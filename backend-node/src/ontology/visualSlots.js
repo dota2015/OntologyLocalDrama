@@ -41,9 +41,19 @@ function createCharacterVisualSlot(data = {}) {
     }
   }
 
+  // 智能推断或规整 Z 轴纵深层级 (foreground 前景 / midground 中景 / background 后景)
+  let depthLayer = String(data.depth_layer || '').trim().toLowerCase();
+  if (!depthLayer) {
+    const combined = `${finalScreenPos} ${spatialAnchor}`;
+    if (/(?:前景|近景|近处|左前|右前|过肩|foreground)/i.test(combined)) depthLayer = 'foreground';
+    else if (/(?:后景|远处|深处|远景|后方|背景|background)/i.test(combined)) depthLayer = 'background';
+    else depthLayer = 'midground';
+  }
+
   return {
     character_id: data.character_id != null ? Number(data.character_id) : null,
     name: String(data.name || '').trim(),
+    depth_layer: depthLayer,
     screen_position: finalScreenPos || '画面中央',
     environmental_anchor: finalEnvAnchor || '',
     spatial_anchor: spatialAnchor || (finalEnvAnchor ? `${finalScreenPos}${finalEnvAnchor}` : finalScreenPos),
@@ -167,6 +177,35 @@ function validateCharacterVisualSlots(shot, slots = []) {
     }
   });
 
+  // 8. 多人构图空间关系审查：防止双人完全重叠，并审查远近前后纵深层级 (Z-Axis Depth Staging)
+  if (slots.length >= 2) {
+    const posList = slots.map((s) => `${s.screen_position || ''} ${s.spatial_anchor || ''}`);
+    // 检查是否全挤在完全相同的点
+    if (posList.length === 2 && posList[0].trim() === posList[1].trim() && posList[0].trim() !== '') {
+      violations.push({
+        rule: 'INVARIANT_SLOT_DUPLICATE_POSITION',
+        shot_number: shotNum,
+        severity: 'error',
+        message: `分镜 ${shotNum} 中两名角色（「${slots[0].name || '角色1'}」与「${slots[1].name || '角色2'}」）被安排在完全相同的构图位置（${posList[0]}），将导致生图模型产生严重的二人重叠穿模与克隆！必须一左一右并区分前后远近纵深！`,
+      });
+    }
+
+    // 检查是否存在前后远近纵深关系 (Z-Axis Depth Staging)
+    const hasForeground = slots.some((s) => s.depth_layer === 'foreground' || /(?:前景|近处|近景|前侧|左前|右前|过肩)/i.test(`${s.screen_position} ${s.spatial_anchor}`));
+    const hasBackOrMid = slots.some((s) => s.depth_layer === 'background' || /(?:后景|远处|深处|后方|背景)/i.test(`${s.screen_position} ${s.spatial_anchor}`));
+
+    // 如果所有角色只有横向左右（如全是“画面左侧”、“画面右侧”），没有任何前后远近纵深词
+    const allFlat = !hasForeground && !hasBackOrMid && !slots.some((s) => /(?:前景|近景|近处|后景|深处|远处|过肩)/i.test(`${s.screen_position} ${s.spatial_anchor}`));
+    if (allFlat) {
+      violations.push({
+        rule: 'INVARIANT_SLOT_MISSING_DEPTH_STAGING',
+        shot_number: shotNum,
+        severity: 'warning',
+        message: `分镜 ${shotNum} 多人同框仅有左右横向站位，缺少前后远近纵深关系（Z轴前后层次），容易导致画面呈扁平纸片人贴立。建议构图引入一前一后（如：前景过肩/近身背影 vs 中景正面焦点，或中景主体 vs 后景纵深掩护）。`,
+      });
+    }
+  }
+
   return violations;
 }
 
@@ -224,7 +263,14 @@ function compileImagePromptFromSlots(shot, slots = [], options = {}) {
       else if (s.head_gaze && !s.head_pose) items.push(s.head_gaze);
       if (s.appearance_details) items.push(s.appearance_details);
 
-      const anchor = s.spatial_anchor ? (s.spatial_anchor.startsWith('位于') ? s.spatial_anchor : `位于${s.spatial_anchor}`) : '';
+      let anchor = s.spatial_anchor ? (s.spatial_anchor.startsWith('位于') ? s.spatial_anchor : `位于${s.spatial_anchor}`) : '';
+      if (slots.length >= 2) {
+        if ((s.depth_layer === 'foreground' || /(?:前景|近处|近景|左前|右前|过肩)/i.test(anchor)) && !anchor.includes('前景近处') && !anchor.includes('前景') && !anchor.includes('近处')) {
+          anchor = `${anchor}（处于画面前景近处）`;
+        } else if ((s.depth_layer === 'background' || /(?:后景|远处|深处)/i.test(anchor)) && !anchor.includes('后景纵深') && !anchor.includes('后景') && !anchor.includes('深处')) {
+          anchor = `${anchor}（处于画面后景纵深处）`;
+        }
+      }
       const prefix = anchor ? `${charName}${anchor}` : charName;
       return `${prefix}${items.length > 0 ? '，' + items.join('，') : ''}`;
     });
@@ -318,11 +364,26 @@ function synthesizeCharacterVisualSlots(shot, catalogCharacters = []) {
 
     const isTactical = /(?:断墙|战术装备|战术武器|战术耳机|掩体|火力|持枪|射击|拔枪|冲锋枪|突击步枪|手枪|子弹|废弃工厂|潜行|撤离|废墟|蜂医|红狼|露娜)/i.test(prompt) || /(?:断墙|掩体|废弃工厂|废墟)/i.test(shot.location || '');
 
-    let anchor = idx === 0 ? (shot.angle_h === 'front_left' ? '画面左侧近景' : '画面中央前景') : (isTactical ? '画面右侧掩体后' : '画面右侧中景');
-    if (shot.layout_description) {
-      if (shot.layout_description.includes('左侧')) anchor = '画面左侧';
-      else if (shot.layout_description.includes('右侧')) anchor = '画面右侧';
-      else if (shot.layout_description.includes('中央') || shot.layout_description.includes('中间')) anchor = '画面中央';
+    let depthLayer = 'midground';
+    let anchor = '画面中央中景';
+    if (charIds.length >= 2) {
+      if (idx === 0) {
+        depthLayer = 'foreground';
+        anchor = shot.angle_h === 'front_left' ? '画面左侧前景近景' : '画面左前近景过肩';
+      } else if (idx === 1) {
+        depthLayer = 'midground';
+        anchor = isTactical ? '画面右侧中景掩体后' : '画面右侧中景';
+      } else {
+        depthLayer = 'background';
+        anchor = '画面后景深处通道旁';
+      }
+    } else {
+      anchor = idx === 0 ? (shot.angle_h === 'front_left' ? '画面左侧近景' : '画面中央前景') : (isTactical ? '画面右侧掩体后' : '画面右侧中景');
+      if (shot.layout_description) {
+        if (shot.layout_description.includes('左侧')) anchor = '画面左侧';
+        else if (shot.layout_description.includes('右侧')) anchor = '画面右侧';
+        else if (shot.layout_description.includes('中央') || shot.layout_description.includes('中间')) anchor = '画面中央';
+      }
     }
 
     let posture = isTactical ? '身体保持戒备低姿，重心稳固隐蔽' : '身体保持端正姿态，重心平稳';
@@ -379,6 +440,8 @@ function synthesizeCharacterVisualSlots(shot, catalogCharacters = []) {
     return createCharacterVisualSlot({
       character_id: cid,
       name,
+      depth_layer: depthLayer,
+      screen_position: anchor,
       facing,
       spatial_anchor: anchor,
       head_pose: headPose,
@@ -431,7 +494,14 @@ function compileLastFramePromptFromSlots(shot, slots = [], options = {}) {
       if (s.gaze && s.gaze !== s.head_pose) items.push(s.gaze);
       else if (s.head_gaze && !s.head_pose) items.push(s.head_gaze);
 
-      const anchor = s.spatial_anchor ? (s.spatial_anchor.startsWith('位于') ? s.spatial_anchor : `位于${s.spatial_anchor}`) : '';
+      let anchor = s.spatial_anchor ? (s.spatial_anchor.startsWith('位于') ? s.spatial_anchor : `位于${s.spatial_anchor}`) : '';
+      if (slots.length >= 2) {
+        if ((s.depth_layer === 'foreground' || /(?:前景|近处|近景|左前|右前|过肩)/i.test(anchor)) && !anchor.includes('前景近处') && !anchor.includes('前景') && !anchor.includes('近处')) {
+          anchor = `${anchor}（处于画面前景近处）`;
+        } else if ((s.depth_layer === 'background' || /(?:后景|远处|深处)/i.test(anchor)) && !anchor.includes('后景纵深') && !anchor.includes('后景') && !anchor.includes('深处')) {
+          anchor = `${anchor}（处于画面后景纵深处）`;
+        }
+      }
       const prefix = anchor ? `${charName}${anchor}` : charName;
       return `${prefix}${items.length > 0 ? '，' + items.join('，') : ''}`;
     });

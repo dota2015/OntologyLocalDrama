@@ -84,3 +84,49 @@ test('VisualSlotCompletenessRule detects boilerplate template phrases', () => {
   const violations = rule.evaluate({ shots: [badShot] });
   assert.ok(violations.some((v) => v.rule === 'INVARIANT_SLOT_BOILERPLATE_DETECTED'));
 });
+
+test('validateCharacterVisualSlots checks multi-character depth staging (near vs far)', () => {
+  const { validateCharacterVisualSlots, synthesizeCharacterVisualSlots } = require('../src/ontology/visualSlots');
+
+  // 1. 两角色处于完全相同坐标点 -> INVARIANT_SLOT_DUPLICATE_POSITION
+  const duplicatePosShot = {
+    shot_number: 38,
+    characters: [1, 2],
+  };
+  const dupSlots = [
+    createCharacterVisualSlot({ name: '露娜', screen_position: '画面左侧', facing: '正面', head_pose: '正对', gaze: '看前', posture: '靠桌站立', hands: '双手抱胸' }),
+    createCharacterVisualSlot({ name: '红狼', screen_position: '画面左侧', facing: '正面', head_pose: '正对', gaze: '看前', posture: '半蹲低位', hands: '单手扶膝' }),
+  ];
+  const dupViolations = validateCharacterVisualSlots(duplicatePosShot, dupSlots);
+  assert.ok(dupViolations.some((v) => v.rule === 'INVARIANT_SLOT_DUPLICATE_POSITION'));
+
+  // 2. 两角色仅有横向左右（无任何前景/后景等纵深） -> INVARIANT_SLOT_MISSING_DEPTH_STAGING
+  const flatShot = {
+    shot_number: 39,
+    characters: [1, 2],
+  };
+  const flatSlots = [
+    createCharacterVisualSlot({ name: '露娜', screen_position: '画面左侧', facing: '面对', head_pose: '正对', gaze: '看前', posture: '靠桌站立', hands: '双手抱胸' }),
+    createCharacterVisualSlot({ name: '红狼', screen_position: '画面右侧', facing: '面对', head_pose: '正对', gaze: '看前', posture: '半蹲低位', hands: '单手扶膝' }),
+  ];
+  const flatViolations = validateCharacterVisualSlots(flatShot, flatSlots);
+  assert.ok(flatViolations.some((v) => v.rule === 'INVARIANT_SLOT_MISSING_DEPTH_STAGING'));
+
+  // 3. 正确的 Z 轴前后纵深构图（前景过肩 vs 中景面对） -> 0 违规
+  const depthShot = {
+    shot_number: 40,
+    characters: [1, 2],
+  };
+  const depthSlots = [
+    createCharacterVisualSlot({ name: '红狼', depth_layer: 'foreground', screen_position: '画面左侧前景近景过肩', facing: '背向镜头', head_pose: '正对', gaze: '看前', posture: '半蹲低姿', hands: '手扶掩体' }),
+    createCharacterVisualSlot({ name: '露娜', depth_layer: 'midground', screen_position: '画面右侧中景', facing: '正面面对镜头', head_pose: '微仰', gaze: '看前', posture: '身体前倾', hands: '按在控制台' }),
+  ];
+  const depthViolations = validateCharacterVisualSlots(depthShot, depthSlots);
+  assert.equal(depthViolations.filter((v) => v.rule === 'INVARIANT_SLOT_MISSING_DEPTH_STAGING' || v.rule === 'INVARIANT_SLOT_DUPLICATE_POSITION').length, 0);
+
+  // 4. synthesizeCharacterVisualSlots 自动分配错落纵深层级
+  const autoSlots = synthesizeCharacterVisualSlots({ characters: [1, 2], action: '两人在控制室商议撤离路线。' }, [{ id: 1, name: '红狼' }, { id: 2, name: '露娜' }]);
+  assert.equal(autoSlots[0].depth_layer, 'foreground');
+  assert.equal(autoSlots[1].depth_layer, 'midground');
+});
+
