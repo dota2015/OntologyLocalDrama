@@ -1,0 +1,15 @@
+[Unit]
+Description=LocalMiniDrama web and API
+After=network-online.target localminidrama-h3.service
+Wants=localminidrama-h3.service
+
+[Service]
+WorkingDirectory=%h/LocalMiniDrama/backend-node
+Environment=PATH=%h/LocalMiniDrama/.venv-video-bridge/bin:%h/LocalMiniDrama/.runtime/node/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/LocalMiniDrama/.runtime/node/bin/node src/server.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target

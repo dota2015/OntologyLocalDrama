@@ -12,6 +12,7 @@ import { GEN_RESOURCE } from '@/stores/generationTaskStore'
 export async function runGenerateStoryFromPremise({
   premise,
   storyStyle,
+  narrativeStyle,
   storyType,
   storyEpisodeCount,
   scriptTitle,
@@ -51,6 +52,7 @@ export async function runGenerateStoryFromPremise({
         metadata: {
           ...stylePromptMetadataForSave(generationStyle, customStylePrompt),
           story_style: storyStyle || undefined,
+          ...(narrativeStyle ? { narrative_style: narrativeStyle } : {}),
           aspect_ratio: projectAspectRatio || '16:9',
         },
       })
@@ -87,6 +89,7 @@ export async function runGenerateStoryFromPremise({
         metadata: {
           ...stylePromptMetadataForSave(generationStyle, customStylePrompt),
           story_style: storyStyle || undefined,
+          ...(narrativeStyle ? { narrative_style: narrativeStyle } : {}),
           aspect_ratio: projectAspectRatio || '16:9',
         },
       })

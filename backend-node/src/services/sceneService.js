@@ -1,8 +1,10 @@
+const referenceModes = require('./referenceImageModeService');
 // 场景：与 Go scene_handler + storyboard_composition 对齐
 const imageClient = require('./imageClient');
 const aiClient = require('./aiClient');
 const promptI18n = require('./promptI18n');
 const { mergeCfgStyleWithDrama } = require('../utils/dramaStyleMerge');
+const { stripChineseExclusions } = require('../utils/framePromptSanitize');
 
 function applySceneStyleOverride(cfg, styleOverride) {
   const o = (styleOverride || '').toString().trim();
@@ -20,13 +22,17 @@ function applySceneStyleOverride(cfg, styleOverride) {
 function updateScene(db, log, sceneId, req) {
   const row = db.prepare('SELECT id FROM scenes WHERE id = ? AND deleted_at IS NULL').get(Number(sceneId));
   if (!row) return { ok: false, error: 'scene not found' };
+  if (req.reference_image_mode !== undefined) {
+    try { referenceModes.validateMode(req.reference_image_mode); } catch (err) { return { ok: false, error: err.message }; }
+  }
   const updates = [];
   const params = [];
+  if (req.reference_image_mode !== undefined) { updates.push('reference_image_mode = ?'); params.push(req.reference_image_mode); }
   if (req.location != null) { updates.push('location = ?'); params.push(req.location); }
   if (req.time != null) { updates.push('time = ?'); params.push(req.time); }
-  if (req.prompt != null) { updates.push('prompt = ?'); params.push(req.prompt); }
-  if (req.polished_prompt != null) { updates.push('polished_prompt = ?'); params.push(req.polished_prompt); }
-  if (req.polished_prompt_single != null) { updates.push('polished_prompt_single = ?'); params.push(req.polished_prompt_single); }
+  if (req.prompt != null) { updates.push('prompt = ?'); params.push(stripChineseExclusions(req.prompt)); }
+  if (req.polished_prompt != null) { updates.push('polished_prompt = ?'); params.push(stripChineseExclusions(req.polished_prompt)); }
+  if (req.polished_prompt_single != null) { updates.push('polished_prompt_single = ?'); params.push(stripChineseExclusions(req.polished_prompt_single)); }
   if (req.image_url != null) { updates.push('image_url = ?'); params.push(req.image_url); }
   if (req.local_path !== undefined) { updates.push('local_path = ?'); params.push(req.local_path); }
   if (req.extra_images !== undefined) { updates.push('extra_images = ?'); params.push(req.extra_images ?? null); }
@@ -41,7 +47,7 @@ function updateScene(db, log, sceneId, req) {
 function updateScenePrompt(db, log, sceneId, req) {
   const row = db.prepare('SELECT id FROM scenes WHERE id = ? AND deleted_at IS NULL').get(Number(sceneId));
   if (!row) return { ok: false, error: 'scene not found' };
-  const prompt = req.prompt != null ? req.prompt : '';
+  const prompt = req.prompt != null ? stripChineseExclusions(req.prompt) : '';
   db.prepare('UPDATE scenes SET prompt = ?, updated_at = ? WHERE id = ?').run(prompt, new Date().toISOString(), Number(sceneId));
   log.info('Scene prompt updated', { scene_id: sceneId });
   return { ok: true };
@@ -58,6 +64,7 @@ function deleteScene(db, log, sceneId) {
 function createScene(db, log, dramaId, req) {
   const now = new Date().toISOString();
   const episodeId = req.episode_id != null ? Number(req.episode_id) : null;
+  const cleanPrompt = stripChineseExclusions(req.prompt || '');
   try {
     const info = db.prepare(
       `INSERT INTO scenes (drama_id, episode_id, location, time, prompt, image_url, local_path, storyboard_count, status, created_at, updated_at)
@@ -67,7 +74,7 @@ function createScene(db, log, dramaId, req) {
       episodeId,
       req.location || '',
       req.time || '',
-      req.prompt || '',
+      cleanPrompt,
       req.image_url ?? null,
       req.local_path ?? null,
       now,
@@ -81,7 +88,7 @@ function createScene(db, log, dramaId, req) {
       const info = db.prepare(
         `INSERT INTO scenes (drama_id, location, time, prompt, image_url, local_path, storyboard_count, status, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, 1, 'pending', ?, ?)`
-      ).run(Number(dramaId), req.location || '', req.time || '', req.prompt || '', req.image_url ?? null, req.local_path ?? null, now, now);
+      ).run(Number(dramaId), req.location || '', req.time || '', cleanPrompt, req.image_url ?? null, req.local_path ?? null, now, now);
       return getSceneById(db, info.lastInsertRowid);
     }
     throw e;
@@ -109,6 +116,7 @@ function listByDramaId(db, dramaId) {
     'SELECT * FROM scenes WHERE drama_id = ? AND deleted_at IS NULL ORDER BY id ASC'
   ).all(Number(dramaId));
   return rows.map((row) => ({
+    ...referenceModes.fields(row),
     id: row.id,
     drama_id: row.drama_id,
     episode_id: row.episode_id,
@@ -130,6 +138,7 @@ function listByDramaId(db, dramaId) {
 function getSceneById(db, id) {
   const row = db.prepare('SELECT * FROM scenes WHERE id = ? AND deleted_at IS NULL').get(id);
   return row ? {
+    ...referenceModes.fields(row),
     id: row.id,
     drama_id: row.drama_id,
     location: row.location,

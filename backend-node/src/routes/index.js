@@ -18,12 +18,14 @@ const imageRoutes = require('./images');
 const videoRoutes = require('./videos');
 const videoMergeRoutes = require('./videoMerges');
 const assetRoutes = require('./assets');
+const ontologyRoutes = require('./ontology');
 const audioRoutes = require('./audio');
 const promptOverridesRoutes = require('./promptOverrides');
 const sceneModelMapRoutes = require('./sceneModelMap');
 
 function setupRouter(cfg, db, log) {
   const r = express.Router();
+  require('./creativeSettings')(r, db);
   const drama = dramaRoutes(db, cfg, log);
   const task = taskRoutes(db, log);
   const settings = settingsRoutes(db, cfg, log);
@@ -45,7 +47,10 @@ function setupRouter(cfg, db, log) {
   const videos = videoRoutes(db, log);
   const videoMerges = videoMergeRoutes(db, log);
   const assets = assetRoutes(db, log);
+  const ontology = ontologyRoutes(db, log);
   const audio = audioRoutes(db, log, cfg);
+  r.use('/audio/background-music', require('./backgroundMusic')(db, cfg, log));
+  r.use('/audio/h3-voices', require('./h3Voices')(db, cfg, log));
   const promptOverrides = promptOverridesRoutes.routes(db, log);
 
   // ---------- dramas ----------
@@ -212,12 +217,55 @@ function setupRouter(cfg, db, log) {
   // ---------- episodes ----------
   // 注意：drama.generateStoryboard 已处理所有逻辑（包括参数解析），这里统一使用 drama 模块的实现
   // 之前可能有部分路由指向了 storyboards.episodeStoryboardsGenerate，这可能导致参数解析不一致
+  r.post('/episodes/:episode_id/script/generate', async (req, res) => {
+    try {
+      const result = await require('../services/episodeScriptService').generateEpisodeDraft(db, log, req.params.episode_id, req.body || {});
+      response.success(res, result);
+    } catch (err) {
+      log.error('episode/script/generate', { error: err.message });
+      if (err.message.includes('不存在')) return response.notFound(res, err.message);
+      response.internalError(res, err.message || '当前集剧本生成失败');
+    }
+  });
+  r.put('/episodes/:episode_id/script', (req, res) => {
+    try {
+      const result = require('../services/episodeScriptService').saveEpisodeScript(db, req.params.episode_id, req.body || {});
+      response.success(res, result);
+    } catch (err) {
+      if (err.message.includes('不存在')) return response.notFound(res, err.message);
+      if (err.message.includes('必填')) return response.badRequest(res, err.message);
+      log.error('episode/script/save', { error: err.message });
+      response.internalError(res, err.message || '保存当前集失败');
+    }
+  });
   r.post('/episodes/:episode_id/storyboards', drama.generateStoryboard);
   r.post('/episodes/:episode_id/props/extract', prop.extractProps);
+  r.post('/episodes/:episode_id/reference-image-recommendations', async (req, res) => {
+    try {
+      const out = await require('../services/referenceImageModeService').recommendEpisode(db, log, req.params.episode_id);
+      res.json({ success: true, data: out });
+    } catch (err) {
+      res.status(400).json({ success: false, error: { message: err.message } });
+    }
+  });
   r.post('/episodes/:episode_id/characters/extract', stub.episodeCharactersExtract);
   r.get('/episodes/:episode_id/storyboards', storyboards.episodeStoryboardsGet);
   r.post('/episodes/:episode_id/finalize', drama.finalizeEpisode);
   r.get('/episodes/:episode_id/download', drama.downloadEpisodeVideo);
+
+  // Durable multi-step jobs. Refreshing only replaces the observer.
+  r.get('/dramas/:id/generation-jobs', (req, res) => {
+    try { response.success(res, require('../services/generationJobService').list(db, req.params.id)); }
+    catch (err) { response.internalError(res, err.message); }
+  });
+  r.post('/dramas/:id/generation-jobs', (req, res) => {
+    try { response.success(res, require('../services/generationJobService').create(db, log, req.params.id, req.body || {})); }
+    catch (err) { response.error(res, err.status || 400, 'GENERATION_JOB_ERROR', err.message); }
+  });
+  r.post('/dramas/:id/generation-jobs/:job_id/:command', (req, res) => {
+    try { response.success(res, require('../services/generationJobService').control(db, req.params.id, req.params.job_id, req.params.command)); }
+    catch (err) { response.badRequest(res, err.message); }
+  });
 
   // ---------- tasks ----------
   r.get('/tasks/:task_id', task.getTaskStatus);
@@ -250,9 +298,14 @@ function setupRouter(cfg, db, log) {
 
   // ---------- videos ----------
   r.get('/videos', videos.list);
+  r.get('/videos/h3-inputs/:storyboard_id', videos.h3Inputs);
+  r.put('/videos/h3-inputs/:storyboard_id', videos.saveH3Inputs);
   r.post('/videos', videos.create);
   r.post('/videos/image/:image_gen_id', videos.fromImage);
   r.post('/videos/episode/:episode_id/batch', videos.episodeBatch);
+  r.get('/videos/episode/:episode_id/batch', videos.getEpisodeBatch);
+  r.post('/videos/episode/:episode_id/batch/stop', videos.stopEpisodeBatch);
+  r.post('/videos/episode/:episode_id/batch/clear', videos.clearEpisodeBatch);
   r.post('/videos/:id/resume-poll', videos.resumePoll);
   r.get('/videos/:id', videos.get);
   r.delete('/videos/:id', videos.delete);
@@ -294,8 +347,19 @@ function setupRouter(cfg, db, log) {
   r.post('/storyboards/:id/regenerate-layout-description', storyboards.regenerateLayoutDescription);
   r.post('/storyboards/:id/rebuild-video-prompt', storyboards.rebuildVideoPrompt);
   r.post('/storyboards/:id/split-by-audio', storyboards.splitByAudio);
+  r.post('/storyboards/:id/ai-split', storyboards.aiSplit);
 
   // ---------- audio ----------
+  r.get('/audio/dubbing/:drama_id', audio.dubbingGet);
+  r.put('/audio/dubbing/:drama_id', audio.dubbingSave);
+  r.post('/audio/dubbing/:drama_id/auto-assign', audio.dubbingAutoAssign);
+  r.post('/audio/dubbing/:drama_id/generate', audio.dubbingStart);
+  r.post('/audio/dubbing/:drama_id/preview', audio.dubbingPreview);
+  r.get('/audio/dubbing/:drama_id/speech-task', audio.speechTask);
+  r.post('/audio/dubbing/:drama_id/speech-batch', audio.speechBatch);
+  r.get('/audio/dubbing/:drama_id/speech/:storyboard_id', audio.speechGet);
+  r.post('/audio/dubbing/:drama_id/speech/:storyboard_id/extract', audio.speechExtract);
+  r.put('/audio/dubbing/:drama_id/speech/:storyboard_id', audio.speechSave);
   r.post('/audio/extract', audio.extract);
   r.post('/audio/extract/batch', audio.extractBatch);
 
@@ -304,6 +368,9 @@ function setupRouter(cfg, db, log) {
   r.put('/settings/language', settings.updateLanguage);
   r.get('/settings/generation', settings.getGenerationSettings);
   r.put('/settings/generation', settings.updateGenerationSettings);
+  r.get('/settings/h3-instances', settings.getH3Instances);
+  r.put('/settings/h3-instances', settings.updateH3Instances);
+  r.post('/settings/h3-instances/test', settings.testH3Instance);
 
   // ---------- prompt overrides ----------
   r.get('/settings/prompts', promptOverrides.list);
@@ -323,6 +390,16 @@ function setupRouter(cfg, db, log) {
   r.post('/agent/approve', agent.approve);
   r.post('/agent/decline', agent.decline);
   r.get('/agent/history', agent.history);
+
+  // ---------- audiovisual ontology & director agent ----------
+  r.get('/episodes/:episode_id/ontology/semantic-package', ontology.getSemanticPackage);
+  r.post('/episodes/:episode_id/ontology/validate', ontology.validateEpisodeInvariants);
+  r.post('/episodes/:episode_id/ontology/extract-entities', ontology.extractEntities);
+  r.post('/episodes/:episode_id/ontology/director-generate', ontology.directorGenerate);
+  r.post('/dramas/:drama_id/ontology/director-full-pipeline', ontology.directorFullPipeline);
+  r.post('/dramas/:drama_id/ontology/reconcile-assets', ontology.reconcileDramaAssets);
+  r.post('/dramas/:drama_id/ontology/autocomplete-entity', ontology.autocompleteEntity);
+  r.post('/storyboards/:id/ontology/director-refine', ontology.refineStoryboard);
 
   // 启动时将已有的覆盖加载到 promptI18n 内存缓存
   try {

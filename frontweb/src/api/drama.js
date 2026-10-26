@@ -19,6 +19,12 @@ export const dramaAPI = {
   saveEpisodes(id, episodes) {
     return request.put(`/dramas/${id}/episodes`, { episodes })
   },
+  generateEpisodeScript(episodeId, data) {
+    return request.post(`/episodes/${episodeId}/script/generate`, data || {})
+  },
+  saveEpisodeScript(episodeId, data) {
+    return request.put(`/episodes/${episodeId}/script`, data)
+  },
   saveCharacters(id, data) {
     return request.put(`/dramas/${id}/characters`, data)
   },

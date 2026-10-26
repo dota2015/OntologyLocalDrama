@@ -1,3 +1,4 @@
+const referenceModes = require('./referenceImageModeService');
 const aiClient = require('./aiClient');
 const promptI18n = require('./promptI18n');
 const { mergeCfgStyleWithDrama } = require('../utils/dramaStyleMerge');
@@ -7,11 +8,13 @@ function listByDramaId(db, dramaId) {
     'SELECT * FROM props WHERE drama_id = ? AND deleted_at IS NULL ORDER BY id ASC'
   ).all(Number(dramaId));
   return rows.map((r) => ({
+    ...referenceModes.fields(r),
     id: r.id,
     drama_id: r.drama_id,
     name: r.name,
     type: r.type,
     description: r.description,
+    physical_scale: r.physical_scale || null,
     prompt: r.prompt,
     negative_prompt: r.negative_prompt || null,
     image_url: r.image_url,
@@ -23,44 +26,127 @@ function listByDramaId(db, dramaId) {
   }));
 }
 
+function hasPhysicalScaleColumn(db) {
+  try {
+    const cols = db.prepare('PRAGMA table_info(props)').all();
+    return cols.some((c) => c.name === 'physical_scale');
+  } catch (_) {
+    return false;
+  }
+}
+
 function create(db, log, req) {
   const now = new Date().toISOString();
   const episodeId = req.episode_id != null ? Number(req.episode_id) : null;
-  const info = db.prepare(
-    `INSERT INTO props (drama_id, episode_id, name, type, description, prompt, negative_prompt, image_url, local_path, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    req.drama_id,
-    episodeId,
-    req.name || '',
-    req.type ?? null,
-    req.description ?? null,
-    req.prompt ?? null,
-    req.negative_prompt ?? null,
-    req.image_url ?? null,
-    req.local_path ?? null,
-    now,
-    now
-  );
+  const hasScale = hasPhysicalScaleColumn(db);
+
+  let info;
+  if (hasScale) {
+    info = db.prepare(
+      `INSERT INTO props (drama_id, episode_id, name, type, description, physical_scale, prompt, negative_prompt, image_url, local_path, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      req.drama_id,
+      episodeId,
+      req.name || '',
+      req.type ?? null,
+      req.description ?? null,
+      req.physical_scale ?? null,
+      req.prompt ?? null,
+      req.negative_prompt ?? null,
+      req.image_url ?? null,
+      req.local_path ?? null,
+      now,
+      now
+    );
+  } else {
+    info = db.prepare(
+      `INSERT INTO props (drama_id, episode_id, name, type, description, prompt, negative_prompt, image_url, local_path, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      req.drama_id,
+      episodeId,
+      req.name || '',
+      req.type ?? null,
+      req.description ?? null,
+      req.prompt ?? null,
+      req.negative_prompt ?? null,
+      req.image_url ?? null,
+      req.local_path ?? null,
+      now,
+      now
+    );
+  }
   log.info('Prop created', { prop_id: info.lastInsertRowid });
-  return getById(db, info.lastInsertRowid);
+  const createdProp = getById(db, info.lastInsertRowid);
+  const linkedNumbers = autoLinkPropToStoryboards(db, log, info.lastInsertRowid, req.drama_id, episodeId);
+  return { ...createdProp, auto_linked_storyboards: linkedNumbers };
+}
+
+function autoLinkPropToStoryboards(db, log, propId, dramaId, episodeId) {
+  try {
+    const prop = db.prepare('SELECT id, name, type, description FROM props WHERE id = ?').get(propId);
+    if (!prop || !prop.name) return [];
+
+    let query = 'SELECT id, storyboard_number, action, description, dialogue, result FROM storyboards WHERE deleted_at IS NULL';
+    const params = [];
+    if (episodeId) {
+      query += ' AND episode_id = ?';
+      params.push(episodeId);
+    } else if (dramaId) {
+      query += ' AND episode_id IN (SELECT id FROM episodes WHERE drama_id = ? AND deleted_at IS NULL)';
+      params.push(dramaId);
+    }
+    query += ' ORDER BY storyboard_number ASC';
+
+    const shots = db.prepare(query).all(...params);
+    const { isAssetMentionedInText } = require('../ontology/assetMatcher');
+    const linkedNumbers = [];
+
+    const ins = db.prepare('INSERT OR IGNORE INTO storyboard_props (storyboard_id, prop_id) VALUES (?, ?)');
+    for (const s of shots) {
+      const shotText = `${s.action || ''} ${s.description || ''} ${s.dialogue || ''} ${s.result || ''}`;
+      if (isAssetMentionedInText('prop', prop, shotText)) {
+        ins.run(s.id, propId);
+        linkedNumbers.push(s.storyboard_number);
+      }
+    }
+    if (linkedNumbers.length > 0) {
+      log.info('[道具自动连带] 已自动将道具关联到涉及分镜', { prop_id: propId, name: prop.name, shots: linkedNumbers });
+    }
+    return linkedNumbers;
+  } catch (_) {
+    return [];
+  }
 }
 
 function getById(db, id) {
   const r = db.prepare('SELECT * FROM props WHERE id = ? AND deleted_at IS NULL').get(id);
   if (!r) return null;
+  let linkedNumbers = [];
+  try {
+    linkedNumbers = db.prepare(`
+      SELECT s.storyboard_number FROM storyboard_props sp
+      JOIN storyboards s ON s.id = sp.storyboard_id
+      WHERE sp.prop_id = ? AND s.deleted_at IS NULL
+      ORDER BY s.storyboard_number ASC
+    `).all(id).map((x) => x.storyboard_number);
+  } catch (_) {}
   return {
+    ...referenceModes.fields(r),
     id: r.id,
     drama_id: r.drama_id,
     name: r.name,
     type: r.type,
     description: r.description,
+    physical_scale: r.physical_scale || null,
     prompt: r.prompt,
     negative_prompt: r.negative_prompt || null,
     image_url: r.image_url,
     local_path: r.local_path,
     extra_images: r.extra_images || null,
     ref_image: r.ref_image || null,
+    linked_storyboard_numbers: linkedNumbers,
     created_at: r.created_at,
     updated_at: r.updated_at,
   };
@@ -69,10 +155,13 @@ function getById(db, id) {
 function update(db, log, id, updates) {
   const existing = getById(db, id);
   if (!existing) return null;
+  if (updates.reference_image_mode !== undefined) referenceModes.validateMode(updates.reference_image_mode);
   const set = [];
   const params = [];
+  if (updates.reference_image_mode !== undefined) { set.push('reference_image_mode = ?'); params.push(updates.reference_image_mode); }
   if (updates.name != null) { set.push('name = ?'); params.push(updates.name); }
   if (updates.type != null) { set.push('type = ?'); params.push(updates.type); }
+  if (updates.physical_scale !== undefined && hasPhysicalScaleColumn(db)) { set.push('physical_scale = ?'); params.push(updates.physical_scale); }
   if (updates.description != null) { set.push('description = ?'); params.push(updates.description); }
   if (updates.prompt != null) { set.push('prompt = ?'); params.push(updates.prompt); }
   if (updates.negative_prompt !== undefined) { set.push('negative_prompt = ?'); params.push(updates.negative_prompt); }
@@ -84,7 +173,9 @@ function update(db, log, id, updates) {
   params.push(new Date().toISOString(), id);
   db.prepare('UPDATE props SET ' + set.join(', ') + ', updated_at = ? WHERE id = ?').run(...params);
   log.info('Prop updated', { prop_id: id });
-  return getById(db, id);
+  const updatedProp = getById(db, id);
+  const linkedNumbers = autoLinkPropToStoryboards(db, log, id, existing.drama_id, null);
+  return { ...updatedProp, auto_linked_storyboards: linkedNumbers };
 }
 
 function deleteById(db, log, id) {

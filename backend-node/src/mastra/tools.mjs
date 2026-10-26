@@ -196,6 +196,31 @@ export function executeUpdateScene(db, log, dramaId, episodeId, input) {
   return { ok: true, id: created.id, name: created.location, summary: '已新建场景' };
 }
 
+export function executeUpdateProp(db, log, dramaId, episodeId, input) {
+  const data = input || {};
+  const propService = requireService('propService.js');
+  if (data.id != null) {
+    const owned = assertOwned(db, dramaId, 'prop', data.id);
+    if (!owned.ok) return owned;
+    const patch = {};
+    for (const key of ['name', 'type', 'description', 'physical_scale', 'image_prompt']) {
+      if (data[key] != null) patch[key] = data[key];
+    }
+    const updated = propService.update(db, log, data.id, patch);
+    if (!updated) return fail('更新道具失败');
+    return { ok: true, id: Number(data.id), name: patch.name || owned.label, summary: '已更新道具' };
+  }
+  const created = propService.create(db, log, {
+    drama_id: Number(dramaId),
+    name: data.name || '',
+    type: data.type || '日常物品',
+    description: data.description || '',
+    physical_scale: data.physical_scale || '',
+    image_prompt: data.image_prompt || '',
+  });
+  return { ok: true, id: created.id, name: created.name, summary: '已新建道具' };
+}
+
 export function executeUpdateStoryboard(db, log, dramaId, input) {
   const data = input || {};
   const owned = assertOwned(db, dramaId, 'storyboard', data.id);
@@ -208,6 +233,27 @@ export function executeUpdateStoryboard(db, log, dramaId, input) {
   const updated = requireService('storyboardService.js').updateStoryboard(db, log, data.id, patch);
   if (!updated) return fail('更新分镜失败');
   return { ok: true, id: Number(data.id), summary: '已更新分镜' };
+}
+
+export async function executeDirectorRefineStoryboard(db, log, dramaId, input) {
+  const data = input || {};
+  const owned = assertOwned(db, dramaId, 'storyboard', data.id);
+  if (!owned.ok) return owned;
+  try {
+    const req = createRequire(import.meta.url);
+    const { loadConfig } = req('../config');
+    const { refineSingleStoryboard } = req('../ontology/directorAgent');
+    const cfg = loadConfig();
+    const result = await refineSingleStoryboard(db, log, cfg, data.id, data.instruction || '');
+    return {
+      ok: true,
+      id: Number(data.id),
+      summary: `导演智能体已完成第 ${result.storyboard?.storyboard_number || data.id} 镜定向微调（${result.storyboard?.shot_type || '中景'}，${result.storyboard?.movement || 'push'}运镜）`,
+      storyboard: result.storyboard,
+    };
+  } catch (err) {
+    return fail(err.message || '导演微调失败');
+  }
 }
 
 function taskResult(value, summary) {
@@ -323,6 +369,9 @@ export function executeDeleteItem(db, log, dramaId, input) {
   } else if (data.type === 'scene') {
     const result = requireService('sceneService.js').deleteScene(db, log, data.id);
     if (!result || result.ok === false) return fail((result && result.error) || '删除场景失败');
+  } else if (data.type === 'prop') {
+    const result = requireService('propService.js').deleteById(db, log, data.id);
+    if (!result) return fail('删除道具失败');
   } else if (data.type === 'storyboard') {
     const result = requireService('storyboardService.js').deleteStoryboard(db, log, data.id);
     if (!result) return fail('删除分镜失败');

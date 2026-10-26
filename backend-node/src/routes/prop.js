@@ -27,7 +27,9 @@ function updateProp(db, log) {
   return (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return response.badRequest(res, '无效的ID');
-    const prop = propService.update(db, log, id, req.body || {});
+    let prop;
+    try { prop = propService.update(db, log, id, req.body || {}); }
+    catch (err) { return response.badRequest(res, err.message); }
     if (!prop) return response.notFound(res, '道具不存在');
     response.success(res, prop);
   };
@@ -51,10 +53,11 @@ function generateImage(db, log) {
     const model = req.body?.model != null ? String(req.body.model).trim() || null : null;
     const style = req.body?.style != null ? String(req.body.style).trim() || null : null;
     try {
-      const taskId = propImageGenerationService.generatePropImage(db, log, id, { model, style });
+      const taskId = propImageGenerationService.generatePropImage(db, log, id, { model, style, use_quad_grid: req.body?.use_quad_grid });
       response.success(res, { task_id: taskId });
     } catch (err) {
       if (err.message === '道具不存在') return response.notFound(res, err.message);
+      if (err.message.includes('use_quad_grid')) return response.badRequest(res, err.message);
       if (err.message === '道具没有图片提示词') return response.badRequest(res, err.message);
       log.error('generatePropImage failed', { error: err.message });
       response.internalError(res, err.message || '生成失败');

@@ -1,6 +1,9 @@
 import request from '@/utils/request'
 
 export const sceneAPI = {
+  recommendReferenceImages(episodeId) {
+    return request.post(`/episodes/${episodeId}/reference-image-recommendations`, {})
+  },
   get(sceneId) {
     return request.get(`/scenes/${sceneId}`)
   },

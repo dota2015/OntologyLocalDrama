@@ -1,0 +1,13 @@
+[Unit]
+Description=LocalMiniDrama H3 ComfyUI bridge
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/LocalMiniDrama
+ExecStart=%h/LocalMiniDrama/.venv-video-bridge/bin/python minimax_video_bridge.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

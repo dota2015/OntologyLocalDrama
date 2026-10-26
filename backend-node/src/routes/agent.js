@@ -56,6 +56,7 @@ function createAgentHandlers(db, log, runtime) {
         dramaId: parsed.dramaId,
         episodeId: parsed.episodeId,
         message: req.body.message,
+        focusedTarget: req.body.focusedTarget || req.body.focused_target || null,
         writeEvent(event) { writeSse(res, event); },
       });
     } catch (err) {

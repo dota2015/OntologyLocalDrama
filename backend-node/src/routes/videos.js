@@ -1,10 +1,19 @@
 const response = require('../response');
 const videoService = require('../services/videoService');
 const taskService = require('../services/taskService');
-const { normalizeAspectRatioForApi } = require('../services/videoClient');
 
 function routes(db, log) {
   return {
+    h3Inputs: (req, res) => {
+      try {
+        response.success(res, require('../services/h3NativeService').getSettings(db, req.query.drama_id, req.params.storyboard_id));
+      } catch (err) { response.badRequest(res, err.message); }
+    },
+    saveH3Inputs: (req, res) => {
+      try {
+        response.success(res, require('../services/h3NativeService').saveSettings(db, req.body?.drama_id, req.params.storyboard_id, req.body || {}));
+      } catch (err) { response.badRequest(res, err.message); }
+    },
     list: (req, res) => {
       try {
         const query = { ...req.query };
@@ -18,61 +27,22 @@ function routes(db, log) {
     create: (req, res) => {
       try {
         const body = req.body || {};
-        const task = taskService.createTask(db, log, 'video_generation', String(body.drama_id || ''));
-        const now = new Date().toISOString();
-        const dramaId = Number(body.drama_id) || 0;
-        const storyboardId = body.storyboard_id != null ? Number(body.storyboard_id) : null;
-        const provider = body.provider || 'chatfire';
-        let prompt = body.prompt || '';
-        const style = (body.style || '').toString().trim();
-        if (style) {
-          const baseLower = String(prompt || '').toLowerCase();
-          const styleLower = style.toLowerCase();
-          if (!baseLower.includes(styleLower)) {
-            prompt = prompt ? `${prompt}. Style: ${style}` : `Style: ${style}`;
-          }
+        // A stale browser or a second tab must not duplicate a queued/running shot.
+        if (body.storyboard_id && body.drama_id) {
+          const active = db.prepare("SELECT id FROM video_generations WHERE storyboard_id=? AND drama_id=? AND status='processing' AND deleted_at IS NULL ORDER BY id DESC LIMIT 1")
+            .get(Number(body.storyboard_id), Number(body.drama_id));
+          if (active) return response.success(res, videoService.getById(db, active.id));
+          const queued = db.prepare(`SELECT i.id FROM video_batch_items i JOIN video_batches b ON b.id=i.batch_id
+            WHERE i.storyboard_id=? AND b.drama_id=? AND b.status IN ('running','stopping') AND i.status IN ('pending','running') LIMIT 1`)
+            .get(Number(body.storyboard_id), Number(body.drama_id));
+          if (queued) return response.badRequest(res, '该分镜已在后台视频队列中，请等待完成或先停止批量任务');
         }
-        const model = body.model ?? null;
-        const duration = body.duration ?? null;
-        // 画幅：请求体归一化（全角冒号等）后写入 DB；未传则从 drama.metadata 读取并同样归一化
-        let aspectRatio = null;
-        if (body.aspect_ratio != null && String(body.aspect_ratio).trim() !== '') {
-          aspectRatio = normalizeAspectRatioForApi(body.aspect_ratio);
-        }
-        if (!aspectRatio && dramaId) {
-          try {
-            const dramaRow = db.prepare('SELECT metadata FROM dramas WHERE id = ? AND deleted_at IS NULL').get(dramaId);
-            if (dramaRow && dramaRow.metadata) {
-              const meta = typeof dramaRow.metadata === 'string' ? JSON.parse(dramaRow.metadata) : dramaRow.metadata;
-              if (meta && meta.aspect_ratio) aspectRatio = normalizeAspectRatioForApi(meta.aspect_ratio);
-            }
-          } catch (_) {}
-        }
-        const resolution = body.resolution ?? null;
-        const seed = body.seed != null ? Number(body.seed) : null;
-        const cameraFixed = body.camera_fixed != null ? (body.camera_fixed ? 1 : 0) : null;
-        const watermark = body.watermark != null ? (body.watermark ? 1 : 0) : 0;
-        const imageUrl = body.image_url ?? null;
-        // 首尾帧：支持 URL 或本地路径（sxy，存到 first_frame_url / last_frame_url）
-        const firstFrameUrl = body.first_frame_url ?? body.first_frame_local_path ?? null;
-        const lastFrameUrl = body.last_frame_url ?? body.last_frame_local_path ?? null;
-        // 多图模式：sxy，存 JSON 数组到 reference_image_urls
-        const refImagesJson =
-          body.reference_image_urls && Array.isArray(body.reference_image_urls)
-            ? JSON.stringify(body.reference_image_urls.slice(0, 10))
-            : null;
-        db.prepare(
-          `INSERT INTO video_generations (drama_id, storyboard_id, provider, prompt, model, duration, aspect_ratio, resolution, seed, camera_fixed, watermark, image_url, first_frame_url, last_frame_url, reference_image_urls, status, task_id, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?)`
-        ).run(dramaId, storyboardId, provider, prompt, model, duration, aspectRatio, resolution, seed, cameraFixed, watermark, imageUrl, firstFrameUrl, lastFrameUrl, refImagesJson, task.id, now, now);
-        const videoGenId = db.prepare('SELECT last_insert_rowid() as id').get().id;
-        setImmediate(() => {
-          videoService.processVideoGeneration(db, log, videoGenId);
-        });
-        const item = videoService.getById(db, videoGenId);
-        response.created(res, item || { id: videoGenId, task_id: task.id, status: 'processing' });
+        const item = require('../services/videoSubmissionService').submitVideo(db, log, body);
+        setImmediate(() => videoService.processVideoGeneration(db, log, item.id));
+        response.created(res, item);
       } catch (err) {
         log.error('videos create', { error: err.message });
+        if (err.status === 400) return response.badRequest(res, err.message);
         response.internalError(res, err.message);
       }
     },
@@ -121,11 +91,20 @@ function routes(db, log) {
     },
     episodeBatch: (req, res) => {
       try {
-        response.success(res, []);
-      } catch (err) {
-        log.error('videos episode batch', { error: err.message });
-        response.internalError(res, err.message);
-      }
+        response.created(res, require('../services/videoBatchService').createBatch(db, log, req.params.episode_id, req.body || {}));
+      } catch (err) { response.badRequest(res, err.message); }
+    },
+    getEpisodeBatch: (req, res) => {
+      try { response.success(res, require('../services/videoBatchService').latestBatch(db, req.params.episode_id)); }
+      catch (err) { response.badRequest(res, err.message); }
+    },
+    stopEpisodeBatch: (req, res) => {
+      try { response.success(res, require('../services/videoBatchService').stopBatch(db, req.params.episode_id, req.body?.batch_id)); }
+      catch (err) { response.badRequest(res, err.message); }
+    },
+    clearEpisodeBatch: (req, res) => {
+      try { response.success(res, require('../services/videoBatchService').clearBatch(db, req.params.episode_id, req.body?.batch_id)); }
+      catch (err) { response.badRequest(res, err.message); }
     },
   };
 }

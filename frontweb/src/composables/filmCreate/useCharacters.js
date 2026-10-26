@@ -2,6 +2,7 @@ import { ref, reactive, watch, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { characterAPI } from '@/api/characters'
 import { characterLibraryAPI } from '@/api/characterLibrary'
+import { ontologyAPI } from '@/api/ontology'
 import { dramaAPI } from '@/api/drama'
 import { generationAPI } from '@/api/generation'
 import { uploadAPI } from '@/api/upload'
@@ -58,7 +59,53 @@ export function useCharacters(deps) {
   const extractingAnchors = ref(false)
   const addCharRefImage = ref(null)   // { dataUrl, filename }
   const addCharRefFileInput = ref(null)
+  const aiCompletingCharacter = ref(false)
   let editCharacterPollTimer = null
+
+  async function onAiCompleteCharacter() {
+    const name = (editCharacterForm.value?.name || '').trim()
+    if (!name) {
+      ElMessage.warning('请先输入角色名称')
+      return
+    }
+    if (!dramaId.value) return
+    aiCompletingCharacter.value = true
+    try {
+      const res = await ontologyAPI.autocompleteEntity(dramaId.value, {
+        entity_type: 'character',
+        name,
+        episode_id: currentEpisodeId.value ?? undefined,
+        hint: editCharacterForm.value?.description?.trim() || undefined,
+      })
+      const data = res?.data ?? res
+      if (data && editCharacterForm.value) {
+        let r = data.role
+        if (r === '主角') r = 'main'
+        else if (r === '配角') r = 'supporting'
+        else if (r === '次要角色' || r === '次要') r = 'minor'
+        if (r && (!editCharacterForm.value.role || editCharacterForm.value.role === '')) {
+          editCharacterForm.value.role = r
+        }
+        if (data.appearance) {
+          editCharacterForm.value.appearance = data.appearance
+        }
+        if (data.description && !editCharacterForm.value.description) {
+          editCharacterForm.value.description = data.description
+        }
+        if (data.personality && !editCharacterForm.value.personality) {
+          editCharacterForm.value.personality = data.personality
+        }
+        if (data.polished_prompt && !editCharacterForm.value.polished_prompt) {
+          editCharacterForm.value.polished_prompt = data.polished_prompt
+        }
+        ElMessage.success(`已结合剧本自动补全角色【${name}】的外貌与人设`)
+      }
+    } catch (e) {
+      ElMessage.error(e.message || 'AI 补全分析失败')
+    } finally {
+      aiCompletingCharacter.value = false
+    }
+  }
 
   // ── 角色生成状态 ──────────────────────────────────────
   /** 仅当前集「提取角色」进行中时为 true（按集隔离，切集不误显示 loading） */
@@ -202,9 +249,10 @@ export function useCharacters(deps) {
       const file = dataUrlToFile(refImg.dataUrl, refImg.filename || 'reference.png')
       const uploadRes = await uploadAPI.uploadImage(file, { dramaId: dramaId.value })
       const refPath = uploadRes.local_path || uploadRes.url || ''
+      if (!refPath) throw new Error('上传接口未返回图片路径')
       await characterAPI.putRefImage(characterId, refPath)
     } catch (e) {
-      console.warn('[saveCharRefImage] 保存参考图失败:', e.message)
+      throw new Error('参考照片保存失败，请重试：' + (e.message || '上传失败'))
     }
   }
 
@@ -214,6 +262,7 @@ export function useCharacters(deps) {
     editCharacterSaving.value = true
     try {
       if (form.id) {
+        await deps.beforeSaveCharacter?.(form)
         await characterAPI.update(form.id, {
           name: form.name.trim(),
           role: form.role || undefined,
@@ -791,6 +840,8 @@ export function useCharacters(deps) {
     editCharacterSaving,
     editCharacterPromptGenerating,
     extractingCharAppearance,
+    aiCompletingCharacter,
+    onAiCompleteCharacter,
     extractingAnchors,
     addCharRefImage,
     addCharRefFileInput,

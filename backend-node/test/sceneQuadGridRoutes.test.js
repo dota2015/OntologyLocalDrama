@@ -26,7 +26,7 @@ function makeRes() {
 const noopLog = { info() {}, warn() {}, error() {}, debug() {} };
 
 function callRoute(method, reqBody, params = {}) {
-  const routes = sceneRoutes({ prepare: () => ({ get: () => null }) }, noopLog, {});
+  const routes = sceneRoutes({ prepare: () => ({ get: () => ({ id: 3, reference_image_mode: 'quad_grid' }) }) }, noopLog, {});
   const handler = routes[method];
   const res = makeRes();
   handler({ params, body: reqBody }, res);
@@ -39,7 +39,7 @@ describe('POST /scenes/generate-image honors use_quad_grid (issue #29)', () => {
     sceneService.generateSceneFourViewImage = originalFourView;
   });
 
-  it('uses single-image generation when use_quad_grid is false (checkbox unchecked)', async () => {
+  it('uses single-image generation when use_quad_grid is false (explicit override)', async () => {
     let called = null;
     sceneService.generateSceneSingleImage = async () => {
       called = 'single';
@@ -56,7 +56,7 @@ describe('POST /scenes/generate-image honors use_quad_grid (issue #29)', () => {
     assert.equal(res.payload.data.image_generation.id, 7);
   });
 
-  it('uses four-view generation when use_quad_grid is true (checkbox checked)', async () => {
+  it('uses four-view generation when use_quad_grid is true (explicit override)', async () => {
     let called = null;
     sceneService.generateSceneSingleImage = async () => {
       called = 'single';
@@ -72,7 +72,7 @@ describe('POST /scenes/generate-image honors use_quad_grid (issue #29)', () => {
     assert.equal(res.payload.data.message, '场景四视图生成任务已提交');
   });
 
-  it('keeps legacy four-view behavior for callers that omit the flag', async () => {
+  it('uses the saved per-scene four-view choice when callers omit the flag', async () => {
     let called = null;
     sceneService.generateSceneSingleImage = async () => {
       called = 'single';

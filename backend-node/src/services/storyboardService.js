@@ -59,9 +59,12 @@ function createStoryboard(db, log, req) {
   const now = new Date().toISOString();
   const episodeId = Number(req.episode_id);
   const num = Number(req.storyboard_number ?? 0) || 0;
+  const charVis = req.character_visuals ? (typeof req.character_visuals === 'object' ? JSON.stringify(req.character_visuals) : req.character_visuals) : null;
+  const lastVis = req.last_frame_visuals ? (typeof req.last_frame_visuals === 'object' ? JSON.stringify(req.last_frame_visuals) : req.last_frame_visuals) : null;
+  const vidSlots = req.video_slots ? (typeof req.video_slots === 'object' ? JSON.stringify(req.video_slots) : req.video_slots) : null;
   const info = db.prepare(
-    `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, duration, dialogue, action, result, atmosphere, image_prompt, video_prompt, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+    `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, duration, dialogue, action, result, atmosphere, image_prompt, video_prompt, character_visuals, last_frame_visuals, video_slots, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
   ).run(
     episodeId,
     req.scene_id ?? null,
@@ -77,6 +80,9 @@ function createStoryboard(db, log, req) {
     req.atmosphere ?? null,
     req.image_prompt ?? null,
     req.video_prompt ?? null,
+    charVis,
+    lastVis,
+    vidSlots,
     now,
     now
   );
@@ -87,7 +93,11 @@ function createStoryboard(db, log, req) {
 function updateStoryboard(db, log, id, req) {
   const row = db.prepare('SELECT id FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(Number(id));
   if (!row) return null;
-  const allowed = ['title', 'description', 'location', 'time', 'duration', 'dialogue', 'narration', 'action', 'result', 'atmosphere', 'image_prompt', 'polished_prompt', 'video_prompt', 'scene_id', 'characters', 'composed_image', 'image_url', 'local_path', 'main_panel_idx', 'video_url', 'audio_local_path', 'narration_audio_local_path', 'status', 'shot_type', 'angle', 'angle_h', 'angle_v', 'angle_s', 'movement', 'segment_index', 'segment_title', 'creation_mode', 'universal_segment_text', 'layout_description', 'first_frame_image_id', 'last_frame_image_id', 'last_frame_image_url', 'last_frame_local_path'];
+  const allowed = ['title', 'description', 'location', 'time', 'duration', 'dialogue', 'narration', 'action', 'result', 'atmosphere', 'image_prompt', 'polished_prompt', 'video_prompt', 'video_model', 'scene_id', 'characters', 'character_visuals', 'last_frame_visuals', 'video_slots', 'composed_image', 'image_url', 'local_path', 'main_panel_idx', 'video_url', 'selected_video_id', 'audio_local_path', 'narration_audio_local_path', 'status', 'shot_type', 'angle', 'angle_h', 'angle_v', 'angle_s', 'movement', 'lighting_style', 'depth_of_field', 'bgm_prompt', 'sound_effect', 'segment_index', 'segment_title', 'creation_mode', 'universal_segment_text', 'layout_description', 'first_frame_image_id', 'last_frame_image_id', 'last_frame_image_url', 'last_frame_local_path'];
+  if (req.video_model != null && req.video_model !== '') {
+    const configs = require('./aiConfigService').listConfigs(db, 'video');
+    if (!configs.some(c => c.is_active && (Array.isArray(c.model) ? c.model : [c.model]).includes(req.video_model))) throw new Error('所选视频模型未启用或已删除');
+  }
   const updates = [];
   const params = [];
   // 前端可能传 character_ids，与 characters 统一：存为 JSON 字符串
@@ -172,12 +182,17 @@ function getStoryboardById(db, id) {
     image_prompt: r.image_prompt,
     polished_prompt: r.polished_prompt ?? null,
     video_prompt: r.video_prompt,
+    video_model: r.video_model ?? null,
     shot_type: r.shot_type,
     angle: r.angle,
     angle_h: r.angle_h ?? null,
     angle_v: r.angle_v ?? null,
     angle_s: r.angle_s ?? null,
     movement: r.movement,
+    lighting_style: r.lighting_style ?? null,
+    depth_of_field: r.depth_of_field ?? null,
+    bgm_prompt: r.bgm_prompt ?? null,
+    sound_effect: r.sound_effect ?? null,
     segment_index: r.segment_index ?? 0,
     segment_title: r.segment_title ?? null,
     creation_mode: r.creation_mode === 'universal' ? 'universal' : 'classic',
@@ -187,6 +202,9 @@ function getStoryboardById(db, id) {
     last_frame_image_id: r.last_frame_image_id ?? null,
     last_frame_image_url: r.last_frame_image_url ?? null,
     last_frame_local_path: r.last_frame_local_path ?? null,
+    character_visuals: (() => { try { return r.character_visuals ? (typeof r.character_visuals === 'string' ? JSON.parse(r.character_visuals) : r.character_visuals) : null; } catch (_) { return null; } })(),
+    last_frame_visuals: (() => { try { return r.last_frame_visuals ? (typeof r.last_frame_visuals === 'string' ? JSON.parse(r.last_frame_visuals) : r.last_frame_visuals) : null; } catch (_) { return null; } })(),
+    video_slots: (() => { try { return r.video_slots ? (typeof r.video_slots === 'string' ? JSON.parse(r.video_slots) : r.video_slots) : null; } catch (_) { return null; } })(),
     characters,
     prop_ids: propIds,
     composed_image: r.composed_image,
@@ -194,6 +212,7 @@ function getStoryboardById(db, id) {
     local_path: r.local_path ?? null,
     main_panel_idx: r.main_panel_idx != null ? Number(r.main_panel_idx) : null,
     video_url: r.video_url,
+    selected_video_id: r.selected_video_id != null ? Number(r.selected_video_id) : null,
     audio_local_path: r.audio_local_path ?? null,
     narration_audio_local_path: r.narration_audio_local_path ?? null,
     status: r.status || 'pending',

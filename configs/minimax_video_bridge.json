@@ -1,0 +1,8 @@
+{
+  "comfy_url": "http://10.10.13.15:8188",
+  "workflow_path": "workflows/selfhost/video_minimax_h3.json",
+  "storage_dir": "generated_videos",
+  "public_base_url": "http://10.10.10.205:5688",
+  "host": "0.0.0.0",
+  "port": 5688
+}

@@ -15,7 +15,7 @@ const seedance2AssetGuards = require('../utils/seedance2AssetGuards');
 const IMAGE_HTTP_TIMEOUT_MS = 600000;
 
 // 多参考图时注入到所有支持 negative_prompt 的模型，防止生成分割/拼贴布局；同时加入安全词以减少敏感拦截
-const ANTI_SPLIT_NEGATIVE_PROMPT = 'nsfw, nudity, naked, violence, blood, gore, sensitive content, split panels, side-by-side layout, collage, diptych, triptych, grid layout, multiple panels, comparison view, composite image, two images in one frame';
+const ANTI_SPLIT_NEGATIVE_PROMPT = 'nsfw, nudity, naked, violence, blood, gore, sensitive content, split panels, side-by-side layout, collage, diptych, triptych, grid layout, multiple panels, comparison view, composite image, two images in one frame, duplicate characters, clone, cloned person, extra people, extra characters, multiple views of same person, duplicate face, character sheet layout, split screen, missing character, bad anatomy, deformed limbs, frontal standing portrait in center, standing pose, character standing in foreground, extra person in front of scene, passport photo, model sheet, character reference sheet, 正面站立肖像, 画面中心多余人物, 双重人物, 额外角色, 克隆人, 呆立, 证件照, 模特立绘';
 
 function mergeNegativePromptFragments(auto, user) {
   const a = (auto || '').trim();
@@ -204,6 +204,42 @@ function fixSeedreamSize(size) {
     h += 64;
   }
   
+  return `${w}x${h}`;
+}
+
+/**
+ * 约束图片尺寸到最大 2048、最小 256，且对齐到 16 的倍数
+ * 避免 Qwen-Image、DALL-E 及 OpenAI 兼容接口因尺寸过大（如 2560x1440）报错 400
+ */
+function clampAndAlignSize(size, maxDim = 2048, minDim = 256, align = 16) {
+  if (!size || typeof size !== 'string') return '1024x1024';
+  const s = size.trim().toLowerCase().replace(/\*/g, 'x');
+  const match = s.match(/^(\d+)\s*x\s*(\d+)$/);
+  if (!match) return size;
+
+  let w = parseInt(match[1], 10);
+  let h = parseInt(match[2], 10);
+  if (!w || !h) return size;
+
+  // 超过最大尺寸时等比例缩小
+  if (w > maxDim || h > maxDim) {
+    const scale = Math.min(maxDim / w, maxDim / h);
+    w = Math.round((w * scale) / align) * align;
+    h = Math.round((h * scale) / align) * align;
+  }
+
+  // 确保不低于最小尺寸
+  if (w < minDim) w = minDim;
+  if (h < minDim) h = minDim;
+
+  // 确保按 align (默认 16) 对齐
+  w = Math.round(w / align) * align;
+  h = Math.round(h / align) * align;
+
+  // 最终边界截断
+  if (w > maxDim) w = maxDim;
+  if (h > maxDim) h = maxDim;
+
   return `${w}x${h}`;
 }
 
@@ -1340,10 +1376,17 @@ async function callGeminiImageApi(db, config, log, opts) {
   // 这与 Gemini 的 "文字描述紧接对应内容" 原则一致，避免模型混淆
   const parts = [];
   if (refImageParts.length > 0) {
-    parts.push({ text: 'The following are visual reference images. Use them ONLY to maintain character appearance and scene environment consistency. Do NOT reproduce their layout or format.' });
+    const hasLayoutLock = refImageParts.some(p => /LAYOUT_LOCK|首帧|FIRST_FRAME/i.test(p.label || ''));
+    if (hasLayoutLock) {
+      parts.push({ text: 'The following are visual reference images. For any reference marked LAYOUT_LOCK, maintain identical camera framing, background, and character positions from that image, evolving only existing characters into their final poses and expressions without adding duplicate persons. For other references, use them only for appearance consistency without reproducing their layout.' });
+    } else {
+      parts.push({ text: 'The following are visual reference images. Use them ONLY to maintain character appearance and scene environment consistency. Do NOT reproduce their layout or format.' });
+    }
     for (let i = 0; i < refImageParts.length; i++) {
       const { label, imagePart } = refImageParts[i];
-      parts.push({ text: label ? `Reference ${i + 1}: ${label}` : `Reference ${i + 1}:` });
+      const isLock = /LAYOUT_LOCK|首帧|FIRST_FRAME/i.test(label || '');
+      const prefix = isLock ? `Reference ${i + 1} (BASE FRAME - LOCK CAMERA & POSITIONS)` : `Reference ${i + 1}`;
+      parts.push({ text: label ? `${prefix}: ${label}` : `${prefix}:` });
       parts.push(imagePart);
     }
     // 生成指令放在所有参考图之后，清晰分隔
@@ -1475,9 +1518,41 @@ async function callImageApi(db, log, opts) {
     const refLines = String(system_prompt).split('\n').filter(l => /^Image\s+\d+:/i.test(l));
     if (refLines.length > 0) {
       const refHeader = refLines
-        .map(l => `[${l} — FOR REFERENCE ONLY, DO NOT copy its layout or framing]`)
+        .map((l, i) => {
+          const m = l.match(/^Image\s+(\d+):\s*(.*)/i);
+          const idx = m ? m[1] : (i + 1);
+          const content = m ? m[2] : l;
+          const isLastOrLock = /LAYOUT_LOCK|首帧|FIRST_FRAME/i.test(l);
+          const isChar = /character appearance reference/i.test(l);
+          const isFourView = /four-view|reference sheet/i.test(l);
+          const isScene = /scene background reference/i.test(l);
+          const isProp = /prop/i.test(l);
+
+          if (isLastOrLock) {
+            return `<image${idx}>是本分镜首帧画面（基准站位与构图锁）。保持<image${idx}>中的相机取景、背景透视与既有角色站位，使既有角色演化至最终动作结果，严禁生成重复人物或多余路人。\n[<image${idx}> / Image ${idx} — STRICT BASE FRAME: Maintain identical camera framing, scene background, and character positions from <image${idx}>. EVOLVE existing characters into their final postures; STRICTLY PREVENT duplicate characters or extra figures.]`;
+          }
+          if (isChar) {
+            const nameM = content.match(/for\s+"([^"]+)"/i);
+            const cName = nameM ? nameM[1] : '该角色';
+            return `<image${idx}>是角色「${cName}」的长相与服装参考（仅提供面部五官、发型与服装款式色彩）。\n【重要防照搬与防克隆铁律】<image${idx}>仅供提取角色相貌身份与穿着，绝对严禁照搬<image${idx}>的正面站立姿态、正面朝向或居中构图！画面中绝不可出现任何多余的正面站立人物、肖像贴图或克隆分身！「${cName}」必须全身心融入本镜头的具体剧情动作与相机机位中。\n[<image${idx}> / Image ${idx} — SINGLE PERSON IDENTITY REFERENCE for "${cName}": Use this specific person's facial identity and outfit for this character only. DO NOT copy the standing pose, framing, or orientation from <image${idx}>. DO NOT duplicate this character across the scene, DO NOT create clones or extra standing figures.]`;
+          }
+          if (isScene) {
+            const sceneM = content.match(/for\s+"([^"]+)"/i);
+            const sName = sceneM ? sceneM[1] : '场景';
+            return `<image${idx}>是场景背景参考图（"${sName}"），保持场景环境空间结构、陈设与光影基调。\n[<image${idx}> / Image ${idx} — SCENE BACKGROUND REFERENCE for "${sName}": Maintain environment spatial context and lighting; DO NOT copy fixed camera framing.]`;
+          }
+          if (isProp) {
+            const propM = content.match(/for\s+"([^"]+)"/i);
+            const pName = propM ? propM[1] : '道具';
+            return `<image${idx}>是道具「${pName}」的外观参考。\n[<image${idx}> / Image ${idx} — PROP REFERENCE for "${pName}": Use for item appearance only.]`;
+          }
+          if (isFourView) {
+            return `<image${idx}>为多视图参考（仅用于身份与服装参考）。\n[<image${idx}> / Image ${idx} — MODEL SHEET for identity reference only: DO NOT generate duplicate figures, multiple views, or panel dividers.]`;
+          }
+          return `<image${idx}>为视觉参考。\n[<image${idx}> / Image ${idx} — FOR REFERENCE ONLY, DO NOT copy its layout or framing]`;
+        })
         .join('\n');
-      effectivePrompt = `${refHeader}\n\n[GENERATE THIS SCENE — single continuous image, no grid, no split panels]:\n${effectivePrompt}`;
+      effectivePrompt = `${refHeader}\n\n[GENERATE THIS SCENE — single continuous image, no grid, no split panels / 生成当前单张连续画面，非多格非画中画]:\n${effectivePrompt}`;
     }
   }
 
@@ -1495,11 +1570,12 @@ async function callImageApi(db, log, opts) {
   });
 
   // 多参考图时统一生成 negative_prompt（供各子函数使用）
+  const incomingUserNeg = user_negative_prompt || opts.negative_prompt;
   const refCountForNeg = Array.isArray(opts.reference_image_urls) ? opts.reference_image_urls.filter(Boolean).length : 0;
-  // Seedream/Volcengine 模型强制启用安全词负面提示，其他模型仅在多参考图时启用
+  // Seedream/Volcengine 模型或含有参考图时启用防分割/防克隆负面提示
   const isVolcOrSeedream = (protocol === 'volcengine' || /seedream|doubao/i.test(model));
-  const autoNegativePrompt = (refCountForNeg > 1 || isVolcOrSeedream) ? ANTI_SPLIT_NEGATIVE_PROMPT : '';
-  const userNegFragment = (user_negative_prompt && String(user_negative_prompt).trim()) || '';
+  const autoNegativePrompt = (refCountForNeg >= 1 || isVolcOrSeedream || protocol === 'unsloth') ? ANTI_SPLIT_NEGATIVE_PROMPT : '';
+  const userNegFragment = (incomingUserNeg && String(incomingUserNeg).trim()) || '';
   const mergedNegativePrompt = mergeNegativePromptFragments(autoNegativePrompt, userNegFragment);
 
   if (protocol === 'dashscope') {
@@ -1519,6 +1595,27 @@ async function callImageApi(db, log, opts) {
       files_base_url: opts.files_base_url,
       storage_local_path: opts.storage_local_path,
     });
+  }
+
+  if (protocol === 'unsloth') {
+    const refs = (reference_image_urls || []).filter(Boolean)
+      .map(ref => resolveImageRef(ref, files_base_url, storage_local_path));
+    // 分镜图生成带有参考图时，设置 guidance=2.0 以激活 Diffusers/Qwen-Image 的 Classifier-Free Guidance (CFG)，
+    // 使防克隆与防站立姿态照搬的 negative_prompt 真正生效，防止在画面中心出现多余的正面立绘
+    let guidanceForUnsloth = opts.guidance;
+    if (guidanceForUnsloth == null && (imageServiceType === 'storyboard_image' || opts.storyboard_id) && refs.length > 0) {
+      guidanceForUnsloth = 2.0;
+    }
+    const result = await require('./unslothImageService').callUnslothImageApi(config, log, {
+      prompt: effectivePrompt, model, size, reference_image_urls: refs,
+      negative_prompt: mergedNegativePrompt || undefined,
+      guidance: guidanceForUnsloth,
+    });
+    if (!result.error && opts.image_gen_id && result.size) {
+      db.prepare('UPDATE image_generations SET size = ?, width = ?, height = ? WHERE id = ?')
+        .run(result.size, result.width, result.height, opts.image_gen_id);
+    }
+    return result;
   }
 
   if (protocol === 'kling') {
@@ -1563,6 +1660,8 @@ async function callImageApi(db, log, opts) {
   else if (isAgnes) {
     agnesSizeSpec = mapAgnesImageSizeSpec(size);
     effectiveSize = agnesSizeSpec.size;
+  } else if (effectiveSize) {
+    effectiveSize = clampAndAlignSize(effectiveSize);
   }
 
   const body = {
@@ -1676,6 +1775,10 @@ function createAndGenerateImage(db, log, opts) {
     quality,
     provider,
     user_negative_prompt,
+    reference_image_urls,
+    files_base_url,
+    storage_local_path,
+    system_prompt,
   } = opts;
   const negRow = (user_negative_prompt && String(user_negative_prompt).trim()) || null;
   const now = new Date().toISOString();
@@ -1722,6 +1825,11 @@ function createAndGenerateImage(db, log, opts) {
     }
   }
 
+  if (Array.isArray(reference_image_urls) && reference_image_urls.length) {
+    db.prepare('UPDATE image_generations SET reference_images = ? WHERE id = ?')
+      .run(JSON.stringify(reference_image_urls), imageGenId);
+  }
+
   setImmediate(async () => {
     try {
       db.prepare('UPDATE image_generations SET status = ? WHERE id = ?').run('processing', imageGenId);
@@ -1735,6 +1843,10 @@ function createAndGenerateImage(db, log, opts) {
         image_type,
         image_gen_id: imageGenId,
         user_negative_prompt: user_negative_prompt || undefined,
+        reference_image_urls,
+        files_base_url,
+        storage_local_path,
+        system_prompt,
       });
       const now2 = new Date().toISOString();
       if (result.error) {
@@ -1967,6 +2079,7 @@ module.exports = {
   canAddStoryboardCharacterRef,
   canAddStoryboardObjectRef,
   refListHasCanonical,
+  clampAndAlignSize,
   fixAgnesImageSize,
   mapAgnesImageSizeSpec,
   isAgnesImageConfig,

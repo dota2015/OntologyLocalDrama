@@ -42,10 +42,17 @@ function getById(db, id) {
 
 function create(db, log, req) {
   const now = new Date().toISOString();
+  const mergeOptions = req.merge_options && typeof req.merge_options === 'object' ? { ...req.merge_options } : {};
+  // Read episode settings on the server; freeze them for this merge job.
+  delete mergeOptions.background_music;
+  if (req.episode_id) {
+    const music = require('./backgroundMusicService').snapshot(db, req.episode_id, getStorageRoot());
+    if (music) mergeOptions.background_music = music;
+  }
   const taskService = require('./taskService');
   const task = taskService.createTask(db, log, 'video_merge', String(req.episode_id || ''));
   const mergeOptionsJson = (() => {
-    const o = req.merge_options;
+    const o = mergeOptions;
     if (o && typeof o === 'object') return JSON.stringify(o);
     return '{}';
   })();
@@ -80,31 +87,44 @@ function getStorageRoot() {
   return path.isAbsolute(p) ? p : path.join(process.cwd(), p);
 }
 
+function isVideoFile(p) {
+  if (!p || typeof p !== 'string') return false;
+  const clean = p.split('?')[0].toLowerCase();
+  return clean.endsWith('.mp4') || clean.endsWith('.webm') || clean.endsWith('.mov') || clean.endsWith('.mkv') || clean.endsWith('.m4v');
+}
+
 /** 将 video_url 解析为本地文件路径，或下载到 temp 返回路径 */
 async function resolveVideoToLocalPath(videoUrl, baseUrl, storageRoot, tempDir, index, log) {
   if (!videoUrl || typeof videoUrl !== 'string') return null;
   const u = videoUrl.trim();
+  // 严格过滤：若 URL 本身是图片文件（如 tailframe_xxx.jpg），拒绝加入视频合成
+  const cleanUrl = u.split('?')[0].toLowerCase();
+  if (cleanUrl.endsWith('.jpg') || cleanUrl.endsWith('.jpeg') || cleanUrl.endsWith('.png') || cleanUrl.endsWith('.webp') || cleanUrl.endsWith('.gif')) {
+    log.warn('Video merge: skipped non-video image input', { index, url: u });
+    return null;
+  }
+
   // 1) URL 以 baseUrl 开头（如 http://localhost:5679/static）-> 对应 storageRoot 下相对路径
   if (baseUrl && (u.startsWith(baseUrl) || u.startsWith(baseUrl.replace(/\/$/, '')))) {
     const base = baseUrl.replace(/\/$/, '');
     const rel = u.startsWith(base + '/') ? u.slice(base.length + 1) : u.slice(base.length).replace(/^\//, '');
     if (rel && !rel.startsWith('http')) {
       const localPath = path.join(storageRoot, rel.replace(/\//g, path.sep));
-      if (fs.existsSync(localPath)) {
+      if (fs.existsSync(localPath) && isVideoFile(localPath)) {
         log.info('Video merge: using local static file', { index, path: localPath });
         return localPath;
       }
     }
   }
   // 2) 已是本地绝对路径且存在
-  if (path.isAbsolute(u) && fs.existsSync(u)) {
+  if (path.isAbsolute(u) && fs.existsSync(u) && isVideoFile(u)) {
     log.info('Video merge: using absolute path', { index, path: u });
     return u;
   }
   // 3) 相对路径（相对 storageRoot）
   if (!u.startsWith('http://') && !u.startsWith('https://')) {
     const localPath = path.join(storageRoot, u.replace(/^\//, '').replace(/\//g, path.sep));
-    if (fs.existsSync(localPath)) {
+    if (fs.existsSync(localPath) && isVideoFile(localPath)) {
       log.info('Video merge: using relative path', { index, path: localPath });
       return localPath;
     }
@@ -165,11 +185,41 @@ function runFfmpegConcatOnce(listFile, outputPath, transcode, log) {
   return true;
 }
 
+// Wan is silent; H3 includes audio. Match streams/time bases before concat so
+// a silent first clip cannot cause all subsequent H3 audio to disappear.
+function normalizeMixedAudio(localPaths, directory, log) {
+  const { spawnSync } = require('child_process');
+  const probes = localPaths.map(file => {
+    const result = spawnSync(getFfprobePath(), ['-v', 'error', '-show_entries', 'format=duration:stream=codec_type', '-of', 'json', file], { encoding: 'utf8' });
+    try { const parsed = JSON.parse(result.stdout); return { audio: parsed.streams.some(s => s.codec_type === 'audio'), duration: Number(parsed.format.duration) }; } catch (_) { return null; }
+  });
+  if (probes.some(p => !p || !(p.duration > 0))) return null;
+  if (probes.every(p => p.audio) || probes.every(p => !p.audio)) return localPaths;
+  const files = [];
+  for (let i = 0; i < localPaths.length; i++) {
+    const output = path.join(directory, `mixed_audio_${Date.now()}_${i}.mp4`);
+    const inputs = probes[i].audio ? ['-i', localPaths[i], '-map', '0:v:0', '-map', '0:a:0']
+      : ['-i', localPaths[i], '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo', '-map', '0:v:0', '-map', '1:a:0'];
+    const result = spawnSync(getFfmpegPath(), ['-y', ...inputs, '-c:v', 'copy', '-video_track_timescale', '90000', '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-af', 'apad', '-t', String(probes[i].duration), output], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
+    if (result.status !== 0) {
+      log.warn('Video merge: mixed audio normalization failed', { index: i, stderr: result.stderr?.slice(-500) });
+      for (const file of [...files, output]) { try { fs.unlinkSync(file); } catch (_) {} }
+      return null;
+    }
+    files.push(output);
+  }
+  return files;
+}
+
 /** 使用 ffmpeg concat 合并多个视频文件：先流拷贝，失败再重编码兜底 */
 function runFfmpegConcat(localPaths, outputPath, log) {
   const listFile = path.join(path.dirname(outputPath), `concat_list_${Date.now()}.txt`);
+  let normalizedPaths = [];
   try {
-    const lines = localPaths.map((p) => {
+    const pathsForConcat = normalizeMixedAudio(localPaths, path.dirname(outputPath), log);
+    if (!pathsForConcat) return false;
+    normalizedPaths = pathsForConcat.filter(p => !localPaths.includes(p));
+    const lines = pathsForConcat.map((p) => {
       const normalized = p.replace(/\\/g, '/');
       return `file '${normalized.replace(/'/g, "'\\''")}'`;
     });
@@ -181,6 +231,86 @@ function runFfmpegConcat(localPaths, outputPath, log) {
     return runFfmpegConcatOnce(listFile, outputPath, true, log);
   } finally {
     try { if (fs.existsSync(listFile)) fs.unlinkSync(listFile); } catch (_) {}
+    for (const file of normalizedPaths) { try { fs.unlinkSync(file); } catch (_) {} }
+  }
+}
+
+/**
+ * 为合成视频末尾追加指定秒数的纯黑屏（默认 1 秒）与静音缓冲，
+ * 解决上传至社交平台（抖音、微信视频号、快手、小红书等）时因平台播放器提前循环或截断导致结尾画面/对白被吞的问题。
+ */
+function appendBlackTail(videoPath, tailSec = 1.0, log) {
+  if (!fs.existsSync(videoPath) || tailSec <= 0) return false;
+  const ffmpeg = getFfmpegPath();
+  const ffprobe = getFfprobePath();
+  if (!ffmpeg || !ffprobe) return false;
+
+  const { spawnSync } = require('child_process');
+  const probe = spawnSync(
+    ffprobe,
+    ['-v', 'error', '-show_entries', 'format=duration:stream=codec_type', '-of', 'json', videoPath],
+    { encoding: 'utf8', maxBuffer: 1024 * 1024 }
+  );
+  if (probe.status !== 0) {
+    if (log && log.warn) log.warn('appendBlackTail: ffprobe failed', { videoPath });
+    return false;
+  }
+
+  let duration = 0;
+  let hasAudio = false;
+  try {
+    const meta = JSON.parse(probe.stdout);
+    duration = parseFloat(meta.format?.duration) || 0;
+    hasAudio = Array.isArray(meta.streams) && meta.streams.some(s => s.codec_type === 'audio');
+  } catch (_) {
+    return false;
+  }
+
+  if (duration <= 0.05) return false;
+  const targetDuration = (duration + tailSec).toFixed(3);
+  const outPath = path.join(path.dirname(videoPath), `tailpad_${Date.now()}_${path.basename(videoPath)}`);
+
+  const filterComplex = hasAudio
+    ? `[0:v]tpad=stop_mode=add:stop_duration=${tailSec}:color=black[v];[0:a]apad,atrim=0:${targetDuration}[a]`
+    : `[0:v]tpad=stop_mode=add:stop_duration=${tailSec}:color=black[v]`;
+
+  const args = [
+    '-y',
+    '-i', videoPath,
+    '-filter_complex', filterComplex,
+    '-map', '[v]',
+  ];
+
+  if (hasAudio) {
+    args.push('-map', '[a]', '-c:a', 'aac', '-b:a', '192k', '-ar', '44100');
+  } else {
+    args.push('-an');
+  }
+
+  args.push(
+    '-c:v', 'libx264',
+    '-preset', 'veryfast',
+    '-crf', '23',
+    '-pix_fmt', 'yuv420p',
+    '-movflags', '+faststart',
+    outPath
+  );
+
+  const res = spawnSync(ffmpeg, args, { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+  if (res.status !== 0 || !fs.existsSync(outPath) || fs.statSync(outPath).size === 0) {
+    if (log && log.warn) log.warn('appendBlackTail: ffmpeg failed', { stderr: res.stderr?.slice(-500) });
+    try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch (_) {}
+    return false;
+  }
+
+  try {
+    fs.copyFileSync(outPath, videoPath);
+    fs.unlinkSync(outPath);
+    return true;
+  } catch (e) {
+    if (log && log.warn) log.warn('appendBlackTail: replace file failed', { error: e.message });
+    try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch (_) {}
+    return false;
   }
 }
 
@@ -273,6 +403,7 @@ async function processVideoMerge(db, log, mergeId, baseUrl) {
   const postNeed =
     !!mergeOpts.burn_narration_subtitles
     || !!mergeOpts.burn_dialogue_audio
+    || !!mergeOpts.background_music?.enabled
     || !!(mergeOpts.watermark_text && String(mergeOpts.watermark_text).trim());
   if (mergedRelativePath && ffmpegAvailable && postNeed) {
     const mergedAbsPath = path.join(storageRoot, mergedRelativePath.replace(/\//g, path.sep));
@@ -280,6 +411,7 @@ async function processVideoMerge(db, log, mergeId, baseUrl) {
       const mergedPP = require('./mergedEpisodePostProcess');
       const post = await mergedPP.runMergedEpisodePostProcess(db, log, {
         mergedAbsPath,
+        sceneSourcePaths: localPaths.length === scenes.length ? localPaths : undefined,
         storageRoot,
         scenes,
         episodeId,
@@ -289,7 +421,25 @@ async function processVideoMerge(db, log, mergeId, baseUrl) {
         mergedRelativePath = post.relativePath;
         log.info('Video merge: merged episode post-process', { merge_id: mergeId, out: mergedRelativePath });
       } else if (post.error && post.error !== 'NO_POST_OPTS') {
-        log.warn('Video merge: post-process skipped', { merge_id: mergeId, err: post.error });
+        log.warn('Video merge: post-process failed', { merge_id: mergeId, err: post.error });
+        db.prepare('UPDATE video_merges SET status = ?, error_msg = ? WHERE id = ?').run('failed', post.error, mergeId);
+        if (taskId) taskService.updateTaskError(db, taskId, post.error);
+        for (const file of toCleanup) { try { fs.unlinkSync(file); } catch (_) {} }
+        return;
+      }
+    }
+  }
+
+  // 末尾追加防裁切的 1 秒黑屏画面（默认开启 1.0 秒，支持 merge_options.tail_black_seconds 配置）
+  const tailBlackSec = mergeOpts.tail_black_seconds !== undefined
+    ? Math.max(0, Number(mergeOpts.tail_black_seconds) || 0)
+    : 1.0;
+  if (mergedRelativePath && ffmpegAvailable && tailBlackSec > 0) {
+    const finalAbs = path.join(storageRoot, mergedRelativePath.replace(/\//g, path.sep));
+    if (fs.existsSync(finalAbs)) {
+      const padded = appendBlackTail(finalAbs, tailBlackSec, log);
+      if (padded) {
+        log.info('Video merge: appended black screen tail', { merge_id: mergeId, episode_id: episodeId, tail_seconds: tailBlackSec });
       }
     }
   }
@@ -299,12 +449,32 @@ async function processVideoMerge(db, log, mergeId, baseUrl) {
   }
 
   const finalMergedUrl = mergedRelativePath || mergedUrlFallback;
+  let finalDuration = Math.round(totalDuration) || null;
+  if (mergedRelativePath) {
+    const finalAbs = path.join(storageRoot, mergedRelativePath.replace(/\//g, path.sep));
+    const probe = getFfprobePath();
+    if (probe && fs.existsSync(finalAbs)) {
+      try {
+        const { spawnSync } = require('child_process');
+        const rprobe = spawnSync(
+          probe,
+          ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', finalAbs],
+          { encoding: 'utf8' }
+        );
+        const actualD = parseFloat(String(rprobe.stdout || '').trim());
+        if (Number.isFinite(actualD) && actualD > 0) {
+          finalDuration = Math.round(actualD);
+        }
+      } catch (_) {}
+    }
+  }
+
   db.prepare(
     'UPDATE video_merges SET status = ?, merged_url = ?, duration = ?, completed_at = ?, error_msg = ? WHERE id = ?'
-  ).run('completed', finalMergedUrl, Math.round(totalDuration) || null, now, null, mergeId);
+  ).run('completed', finalMergedUrl, finalDuration, now, null, mergeId);
   db.prepare('UPDATE episodes SET video_url = ?, status = ?, updated_at = ? WHERE id = ?').run(finalMergedUrl, 'completed', now, episodeId);
   if (taskId) {
-    taskService.updateTaskResult(db, taskId, { merge_id: mergeId, video_url: finalMergedUrl, duration: Math.round(totalDuration) });
+    taskService.updateTaskResult(db, taskId, { merge_id: mergeId, video_url: finalMergedUrl, duration: finalDuration });
   }
   if (!mergedRelativePath) {
     log.info('Video merge completed (first-clip fallback)', { merge_id: mergeId, episode_id: episodeId });
@@ -319,4 +489,5 @@ module.exports = {
   processVideoMerge,
   buildConcatArgs,
   runFfmpegConcat,
+  appendBlackTail,
 };

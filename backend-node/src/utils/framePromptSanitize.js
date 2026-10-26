@@ -8,6 +8,8 @@ const STEP_KEYS = {
   ORPHAN: 'orphan_position',
   SCENE: 'scene_appearance',
   MODERN_PROP_BOILERPLATE: 'modern_prop_boilerplate',
+  META_COMMENTARY: 'meta_commentary',
+  TRANSITIONAL: 'transitional_states',
   PUNCT: 'cleanup_punctuation',
 };
 
@@ -37,29 +39,46 @@ function parseNamesFromAnchorLines(anchorLines) {
 
 function isReferenceAppearanceParen(inner) {
   const t = String(inner || '').trim();
-  return /参考图|reference\s*image/i.test(t);
+  return /参考图|reference\s*image|Image\s*\d+/i.test(t);
 }
 
-/** 将允许出场角色的括号外貌描写统一为「参考图中的人物形象」 */
-function normalizeAllowedCharacterAppearance(text, allowedNames) {
+/** 将允许出场角色的括号外貌描写统一为「参考图中的人物形象」或精确的「见 Image N 形象」 */
+function normalizeAllowedCharacterAppearance(text, allowedNames, charImageMap = {}) {
   const hits = [];
   let out = String(text || '');
   for (const name of allowedNames || []) {
     if (!name) continue;
     const esc = escapeRegExp(name);
+    const mapInfo = charImageMap[name];
+    const replacementInner = mapInfo
+      ? `见 Image ${mapInfo.index} / <image${mapInfo.index}>${mapInfo.gender ? ' ' + mapInfo.gender : ''}形象`
+      : '参考图中的人物形象';
+
     out = out.replace(new RegExp(`${esc}（([^）]*)）`, 'g'), (match, inner) => {
-      if (isReferenceAppearanceParen(inner)) return match;
+      if (isReferenceAppearanceParen(inner)) {
+        if (mapInfo && inner.includes('参考图中的人物形象')) {
+          hits.push({ name, refined_to_image: replacementInner });
+          return `${name}（${replacementInner}）`;
+        }
+        return match;
+      }
       hits.push({ name, removed_appearance: inner.slice(0, 120) });
-      return `${name}（参考图中的人物形象）`;
+      return `${name}（${replacementInner}）`;
     });
     out = out.replace(new RegExp(`${esc}\\(([^)]*)\\)`, 'g'), (match, inner) => {
-      if (isReferenceAppearanceParen(inner)) return match;
+      if (isReferenceAppearanceParen(inner)) {
+        if (mapInfo && inner.includes('参考图中的人物形象')) {
+          hits.push({ name, refined_to_image: replacementInner });
+          return `${name}（${replacementInner}）`;
+        }
+        return match;
+      }
       hits.push({ name, removed_appearance: inner.slice(0, 120) });
-      return `${name}（参考图中的人物形象）`;
+      return `${name}（${replacementInner}）`;
     });
     out = out.replace(
       new RegExp(`${esc}\\s*\\(\\s*use appearance from reference image\\s*\\)`, 'gi'),
-      `${name}（参考图中的人物形象）`
+      `${name}（${replacementInner}）`
     );
   }
   return { text: out, hits };
@@ -163,6 +182,84 @@ function stripModernPropBoilerplate(text) {
     out = out.replace(reCopy, (match) => {
       hits.push({ removed: match.slice(0, 120) });
       return '';
+    });
+  }
+  return { text: out, hits };
+}
+
+/** 尾帧或通用提示词中误写入的对比、演化元指令与首尾分析套话，需剔除避免生图模型误解 */
+const META_COMMENTARY_PATTERNS = [
+  /五至十五秒(?:固定镜头|视频)?结束后保持原机位[^，,。]*/g,
+  /首尾视觉差异由[^，,。]+共同形成/g,
+  /不虚构推拉摇移/g,
+  /(?:固定机位下)?动作结果自然演化/g,
+  /尾帧以[^，,。]*形成(?:高低)?对照/g,
+  /人物所属掩体位置和主要道具位置保持连续/g,
+  /现场停留在[^，,。]*最终状态/g,
+  /运镜自然演化/g,
+  /短暂获救的希望被[^，,。]*打断/g,
+  /焦急与时间压力凝结在[^，,。]*/g,
+  /焦急凝结在[^，,。]*/g,
+  /形成(?:鲜明)?(?:高低)?(?:心理)?对照/g,
+  /悬浮(?:小幅)?(?:救援)?倒计时界面[^，,。]*/g,
+  /显示正在流逝的剩余[^，,。]*/g,
+  /救援界面仅为[^，,。]*/g,
+  /倒计时启动共同形成/g,
+  /[，,]\s*(?:不要出现|不出现|无|禁止出现|不含)(?:任何)?(?:文字|界面|倒计时|UI|字幕|水印)[^，,。]*([。])/g,
+  /[，,。]?\s*(?:不要出现|不出现|无|禁止出现|不含)(?:任何)?(?:文字|界面|倒计时|UI|字幕|水印)[^，,。]*/g,
+];
+
+function stripChineseExclusions(text) {
+  if (typeof text !== 'string') return text;
+  return text
+    .replace(/[，,]\s*(?:不要出现|不出现|无|禁止出现|不含)(?:任何)?(?:文字|界面|倒计时|UI|字幕|水印)[^，,。]*([。])/g, '$1')
+    .replace(/[，,。]?\s*(?:不要出现|不出现|无|禁止出现|不含)(?:任何)?(?:文字|界面|倒计时|UI|字幕|水印)[^，,。]*/g, '')
+    .replace(/[，,]{2,}/g, '，')
+    .replace(/^[，,。\s]+|[，,\s]+$/g, '')
+    .trim();
+}
+
+function stripMetaCommentary(text) {
+  const hits = [];
+  let out = String(text || '');
+  for (const re of META_COMMENTARY_PATTERNS) {
+    const reCopy = new RegExp(re.source, re.flags);
+    out = out.replace(reCopy, (match) => {
+      hits.push({ removed: match.slice(0, 120) });
+      return '';
+    });
+  }
+  return { text: out, hits };
+}
+
+/**
+ * 消除双状态/过程过渡表述（如「由站姿变为地面倒卧」「表情由释然转为焦急」）。
+ * 扩散模型（如 Qwen-Image、Flux 等）遇到「由A变为B」会同时绘制出A和B两个实体，导致同一人物分身克隆。
+ */
+const TRANSITIONAL_STATE_PATTERNS = [
+  {
+    regex: /(?:由|从)(?:站姿|站立|坐姿|蹲姿|奔跑|行走)[^，,。、；;]*(?:变为|转为|变成)(倒地|倒卧|地面倒卧|躺地|坐下|趴倒|站立|站起)[^，,。、；;]*/g,
+    replace: '$1',
+  },
+  {
+    regex: /表情由[^，,。、；;]+(?:转为|变为)([^，,。、；;]+)/g,
+    replace: '表情$1',
+  },
+  {
+    regex: /(?:状态|姿态)由[^，,。、；;]+(?:转为|变为)([^，,。、；;]+)/g,
+    replace: '姿态$1',
+  },
+];
+
+function stripTransitionalStates(text) {
+  const hits = [];
+  let out = String(text || '');
+  for (const item of TRANSITIONAL_STATE_PATTERNS) {
+    const reCopy = new RegExp(item.regex.source, item.regex.flags);
+    out = out.replace(reCopy, (match, p1) => {
+      const rep = item.replace.replace('$1', p1 || '');
+      hits.push({ original: match.slice(0, 80), replaced_with: rep });
+      return rep;
     });
   }
   return { text: out, hits };
@@ -282,7 +379,7 @@ function sanitizeFramePrompt(prompt, allowedNames, allDramaNames, opts = {}) {
 
   let text = original;
 
-  const n1 = normalizeAllowedCharacterAppearance(text, allowedNames);
+  const n1 = normalizeAllowedCharacterAppearance(text, allowedNames, opts.charImageMap);
   recordStep(report, STEP_KEYS.NORMALIZE, text, n1.text, n1.hits);
   text = n1.text;
 
@@ -301,6 +398,14 @@ function sanitizeFramePrompt(prompt, allowedNames, allDramaNames, opts = {}) {
   const n5 = stripModernPropBoilerplate(text);
   recordStep(report, STEP_KEYS.MODERN_PROP_BOILERPLATE, text, n5.text, n5.hits);
   text = n5.text;
+
+  const n6 = stripMetaCommentary(text);
+  recordStep(report, STEP_KEYS.META_COMMENTARY, text, n6.text, n6.hits);
+  text = n6.text;
+
+  const n7 = stripTransitionalStates(text);
+  recordStep(report, STEP_KEYS.TRANSITIONAL, text, n7.text, n7.hits);
+  text = n7.text;
 
   const beforePunct = text;
   text = cleanupPunctuation(text);
@@ -330,5 +435,6 @@ module.exports = {
   parseCharacterNameFromAnchorLine,
   parseNamesFromAnchorLines,
   sanitizeFramePrompt,
+  stripChineseExclusions,
   STEP_KEYS,
 };

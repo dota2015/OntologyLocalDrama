@@ -1,3 +1,4 @@
+const referenceModes = require('../services/referenceImageModeService');
 const response = require('../response');
 const sceneService = require('../services/sceneService');
 const sceneLibraryService = require('../services/sceneLibraryService');
@@ -56,7 +57,7 @@ function routes(db, log, cfg) {
     update: (req, res) => {
       try {
         const out = sceneService.updateScene(db, log, req.params.scene_id, req.body || {});
-        if (!out.ok) return response.notFound(res, '场景不存在');
+        if (!out.ok) return out.error === 'scene not found' ? response.notFound(res, '场景不存在') : response.badRequest(res, out.error);
         response.success(res, { message: '保存成功' });
       } catch (err) {
         log.error('scenes update', { error: err.message });
@@ -102,11 +103,11 @@ function routes(db, log, cfg) {
         if (sceneId == null) return response.badRequest(res, '缺少 scene_id');
         const modelName = body.model || undefined;
         const style = body.style || undefined;
-        // use_quad_grid：前端场景区复选框显式传入。勾选走四视图，取消勾选走单图；
-        // 未传该字段的旧调用方（画布、旧详情页）保持四视图行为不变
-        const useQuadGrid = body.use_quad_grid == null
-          ? true
-          : (body.use_quad_grid === true || body.use_quad_grid === 1 || body.use_quad_grid === 'true');
+        const scene = sceneService.getSceneById(db, sceneId);
+        if (!scene) return response.notFound(res, '场景不存在');
+        let useQuadGrid;
+        try { useQuadGrid = referenceModes.generationMode(scene, body.use_quad_grid) === 'quad_grid'; }
+        catch (err) { return response.badRequest(res, err.message); }
         const out = useQuadGrid
           ? await sceneService.generateSceneFourViewImage(db, log, cfg, sceneId, modelName, style)
           : await sceneService.generateSceneSingleImage(db, log, cfg, sceneId, modelName, style);

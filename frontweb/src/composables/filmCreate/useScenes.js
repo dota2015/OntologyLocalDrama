@@ -1,7 +1,9 @@
+import { usesFourViews } from '@/utils/referenceImageMode'
 import { ref, reactive, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { sceneAPI } from '@/api/scenes'
 import { sceneLibraryAPI } from '@/api/sceneLibrary'
+import { ontologyAPI } from '@/api/ontology'
 import { uploadAPI } from '@/api/upload'
 import { useGenerationTaskStore, GEN_RESOURCE } from '@/stores/generationTaskStore'
 import { buildExtractTaskMeta, isEpisodeExtractRunning } from '@/composables/useGenerationTaskSync'
@@ -57,7 +59,41 @@ export function useScenes(deps) {
   const extractingSceneDesc = ref(false)
   const addSceneRefImage = ref(null)   // { dataUrl, filename }
   const addSceneRefFileInput = ref(null)
+  const aiCompletingScene = ref(false)
   let editScenePollTimer = null
+
+  async function onAiCompleteScene() {
+    const form = editSceneForm.value
+    const location = (form?.location || '').trim()
+    if (!location) {
+      ElMessage.warning('请先输入场景地点')
+      return
+    }
+    if (!dramaId.value) return
+    aiCompletingScene.value = true
+    try {
+      const res = await ontologyAPI.autocompleteEntity(dramaId.value, {
+        entity_type: 'scene',
+        name: location,
+        episode_id: currentEpisodeId.value ?? undefined,
+        hint: form.prompt?.trim() || undefined,
+      })
+      const data = res?.data ?? res
+      if (data && form) {
+        if (data.time) form.time = data.time
+        if (data.description && !form.prompt) form.prompt = data.description
+        else if (data.prompt && !form.prompt) form.prompt = data.prompt
+        if (data.prompt && (!form.polished_prompt_single || form.polished_prompt_single === '')) {
+          form.polished_prompt_single = data.prompt
+        }
+        ElMessage.success(`已结合剧本自动提炼场景【${location}】的空间与光影`)
+      }
+    } catch (e) {
+      ElMessage.error(e.message || 'AI 补全分析失败')
+    } finally {
+      aiCompletingScene.value = false
+    }
+  }
 
   // ── 场景生成状态 ──────────────────────────────────────
   const scenesExtracting = computed(() =>
@@ -309,7 +345,7 @@ export function useScenes(deps) {
     }
   }
 
-  async function onGenerateSceneImage(scene, useQuadGrid = false) {
+  async function onGenerateSceneImage(scene, useQuadGrid = usesFourViews(scene)) {
     scene.errorMsg = ''
     scene.error_msg = ''
     const meta = buildSceneImageMeta(scene)
@@ -575,6 +611,8 @@ export function useScenes(deps) {
     editSceneSaving,
     editScenePromptGenerating,
     extractingSceneDesc,
+    aiCompletingScene,
+    onAiCompleteScene,
     addSceneRefImage,
     addSceneRefFileInput,
     // 生成状态

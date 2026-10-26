@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import { taskAPI } from '@/api/task'
 import { imagesAPI } from '@/api/images'
 import { videosAPI } from '@/api/videos'
+import { canExpireLocally, videoAwareMaxAttempts } from '@/utils/videoTaskPolicy'
 
 /** 资源类型常量 */
 export const GEN_RESOURCE = {
@@ -54,7 +55,7 @@ function isActiveTaskStatus(status) {
 }
 
 function isOrphanedProcessingTask(remote, staleMs = ORPHAN_PROCESSING_MS) {
-  if (!remote || !isActiveTaskStatus(remote.status)) return false
+  if (!remote || !canExpireLocally(remote) || !isActiveTaskStatus(remote.status)) return false
   const updatedAt = remote.updated_at ? new Date(remote.updated_at).getTime() : 0
   if (!updatedAt) return false
   return Date.now() - updatedAt > staleMs
@@ -131,7 +132,9 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
   function markDone(meta) {
     const key = typeof meta === 'string' ? meta : taskKey(meta)
     const existing = tasks.value.get(key)
+    if (existing && existing.status === 'failed') return
     const taskId = existing?.taskId || (typeof meta === 'object' ? meta?.taskId : null)
+    if (taskId && cancelledPollTaskIds.value.has(taskId)) return
     const keys = taskId ? _findKeysByTaskId(taskId) : [key]
     if (keys.length === 0 && key) keys.push(key)
     _finishKeys(keys, 'completed')
@@ -170,11 +173,18 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
     markFailed({ taskId }, reason || '任务已停止')
   }
 
+  function isCancelledTask(taskId) {
+    if (!taskId) return false
+    return cancelledPollTaskIds.value.has(taskId)
+  }
+
   /** 取消任务：通知后端并停止前端轮询 */
   async function cancelTask(meta, options = {}) {
     const reason = options.reason || USER_CANCEL_TASK_MSG
     const taskId = typeof meta === 'string' ? meta : meta?.taskId
     if (taskId) {
+      cancelledPollTaskIds.value = new Set([...cancelledPollTaskIds.value, taskId])
+      markFailed(meta, reason)
       try {
         await taskAPI.cancel(taskId, { reason })
       } catch (e) {
@@ -204,7 +214,7 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
     const now = Date.now()
 
     for (const t of running) {
-      if (t.startedAt && now - t.startedAt > STALE_TASK_MS) {
+      if (canExpireLocally(t) && t.startedAt && now - t.startedAt > STALE_TASK_MS) {
         markFailed(t, '任务等待超时，已自动清除（请刷新确认是否已完成）')
         continue
       }
@@ -260,7 +270,7 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
       return pollPromises.value.get(taskId)
     }
 
-    const maxAttempts = options.maxAttempts ?? 450
+    const maxAttempts = options.maxAttempts ?? videoAwareMaxAttempts(meta)
     const interval = options.interval ?? 2000
     const showErrorToast = options.showErrorToast !== false
     const showTimeoutToast = options.showTimeoutToast !== false
@@ -276,6 +286,17 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
         attempts++
         try {
           const t = await taskAPI.get(taskId)
+          if (t && (t.status === 'pending' || t.status === 'processing')) {
+            const existing = tasks.value.get(key)
+            if (existing && (existing.serverStatus !== t.status || existing.progress !== t.progress || existing.message !== t.message)) {
+              _setTask(key, {
+                ...existing,
+                serverStatus: t.status,
+                progress: t.progress ?? existing.progress,
+                message: t.message || existing.message,
+              })
+            }
+          }
           if (isOrphanedProcessingTask(t)) {
             const errMsg = ORPHAN_TASK_MSG
             markFailed(key, errMsg)
@@ -651,6 +672,7 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
     reconcileRunningTasks,
     stopPollingTask,
     cancelTask,
+    isCancelledTask,
     clearAllRunningTasks,
     taskKey,
   }

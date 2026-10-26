@@ -1,3 +1,5 @@
+const narrative = require('./narrativeStyleService');
+const referenceModes = require('./referenceImageModeService');
 // 对应 Go application/services/drama_service.go
 
 const storageLayout = require('./storageLayout');
@@ -37,6 +39,7 @@ function createDrama(db, log, req) {
       meta = {};
     }
   }
+  meta = narrative.mergeMetadata(meta, { narrative_style: meta.narrative_style || { preset: 'dialogue_fast', speech_mode: 'auto' } });
   if (!meta.storage_folder_label) {
     meta.storage_folder_label = storageLayout.sanitizeFolderLabel(req.title || '');
   }
@@ -112,9 +115,7 @@ function getDrama(db, dramaId, baseUrl) {
     }
     // 本集关联的场景（与 Go Preload("Episodes.Scenes") 一致，用于提取完成后展示）
     try {
-      const epScenes = db.prepare(
-        'SELECT * FROM scenes WHERE episode_id = ? AND deleted_at IS NULL ORDER BY id ASC'
-      ).all(ep.id);
+      const epScenes = require('./episodeSceneService').list(db, drama.id, ep.id);
       ep.scenes = epScenes.map((s) => rowToScene(s));
     } catch (_) {
       ep.scenes = [];
@@ -255,7 +256,7 @@ function updateDrama(db, log, dramaId, req) {
 
 function generateStoryboard(db, log, episodeId, options) {
   const episodeStoryboardService = require('./episodeStoryboardService');
-  const { model, style, storyboard_count, video_duration, aspect_ratio, include_narration, universal_omni_storyboard } = options || {};
+  const { model, style, storyboard_count, video_duration, aspect_ratio, include_narration, universal_omni_storyboard, shot_duration_range } = options || {};
   // 转换可能为字符串的数字
   const count = storyboard_count ? Number(storyboard_count) : undefined;
   const duration = video_duration ? Number(video_duration) : undefined;
@@ -269,7 +270,8 @@ function generateStoryboard(db, log, episodeId, options) {
     duration,
     aspect_ratio,
     include_narration,
-    universal_omni_storyboard
+    universal_omni_storyboard,
+    shot_duration_range
   );
 }
 
@@ -365,6 +367,7 @@ function rowToStoryboard(r) {
     polished_prompt: r.polished_prompt ?? null,
     continuity_snapshot: r.continuity_snapshot ?? null,
     video_prompt: r.video_prompt,
+    video_model: r.video_model ?? null,
       shot_type: r.shot_type ?? null,
       angle: r.angle ?? null,
       angle_h: r.angle_h ?? null,
@@ -373,10 +376,13 @@ function rowToStoryboard(r) {
       movement: r.movement ?? null,
       lighting_style: r.lighting_style ?? null,
       depth_of_field: r.depth_of_field ?? null,
+      bgm_prompt: r.bgm_prompt ?? null,
+      sound_effect: r.sound_effect ?? null,
       segment_index: r.segment_index ?? 0,
       segment_title: r.segment_title ?? null,
       creation_mode: r.creation_mode === 'universal' ? 'universal' : 'classic',
       universal_segment_text: r.universal_segment_text ?? null,
+      layout_description: r.layout_description ?? null,
       first_frame_image_id: r.first_frame_image_id ?? null,
       last_frame_image_id: r.last_frame_image_id ?? null,
       last_frame_image_url: sanitizeImageUrl(r.last_frame_image_url),
@@ -387,6 +393,7 @@ function rowToStoryboard(r) {
       local_path: r.local_path ?? null,
       main_panel_idx: r.main_panel_idx != null ? Number(r.main_panel_idx) : null,
       video_url: r.video_url,
+      selected_video_id: r.selected_video_id != null ? Number(r.selected_video_id) : null,
       audio_local_path: r.audio_local_path ?? null,
       narration_audio_local_path: r.narration_audio_local_path ?? null,
       status: r.status || 'pending',
@@ -414,6 +421,7 @@ function rowToCharacter(r) {
     seed_value: r.seed_value,
     sort_order: r.sort_order ?? 0,
     error_msg: r.error_msg,
+    identity_anchors: r.identity_anchors || null,
     polished_prompt: r.polished_prompt || null,
     negative_prompt: r.negative_prompt || null,
     four_view_image_url: r.four_view_image_url || null,
@@ -426,6 +434,7 @@ function rowToCharacter(r) {
 
 function rowToScene(r) {
   return {
+    ...referenceModes.fields(r),
     id: r.id,
     drama_id: r.drama_id,
     location: r.location,
@@ -447,6 +456,7 @@ function rowToScene(r) {
 
 function rowToProp(r) {
   return {
+    ...referenceModes.fields(r),
     id: r.id,
     drama_id: r.drama_id,
     name: r.name,
@@ -468,7 +478,7 @@ function saveOutline(db, log, dramaId, req) {
   const drama = getDramaById(db, Number(dramaId));
   if (!drama) return false;
   const now = new Date().toISOString();
-  const tagsStr = Array.isArray(req.tags) ? JSON.stringify(req.tags) : null;
+  const tagsStr = req.tags === undefined ? drama.tags : (Array.isArray(req.tags) ? JSON.stringify(req.tags) : null);
   // Merge new metadata with existing metadata
   let existingMetadata = {};
   if (drama.metadata) {
@@ -486,7 +496,7 @@ function saveOutline(db, log, dramaId, req) {
       newMetadata = {};
     }
   }
-  const mergedMetadata = { ...existingMetadata, ...newMetadata };
+  const mergedMetadata = narrative.mergeMetadata(existingMetadata, newMetadata);
 
   // 与 mergeCfgStyleWithDrama 一致：提示词优先读 metadata.style_prompt_*。仅改 dramas.style 而不带画风长文案时，
   // 若仍保留旧的 metadata 画风，会出现「列表/首页 badge 已是新 style，角色提示词却仍用旧画风」。
@@ -742,6 +752,18 @@ function saveCanvasLayout(db, log, dramaId, req) {
   return getDrama(db, dramaId);
 }
 
+function isVideoPath(p) {
+  if (!p || typeof p !== 'string') return false;
+  const clean = p.split('?')[0].toLowerCase();
+  return (
+    clean.endsWith('.mp4') ||
+    clean.endsWith('.webm') ||
+    clean.endsWith('.mov') ||
+    clean.endsWith('.mkv') ||
+    clean.endsWith('.m4v')
+  );
+}
+
 /**
  * 取某分镜的视频地址：优先使用用户手动选定的 storyboard.video_url，否则取最新完成的 video_generations 记录
  */
@@ -755,38 +777,52 @@ function getVideoUrlForStoryboard(db, storyboardId, baseUrl) {
   ).get(storyboardId);
 
   // 辅助函数：构造完整 URL，优先使用本地路径（避免远程URL过期导致无法合并）
+  // 核心安全约束：localPath 必须是视频文件，绝不能使用分镜首帧图片路径（.jpg/.png）！
   const buildUrl = (videoUrl, localPath) => {
-    if (localPath && String(localPath).trim() && baseUrl) {
+    if (localPath && isVideoPath(localPath) && baseUrl) {
       const base = (baseUrl || '').replace(/\/$/, '');
       const p = String(localPath).replace(/^\//, '');
       return p ? base + '/' + p : null;
     }
-    if (videoUrl && String(videoUrl).trim()) return videoUrl;
+    if (videoUrl && String(videoUrl).trim()) {
+      const u = videoUrl.trim();
+      if (!isVideoPath(u) && !u.startsWith('http://') && !u.startsWith('https://')) {
+        return null;
+      }
+      return u;
+    }
     return null;
   };
 
-  const sbUrl = sb ? buildUrl(sb.video_url, sb.local_path) : null;
+  // storyboard 表的 local_path 字段通常为分镜首帧图片路径（如 media/images/xxx.jpg），只有当其本身是视频格式时才传入
+  const sbVideoPath = (sb && isVideoPath(sb.local_path)) ? sb.local_path : null;
+  const sbUrl = sb ? buildUrl(sb.video_url, sbVideoPath) : null;
   const vgUrl = vg ? buildUrl(vg.video_url, vg.local_path) : null;
 
-  // 策略：比较时间，取最新的
+  // 策略：
   // 如果只有其中一个有 URL，直接用那个
   if (sbUrl && !vgUrl) return sbUrl;
   if (!sbUrl && vgUrl) return vgUrl;
   if (!sbUrl && !vgUrl) return null;
 
-  // 都有 URL，比较时间
-  // sb 使用 updated_at
-  // vg 使用 completed_at > updated_at > created_at
+  // 都有有效视频 URL：
+  // 如果 vg.local_path 存在且为本地真实视频文件，优先使用本地已就绪的 vgUrl（避免重复网络下载）
+  if (vg && vg.local_path && isVideoPath(vg.local_path)) {
+    if (sb && sb.video_url && (sb.video_url === vg.video_url || sb.video_url === vgUrl)) {
+      return vgUrl;
+    }
+  }
+
+  // 比较时间：
+  // 注意：用户编辑台词、图片、绑定尾帧会刷新 sb.updated_at，但生成记录 vgTime 代表实际出片完成时间
   const sbTime = sb.updated_at || '1970-01-01';
   const vgTime = vg.completed_at || vg.updated_at || vg.created_at || '1970-01-01';
 
-  // 如果生成记录的时间比分镜更新时间还晚（说明是重新生成的，且可能没回写），则优先用生成记录
   if (vgTime > sbTime) {
     return vgUrl;
   }
   
-  // 否则依然以 storyboard 为准（可能是用户手动修改过，或者已经回写过）
-  return sbUrl;
+  return sbUrl || vgUrl;
 }
 
 function finalizeEpisode(db, log, episodeId, baseUrl, body = {}) {
@@ -829,6 +865,9 @@ function finalizeEpisode(db, log, episodeId, baseUrl, body = {}) {
       watermark_text: (body && body.watermark_text != null)
         ? String(body.watermark_text).trim().slice(0, 200)
         : '',
+      tail_black_seconds: body && body.tail_black_seconds !== undefined
+        ? Math.max(0, Number(body.tail_black_seconds) || 0)
+        : 1.0,
     },
   };
   const created = videoMergeService.create(db, log, mergeReq);
@@ -868,6 +907,7 @@ module.exports = {
   saveProgress,
   saveCanvasLayout,
   finalizeEpisode,
+  getVideoUrlForStoryboard,
   downloadEpisodeVideo,
   generateStoryboard,
 };

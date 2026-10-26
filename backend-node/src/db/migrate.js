@@ -132,6 +132,7 @@ function ensureAllColumns(database) {
 
   // --- storyboards ---
   ensureColumns(database, 'storyboards', [
+    { name: 'video_model',        type: 'TEXT' },
     { name: 'episode_id',        type: 'INTEGER DEFAULT 0' },
     { name: 'scene_id',          type: 'INTEGER' },
     { name: 'storyboard_number', type: 'INTEGER DEFAULT 0' },
@@ -165,8 +166,13 @@ function ensureAllColumns(database) {
     { name: 'angle_h',           type: 'TEXT' },               // 水平方向（front/left/back/right...）
     { name: 'angle_v',           type: 'TEXT' },               // 俯仰角度（worm/low/eye_level/high）
     { name: 'angle_s',           type: 'TEXT' },               // 景别（close_up/medium/wide）
+    { name: 'character_visuals', type: 'TEXT' },               // JSON: 画面首帧角色视觉槽位 [{character_id,name,facing,posture,hands,head_gaze,spatial_anchor}]
+    { name: 'last_frame_visuals', type: 'TEXT' },              // JSON: 画面尾帧角色视觉槽位 [{character_id,name,facing,posture,hands,head_gaze,spatial_anchor}]
+    { name: 'video_slots',       type: 'TEXT' },               // JSON: 视频语义槽位契约 {camera,audio_lip_sync,trajectories,environment_vfx,timing}
     { name: 'lighting_style',    type: 'TEXT' },               // 灯光风格（natural/side/dramatic/golden_hour 等）
     { name: 'depth_of_field',    type: 'TEXT' },               // 景深（shallow/medium/deep/extreme_shallow）
+    { name: 'bgm_prompt',        type: 'TEXT' },               // 背景音乐/配乐描述（无对白镜头专供视频模型生成）
+    { name: 'sound_effect',      type: 'TEXT' },               // 环境音效与口型动作音
     { name: 'polished_prompt',        type: 'TEXT' },               // 文字AI润色后的图片生成提示词（可编辑，生图时优先使用）
     { name: 'continuity_snapshot',   type: 'TEXT' },               // JSON: 连戏状态快照 {characters:{name:{position,clothing,expression,props}},lighting}
     { name: 'audio_local_path',      type: 'TEXT' },               // 对白 TTS 本地路径
@@ -177,6 +183,7 @@ function ensureAllColumns(database) {
     { name: 'last_frame_image_id',  type: 'INTEGER' },
     { name: 'last_frame_image_url', type: 'TEXT' },
     { name: 'last_frame_local_path', type: 'TEXT' },
+    { name: 'selected_video_id',    type: 'INTEGER' },
     { name: 'status',            type: 'TEXT DEFAULT \'draft\'' },
     { name: 'created_at',        type: 'TEXT' },
     { name: 'updated_at',        type: 'TEXT' },
@@ -214,12 +221,16 @@ function ensureAllColumns(database) {
 
   // --- scenes ---
   ensureColumns(database, 'scenes', [
+    { name: 'reference_image_mode', type: 'TEXT' },
+    { name: 'reference_image_recommendation', type: 'TEXT' },
+    { name: 'reference_image_reason', type: 'TEXT' },
     { name: 'drama_id',         type: 'INTEGER DEFAULT 0' },
     { name: 'episode_id',       type: 'INTEGER' },
     { name: 'location',         type: 'TEXT' },
     { name: 'time',             type: 'TEXT' },
     { name: 'prompt',           type: 'TEXT' },
     { name: 'polished_prompt',  type: 'TEXT' },  // 文字AI润色后的完整四视图图片提示词，生图时直接使用
+    { name: 'polished_prompt_single', type: 'TEXT' }, // 单图提示词独立保存，避免复用四视图提示词
     { name: 'image_url',        type: 'TEXT' },
     { name: 'local_path',       type: 'TEXT' },
     { name: 'extra_images',     type: 'TEXT' },
@@ -235,12 +246,17 @@ function ensureAllColumns(database) {
 
   // --- props ---
   ensureColumns(database, 'props', [
+    { name: 'reference_image_mode', type: 'TEXT' },
+    { name: 'reference_image_recommendation', type: 'TEXT' },
+    { name: 'reference_image_reason', type: 'TEXT' },
     { name: 'drama_id',    type: 'INTEGER DEFAULT 0' },
     { name: 'episode_id',  type: 'INTEGER' },
     { name: 'name',        type: 'TEXT NOT NULL DEFAULT \'\'' },
     { name: 'type',        type: 'TEXT' },
     { name: 'description', type: 'TEXT' },
+    { name: 'physical_scale', type: 'TEXT' }, // 真实物理尺寸与主次空间锚点约束
     { name: 'prompt',      type: 'TEXT' },
+    { name: 'image_prompt', type: 'TEXT' },
     { name: 'image_url',    type: 'TEXT' },
     { name: 'local_path',   type: 'TEXT' },
     { name: 'extra_images', type: 'TEXT' },
@@ -524,6 +540,19 @@ function ensureAllColumns(database) {
 function runMigrationsAndEnsure(database) {
   runMigrations(database);
   ensureAllColumns(database);
+  try {
+    const missing = database.prepare(
+      `SELECT id FROM storyboards WHERE deleted_at IS NULL AND (image_prompt IS NULL OR image_prompt = '' OR video_prompt IS NULL OR video_prompt = '') LIMIT 500`
+    ).all();
+    if (missing.length > 0) {
+      console.log(`[migrate] 发现 ${missing.length} 条分镜缺少提示词，自动补齐生图/视频提示词...`);
+      const { rebuildPromptsForStoryboard } = require('../services/episodeStoryboardService');
+      for (const m of missing) {
+        try { rebuildPromptsForStoryboard(database, console, m.id); } catch (_) {}
+      }
+      console.log('[migrate] 缺失提示词自动补齐完成。');
+    }
+  } catch (_) {}
 }
 
 function main() {

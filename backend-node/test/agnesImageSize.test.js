@@ -1,6 +1,29 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { mapAgnesImageSizeSpec, isAgnesImageConfig } = require('../src/services/imageClient');
+const { mapAgnesImageSizeSpec, isAgnesImageConfig, clampAndAlignSize } = require('../src/services/imageClient');
+const { aspectRatioToSize } = require('../src/services/imageService');
+
+describe('aspectRatioToSize and clampAndAlignSize', () => {
+  it('aspectRatioToSize returns sizes with max dimension <= 2048 and divisible by 16', () => {
+    const ratios = ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9'];
+    for (const r of ratios) {
+      const s = aspectRatioToSize(r);
+      assert.ok(s, `ratio ${r} should map to a size`);
+      const [w, h] = s.split('x').map(Number);
+      assert.ok(w <= 2048 && w >= 256, `w=${w} for ${r} should be between 256 and 2048`);
+      assert.ok(h <= 2048 && h >= 256, `h=${h} for ${r} should be between 256 and 2048`);
+      assert.equal(w % 16, 0, `w=${w} for ${r} must be multiple of 16`);
+      assert.equal(h % 16, 0, `h=${h} for ${r} must be multiple of 16`);
+    }
+  });
+
+  it('clampAndAlignSize scales down oversized dimensions to <= 2048 and aligns to 16', () => {
+    assert.equal(clampAndAlignSize('2560x1440'), '2048x1152');
+    assert.equal(clampAndAlignSize('1440x2560'), '1152x2048');
+    assert.equal(clampAndAlignSize('1024x1024'), '1024x1024');
+    assert.equal(clampAndAlignSize('2048x1152'), '2048x1152');
+  });
+});
 
 describe('mapAgnesImageSizeSpec', () => {
   it('maps 9:16 project size to 2K portrait', () => {

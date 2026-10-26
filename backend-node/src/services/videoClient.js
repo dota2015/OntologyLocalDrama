@@ -34,6 +34,7 @@ function inferVideoProtocol(provider) {
   if (p === 'cheap_seedance2') return 'sora';
   if (p === 'xai' || p === 'grok') return 'xai';
   if (p === 'agnes') return 'agnes';
+  if (p === 'comfyui_wan22') return 'comfyui_wan22';
   if (p === 'minimax_h3') return 'minimax_h3';
   return 'openai';
 }
@@ -1144,6 +1145,7 @@ function buildQueryUrl(config, taskId, extras = {}) {
   const isSora = proto === 'sora';
   if (isVolc) return getVolcVideoBase(config) + VOLC_VIDEO_QUERY_PATH + '/' + encodeURIComponent(taskId);
   if (proto === 'agnes') return buildAgnesPollUrl(config, taskId, extras.model);
+  if (proto === 'comfyui_wan22') return buildMinimaxH3PollUrl({ ...config, query_endpoint: config.query_endpoint || '/v1/videos/{taskId}' }, taskId);
   if (proto === 'minimax_h3') return buildMinimaxH3PollUrl(config, taskId);
   const base = (config.base_url || '').replace(/\/$/, '');
   let defaultEp;
@@ -2606,6 +2608,9 @@ function formatVideoPostBodyForLog(body) {
   }
   if (Array.isArray(clone.content)) {
     clone.content = clone.content.map((part) => {
+      if (part?.type === 'audio_url' && part.audio_url?.url) {
+        return { ...part, audio_url: { ...part.audio_url, url: summarizeMediaValueForLog(part.audio_url.url) } };
+      }
       if (part?.type === 'image_url' && part.image_url?.url) {
         return {
           ...part,
@@ -3890,10 +3895,10 @@ function extractMinimaxH3TaskStatus(data) {
 }
 
 /**
- * MiniMax-H3：POST /v2/video_generation（content[] 多模态），轮询 GET /v2/query/video_generation/{task_id}
+ * Shared content[] JSON transport for H3 and the local Wan2.2 bridge; validation stays model-specific.
  * @returns {Promise<{ task_id?: string, video_url?: string, error?: string }>}
  */
-async function callMinimaxH3VideoApi(config, log, opts) {
+async function callContentVideoApi(config, log, opts) {
   const {
     prompt,
     model,
@@ -3908,10 +3913,15 @@ async function callMinimaxH3VideoApi(config, log, opts) {
     storage_local_path,
     video_gen_id,
   } = opts || {};
-  const url = buildMinimaxH3CreateUrl(config);
-  const finalModel = isMinimaxH3Model(model) ? 'MiniMax-H3' : model || 'MiniMax-H3';
-  const dur = normalizeMinimaxH3Duration(duration);
-  const res = normalizeMinimaxH3Resolution(resolution);
+  const wan = resolveVideoProtocol(config, model) === 'comfyui_wan22';
+  const label = wan ? 'Wan2.2' : 'MiniMax H3';
+  const url = buildMinimaxH3CreateUrl(wan ? { ...config, endpoint: config.endpoint || '/v1/videos' } : config);
+  if (wan && duration != null && (!Number.isFinite(Number(duration)) || Number(duration) < 1 || Number(duration) > 10)) {
+    return { error: 'Wan2.2 本地视频时长须在 1–10 秒之间' };
+  }
+  const finalModel = wan ? (model || 'Wan2.2-I2V-A14B-FP8-4steps') : (isMinimaxH3Model(model) ? 'MiniMax-H3' : model || 'MiniMax-H3');
+  const dur = wan ? Number(duration ?? 5) : normalizeMinimaxH3Duration(duration);
+  const res = wan ? 'local' : normalizeMinimaxH3Resolution(resolution);
   const ratio = normalizeAspectRatioForApi(aspect_ratio) || String(aspect_ratio || '16:9').trim() || '16:9';
 
   const content = [{ type: 'text', text: String(prompt || '').trim() || 'cinematic scene' }];
@@ -3930,11 +3940,18 @@ async function callMinimaxH3VideoApi(config, log, opts) {
   if (rawLast) {
     lastForApi = resolveVolcClassicImage(rawLast, files_base_url, storage_local_path, log, video_gen_id, 'last_frame');
   }
-  if (firstForApi && lastForApi && firstForApi === lastForApi) lastForApi = null;
+  if (!wan && firstForApi && lastForApi && firstForApi === lastForApi) lastForApi = null;
 
   const refs = Array.isArray(reference_urls) ? reference_urls.filter(Boolean).map(String) : [];
   const useFirstLast = !!(firstForApi || lastForApi);
 
+  if (wan && !firstForApi) {
+    return { error: 'Wan2.2 I2V 需要首帧图片；不支持仅用参考图列表或纯文字生成' };
+  }
+  const mixedH3 = !wan && opts.h3_mixed_references === true;
+  if ((!useFirstLast || mixedH3) && refs.length > 9) {
+    return { error: 'MiniMax-H3 最多支持 9 张参考图，请减少参考图后重试' };
+  }
   if (useFirstLast) {
     if (firstForApi) {
       content.push({ type: 'image_url', image_url: { url: firstForApi }, role: 'first_frame' });
@@ -3942,7 +3959,8 @@ async function callMinimaxH3VideoApi(config, log, opts) {
     if (lastForApi) {
       content.push({ type: 'image_url', image_url: { url: lastForApi }, role: 'last_frame' });
     }
-  } else if (refs.length) {
+  }
+  if ((!useFirstLast || mixedH3) && refs.length) {
     for (let i = 0; i < Math.min(refs.length, 9); i++) {
       const refUrl = resolveVolcClassicImage(
         refs[i],
@@ -3958,24 +3976,35 @@ async function callMinimaxH3VideoApi(config, log, opts) {
     }
   }
 
+  if (!wan && Array.isArray(opts.h3_audio_references)) {
+    if (opts.h3_audio_references.length > 3) return { error: 'H3 每镜最多支持 3 个参考声音，请拆分镜头' };
+    for (const reference of opts.h3_audio_references) {
+      content.push({ type: 'audio_url', audio_url: { url: reference.url }, role: 'reference_audio' });
+    }
+  }
+
   const body = {
     model: finalModel,
     content,
     duration: dur,
     resolution: res,
+    ...(!wan && opts.h3_native ? { h3_native: opts.h3_native } : {}),
+    ...(wan && opts.seed != null ? { seed: Number(opts.seed) } : {}),
   };
   // 文生视频 ratio 必填且不能 adaptive；有图时官方示例可省略或 adaptive
   if (!useFirstLast && !refs.length) {
     body.ratio = ratio === 'adaptive' ? '16:9' : ratio;
   } else if (useFirstLast) {
     body.ratio = 'adaptive';
+  } else {
+    body.ratio = ratio === 'adaptive' ? '16:9' : ratio;
   }
 
-  logVideoPostRequest(log, 'MiniMaxH3', url, body, video_gen_id, {
+  logVideoPostRequest(log, label, url, body, video_gen_id, {
     model: finalModel,
     has_first_frame: !!firstForApi,
     has_last_frame: !!lastForApi,
-    reference_count: useFirstLast ? 0 : Math.min(refs.length, 9),
+    reference_count: useFirstLast && !mixedH3 ? 0 : Math.min(refs.length, 9),
   });
 
   const resHttp = await fetch(url, {
@@ -3987,12 +4016,12 @@ async function callMinimaxH3VideoApi(config, log, opts) {
     body: JSON.stringify(body),
   });
   const raw = await resHttp.text();
-  log.info('[MiniMaxH3] raw response', { video_gen_id, status: resHttp.status, raw: raw.slice(0, 1000) });
+  log.info('[' + label + '] raw response', { video_gen_id, status: resHttp.status, raw: raw.slice(0, 1000) });
   if (!resHttp.ok) {
-    let errMsg = 'MiniMax H3 请求失败: ' + resHttp.status;
+    let errMsg = label + ' 请求失败: ' + resHttp.status;
     try {
       const errJson = JSON.parse(raw);
-      const msg = errJson.error?.message || errJson.message || errJson.base_resp?.status_msg;
+      const msg = errJson.error?.message || errJson.message || errJson.base_resp?.status_msg || errJson.detail;
       if (msg) errMsg += ' - ' + (typeof msg === 'string' ? msg : JSON.stringify(msg).slice(0, 200));
     } catch (_) {
       if (raw) errMsg += ' - ' + raw.slice(0, 200);
@@ -4003,19 +4032,19 @@ async function callMinimaxH3VideoApi(config, log, opts) {
   try {
     data = JSON.parse(raw);
   } catch (e) {
-    return { error: 'MiniMax H3 响应非 JSON: ' + e.message };
+    return { error: label + ' 响应非 JSON: ' + e.message };
   }
   const taskId = data.task_id || data.task?.id || data.id || data.data?.task_id;
   const directUrl = extractMinimaxH3VideoUrl(data);
   if (directUrl) {
-    log.info('[MiniMaxH3] 直接返回 video_url', { video_gen_id, video_url: directUrl });
+    log.info('[' + label + '] 直接返回 video_url', { video_gen_id, video_url: directUrl });
     return { video_url: directUrl };
   }
   if (taskId) {
-    log.info('[MiniMaxH3] 返回 task_id', { video_gen_id, task_id: taskId });
+    log.info('[' + label + '] 返回 task_id', { video_gen_id, task_id: taskId });
     return { task_id: String(taskId), status: 'processing' };
   }
-  return { error: 'MiniMax H3 未返回 task_id: ' + JSON.stringify(data).slice(0, 300) };
+  return { error: label + ' 未返回 task_id: ' + JSON.stringify(data).slice(0, 300) };
 }
 
 /**
@@ -4292,13 +4321,26 @@ async function callVideoApi(db, log, opts) {
   }
 
   // MiniMax H3 Video Generation V2
-  if (protocol === 'minimax_h3') {
-    return callMinimaxH3VideoApi(config, log, {
-      prompt,
+  if (protocol === 'minimax_h3' || protocol === 'comfyui_wan22') {
+    const nativeSettings = parseJsonColumnForVideo(config.settings) || {};
+    if (protocol === 'minimax_h3' && nativeSettings.h3_native_references === true && db && opts.drama_id && opts.storyboard_id) {
+      const prepared = await require('./h3NativeService').prepare(db, log, opts);
+      return callContentVideoApi(config, log, { ...opts, ...prepared, model });
+    }
+    let h3Voices = { references: [], instructions: '' };
+    const settings = parseJsonColumnForVideo(config.settings) || {};
+    if (protocol === 'minimax_h3' && settings.supports_voice_reference === true && db && opts.drama_id && opts.storyboard_id) {
+      h3Voices = await require('./h3VoiceReferenceService').forShot(db, log, opts.drama_id, opts.storyboard_id, opts.storage_local_path);
+      log.info('[H3] Prepared speaker voice references', { storyboard_id: opts.storyboard_id, speakers: h3Voices.references.map(r => r.speaker) });
+    }
+    return callContentVideoApi(config, log, {
+      prompt: (prompt || '') + h3Voices.instructions,
+      h3_audio_references: h3Voices.references,
       model,
       duration: opts.duration,
       aspect_ratio,
       resolution: opts.resolution,
+      seed: opts.seed,
       image_url: opts.image_url,
       first_frame_url: opts.first_frame_url,
       last_frame_url: opts.last_frame_url,
@@ -4465,7 +4507,8 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   const isVidu = protocol === 'vidu';
   const isSora = protocol === 'sora';
   const isAgnes = protocol === 'agnes';
-  const isMinimaxH3 = protocol === 'minimax_h3';
+  const isContentBridge = protocol === 'minimax_h3' || protocol === 'comfyui_wan22';
+  const contentLabel = protocol === 'comfyui_wan22' ? 'Wan2.2' : 'MiniMax H3';
   const isKling = protocol === 'kling';
   const isKlingOmni = protocol === 'kling_omni' || (typeof taskId === 'string' && taskId.startsWith('omni:'));
   const isVeo3 = protocol === 'veo3';
@@ -4517,7 +4560,25 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
     agnes_model: isAgnes ? agnesPollModel : undefined,
   });
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (db && videoGenId) {
+      try {
+        const current = db.prepare('SELECT status, error_msg, deleted_at FROM video_generations WHERE id = ?').get(videoGenId);
+        if (!current || current.status === 'failed' || current.status === 'cancelled' || current.deleted_at) {
+          log.info('[poll] 视频任务已取消或已标记失败，停止轮询', { video_gen_id: videoGenId });
+          return { error: current?.error_msg || '任务已被取消' };
+        }
+      } catch (_) {}
+    }
     await new Promise((r) => setTimeout(r, intervalMs));
+    if (db && videoGenId) {
+      try {
+        const current = db.prepare('SELECT status, error_msg, deleted_at FROM video_generations WHERE id = ?').get(videoGenId);
+        if (!current || current.status === 'failed' || current.status === 'cancelled' || current.deleted_at) {
+          log.info('[poll] 视频任务已取消或已标记失败，停止轮询', { video_gen_id: videoGenId });
+          return { error: current?.error_msg || '任务已被取消' };
+        }
+      } catch (_) {}
+    }
     try {
       let url, headers;
       if (isKling) {
@@ -4760,11 +4821,11 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         continue;
       }
 
-      if (isMinimaxH3) {
+      if (isContentBridge) {
         const status = extractMinimaxH3TaskStatus(data);
         const videoUrl = extractMinimaxH3VideoUrl(data);
         const taskObj = data.task && typeof data.task === 'object' ? data.task : data;
-        log.info('[MiniMaxH3 poll] 状态', {
+        log.info('[' + contentLabel + ' poll] 状态', {
           video_gen_id: videoGenId,
           attempt,
           status,
@@ -4777,20 +4838,20 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
             (err && (err.message || err.code)) ||
             extractPollFailureMessage(data) ||
             status ||
-            'MiniMax H3 任务失败';
-          log.warn('[MiniMaxH3 poll] 任务失败', { video_gen_id: videoGenId, msg });
+            contentLabel + ' 任务失败';
+          log.warn('[' + contentLabel + ' poll] 任务失败', { video_gen_id: videoGenId, msg });
           return { error: String(msg).slice(0, 500) };
         }
         if (videoUrl && isPlausibleHttpVideoUrl(videoUrl)) {
-          log.info('[MiniMaxH3 poll] 完成', { video_gen_id: videoGenId, video_url: videoUrl });
+          log.info('[' + contentLabel + ' poll] 完成', { video_gen_id: videoGenId, video_url: videoUrl });
           return { video_url: videoUrl };
         }
         if (status === 'succeeded' || status === 'completed' || status === 'success' || status === 'done') {
-          log.warn('[MiniMaxH3 poll] 成功但无视频地址', {
+          log.warn('[' + contentLabel + ' poll] 成功但无视频地址', {
             video_gen_id: videoGenId,
             data: JSON.stringify(data).slice(0, 500),
           });
-          return { error: 'MiniMax H3 任务完成但未返回视频地址' };
+          return { error: contentLabel + ' 任务完成但未返回视频地址' };
         }
         continue;
       }
@@ -4884,10 +4945,11 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
       log.warn('Video poll request failed', { attempt, error: e.message });
     }
   }
-  return { error: '??????' };
+  return { error: '生成耗时较长，任务仍在队列中渲染，可点击「继续查询」获取进度' };
 }
 
 module.exports = {
+  resolveVideoProtocol,
   getDefaultVideoConfig,
   callVideoApi,
   pollVideoTask,

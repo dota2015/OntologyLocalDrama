@@ -43,3 +43,46 @@ describe('runFfmpegConcat', () => {
     );
   });
 });
+
+describe('appendBlackTail', () => {
+  it('returns false for non-existent files or 0-duration padding', () => {
+    assert.equal(videoMergeService.appendBlackTail('/tmp/non_existent_file_xyz.mp4', 1.0, log), false);
+    assert.equal(videoMergeService.appendBlackTail('/tmp/non_existent_file_xyz.mp4', 0, log), false);
+  });
+
+  it('appends black frame tail to video and syncs duration', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'video-black-tail-'));
+    const testVideo = path.join(dir, 'sample.mp4');
+    const { spawnSync } = require('child_process');
+    const { getFfmpegPath, getFfprobePath } = require('../src/utils/ffmpegPath');
+
+    // Create 2-second test video with audio
+    spawnSync(getFfmpegPath(), [
+      '-f', 'lavfi', '-i', 'testsrc=duration=2:size=320x240:rate=24',
+      '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo',
+      '-c:v', 'libx264', '-c:a', 'aac',
+      '-t', '2', '-y', testVideo
+    ]);
+
+    const beforeProbe = spawnSync(getFfprobePath(), ['-v', 'error', '-show_entries', 'format=duration', '-of', 'json', testVideo], { encoding: 'utf8' });
+    const durBefore = parseFloat(JSON.parse(beforeProbe.stdout).format.duration);
+    assert.ok(durBefore >= 1.9 && durBefore <= 2.1);
+
+    const ok = videoMergeService.appendBlackTail(testVideo, 1.0, log);
+    assert.equal(ok, true);
+
+    const afterProbe = spawnSync(getFfprobePath(), ['-v', 'error', '-show_entries', 'format=duration:stream=codec_type', '-of', 'json', testVideo], { encoding: 'utf8' });
+    const meta = JSON.parse(afterProbe.stdout);
+    const durAfter = parseFloat(meta.format.duration);
+    assert.ok(durAfter >= 2.9 && durAfter <= 3.1);
+
+    // Verify both video and audio stream exist
+    const hasVideo = meta.streams.some(s => s.codec_type === 'video');
+    const hasAudio = meta.streams.some(s => s.codec_type === 'audio');
+    assert.equal(hasVideo, true);
+    assert.equal(hasAudio, true);
+
+    // Clean up
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});

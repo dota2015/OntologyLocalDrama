@@ -11,13 +11,26 @@ async function generateStory(db, log, body) {
   if (!premise) {
     throw new Error('请提供故事梗概');
   }
-  const cfg = loadConfig();
+  const project = body.drama_id ? db.prepare('SELECT metadata FROM dramas WHERE id=? AND deleted_at IS NULL').get(Number(body.drama_id)) : null;
+  const narrative = require('./narrativeStyleService');
+  const cfg = narrative.withConfig(loadConfig(), { ...narrative.parse(project?.metadata), ...narrative.parse(body.metadata) });
   const style = body.style || body.genre || null;
   const type = body.type || null;
   const episodeCount = Math.max(1, Math.floor(Number(body.episode_count) || 1));
 
   const systemPrompt = promptI18n.getStoryExpansionSystemPrompt(cfg, episodeCount);
-  const userPrompt = promptI18n.buildStoryExpansionUserPrompt(cfg, premise, style, type, episodeCount);
+  let userPrompt = promptI18n.buildStoryExpansionUserPrompt(cfg, premise, style, type, episodeCount);
+  if (body.drama_id) {
+    // Supply identity text only; image data, voice assets and other dramas do
+    // not belong in a script-writing request. Catalog entries are context,
+    // not a requirement to insert every existing character into the story.
+    const rows = table => db.prepare(`SELECT name, description FROM ${table}
+      WHERE drama_id = ? AND deleted_at IS NULL ORDER BY id`).all(Number(body.drama_id))
+      .map(row => ({ name: row.name, description: String(row.description || '').slice(0, 500) }));
+    userPrompt += '\n[Existing character identities in THIS drama / 本剧已有角色身份]\n'
+      + JSON.stringify({ characters: rows('characters'), library: rows('character_libraries') })
+      + '\nUse only identities relevant to the premise. Preserve established names and relationships; do not force every catalog entry into the script. Title-only entries refer to existing people, not additional new people.';
+  }
 
   // 每集约 800 字（中文）≈ 1600 token，多留余量作为最低需求；
   // 不使用 max_tokens 硬上限，而是用 min_max_tokens 确保即使用户 AI 配置了小上限也能保证基本输出量。

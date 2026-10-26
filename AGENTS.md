@@ -43,3 +43,9 @@ cd frontweb && npm run build
 - AI content generation requires external API keys (configured via the app's "AI 配置" page), but the app fully functions without them for development/testing purposes.
 - The backend also serves the built frontend from `frontweb/dist/` at port 5679 when the dist folder exists; during development, use the Vite dev server at port 3013 instead.
 - Video merge / tail-frame features require `ffmpeg` on PATH (or in `backend-node/tools/ffmpeg/`); UI and CRUD work without it.
+
+### Collaboration Rules (工作协同铁律)
+
+- **先分析、先确认、后动手**：每次遇到需求变更、功能调整或 Bug 修复，**严禁直接动手修改代码**。必须先深入分析技术影响与根因，列出清晰的整改方案与用户确认，达成完全共识后方可开始改动代码。
+- **杜绝打补丁与双架构分裂**：重构或新增逻辑时，必须向核心架构收敛，严禁随意保留或新增平行的重复入口与分裂代码。
+

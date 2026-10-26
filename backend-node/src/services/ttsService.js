@@ -7,18 +7,38 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { randomUUID } = require('crypto');
+const { execFile } = require('child_process');
+
+async function synthesizeWithEdgeTts(text, voice, speed) {
+  const tmpFile = path.join('/tmp', `edge_${randomUUID().slice(0, 8)}.mp3`);
+  const ratePct = Math.round(((speed || 1.0) - 1.0) * 100);
+  const rateStr = ratePct >= 0 ? `+${ratePct}%` : `${ratePct}%`;
+  const voiceName = voice || 'zh-CN-YunjianNeural';
+  return new Promise((resolve, reject) => {
+    execFile('edge-tts', ['--voice', voiceName, '--rate', rateStr, '--text', text, '--write-media', tmpFile], { timeout: 120000, maxBuffer: 2 * 1024 * 1024 }, (err) => {
+      if (err) { try { fs.unlinkSync(tmpFile); } catch (_) {} return reject(err); }
+      try {
+        const buf = fs.readFileSync(tmpFile);
+        fs.unlinkSync(tmpFile);
+        resolve(buf);
+      } catch (e) {
+        reject(e);
+      }
+    });
+  });
+}
 
 /**
  * 使用 MiniMax T2A v2 合成语音
  */
-async function synthesizeWithMinimax(text, voiceId, apiKey, groupId, model) {
+async function synthesizeWithMinimax(text, voiceId, apiKey, groupId, model, speed) {
   const body = JSON.stringify({
     model: model || 'speech-02-hd',
     text,
     stream: false,
     voice_setting: {
       voice_id: voiceId || 'female-shaonv',
-      speed: 1.0,
+      speed: speed || 1.0,
       vol: 1.0,
       pitch: 0,
     },
@@ -63,6 +83,93 @@ async function synthesizeWithMinimax(text, voiceId, apiKey, groupId, model) {
     req.write(body);
     req.end();
   });
+}
+
+/**
+ * 使用 IndexTTS 2.5 Gradio API 合成语音（部署于 10.10.13.15:7860 等 GPU 实例）
+ * 支持参考音色复刻克隆与 duration_factor 语速控制
+ */
+async function synthesizeWithIndexTts(text, voiceRef, baseUrl, speed, storageBase) {
+  const origin = (baseUrl || 'http://10.10.13.15:7860').replace(/\/+$/, '');
+
+  // 1. 准备参考音频（prompt audio）
+  let promptFileData = null;
+  let resolvedRefPath = null;
+  if (voiceRef) {
+    if (path.isAbsolute(voiceRef) && fs.existsSync(voiceRef)) {
+      resolvedRefPath = voiceRef;
+    } else if (storageBase && fs.existsSync(path.join(storageBase, voiceRef))) {
+      resolvedRefPath = path.join(storageBase, voiceRef);
+    }
+  }
+
+  if (resolvedRefPath && fs.existsSync(resolvedRefPath)) {
+    try {
+      const form = new FormData();
+      const buf = fs.readFileSync(resolvedRefPath);
+      form.append('files', new Blob([buf]), path.basename(resolvedRefPath));
+      const upRes = await fetch(`${origin}/gradio_api/upload`, { method: 'POST', body: form });
+      if (upRes.ok) {
+        const [remotePath] = await upRes.json();
+        promptFileData = { path: remotePath, orig_name: path.basename(resolvedRefPath), meta: { _type: 'gradio.FileData' } };
+      }
+    } catch (_) {}
+  }
+
+  // 若无自定义参考音频，使用内置预设参考音色
+  if (!promptFileData) {
+    promptFileData = { path: 'voice_03.wav', orig_name: 'voice_03.wav', meta: { _type: 'gradio.FileData' } };
+  }
+
+  // 2. 语速映射：系统 speed > 1 变快，IndexTTS duration_factor < 1 变快变短
+  const s = Number(speed) > 0 ? Number(speed) : 1.0;
+  const durationFactor = Math.max(0.5, Math.min(2.0, Number((1.0 / s).toFixed(2))));
+
+  // 3. 提交合成任务到 Gradio 5 /gen_single
+  const postRes = await fetch(`${origin}/gradio_api/call/gen_single`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      data: [
+        'Same as the voice reference', // 0 emo_control_method
+        promptFileData,                // 1 prompt
+        text,                          // 2 text
+        'ZH',                          // 3 lang_choice
+        null,                          // 4 emo_ref_path
+        0.65,                          // 5 emo_weight
+        0, 0, 0, 0, 0, 0, 0, 0,        // 6-13 emotion vectors
+        '',                            // 14 emo_text
+        false,                         // 15 emo_random
+        120,                           // 16 max_text_tokens_per_segment
+        durationFactor,                // 17 duration_factor
+        true, 0.8, 30, 0.8, 0, 3, 10, 1500
+      ]
+    })
+  });
+  if (!postRes.ok) {
+    const errText = await postRes.text();
+    throw new Error(`IndexTTS 请求失败 HTTP ${postRes.status}: ${errText.slice(0, 300)}`);
+  }
+  const { event_id } = await postRes.json();
+  if (!event_id) throw new Error('IndexTTS 未返回 event_id');
+
+  // 4. 获取 SSE 结果流
+  const sseRes = await fetch(`${origin}/gradio_api/call/gen_single/${event_id}`);
+  const sseText = await sseRes.text();
+  if (sseText.includes('event: error')) {
+    throw new Error('IndexTTS 生成异常: ' + sseText.slice(0, 300));
+  }
+  const match = sseText.match(/data:\s*(\[[\s\S]*?\])\s*(?:\n|$)/);
+  if (!match) throw new Error('IndexTTS 未返回合法数据流');
+  const resultData = JSON.parse(match[1]);
+  const audioInfo = resultData[0]?.value;
+  const audioUrl = audioInfo?.url || (audioInfo?.path ? `${origin}/gradio_api/file=${audioInfo.path}` : null);
+  if (!audioUrl) throw new Error('IndexTTS 返回结果中缺少音频 URL');
+
+  // 5. 下载音频流
+  const dlRes = await fetch(audioUrl);
+  if (!dlRes.ok) throw new Error(`IndexTTS 音频下载失败 HTTP ${dlRes.status}`);
+  return Buffer.from(await dlRes.arrayBuffer());
 }
 
 /**
@@ -136,16 +243,30 @@ async function synthesize(db, log, { text, storyboard_id, config, storage_base, 
   const finalSpeed = speed || ttsSettings.speed || 1.0;
   let audioBuffer;
 
-  if (provider === 'minimax') {
+  if (provider === 'indextts' || provider === 'indextts2' || provider === 'indextts25' || (ttsConfig.base_url && /7860/i.test(ttsConfig.base_url))) {
+    audioBuffer = await synthesizeWithIndexTts(
+      text,
+      voiceId,
+      ttsConfig.base_url || 'http://10.10.13.15:7860',
+      finalSpeed,
+      storage_base
+    );
+  } else if (provider === 'edge-tts' || provider === 'edgetts' || provider === 'edge') {
+    audioBuffer = await synthesizeWithEdgeTts(
+      text,
+      voiceId || 'zh-CN-YunjianNeural',
+      finalSpeed
+    );
+  } else if (provider === 'minimax') {
     audioBuffer = await synthesizeWithMinimax(
       text,
       voiceId || 'female-shaonv',
       ttsConfig.api_key,
       groupId,
-      ttsModel || 'speech-02-hd'
+      ttsModel || 'speech-02-hd',
+      finalSpeed
     );
   } else if (provider === 'openai' || ttsConfig.base_url) {
-    console.log('==c sxy synthesizeWithOpenai', text, voiceId, ttsConfig.api_key, ttsConfig.base_url, ttsModel, finalSpeed);
     audioBuffer = await synthesizeWithOpenai(
       text,
       voiceId || 'alloy',
@@ -155,7 +276,12 @@ async function synthesize(db, log, { text, storyboard_id, config, storage_base, 
       finalSpeed
     );
   } else {
-    throw new Error(`不支持的 TTS provider: ${provider}，目前支持 openai、minimax`);
+    // 默认回退到 edge-tts
+    audioBuffer = await synthesizeWithEdgeTts(
+      text,
+      voiceId || 'zh-CN-YunjianNeural',
+      finalSpeed
+    );
   }
 
   // 保存到本地

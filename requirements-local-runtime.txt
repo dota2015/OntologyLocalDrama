@@ -1,0 +1,2 @@
+-r requirements-video-bridge.txt
+edge-tts==7.3.1

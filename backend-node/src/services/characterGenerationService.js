@@ -5,6 +5,7 @@ const promptI18n = require('./promptI18n');
 const { safeParseAIJSON, extractFirstArray } = require('../utils/safeJson');
 const characterLibraryService = require('./characterLibraryService');
 const { mergeCfgStyleWithDrama } = require('../utils/dramaStyleMerge');
+const reuse = require('./extractionReuseService');
 
 /**
  * 从角色外貌描述中提炼 6层视觉锚点，写入 characters.identity_anchors
@@ -63,8 +64,9 @@ async function processCharacterGeneration(db, cfg, log, taskID, req) {
       dramaRow.genre || ''
     );
   }
-  const userPrompt = promptI18n.formatUserPrompt(effectiveCfg, 'character_request', outlineText);
-  const systemPrompt = promptI18n.getCharacterExtractionPrompt(effectiveCfg);
+  const known = reuse.catalog(db, req.drama_id, 'character');
+  const userPrompt = promptI18n.formatUserPrompt(effectiveCfg, 'character_request', outlineText) + reuse.promptContext(known);
+  const systemPrompt = promptI18n.getCharacterExtractionPrompt(effectiveCfg) + reuse.instructions('character');
   const temperature = req.temperature != null ? req.temperature : 0.7;
 
   // 固定 6000 tokens：足够约 10-12 个角色（每角色约 400-500 tokens）
@@ -90,7 +92,8 @@ async function processCharacterGeneration(db, cfg, log, taskID, req) {
   let result;
   try {
     const parsed = safeParseAIJSON(text, log);
-    result = extractFirstArray(parsed) || [];
+    result = extractFirstArray(parsed);
+    if (!Array.isArray(result)) throw new Error('角色提取未返回数组');
   } catch (err) {
     log.error('Character generation parse failed', { error: err.message, task_id: taskID });
     console.error('[角色生成] JSON解析失败，原始内容：\n' + text);
@@ -99,90 +102,58 @@ async function processCharacterGeneration(db, cfg, log, taskID, req) {
   }
 
   const dramaId = Number(req.drama_id);
-  const now = new Date().toISOString();
-
-  // 再次「从剧本提取角色」时先清空本集已关联角色，避免与旧数据累加；仅软删除不再被任何分集引用的角色行
-  if (req.episode_id) {
-    const episodeId = Number(req.episode_id);
-    const linkedRows = db.prepare('SELECT character_id FROM episode_characters WHERE episode_id = ?').all(episodeId);
-    for (const row of linkedRows) {
-      const cid = Number(row.character_id);
-      const other = db
-        .prepare('SELECT COUNT(*) AS n FROM episode_characters WHERE character_id = ? AND episode_id != ?')
-        .get(cid, episodeId);
-      if (other && other.n === 0) {
-        db.prepare('UPDATE characters SET deleted_at = ? WHERE id = ? AND drama_id = ? AND deleted_at IS NULL').run(
-          now,
-          cid,
-          dramaId
-        );
+  let characters;
+  const newlyCreated = [];
+  try {
+    characters = db.transaction(() => {
+      // Re-read after the model call; deleted/cross-drama references must fail
+      // before replacing any episode associations.
+      const current = reuse.catalog(db, dramaId, 'character');
+      const resolved = result.map(item => reuse.resolve(current, item));
+      if (req.episode_id && !db.prepare('SELECT id FROM episodes WHERE id = ? AND drama_id = ? AND deleted_at IS NULL').get(Number(req.episode_id), dramaId)) {
+        throw new Error('分集不属于当前剧');
       }
-    }
-    db.prepare('DELETE FROM episode_characters WHERE episode_id = ?').run(episodeId);
+      const selected = new Map();
+      for (const choice of resolved) {
+        let row = choice.existing;
+        if (!row) {
+          const data = choice.library || choice.fresh;
+          // Deduplicate repeated mentions within this extraction too.
+          row = current.resources.find(c => c.name.trim() === data.name.trim());
+          if (!row) {
+            const fields = ['name', 'role', 'description', 'personality', 'appearance', 'voice_style'];
+            if (choice.library) fields.push('image_url', 'local_path', 'identity_anchors', 'style_tokens', 'color_palette', 'four_view_image_url');
+            const now = new Date().toISOString();
+            const info = db.prepare(`INSERT INTO characters (drama_id, ${fields.join(', ')}, sort_order, created_at, updated_at)
+              VALUES (?, ${fields.map(() => '?').join(', ')}, 0, ?, ?)`)
+              .run(dramaId, ...fields.map(key => data[key] ?? null), now, now);
+            row = db.prepare('SELECT * FROM characters WHERE id = ?').get(info.lastInsertRowid);
+            current.resources.push(row);
+            if (!choice.library) newlyCreated.push(row);
+          }
+        }
+        selected.set(row.id, row);
+      }
+      if (req.episode_id) {
+        db.prepare('DELETE FROM episode_characters WHERE episode_id = ?').run(Number(req.episode_id));
+        const link = db.prepare('INSERT OR IGNORE INTO episode_characters (episode_id, character_id) VALUES (?, ?)');
+        for (const row of selected.values()) link.run(Number(req.episode_id), row.id);
+      }
+      // Existing characters remain in the drama catalog even when absent in this episode.
+      return [...selected.values()];
+    })();
+  } catch (err) {
+    log.error('Character reuse validation failed', { error: err.message, task_id: taskID });
+    taskService.updateTaskError(db, taskID, '角色保存失败，原有资源未修改: ' + err.message);
+    return;
   }
-
-  const characters = [];
-
-  for (const char of result) {
-    const name = (char.name || '').trim();
-    if (!name) continue;
-    const existing = db.prepare('SELECT id, name FROM characters WHERE drama_id = ? AND name = ? AND deleted_at IS NULL').get(dramaId, name);
-    if (existing) {
-      characters.push({
-        id: existing.id,
-        drama_id: dramaId,
-        name: existing.name,
-        role: null,
-        description: null,
-        personality: null,
-        appearance: null,
-        voice_style: null,
+  for (const row of newlyCreated) {
+    if (row.appearance) setImmediate(() => {
+      enrichIdentityAnchors(db, log, row.id, row.appearance).catch(() => {});
+      characterLibraryService.generateCharacterPromptOnly(db, log, effectiveCfg, row.id, undefined, undefined).catch((err) => {
+        log.warn('[提取角色] 预生成polished_prompt失败', { character_id: row.id, error: err.message });
       });
-      continue;
-    }
-    const info = db.prepare(
-      `INSERT INTO characters (drama_id, name, role, description, personality, appearance, voice_style, sort_order, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
-    ).run(
-      dramaId,
-      name,
-      char.role ?? null,
-      char.description ?? null,
-      char.personality ?? null,
-      char.appearance ?? null,
-      char.voice_style ?? null,
-      now,
-      now
-    );
-    const newCharId = info.lastInsertRowid;
-    // 异步后台提炼视觉锚点 + 预生成图片提示词，不阻塞主流程
-    if (char.appearance) {
-      setImmediate(() => {
-        enrichIdentityAnchors(db, log, newCharId, char.appearance).catch(() => {});
-        characterLibraryService.generateCharacterPromptOnly(db, log, effectiveCfg, newCharId, undefined, undefined).catch((err) => {
-          log.warn('[提取角色] 预生成polished_prompt失败', { character_id: newCharId, error: err.message });
-        });
-      });
-    }
-    characters.push({
-      id: newCharId,
-      drama_id: dramaId,
-      name,
-      role: char.role ?? null,
-      description: char.description ?? null,
-      personality: char.personality ?? null,
-      appearance: char.appearance ?? null,
-      voice_style: char.voice_style ?? null,
     });
-  }
-
-  if (req.episode_id && characters.length > 0) {
-    const episodeId = Number(req.episode_id);
-    for (const c of characters) {
-      try {
-        db.prepare('INSERT OR IGNORE INTO episode_characters (episode_id, character_id) VALUES (?, ?)').run(episodeId, c.id);
-      } catch (_) {}
-    }
   }
 
   taskService.updateTaskResult(db, taskID, { characters, count: characters.length });
@@ -209,5 +180,6 @@ function generateCharacters(db, cfg, log, req) {
 
 module.exports = {
   generateCharacters,
+  processCharacterGeneration,
   enrichIdentityAnchors,
 };

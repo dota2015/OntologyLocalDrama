@@ -58,9 +58,16 @@ function routes(db, cfg, log) {
         const storageBase = path.isAbsolute(rawStorage)
           ? rawStorage
           : path.join(process.cwd(), rawStorage);
-        const videoAbsPath = path.isAbsolute(video.local_path)
+        let videoAbsPath = path.isAbsolute(video.local_path)
           ? video.local_path
           : path.join(storageBase, video.local_path.replace(/^\/+/, ''));
+
+        if (!fs.existsSync(videoAbsPath)) {
+          const cwdPath = path.join(process.cwd(), video.local_path.replace(/^\/+/, ''));
+          if (fs.existsSync(cwdPath)) {
+            videoAbsPath = cwdPath;
+          }
+        }
 
         if (!fs.existsSync(videoAbsPath)) {
           return res.status(400).json({ error: '视频文件不存在: ' + video.local_path });
@@ -76,27 +83,45 @@ function routes(db, cfg, log) {
         const outputAbsPath = path.join(imagesDir, outputFileName);
         const outputRelPath = `media/images/${outputFileName}`;
 
-        // 6. 使用 ffmpeg 提取最后一帧
-        // 使用 -sseof -1 定位到最后一秒，然后取第一帧
-        log.info('[尾帧衔接] 开始提取', { from: video.local_path, to: outputRelPath });
+        // 6. 使用 ffmpeg 提取真正的最后一帧
+        // 关键修复：原实现使用了 '-frames:v', '1'，导致 ffmpeg 在 '-sseof -1'（倒数第 1 秒）处直接终止并输出第一帧，
+        // 因而截取到的画面比视频真正的结尾提前了整整 1 秒（约 24~30 帧），而非真正的尾帧！
+        // 正确方案：
+        // 1) 优先使用 '-sseof -1' 定位至末尾 1 秒，并利用 '-update 1' 持续覆盖输出至视频 EOF，输出即为真正的最后一帧；
+        // 2) 若视频时长异常或定位失败，无缝回退为全视频流解码至尾帧；
+        // 3) 绝不传入 '-frames:v 1'，确保覆盖直到最后一帧。
+        log.info('[尾帧衔接] 开始提取真正的视频最后一帧', { from: video.local_path, to: outputRelPath });
 
-        const result = spawnSync(ffmpeg, [
+        let result = spawnSync(ffmpeg, [
           '-sseof', '-1',
           '-i', videoAbsPath,
           '-update', '1',
           '-q:v', '2',
-          '-frames:v', '1',
           '-y',
           outputAbsPath
         ], { encoding: 'utf8', timeout: 60000 });
 
+        if (result.error || result.status !== 0 || !fs.existsSync(outputAbsPath) || fs.statSync(outputAbsPath).size === 0) {
+          log.warn('[尾帧衔接] sseof 方式提取未成功，回退到全视频流解码尾帧', {
+            stderr: result.stderr?.slice(-300),
+            error: result.error?.message
+          });
+          result = spawnSync(ffmpeg, [
+            '-i', videoAbsPath,
+            '-update', '1',
+            '-q:v', '2',
+            '-y',
+            outputAbsPath
+          ], { encoding: 'utf8', timeout: 60000 });
+        }
+
         if (result.error || result.status !== 0) {
-          log.error('[尾帧衔接] ffmpeg 失败', { stderr: result.stderr?.slice(-500) });
+          log.error('[尾帧衔接] ffmpeg 提取失败', { stderr: result.stderr?.slice(-500) });
           return res.status(500).json({ error: 'ffmpeg 提取帧失败: ' + (result.stderr || result.error?.message || '未知错误') });
         }
 
-        if (!fs.existsSync(outputAbsPath)) {
-          return res.status(500).json({ error: '提取帧后文件未生成' });
+        if (!fs.existsSync(outputAbsPath) || fs.statSync(outputAbsPath).size === 0) {
+          return res.status(500).json({ error: '提取帧后文件未生成或为空' });
         }
 
         // 7. 获取图片尺寸（可选，用于记录）
@@ -126,9 +151,8 @@ function routes(db, cfg, log) {
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
-        // 假设有 files_base_url 配置
-        const filesBase = cfg?.files?.base_url || '';
-        const imageUrl = filesBase ? `${filesBase.replace(/\/$/, '')}/${outputRelPath}` : null;
+        const filesBase = cfg?.storage?.base_url || cfg?.files?.base_url || '';
+        const imageUrl = filesBase ? `${filesBase.replace(/\/$/, '')}/${outputRelPath}` : `/static/${outputRelPath}`;
 
         const info = insert.run(
           dramaId,

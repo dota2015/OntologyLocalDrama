@@ -17,6 +17,17 @@
         />
       </el-select>
 
+      <div v-if="agent.focusedTarget" class="focused-target-pill">
+        <div class="pill-content">
+          <span class="pill-icon">📍</span>
+          <span class="pill-text">
+            当前聚焦：<strong>{{ agent.focusedTarget.number != null ? `第 ${agent.focusedTarget.number} 镜` : '当前分镜' }}</strong>
+            <span v-if="agent.focusedTarget.title" class="pill-title"> · {{ agent.focusedTarget.title }}</span>
+          </span>
+        </div>
+        <el-button link size="small" type="info" @click="agent.clearFocusedTarget">清除聚焦</el-button>
+      </div>
+
       <div ref="logRef" class="log">
         <p v-if="!messages.length && !errorText" class="empty">可以让我看看这个项目，或改剧本、角色、场景和分镜。</p>
         <article v-for="(message, index) in messages" :key="index" class="bubble" :class="message.role">
@@ -156,6 +167,7 @@ function onEvent(event) {
 function chatBody(extra) {
   const body = { dramaId: props.dramaId, ...extra }
   if (agent.episodeId) body.episodeId = agent.episodeId
+  if (agent.focusedTarget) body.focusedTarget = agent.focusedTarget
   return body
 }
 
@@ -235,6 +247,28 @@ onBeforeUnmount(() => {
   gap: 12px;
 }
 .episode-picker { width: 100%; }
+.focused-target-pill {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: var(--el-color-primary-light-9, #ecf5ff);
+  border: 1px solid var(--el-color-primary-light-7, #d9ecff);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--el-color-primary, #409eff);
+}
+.pill-content {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pill-title {
+  color: var(--text-secondary, #6b7280);
+}
 .log {
   flex: 1;
   overflow: auto;

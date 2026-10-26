@@ -2,13 +2,10 @@ import fs from 'fs';
 import path from 'path';
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
+import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
-import { Agent } from '@mastra/core/agent';
-import { Mastra } from '@mastra/core/mastra';
-import { RequestContext } from '@mastra/core/request-context';
-import { createTool } from '@mastra/core/tools';
-import { LibSQLStore } from '@mastra/libsql';
-import { Memory } from '@mastra/memory';
+import { Agent, Runner, OpenAIChatCompletionsModel, tool } from '@openai/agents';
+import { default as OpenAI } from 'openai';
 import { dramaThreadId } from './context.mjs';
 import { resolveTextModel } from './model.mjs';
 import { listSkillDirectories } from './skills.mjs';
@@ -19,8 +16,6 @@ const require = createRequire(import.meta.url);
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 let ready = false;
-let agent;
-let memory;
 let appDb;
 let appLog;
 let appConfig;
@@ -31,14 +26,11 @@ function warn(message, err) {
   else console.warn(message, error);
 }
 
-function readScope(ctx) {
-  const source = ctx && ctx.requestContext;
-  if (source && typeof source.get === 'function') {
-    return { dramaId: source.get('dramaId'), episodeId: source.get('episodeId') };
-  }
+function readScope(runContext) {
+  const ctx = (runContext && runContext.context) || runContext || {};
   return {
-    dramaId: source && source.dramaId,
-    episodeId: source && source.episodeId,
+    dramaId: Number(ctx.dramaId || ctx.drama_id),
+    episodeId: ctx.episodeId == null && ctx.episode_id == null ? null : Number(ctx.episodeId ?? ctx.episode_id),
   };
 }
 
@@ -66,241 +58,394 @@ function generationDeps() {
   };
 }
 
-function tool(id, description, inputSchema, execute, extra) {
-  return createTool({ id, description, inputSchema, execute, ...extra });
-}
-
 function buildTools() {
   const empty = z.object({});
   return {
-    get_current_project: tool('get_current_project', '读取当前短剧、分集、角色、场景和分镜', empty, async (_input, ctx) => {
-      const scope = readScope(ctx);
-      return tools.executeGetCurrentProject(appDb, scope.dramaId, scope.episodeId);
+    get_current_project: tool({
+      name: 'get_current_project',
+      description: '读取当前短剧、分集、角色、场景和分镜',
+      parameters: empty,
+      execute: async (_input, ctx) => {
+        const scope = readScope(ctx);
+        return tools.executeGetCurrentProject(appDb, scope.dramaId, scope.episodeId);
+      },
     }),
-    generate_story: tool('generate_story', '为当前短剧生成剧本', empty, async (_input, ctx) => {
-      const scope = readScope(ctx);
-      return tools.executeGenerateStory(appDb, appLog, scope.dramaId, generationDeps());
+    generate_story: tool({
+      name: 'generate_story',
+      description: '为当前短剧生成剧本',
+      parameters: empty,
+      execute: async (_input, ctx) => {
+        const scope = readScope(ctx);
+        return tools.executeGenerateStory(appDb, appLog, scope.dramaId, generationDeps());
+      },
     }),
-    save_episode_script: tool('save_episode_script', '保存当前集的剧本', z.object({
-      title: z.string().optional(),
-      script: z.string(),
-    }), async (input, ctx) => {
-      const scope = readScope(ctx);
-      return tools.executeSaveEpisodeScript(appDb, scope.dramaId, scope.episodeId, {
-        title: input.title,
-        scriptContent: input.script,
-      });
+    save_episode_script: tool({
+      name: 'save_episode_script',
+      description: '保存当前集的剧本',
+      parameters: z.object({
+        title: z.string().optional(),
+        script: z.string(),
+      }),
+      execute: async (input, ctx) => {
+        const scope = readScope(ctx);
+        return tools.executeSaveEpisodeScript(appDb, scope.dramaId, scope.episodeId, {
+          title: input.title,
+          scriptContent: input.script,
+        });
+      },
     }),
-    generate_characters: tool('generate_characters', '为当前集生成角色', empty, async (_input, ctx) => {
-      const scope = readScope(ctx);
-      return tools.executeGenerateCharacters(appDb, appConfig, appLog, scope.dramaId, scope.episodeId, generationDeps());
+    generate_characters: tool({
+      name: 'generate_characters',
+      description: '为当前集生成角色',
+      parameters: empty,
+      execute: async (_input, ctx) => {
+        const scope = readScope(ctx);
+        return tools.executeGenerateCharacters(appDb, appConfig, appLog, scope.dramaId, scope.episodeId, generationDeps());
+      },
     }),
-    update_character: tool('update_character', '新建或修改当前剧的角色', z.object({
-      id: z.number().optional(),
-      name: z.string().optional(),
-      role: z.string().optional(),
-      appearance: z.string().optional(),
-      personality: z.string().optional(),
-      description: z.string().optional(),
-    }), async (input, ctx) => {
-      const scope = readScope(ctx);
-      return tools.executeUpdateCharacter(appDb, appLog, scope.dramaId, scope.episodeId, input);
+    update_character: tool({
+      name: 'update_character',
+      description: '新建或修改当前剧的角色',
+      parameters: z.object({
+        id: z.number().optional(),
+        name: z.string().optional(),
+        role: z.string().optional(),
+        appearance: z.string().optional(),
+        personality: z.string().optional(),
+        description: z.string().optional(),
+      }),
+      execute: async (input, ctx) => {
+        const scope = readScope(ctx);
+        return tools.executeUpdateCharacter(appDb, appLog, scope.dramaId, scope.episodeId, input);
+      },
     }),
-    generate_scenes: tool('generate_scenes', '从当前集剧本提取场景', empty, async (_input, ctx) => {
-      const scope = readScope(ctx);
-      return tools.executeGenerateScenes(appDb, appConfig, appLog, scope.dramaId, scope.episodeId, generationDeps());
+    generate_scenes: tool({
+      name: 'generate_scenes',
+      description: '从当前集剧本提取场景',
+      parameters: empty,
+      execute: async (_input, ctx) => {
+        const scope = readScope(ctx);
+        return tools.executeGenerateScenes(appDb, appConfig, appLog, scope.dramaId, scope.episodeId, generationDeps());
+      },
     }),
-    update_scene: tool('update_scene', '新建或修改当前剧的场景', z.object({
-      id: z.number().optional(),
-      location: z.string().optional(),
-      time: z.string().optional(),
-      prompt: z.string().optional(),
-    }), async (input, ctx) => {
-      const scope = readScope(ctx);
-      return tools.executeUpdateScene(appDb, appLog, scope.dramaId, scope.episodeId, input);
+    update_scene: tool({
+      name: 'update_scene',
+      description: '新建或修改当前剧的场景',
+      parameters: z.object({
+        id: z.number().optional(),
+        location: z.string().optional(),
+        time: z.string().optional(),
+        prompt: z.string().optional(),
+      }),
+      execute: async (input, ctx) => {
+        const scope = readScope(ctx);
+        return tools.executeUpdateScene(appDb, appLog, scope.dramaId, scope.episodeId, input);
+      },
     }),
-    generate_storyboards: tool('generate_storyboards', '为当前集生成分镜', z.object({
-      storyboardCount: z.number().optional(),
-    }), async (input, ctx) => {
-      const scope = readScope(ctx);
-      return tools.executeGenerateStoryboards(appDb, appLog, scope.dramaId, scope.episodeId, input, generationDeps());
+    update_prop: tool({
+      name: 'update_prop',
+      description: '新建或修改当前剧的道具（支持物理真实尺度与描述）',
+      parameters: z.object({
+        id: z.number().optional(),
+        name: z.string().optional(),
+        type: z.string().optional(),
+        description: z.string().optional(),
+        physical_scale: z.string().optional(),
+        image_prompt: z.string().optional(),
+      }),
+      execute: async (input, ctx) => {
+        const scope = readScope(ctx);
+        return tools.executeUpdateProp(appDb, appLog, scope.dramaId, scope.episodeId, input);
+      },
     }),
-    update_storyboard: tool('update_storyboard', '修改当前剧的一条分镜', z.object({
-      id: z.number(),
-      dialogue: z.string().optional(),
-      action: z.string().optional(),
-      description: z.string().optional(),
-      imagePrompt: z.string().optional(),
-    }), async (input, ctx) => {
-      const scope = readScope(ctx);
-      return tools.executeUpdateStoryboard(appDb, appLog, scope.dramaId, input);
+    generate_storyboards: tool({
+      name: 'generate_storyboards',
+      description: '为当前集生成分镜',
+      parameters: z.object({
+        storyboardCount: z.number().optional(),
+      }),
+      execute: async (input, ctx) => {
+        const scope = readScope(ctx);
+        return tools.executeGenerateStoryboards(appDb, appLog, scope.dramaId, scope.episodeId, input, generationDeps());
+      },
     }),
-    generate_image: tool('generate_image', '为角色、场景或分镜出图', z.object({
-      type: z.enum(['character', 'scene', 'storyboard']),
-      id: z.number(),
-      view: z.enum(['single', 'four']).optional(),
-      prompt: z.string().optional(),
-    }), async (input, ctx) => {
-      const scope = readScope(ctx);
-      return tools.executeGenerateImage(appDb, appLog, appConfig, scope.dramaId, input, generationDeps());
+    update_storyboard: tool({
+      name: 'update_storyboard',
+      description: '修改当前剧的一条分镜',
+      parameters: z.object({
+        id: z.number(),
+        dialogue: z.string().optional(),
+        action: z.string().optional(),
+        description: z.string().optional(),
+        imagePrompt: z.string().optional(),
+      }),
+      execute: async (input, ctx) => {
+        const scope = readScope(ctx);
+        return tools.executeUpdateStoryboard(appDb, appLog, scope.dramaId, input);
+      },
     }),
-    get_task: tool('get_task', '查询当前剧的一个生成任务', z.object({
-      taskId: z.string(),
-    }), async (input, ctx) => {
-      const scope = readScope(ctx);
-      return tools.executeGetTask(appDb, scope.dramaId, input);
+    director_refine_storyboard: tool({
+      name: 'director_refine_storyboard',
+      description: '调用导演智能体对分镜进行专业定向微调（携带世界观本体契约、机位运镜推演与连戏快照）',
+      parameters: z.object({
+        id: z.number(),
+        instruction: z.string().describe('修改意见或微调指令'),
+      }),
+      execute: async (input, ctx) => {
+        const scope = readScope(ctx);
+        return tools.executeDirectorRefineStoryboard(appDb, appLog, scope.dramaId, input);
+      },
     }),
-    delete_item: tool('delete_item', '删除当前剧的角色、场景或分镜，必须等用户允许', z.object({
-      type: z.enum(['character', 'scene', 'storyboard']),
-      id: z.number(),
-    }), async (input, ctx) => {
-      const scope = readScope(ctx);
-      return tools.executeDeleteItem(appDb, appLog, scope.dramaId, input);
-    }, {
-      requireApproval: true,
-      beforeApproval(input, ctx) {
+    generate_image: tool({
+      name: 'generate_image',
+      description: '为角色、场景或分镜出图',
+      parameters: z.object({
+        type: z.enum(['character', 'scene', 'storyboard']),
+        id: z.number(),
+        view: z.enum(['single', 'four']).optional(),
+        prompt: z.string().optional(),
+      }),
+      execute: async (input, ctx) => {
+        const scope = readScope(ctx);
+        return tools.executeGenerateImage(appDb, appLog, appConfig, scope.dramaId, input, generationDeps());
+      },
+    }),
+    get_task: tool({
+      name: 'get_task',
+      description: '查询当前剧的一个生成任务',
+      parameters: z.object({
+        taskId: z.string(),
+      }),
+      execute: async (input, ctx) => {
+        const scope = readScope(ctx);
+        return tools.executeGetTask(appDb, scope.dramaId, input);
+      },
+    }),
+    delete_item: tool({
+      name: 'delete_item',
+      description: '删除当前剧的角色、场景、道具或分镜，必须等用户允许',
+      parameters: z.object({
+        type: z.enum(['character', 'scene', 'prop', 'storyboard']),
+        id: z.number(),
+      }),
+      needsApproval: async () => true,
+      execute: async (input, ctx) => {
         const scope = readScope(ctx);
         const guard = guardDeleteApproval(appDb, scope.dramaId, input);
-        if (guard.action === 'decline') return { proceed: false, output: { ok: false, error: guard.error } };
+        if (guard.action === 'decline') return { ok: false, error: guard.error };
+        return tools.executeDeleteItem(appDb, appLog, scope.dramaId, input);
       },
     }),
   };
 }
 
-function messageText(message) {
-  const content = message && message.content;
-  if (typeof content === 'string') return content;
-  const parts = Array.isArray(content) ? content : (content && Array.isArray(content.parts) ? content.parts : []);
-  return parts.map((part) => (part && part.type === 'text' ? part.text || '' : '')).join('');
-}
-
-async function emitStream(output, dramaId, writeEvent) {
-  const stream = output && output.fullStream ? output.fullStream : output;
-  for await (const chunk of stream) {
-    const event = toAgentSseEvent(chunk);
-    if (!event) continue;
-    if (event.type === 'tool-call-approval') {
-      const guard = guardDeleteApproval(appDb, dramaId, { type: event.itemType, id: event.id });
-      if (guard.action === 'ask') event.label = guard.label;
-    }
-    writeEvent(event);
-  }
-  writeEvent({ type: 'done' });
-}
-
-function threadOptions(dramaId, requestContext) {
-  const thread = dramaThreadId(dramaId);
-  return {
-    requestContext,
-    memory: { thread, resource: thread },
-  };
+function ensureAgentTables(db) {
+  if (!db) return;
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS agent_chat_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      drama_id INTEGER NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )`);
+    db.exec(`CREATE TABLE IF NOT EXISTS agent_pending_approvals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      drama_id INTEGER NOT NULL,
+      run_id TEXT NOT NULL,
+      tool_call_id TEXT NOT NULL,
+      tool_name TEXT NOT NULL,
+      item_type TEXT,
+      target_id INTEGER,
+      label TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at TEXT NOT NULL
+    )`);
+  } catch (_) {}
 }
 
 export function isAgentReady() {
   return ready;
 }
 
-export async function initAgent({ db, log, config, dataDir }) {
+export async function initAgent({ db, log, config }) {
   ready = false;
   appDb = db;
   appLog = log;
   appConfig = config || {};
   try {
-    const dir = dataDir || path.join(process.cwd(), 'data');
-    fs.mkdirSync(dir, { recursive: true });
-    const file = path.join(dir, 'agent.db').replace(/\\/g, '/');
-    const storage = new LibSQLStore({ id: 'drama-agent', url: `file:${file}` });
-    memory = new Memory({ storage, options: { lastMessages: 20, semanticRecall: false } });
-    const builtinDir = path.resolve(here, '../../skills/short-drama');
-    const userSkillsDir = path.join(dir, 'skills');
-    agent = new Agent({
-      id: 'drama-assistant',
-      name: '短剧助手',
-      instructions: '你是本地短剧助手。只操作当前打开的短剧。删除必须调用 delete_item 并等待用户允许。没有出视频、导入导出、道具、新建或删除整部剧的工具。',
-      model: () => {
-        const resolved = resolveTextModel(appDb);
-        if (!resolved.ok) throw new Error(resolved.error);
-        return resolved.model;
-      },
-      tools: buildTools(),
-      skills: () => listSkillDirectories({
-        builtinDir,
-        userSkillsDir,
-        log: appLog || { warn() {} },
-        validate: validateSkillMarkdown,
-      }),
-      memory,
-      requestContextSchema: z.object({
-        dramaId: z.number(),
-        episodeId: z.number().nullable(),
-      }),
-    });
-    new Mastra({ agents: { dramaAssistant: agent }, storage });
+    ensureAgentTables(appDb);
     ready = true;
   } catch (err) {
     ready = false;
-    agent = undefined;
-    memory = undefined;
-    warn('助手初始化失败', err);
+    warn('OpenAI Agents 助手初始化失败', err);
   }
 }
 
-export async function streamChat({ dramaId, episodeId, message, writeEvent }) {
+export async function streamChat({ dramaId, episodeId, message, focusedTarget, writeEvent }) {
   if (!ready) throw new Error('助手未就绪');
-  const requestContext = new RequestContext();
-  requestContext.set('dramaId', Number(dramaId));
-  requestContext.set('episodeId', episodeId == null ? null : Number(episodeId));
-  const output = await agent.stream(message, threadOptions(dramaId, requestContext));
-  await emitStream(output, dramaId, writeEvent);
-}
+  const did = Number(dramaId);
+  const eid = episodeId == null ? null : Number(episodeId);
 
-export async function resumeApproval({ dramaId, runId, toolCallId, approved, writeEvent }) {
-  if (!ready) throw new Error('助手未就绪');
-  const requestContext = new RequestContext();
-  requestContext.set('dramaId', Number(dramaId));
-  requestContext.set('episodeId', null);
-  const options = { runId, toolCallId, ...threadOptions(dramaId, requestContext) };
-  const output = approved
-    ? await agent.approveToolCall(options)
-    : await agent.declineToolCall({ ...options, reason: '用户拒绝了这次删除' });
-  await emitStream(output, dramaId, writeEvent);
-}
+  // 1. 持久化记录用户输入
+  try {
+    appDb.prepare(`INSERT INTO agent_chat_messages (drama_id, role, content, created_at) VALUES (?, 'user', ?, ?)`).run(did, message, new Date().toISOString());
+  } catch (_) {}
 
-export async function getHistory(dramaId) {
-  const thread = dramaThreadId(dramaId);
-  const messages = [];
-  const pendingApprovals = [];
-  if (memory) {
-    try {
-      const recalled = await memory.recall({ threadId: thread, resourceId: thread });
-      for (const message of recalled.messages || []) {
-        messages.push({ role: message.role || '', text: messageText(message) });
-      }
-    } catch (_) {
-      /* 新线程还没有记录 */
-    }
+  // 2. 动态读取当前配置的文本大模型
+  const resolved = resolveTextModel(appDb);
+  if (!resolved.ok) throw new Error(resolved.error);
+
+  const modelName = resolved.model.id.replace(/^custom\//, '');
+  const client = new OpenAI({
+    apiKey: resolved.model.apiKey || 'local',
+    baseURL: resolved.model.url,
+  });
+  const model = new OpenAIChatCompletionsModel(client, modelName);
+
+  const toolsMap = buildTools();
+  const agent = new Agent({
+    name: 'drama-assistant',
+    instructions: '你是本地短剧助手。只操作当前打开的短剧。删除必须调用 delete_item 并等待用户允许。没有出视频、导入导出、新建或删除整部剧的工具。你支持维护角色、场景、道具及分镜，并可调用 director_refine_storyboard 进行导演级微调推演。',
+    model,
+    tools: Object.values(toolsMap),
+  });
+
+  const runner = new Runner({ tracingDisabled: true });
+  const runId = uuidv4();
+  let fullAssistantText = '';
+
+  let promptWithContext = message;
+  if (focusedTarget && focusedTarget.type === 'storyboard' && (focusedTarget.number != null || focusedTarget.id != null)) {
+    const shotLabel = focusedTarget.number != null ? `第 ${focusedTarget.number} 镜` : `分镜ID: ${focusedTarget.id}`;
+    const titleStr = focusedTarget.title ? `，标题: "${focusedTarget.title}"` : '';
+    promptWithContext = `[用户屏幕当前正聚焦于分镜：${shotLabel} (ID: ${focusedTarget.id}${titleStr})。若用户的输入是修改提示词、微调镜头、调整光影动作等指令，请优先针对该分镜操作，可优先调用 director_refine_storyboard 进行导演级精细微调推演]\n\n${message}`;
   }
-  if (agent) {
-    try {
-      const listed = await agent.listSuspendedRuns({ threadId: thread, resourceId: thread });
-      for (const run of listed.runs || []) {
-        for (const call of run.toolCalls || []) {
-          if (!call.requiresApproval) continue;
-          const args = call.args || {};
-          const guard = guardDeleteApproval(appDb, dramaId, args);
-          pendingApprovals.push({
-            runId: run.runId,
-            toolCallId: call.toolCallId,
-            toolName: call.toolName,
-            type: args.type,
+
+  try {
+    const result = await runner.run(agent, promptWithContext, {
+      stream: true,
+      context: { dramaId: did, episodeId: eid },
+    });
+
+    for await (const event of result.toStream()) {
+      if (event.type === 'raw_model_stream_event') {
+        const delta = event.event?.choices?.[0]?.delta;
+        if (delta?.content) {
+          fullAssistantText += delta.content;
+          writeEvent({ type: 'text-delta', text: delta.content });
+        }
+      } else if (event.type === 'run_item_stream_event') {
+        const item = event.item;
+        if (item?.type === 'tool_call_item') {
+          const raw = item.rawItem || {};
+          writeEvent({ type: 'tool-call', toolName: raw.name });
+        } else if (item?.type === 'tool_call_output_item') {
+          const raw = item.rawItem || {};
+          let outObj = {};
+          try { outObj = typeof item.output === 'string' ? JSON.parse(item.output) : (item.output || {}); } catch (_) {}
+          writeEvent({
+            type: 'tool-result',
+            toolName: raw.name,
+            ok: outObj.ok !== false,
+            summary: outObj.summary || outObj.error || '',
+            taskId: outObj.taskId,
+            imageUrl: outObj.imageUrl,
+            localPath: outObj.localPath,
+          });
+        } else if (item?.type === 'tool_approval_item') {
+          const raw = item.rawItem || {};
+          const toolCallId = raw.callId || raw.id || uuidv4();
+          let args = {};
+          try { args = typeof item.arguments === 'string' ? JSON.parse(item.arguments) : (item.arguments || {}); } catch (_) {}
+          const guard = guardDeleteApproval(appDb, did, args);
+          try {
+            appDb.prepare(
+              `INSERT INTO agent_pending_approvals (drama_id, run_id, tool_call_id, tool_name, item_type, target_id, label, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)`
+            ).run(did, runId, toolCallId, item.name, args.type, args.id, guard.label || '', new Date().toISOString());
+          } catch (_) {}
+
+          writeEvent({
+            type: 'tool-call-approval',
+            runId,
+            toolCallId,
+            toolName: item.name,
+            itemType: args.type,
             id: args.id,
             label: guard.action === 'ask' ? guard.label : '',
           });
         }
       }
-    } catch (_) {
-      /* 还没有待确认的操作 */
     }
+  } catch (err) {
+    writeEvent({ type: 'error', message: err.message || '对话生成异常' });
+  }
+
+  // 3. 持久化记录助手回复
+  if (fullAssistantText) {
+    try {
+      appDb.prepare(`INSERT INTO agent_chat_messages (drama_id, role, content, created_at) VALUES (?, 'assistant', ?, ?)`).run(did, fullAssistantText, new Date().toISOString());
+    } catch (_) {}
+  }
+
+  writeEvent({ type: 'done' });
+}
+
+export async function resumeApproval({ dramaId, runId, toolCallId, approved, writeEvent }) {
+  if (!ready) throw new Error('助手未就绪');
+  const did = Number(dramaId);
+  try {
+    const pending = appDb.prepare(
+      `SELECT * FROM agent_pending_approvals WHERE drama_id = ? AND run_id = ? AND tool_call_id = ? AND status = 'pending'`
+    ).get(did, runId, toolCallId);
+
+    if (!pending) {
+      writeEvent({ type: 'error', message: '找不到这次确认或已被处理' });
+      writeEvent({ type: 'done' });
+      return;
+    }
+
+    if (approved) {
+      const result = tools.executeDeleteItem(appDb, appLog, did, { type: pending.item_type, id: pending.target_id });
+      appDb.prepare(`UPDATE agent_pending_approvals SET status = 'approved' WHERE id = ?`).run(pending.id);
+      writeEvent({ type: 'tool-result', toolName: pending.tool_name, ok: result.ok !== false, summary: result.summary || '' });
+      writeEvent({ type: 'text-delta', text: `已完成删除${pending.label || ''}。` });
+    } else {
+      appDb.prepare(`UPDATE agent_pending_approvals SET status = 'declined' WHERE id = ?`).run(pending.id);
+      writeEvent({ type: 'text-delta', text: `已取消删除操作。` });
+    }
+  } catch (err) {
+    writeEvent({ type: 'error', message: err.message || '确认执行失败' });
+  }
+  writeEvent({ type: 'done' });
+}
+
+export async function getHistory(dramaId) {
+  const did = Number(dramaId);
+  const messages = [];
+  const pendingApprovals = [];
+  if (appDb) {
+    try {
+      const msgRows = appDb.prepare(
+        `SELECT role, content FROM agent_chat_messages WHERE drama_id = ? ORDER BY id ASC LIMIT 50`
+      ).all(did);
+      for (const m of msgRows) {
+        messages.push({ role: m.role, text: m.content });
+      }
+      const appRows = appDb.prepare(
+        `SELECT run_id, tool_call_id, tool_name, item_type, target_id, label FROM agent_pending_approvals WHERE drama_id = ? AND status = 'pending'`
+      ).all(did);
+      for (const a of appRows) {
+        pendingApprovals.push({
+          runId: a.run_id,
+          toolCallId: a.tool_call_id,
+          toolName: a.tool_name,
+          type: a.item_type,
+          id: a.target_id,
+          label: a.label || '',
+        });
+      }
+    } catch (_) {}
   }
   return { messages, pendingApprovals };
 }

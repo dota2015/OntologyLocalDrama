@@ -1,3 +1,4 @@
+import { generationJobsAPI } from '@/api/generationJobs'
 import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { dramaAPI } from '@/api/drama'
@@ -156,43 +157,14 @@ export function useCanvasScript(deps) {
   }
 
   async function extractAll(episodeId, scriptContent) {
-    if (!episodeId) throw new Error('请先选择集数')
-    const content = (scriptContent || '').trim()
-    if (!content) throw new Error('请先填写剧本内容')
-
-    scriptBusy.value = true
-    let didWork = false
+    if(!dramaId.value || !episodeId) throw new Error('请先选择集数')
+    const content=(scriptContent || '').trim()
+    if(!content) throw new Error('请先填写剧本内容')
+    scriptBusy.value=true
     try {
-      if ((drama.value?.characters || []).length === 0) {
-        setScriptBusy(episodeId, 'extract_chars', '1/3 提取角色…')
-        await _extractCharacters(episodeId, content)
-        didWork = true
-      }
-      if ((drama.value?.scenes || []).length === 0) {
-        setScriptBusy(episodeId, 'extract_scenes', '2/3 提取场景…')
-        await _extractScenes(episodeId)
-        didWork = true
-      }
-      if ((drama.value?.props || []).length === 0) {
-        setScriptBusy(episodeId, 'extract_props', '3/3 提取道具…')
-        await _extractProps(episodeId)
-        didWork = true
-      }
-
-      if (!didWork) {
-        ElMessage.info('角色、场景、道具均已存在，无需重复提取')
-      } else {
-        ElMessage.success(
-          `提取完成：${(drama.value?.characters || []).length} 角色 · ${(drama.value?.scenes || []).length} 场景 · ${(drama.value?.props || []).length} 道具`
-        )
-      }
-    } catch (e) {
-      ElMessage.error(e?.message || '提取失败')
-      throw e
-    } finally {
-      scriptBusy.value = false
-      clearScriptBusy(episodeId)
-    }
+      await generationJobsAPI.create(dramaId.value,'extraction',episodeId,{outline:content,style:getDramaGenerationOptions(drama.value).style,language:'zh'})
+      ElMessage.success('角色、场景与道具提取已加入后台队列，可刷新或关闭页面')
+    } finally {scriptBusy.value=false;clearScriptBusy(episodeId)}
   }
 
   return {

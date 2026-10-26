@@ -64,6 +64,13 @@ test('explicit supports_universal_omni setting still enables omni', () => {
   assert.equal(canUseUniversalOmniVideoApi(cfg), true)
 })
 
+test('H3 supports universal image references, while Hailuo does not inherit that capability', () => {
+  assert.equal(canUseUniversalOmniVideoApi({ api_protocol: 'minimax_h3' }), true)
+  assert.equal(canUseUniversalOmniVideoApi({ model: 'MiniMax-H3', api_protocol: 'openai' }), true)
+  assert.equal(canUseUniversalOmniVideoApi({ provider: 'minimax_h3' }), true)
+  assert.equal(canUseUniversalOmniVideoApi({ model: 'MiniMax-Hailuo-2.3' }), false)
+})
+
 test('non omni-capable models without opt-in are rejected', () => {
   assert.equal(canUseUniversalOmniVideoApi({ provider: 'openai', model: 'sora-2' }), false)
   assert.equal(

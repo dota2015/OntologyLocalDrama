@@ -1,3 +1,4 @@
+const referenceModes = require('./referenceImageModeService');
 // 与 Go PropService.GeneratePropImage + processPropImageGeneration 对齐：道具图片生成
 const path = require('path');
 const taskService = require('./taskService');
@@ -59,7 +60,8 @@ async function processPropImageGeneration(db, log, taskId, propId, opts) {
     } catch (_) {}
   }
   if (!imageSize) imageSize = cfg?.style?.default_image_size || '1920x1920';
-  const fullPrompt = appendPrompt(String(prop.prompt).trim(), style);
+  const mode = referenceModes.generationMode(prop, opts?.use_quad_grid);
+  const fullPrompt = referenceModes.propImagePrompt(appendPrompt(String(prop.prompt).trim(), style), mode);
   // 与角色/场景一致：使用前端「图片生成模型」选择的 model；未传时用 YAML default_image_provider 兜底
   const model = (opts && opts.model) ? String(opts.model).trim() || null : null;
   const preferredProvider = !model && cfg?.ai?.default_image_provider ? cfg.ai.default_image_provider : null;
@@ -130,11 +132,11 @@ async function processPropImageGeneration(db, log, taskId, propId, opts) {
   const extraJson = extras.length ? JSON.stringify(extras) : null;
   try {
     db.prepare(
-      'UPDATE props SET image_url = ?, local_path = ?, extra_images = ?, updated_at = ? WHERE id = ?'
+      'UPDATE props SET image_url = ?, local_path = ?, extra_images = ?, error_msg = NULL, updated_at = ? WHERE id = ?'
     ).run(result.image_url, localPath, extraJson, now, propId);
   } catch (e) {
     if ((e.message || '').includes('extra_images')) {
-      db.prepare('UPDATE props SET image_url = ?, local_path = ?, updated_at = ? WHERE id = ?').run(result.image_url, localPath, now, propId);
+      db.prepare('UPDATE props SET image_url = ?, local_path = ?, error_msg = NULL, updated_at = ? WHERE id = ?').run(result.image_url, localPath, now, propId);
     } else {
       throw e;
     }
@@ -155,6 +157,8 @@ function generatePropImage(db, log, propId, opts) {
     throw new Error('道具没有图片提示词');
   }
 
+  const useQuad = referenceModes.generationMode(prop, opts?.use_quad_grid) === 'quad_grid';
+  opts = { ...(opts || {}), use_quad_grid: useQuad };
   const task = taskService.createTask(db, log, 'prop_image_generation', String(propId));
   setImmediate(() => {
     processPropImageGeneration(db, log, task.id, propId, opts || {}).catch((err) => {

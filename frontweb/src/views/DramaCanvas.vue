@@ -97,6 +97,7 @@
         </el-button>
       </div>
 
+      <GenerationJobs :drama-id="drama?.id" :episode-id="filterEpisodeId" @jobs-change="onCanvasJobsChange" @updated="refreshCanvas(true)" />
       <div v-if="workflowProgress" class="workflow-progress">{{ workflowProgress }}</div>
 
       <div class="generate-bar">
@@ -276,6 +277,8 @@ import '@vue-flow/minimap/dist/style.css'
 
 import { dramaAPI } from '@/api/drama'
 import { useTheme } from '@/composables/useTheme'
+import GenerationJobs from '@/components/GenerationJobs.vue'
+import { activeGenerationJob } from '@/api/generationJobs'
 import { runWorkflowGroup } from '@/composables/useCanvasWorkflowRunner'
 import { CANVAS_CONTEXT_KEY } from '@/composables/useCanvasContext'
 import { useCanvasStoryboardMedia } from '@/composables/useCanvasStoryboardMedia'
@@ -774,37 +777,22 @@ async function onRunActiveGroup() {
   workflowRunning.value = true
   workflowProgress.value = '准备执行…'
   try {
-    const summary = await runWorkflowGroup(drama.value, {
-      ...group,
-      pipeline: normalizePipeline(group.pipeline?.length ? group.pipeline : pipelineSteps.value),
-    }, {
-      stopOnError: true,
-      generationOptions: getCanvasGenerationOptions(),
-      reloadStoryboard: async (storyboardId) => {
-        await loadDrama(true)
-        return findStoryboardInDrama(drama.value, storyboardId)?.storyboard
-      },
-      onStepStart: ({ storyboardId, step }) => {
-        workflowProgress.value = `分镜 #${storyboardId}：${step === 'image' ? '生图' : step === 'video' ? '生视频' : '配音'}…`
-      },
-      onStoryboardError: ({ storyboardId, error }) => {
-        ElMessage.error(`分镜 #${storyboardId} 失败：${error?.message || error}`)
-      },
-    })
-    await loadDrama(true)
-    await loadForDrama(drama.value, filterEpisodeId.value)
-    rebuildGraph()
-    if (summary.failed.length) {
-      ElMessage.warning(`完成 ${summary.ok.length} 镜，失败 ${summary.failed.length} 镜`)
-    } else {
-      ElMessage.success(`工作流执行完成，共 ${summary.ok.length} 镜`)
-    }
+    await runWorkflowGroup(drama.value, {
+      ...group, pipeline:normalizePipeline(group.pipeline?.length ? group.pipeline : pipelineSteps.value),
+    }, {generationOptions:getCanvasGenerationOptions()})
+    ElMessage.success('整组工作流已保存在后台，可刷新或关闭页面')
   } catch (e) {
     ElMessage.error(e?.message || '工作流执行失败')
   } finally {
     workflowRunning.value = false
     workflowProgress.value = ''
   }
+}
+
+function onCanvasJobsChange(jobs) {
+  const active=jobs.find(j=>activeGenerationJob(j))
+  workflowRunning.value=!!active
+  workflowProgress.value=active ? `后台任务 ${active.current}/${active.total}：${active.label}` : ''
 }
 
 function hasProcessingStoryboards() {

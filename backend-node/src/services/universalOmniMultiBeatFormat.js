@@ -59,7 +59,7 @@ function buildFallbackUniversalMultiBeatText(sb, d, styleHint) {
     } else if (isLast) {
       body = `镜头徐徐拉回或推近收束；@图片2 ${res || '完成本镜动作阶段'}，情绪落点明确。`;
     } else {
-      body = `镜头继续推进，跟住 @图片2 的动作节奏，${act.slice(0, 100)}，运镜含定镜与缓推轨衔接。`;
+      body = `镜头继续推进，跟住 @图片2 的动作节奏，${act.slice(0, 100)}，运镜呈连贯微推与动势衔接。`;
     }
     if (dia && (isLast || (M <= 2 && k === M - 1))) {
       body += ` @图片2 说："${dia.replace(/"/g, '')}"`;

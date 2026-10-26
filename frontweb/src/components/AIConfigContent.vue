@@ -171,6 +171,12 @@
               <el-option label="10" :value="10" />
             </el-select>
             <span class="gs-unit">个任务同时生成</span>
+            <span v-if="h3InstanceCount > 0" class="gs-h3-tag">
+              （已配置 {{ h3InstanceCount }} 个 H3 实例，
+              <el-button link type="primary" size="small" @click="activeTab = 'h3_instances'">管理 H3 实例</el-button>
+              <el-button v-if="genVideoConcurrencyInput !== h3InstanceCount" link type="success" size="small" @click="syncVideoConcurrencyWithH3">设为 {{ h3InstanceCount }}</el-button>
+              ）
+            </span>
           </div>
 
           <div style="margin-top: 14px">
@@ -201,6 +207,11 @@
       <el-tab-pane label="SD2 资产管理" name="sd2_assets">
         <div class="tab-content">
           <Sd2AssetManagement :configs="list" @saved="loadList" />
+        </div>
+      </el-tab-pane>
+      <el-tab-pane label="H3 实例集群" name="h3_instances">
+        <div class="tab-content">
+          <H3InstancesManager />
         </div>
       </el-tab-pane>
     </el-tabs>
@@ -363,6 +374,7 @@
           </template>
           <el-select v-model="form.api_protocol" style="width: 100%" placeholder="选择接口规范（自定义厂商必选）" clearable>
             <el-option label="OpenAI 兼容（大多数中转站默认）" value="openai" />
+            <el-option v-if="['image', 'storyboard_image'].includes(form.service_type)" label="Unsloth Desktop 原生（支持人物照片与多图参考）" value="unsloth" />
             <el-option label="火山引擎（豆包 Seedream / Seedance）" value="volcengine" />
             <el-option label="火山即梦 Seedance 全能（方舟多图参考，Seedance 2.0 等）" value="volcengine_omni" />
             <el-option label="通义万象 DashScope" value="dashscope" />
@@ -372,6 +384,7 @@
             <el-option label="Vidu 视频" value="vidu" />
             <el-option label="可灵 Omni-Video（官方 api-beijing / ffir 中转，O1 全能）" value="kling_omni" />
             <el-option label="xAI Grok Imagine（官方 prompt + aspect_ratio，/v1/videos/generations）" value="xai" />
+            <el-option label="Wan2.2 本地 ComfyUI（首尾帧、四步、无声视频）" value="comfyui_wan22" />
             <el-option label="MiniMax H3（官方 V2：/v2/video_generation，模型 MiniMax-H3）" value="minimax_h3" />
             <el-option label="NanoBanana" value="nano_banana" />
           </el-select>
@@ -1199,6 +1212,7 @@ import { generationSettingsAPI } from '@/api/prompts'
 import PromptEditor from '@/components/PromptEditor.vue'
 import SceneModelMap from '@/components/SceneModelMap.vue'
 import Sd2AssetManagement from '@/components/Sd2AssetManagement.vue'
+import H3InstancesManager from '@/components/H3InstancesManager.vue'
 
 const activeTab = ref('configs')
 const importFileRef = ref(null)
@@ -1206,6 +1220,7 @@ const importFileRef = ref(null)
 // ---- 生成设置 ----
 const genConcurrencyInput = ref(3)
 const genVideoConcurrencyInput = ref(3)
+const h3InstanceCount = ref(0)
 const genSettingSaving = ref(false)
 const genSettingSaved = ref(false)
 
@@ -1214,7 +1229,15 @@ async function loadGenerationSettings() {
     const res = await generationSettingsAPI.get()
     genConcurrencyInput.value = res?.concurrency ?? 3
     genVideoConcurrencyInput.value = res?.video_concurrency ?? 3
+    h3InstanceCount.value = Number(res?.h3_instances_count) || 0
   } catch (_) {}
+}
+
+function syncVideoConcurrencyWithH3() {
+  if (h3InstanceCount.value > 0) {
+    genVideoConcurrencyInput.value = h3InstanceCount.value
+    ElMessage.info(`视频并发数已设为 ${h3InstanceCount.value}，请点击下方「保存」生效`)
+  }
 }
 
 function onConcurrencyChange(val) {
@@ -1367,6 +1390,7 @@ const rules = computed(() => ({
           return cb(new Error('请填写 Token'))
         }
         const proto = form.value.api_protocol
+        if (st === 'video' && proto === 'comfyui_wan22') return cb()
         const ak = (form.value.kling_access_key || '').trim()
         const sk = (form.value.kling_secret_key || '').trim()
         if (st === 'video' && proto === 'kling_omni' && ak && sk) return cb()
@@ -1438,6 +1462,7 @@ const providerConfigs = {
     { id: 'vidu', name: 'Vidu', models: ['viduq2', 'viduq2-pro', 'viduq2-turbo', 'viduq3-pro'] },
     { id: 'volces', name: '火山引擎', models: ['doubao-seedance-2-0-fast-260128', 'doubao-seedance-2-0-260128', 'doubao-seedance-2-5-260628', 'doubao-seedance-1-0-pro-250528', 'doubao-seedance-1-0-pro-fast-251015'] },
     // { id: 'chatfire', name: 'Chatfire', models: ['doubao-seedance-1-5-pro-251215', 'doubao-seedance-1-0-lite-i2v-250428', 'doubao-seedance-1-0-lite-t2v-250428', 'doubao-seedance-1-0-pro-250528', 'doubao-seedance-1-0-pro-fast-251015', 'sora-2', 'sora-2-pro'] },
+    { id: 'comfyui_wan22', name: 'Wan2.2 本地 ComfyUI', models: ['Wan2.2-I2V-A14B-FP8-4steps'] },
     { id: 'minimax_h3', name: 'MiniMax H3', models: ['MiniMax-H3'] },
     { id: 'minimax', name: 'MiniMax 海螺', models: ['MiniMax-Hailuo-2.3', 'MiniMax-Hailuo-2.3-Fast', 'MiniMax-Hailuo-02'] },
     { id: 'gemini', name: 'Google Gemini (Veo)', models: ['veo-3.1-generate-preview', 'veo-3.0-generate-preview', 'veo-3.0-fast-generate-preview'] },
@@ -1485,6 +1510,7 @@ const providerProtocolMap = {
   xai: 'xai',
   grok: 'xai',
   minimax: 'openai',
+  comfyui_wan22: 'comfyui_wan22',
   minimax_h3: 'minimax_h3',
   openai: 'openai',
   cheap_seedance2: 'sora',
@@ -1501,6 +1527,7 @@ function getBaseUrlForProvider(provider) {
   if (!provider) return ''
   const p = String(provider).toLowerCase()
   if (p === 'gemini' || p === 'google') return 'https://generativelanguage.googleapis.com'
+  if (p === 'comfyui_wan22') return 'http://127.0.0.1:5688'
   if (p === 'minimax_h3') return 'https://api.minimaxi.com'
   if (p === 'minimax') return 'https://api.minimaxi.com/v1'
   if (p === 'volces' || p === 'volcengine') return 'https://ark.cn-beijing.volces.com/api/v3'
@@ -1613,6 +1640,10 @@ const endpointPreviewInfo = computed(() => {
       submitPath = endpoint || '/tts'
     }
   } else if (service_type === 'image' || service_type === 'storyboard_image') {
+    if (proto === 'unsloth') {
+      const nativeBase = base.replace(/\/v1$/, '').replace(/\/api\/inference$/, '')
+      return { submit: nativeBase + '/api/inference/images/generate', query: nativeBase + '/api/inference/images/status', isAuto: true }
+    }
     if (endpoint) {
       submitPath = endpoint
     } else if (proto === 'volcengine' || p === 'volcengine' || p === 'volces') {
@@ -1653,6 +1684,8 @@ const endpointPreviewInfo = computed(() => {
       submitPath = '/v1/videos'
     } else if (proto === 'agnes' || p === 'agnes') {
       submitPath = '/videos'
+    } else if (proto === 'comfyui_wan22') {
+      submitPath = '/v1/videos'
     } else if (proto === 'minimax_h3' || p === 'minimax_h3') {
       submitPath = '/v2/video_generation'
     } else if (proto === 'xai') {
@@ -1695,6 +1728,8 @@ const endpointPreviewInfo = computed(() => {
       queryPath = /agnes-video-2\.5/.test(m)
         ? '/agnesapi?video_id={videoId}&model_name={model}'
         : '/videos/{taskId}'
+    } else if (proto === 'comfyui_wan22') {
+      queryPath = '/v1/videos/{taskId}'
     } else if (proto === 'minimax_h3' || p === 'minimax_h3') {
       queryPath = '/v2/query/video_generation/{taskId}'
     } else if (proto === 'xai') {
@@ -1778,6 +1813,10 @@ function onProviderChange(providerId) {
     form.value.api_protocol = 'agnes'
     form.value.endpoint = '/videos'
     form.value.query_endpoint = '/agnesapi'
+  }
+  if (st === 'video' && providerId === 'comfyui_wan22') {
+    form.value.endpoint = '/v1/videos'
+    form.value.query_endpoint = '/v1/videos/{taskId}'
   }
   if (st === 'video' && providerId === 'minimax_h3') {
     form.value.api_protocol = 'minimax_h3'
@@ -2824,6 +2863,13 @@ code {
   font-size: 13px;
   color: #606266;
   white-space: nowrap;
+}
+.gs-h3-tag {
+  font-size: 13px;
+  color: #909399;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 .gs-tip-box {
   margin-top: 20px;

@@ -24,6 +24,8 @@ function createApp() {
 
   const { resumeProcessingVideoGenerations } = require('./services/videoService');
   resumeProcessingVideoGenerations(db, log);
+  require('./services/videoBatchService').startWorker(db, log);
+  require('./services/generationJobService').startWorker(db, config, log);
 
   const app = express();
   app.use(express.json({ limit: '10mb' }));

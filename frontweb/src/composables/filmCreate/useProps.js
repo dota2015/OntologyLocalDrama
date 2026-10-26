@@ -1,7 +1,9 @@
+import { usesFourViews } from '@/utils/referenceImageMode'
 import { ref, reactive, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { propAPI } from '@/api/props'
 import { propLibraryAPI } from '@/api/propLibrary'
+import { ontologyAPI } from '@/api/ontology'
 import { uploadAPI } from '@/api/upload'
 import { useGenerationTaskStore, GEN_RESOURCE } from '@/stores/generationTaskStore'
 import { buildExtractTaskMeta, isEpisodeExtractRunning } from '@/composables/useGenerationTaskSync'
@@ -50,7 +52,39 @@ export function useProps(deps) {
   // ── 道具弹窗状态 ──────────────────────────────────────
   const showAddProp = ref(false)
   const addPropSaving = ref(false)
-  const addPropForm = ref({ name: '', type: '', description: '', prompt: '' })
+  const addPropForm = ref({ name: '', type: '', physical_scale: '', description: '', prompt: '' })
+  const aiCompletingProp = ref(false)
+
+  async function onAiCompleteProp(target = 'add') {
+    const form = target === 'edit' ? editPropForm.value : addPropForm.value
+    const name = (form?.name || '').trim()
+    if (!name) {
+      ElMessage.warning('请先输入道具名称')
+      return
+    }
+    if (!dramaId.value) return
+    aiCompletingProp.value = true
+    try {
+      const res = await ontologyAPI.autocompleteEntity(dramaId.value, {
+        entity_type: 'prop',
+        name,
+        episode_id: currentEpisodeId.value ?? undefined,
+        hint: form.description?.trim() || undefined,
+      })
+      const data = res?.data ?? res
+      if (data && form) {
+        if (data.type && !form.type) form.type = data.type
+        if (data.physical_scale) form.physical_scale = data.physical_scale
+        if (data.description) form.description = data.description
+        if (data.prompt) form.prompt = data.prompt
+        ElMessage.success(`已结合剧本自动提炼道具【${name}】的物理尺度与属性`)
+      }
+    } catch (e) {
+      ElMessage.error(e.message || 'AI 补全分析失败')
+    } finally {
+      aiCompletingProp.value = false
+    }
+  }
 
   const showEditProp = ref(false)
   const editPropForm = ref(null)
@@ -136,6 +170,7 @@ export function useProps(deps) {
       id: prop.id,
       name: prop.name || '',
       type: prop.type || '',
+      physical_scale: prop.physical_scale || '',
       description: prop.description || '',
       prompt: prop.prompt || '',
       image_url: prop.image_url || '',
@@ -231,16 +266,25 @@ export function useProps(deps) {
     if (!editPropForm.value?.id) return
     editPropSaving.value = true
     try {
-      await propAPI.update(editPropForm.value.id, {
+      const res = await propAPI.update(editPropForm.value.id, {
         name: editPropForm.value.name?.trim(),
         type: editPropForm.value.type || undefined,
+        physical_scale: editPropForm.value.physical_scale?.trim() || undefined,
         description: editPropForm.value.description || undefined,
         prompt: editPropForm.value.prompt || undefined
       })
+      const linked = res?.data?.auto_linked_storyboards || res?.auto_linked_storyboards || []
       await savePropRefImageIfAny(editPropForm.value.id)
       await loadDrama()
       showEditProp.value = false
-      ElMessage.success('道具已保存')
+      if (linked.length > 0) {
+        ElMessage.success({
+          message: `道具【${editPropForm.value.name}】已保存，并自动连带关联分镜 #${linked.join(', #')}！`,
+          duration: 5000,
+        })
+      } else {
+        ElMessage.success('道具已保存')
+      }
     } catch (e) {
       ElMessage.error(e.message || '保存失败')
     } finally {
@@ -253,17 +297,26 @@ export function useProps(deps) {
     if (!name || !store.dramaId) return
     addPropSaving.value = true
     try {
-      await propAPI.create({
+      const res = await propAPI.create({
         drama_id: store.dramaId,
         episode_id: currentEpisodeId.value ?? undefined,
         name,
         type: addPropForm.value.type?.trim() || undefined,
+        physical_scale: addPropForm.value.physical_scale?.trim() || undefined,
         description: addPropForm.value.description?.trim() || undefined,
         prompt: addPropForm.value.prompt?.trim() || undefined
       })
+      const linked = res?.data?.auto_linked_storyboards || res?.auto_linked_storyboards || []
       showAddProp.value = false
       await loadDrama()
-      ElMessage.success('道具已添加')
+      if (linked.length > 0) {
+        ElMessage.success({
+          message: `道具【${name}】已添加，并自动连带关联分镜 #${linked.join(', #')}！`,
+          duration: 5000,
+        })
+      } else {
+        ElMessage.success('道具已添加')
+      }
     } catch (e) {
       ElMessage.error(e.message || '添加失败')
     } finally {
@@ -294,7 +347,7 @@ export function useProps(deps) {
     }
   }
 
-  async function onGeneratePropImage(prop, useQuadGrid = false) {
+  async function onGeneratePropImage(prop, useQuadGrid = usesFourViews(prop)) {
     prop.errorMsg = ''
     prop.error_msg = ''
     const meta = buildPropImageMeta(prop)
@@ -577,6 +630,8 @@ export function useProps(deps) {
     editPropSaving,
     editPropPromptGenerating,
     extractingPropDesc,
+    aiCompletingProp,
+    onAiCompleteProp,
     addPropRefImage,
     addPropRefFileInput,
     addPropAddRefImage,

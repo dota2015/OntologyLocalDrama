@@ -389,19 +389,18 @@ async function splitNineGridToImages(db, log, originalRow, absLocalPath, storage
 }
 
 /**
- * 将 aspect_ratio（如 "9:16"）转换为图片生成 size 字符串（如 "720*1280"）
- * DashScope/Wan 用 W*H 格式，OpenAI 用 WxH 格式；统一返回 W*H，callDashScopeImageApi 内部会调 dashScopeSize 做最终校验
+ * 将 aspect_ratio（如 "9:16"）转换为图片生成 size 字符串（如 "1152x2048"）
+ * 宽与高均不超过 2048 且为 16 的倍数，全面兼容 OpenAI 协议接口（如 Qwen-Image、DALL-E、SD 等）
+ * 火山引擎 Seedream 需要 >= 3,686,400 像素时在 imageClient.fixSeedreamSize 中自动按比例放大
  */
 function aspectRatioToSize(aspectRatio) {
-  // 统一用 WxH（小写 x）格式：DashScope 的 dashScopeSize() 会把 x 转成 * 并自动缩放
-  // 各尺寸均 >= 3,686,400 像素，满足 ChatFire/OpenAI 兼容接口的最低像素要求
   const map = {
-    '16:9':  '2560x1440',
-    '9:16':  '1440x2560',
-    '1:1':   '1920x1920',
-    '4:3':   '2240x1680',
-    '3:4':   '1680x2240',
-    '21:9':  '2940x1260',
+    '16:9':  '2048x1152',
+    '9:16':  '1152x2048',
+    '1:1':   '1024x1024',
+    '4:3':   '1024x768',
+    '3:4':   '768x1024',
+    '21:9':  '1920x832',
   };
   return map[aspectRatio] || null;
 }
@@ -515,6 +514,262 @@ async function normalizeSavedImageToTargetPixels(absPath, sizeStr, log, ctx) {
     try {
       if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
     } catch (_) {}
+  }
+}
+
+/**
+ * 提取单人正面全身参考图：
+ * 若角色参考图是工业四视图/多视图板式（宽屏 16:9，比例 >= 1.45），
+ * 扩散模型（如 Qwen-Image / Flux）会因图像包含多姿态（正/背/侧/特写大头/道具特写）而发生注意力串扰，
+ * 导致分镜生图中出现多重克隆人、悬浮人头、背向坐姿或重复道具（如双耳机）。
+ * 本函数自动将工业参考表的 FRONT VIEW（正面全身立绘）区域精确裁剪为独立的单人正面图并缓存到磁盘。
+ * 若图片已经是单人肖像或普通照片（比例 < 1.45），则直接返回原图。
+ *
+ * @param {string} storageRoot 存储根目录
+ * @param {string} charRef 原始参考图路径（相对路径、/static/、绝对路径或 data: URL）
+ * @param {object} [log] 日志器
+ * @returns {Promise<string>} 清爽的单人参考图路径（同输入格式）
+ */
+async function getCleanSingleCharacterRef(storageRoot, charRef, log) {
+  if (!charRef || typeof charRef !== 'string') return charRef;
+  let sharpLib;
+  try {
+    sharpLib = require('sharp');
+  } catch (_) {
+    return charRef;
+  }
+
+  try {
+    // 1. 如果是 base64 / data:image
+    if (charRef.startsWith('data:image/')) {
+      const parts = charRef.split(',');
+      if (parts.length < 2) return charRef;
+      const buf = Buffer.from(parts[1], 'base64');
+      const meta = await sharpLib(buf).metadata();
+      if (!meta.width || !meta.height) return charRef;
+      const aspect = meta.width / meta.height;
+      if (aspect >= 1.45) {
+        const left = Math.round(meta.width * 0.268);
+        const top = Math.round(meta.height * 0.039);
+        const width = Math.min(Math.round(meta.width * 0.274), meta.width - left);
+        const height = Math.min(Math.round(meta.height * 0.957), meta.height - top);
+        const croppedBuf = await sharpLib(buf).extract({ left, top, width, height }).toBuffer();
+        if (log) log.info('[角色参考图] 自动从多视图基板裁剪正面单人图 (data URL)', { aspect: aspect.toFixed(2), width, height });
+        return `data:image/png;base64,${croppedBuf.toString('base64')}`;
+      }
+      return charRef;
+    }
+
+    // 2. 如果是 http(s) URL 且指向本地 /static/ 资源
+    let urlObj = null;
+    let effectiveRef = charRef;
+    if (/^https?:\/\//i.test(charRef)) {
+      try {
+        urlObj = new URL(charRef);
+        if (urlObj.pathname.startsWith('/static/')) {
+          effectiveRef = urlObj.pathname;
+        } else {
+          return charRef;
+        }
+      } catch (_) {
+        return charRef;
+      }
+    }
+
+    const isStatic = effectiveRef.startsWith('/static/');
+    const relOrAbs = isStatic ? effectiveRef.replace(/^\/static\//, '') : effectiveRef;
+    const absPath = path.isAbsolute(relOrAbs) ? relOrAbs : path.join(storageRoot, decodeURIComponent(relOrAbs));
+
+    if (!fs.existsSync(absPath)) return charRef;
+
+    // 避免 Windows 中文路径 libvips 错误，统一 readFileSync 为 buffer
+    const fileBuf = fs.readFileSync(absPath);
+    const meta = await sharpLib(fileBuf).metadata();
+    if (!meta.width || !meta.height) return charRef;
+    const aspect = meta.width / meta.height;
+
+    // 工业多视图通常是 16:9（aspect >= 1.45），单人立绘/照片通常是 3:4, 1:1, 9:16（aspect < 1.45）
+    if (aspect < 1.45) {
+      return charRef;
+    }
+
+    const left = Math.round(meta.width * 0.268);
+    const top = Math.round(meta.height * 0.039);
+    const width = Math.min(Math.round(meta.width * 0.274), meta.width - left);
+    const height = Math.min(Math.round(meta.height * 0.957), meta.height - top);
+
+    const ext = path.extname(absPath) || '.png';
+    const cropFileName = path.basename(absPath, ext) + '_front_crop' + ext;
+    const cropAbsPath = path.join(path.dirname(absPath), cropFileName);
+
+    if (!fs.existsSync(cropAbsPath)) {
+      await sharpLib(fileBuf).extract({ left, top, width, height }).toFile(cropAbsPath);
+      if (log) log.info('[角色参考图] 已从工业四视图精确提取单人正面全身图', {
+        src: path.basename(absPath),
+        crop: cropFileName,
+        orig: `${meta.width}x${meta.height}`,
+        cropSize: `${width}x${height}`,
+      });
+    }
+
+    if (urlObj) {
+      urlObj.pathname = path.posix.join(path.posix.dirname(urlObj.pathname), cropFileName);
+      return urlObj.toString();
+    } else if (isStatic) {
+      return path.posix.join(path.posix.dirname(effectiveRef), cropFileName);
+    } else if (path.isAbsolute(charRef)) {
+      return cropAbsPath;
+    } else {
+      return path.join(path.dirname(charRef), cropFileName);
+    }
+  } catch (err) {
+    if (log) log.warn('[角色参考图] 提取单人正面全身图失败，使用原图', { error: err.message, ref: charRef });
+    return charRef;
+  }
+}
+
+/**
+ * 从场景参考图中提取清爽的单图参考（默认全景远景/establishing wide shot）。
+ *
+ * 当场景图是通过「场景四视图」生成时，整图是 2×2 四宫格基板（左上=全景远景，右上=中景，左下=特写，右下=备选角度）。
+ * 扩散模型（如 Qwen-Image / Flux）会因输入图包含 4 格画面而发生空间布局模仿与注意力串扰，
+ * 误以为分镜画面也必须画成四宫格分屏或画中画。
+ * 本函数自动识别 2×2 四宫格场景参考图，将左上角（Top-Left：Establishing Wide Shot）
+ * 精确裁剪为独立的 16:9 场景主图并缓存到磁盘。
+ * 若图片本身已是单图场景，或已裁剪，则直接返回原图。
+ *
+ * @param {string} storageRoot 存储根目录
+ * @param {string} sceneRef 原始参考图路径（相对路径、/static/、绝对路径或 data: URL）
+ * @param {number|string} [sceneId] 场景 ID（可选，用于辅助判断四宫格类型）
+ * @param {object} [db] 数据库实例（可选）
+ * @param {object} [log] 日志器
+ * @returns {Promise<string>} 清爽的单图场景参考路径
+ */
+async function getCleanSingleSceneRef(storageRoot, sceneRef, sceneId, db, log) {
+  if (!sceneRef || typeof sceneRef !== 'string') return sceneRef;
+  if (sceneRef.includes('_establishing_crop') || sceneRef.includes('_panel0')) {
+    return sceneRef;
+  }
+
+  let sharpLib;
+  try {
+    sharpLib = require('sharp');
+  } catch (_) {
+    return sceneRef;
+  }
+
+  try {
+    // 1. 判断是否为四宫格场景图
+    let isQuadGrid = false;
+    if (db) {
+      try {
+        if (sceneId) {
+          const sRow = db.prepare('SELECT reference_image_mode, polished_prompt, prompt FROM scenes WHERE id = ?').get(Number(sceneId));
+          if (sRow) {
+            if (sRow.reference_image_mode === 'quad_grid') {
+              isQuadGrid = true;
+            } else if (sRow.reference_image_mode !== 'single') {
+              const pText = [sRow.polished_prompt || '', sRow.prompt || ''].join(' ');
+              if (/2[×x]2\s*grid|establishing\s+wide|scene\s+environment\s+reference\s+sheet|MANDATORY ART STYLE \(all 4 panels\)|四格统一|四视图/i.test(pText)) {
+                isQuadGrid = true;
+              }
+            }
+          }
+        }
+        if (!isQuadGrid) {
+          const staticRel = sceneRef.replace(/^https?:\/\/[^/]+/i, '').replace(/^\/static\//, '');
+          const igRow = db.prepare(`
+            SELECT prompt, frame_type FROM image_generations
+            WHERE local_path = ? OR local_path = ? OR image_url = ?
+            ORDER BY id DESC LIMIT 1
+          `).get(sceneRef, staticRel, sceneRef);
+          if (igRow) {
+            if (igRow.frame_type === 'quad_grid') {
+              isQuadGrid = true;
+            } else if (igRow.prompt && /2[×x]2\s*grid|establishing\s+wide|scene\s+environment\s+reference\s+sheet|MANDATORY ART STYLE \(all 4 panels\)|四格统一|四视图/i.test(igRow.prompt)) {
+              isQuadGrid = true;
+            }
+          }
+        }
+      } catch (dbErr) {
+        if (log) log.warn('[场景参考图] 查询DB四视图标记异常', { error: dbErr.message });
+      }
+    }
+
+    if (!isQuadGrid) {
+      return sceneRef;
+    }
+
+    // 2. 如果是 base64 / data:image
+    if (sceneRef.startsWith('data:image/')) {
+      const parts = sceneRef.split(',');
+      if (parts.length < 2) return sceneRef;
+      const buf = Buffer.from(parts[1], 'base64');
+      const meta = await sharpLib(buf).metadata();
+      if (!meta.width || !meta.height) return sceneRef;
+      const hw = Math.round(meta.width / 2);
+      const hh = Math.round(meta.height / 2);
+      const croppedBuf = await sharpLib(buf).extract({ left: 0, top: 0, width: hw, height: hh }).toBuffer();
+      if (log) log.info('[场景参考图] 自动从2×2四宫格裁剪左上全景主视图 (data URL)', { orig: `${meta.width}x${meta.height}`, crop: `${hw}x${hh}` });
+      return `data:image/png;base64,${croppedBuf.toString('base64')}`;
+    }
+
+    // 3. 处理本地文件 / static URL / 绝对路径
+    let urlObj = null;
+    let effectiveRef = sceneRef;
+    if (/^https?:\/\//i.test(sceneRef)) {
+      try {
+        urlObj = new URL(sceneRef);
+        if (urlObj.pathname.startsWith('/static/')) {
+          effectiveRef = urlObj.pathname;
+        } else {
+          return sceneRef;
+        }
+      } catch (_) {
+        return sceneRef;
+      }
+    }
+
+    const isStatic = effectiveRef.startsWith('/static/');
+    const relOrAbs = isStatic ? effectiveRef.replace(/^\/static\//, '') : effectiveRef;
+    const absPath = path.isAbsolute(relOrAbs) ? relOrAbs : path.join(storageRoot, decodeURIComponent(relOrAbs));
+
+    if (!fs.existsSync(absPath)) return sceneRef;
+
+    const fileBuf = fs.readFileSync(absPath);
+    const meta = await sharpLib(fileBuf).metadata();
+    if (!meta.width || !meta.height) return sceneRef;
+
+    const hw = Math.round(meta.width / 2);
+    const hh = Math.round(meta.height / 2);
+
+    const ext = path.extname(absPath) || '.png';
+    const cropFileName = path.basename(absPath, ext) + '_establishing_crop' + ext;
+    const cropAbsPath = path.join(path.dirname(absPath), cropFileName);
+
+    if (!fs.existsSync(cropAbsPath)) {
+      await sharpLib(fileBuf).extract({ left: 0, top: 0, width: hw, height: hh }).toFile(cropAbsPath);
+      if (log) log.info('[场景参考图] 已从2×2四宫格场景参考图精确提取左上角全景主视图', {
+        src: path.basename(absPath),
+        crop: cropFileName,
+        orig: `${meta.width}x${meta.height}`,
+        cropSize: `${hw}x${hh}`,
+      });
+    }
+
+    if (urlObj) {
+      urlObj.pathname = path.posix.join(path.posix.dirname(urlObj.pathname), cropFileName);
+      return urlObj.toString();
+    } else if (isStatic) {
+      return path.posix.join(path.posix.dirname(effectiveRef), cropFileName);
+    } else if (path.isAbsolute(sceneRef)) {
+      return cropAbsPath;
+    } else {
+      return path.join(path.dirname(sceneRef), cropFileName).replace(/\\/g, '/');
+    }
+  } catch (err) {
+    if (log) log.warn('[场景参考图] 提取全景主视图失败，使用原图', { error: err.message, ref: sceneRef });
+    return sceneRef;
   }
 }
 
@@ -721,27 +976,42 @@ async function processImageGeneration(db, log, imageGenId) {
     });
 
     // ── Step 2: 解析参考图 ───────────────────────────────────────────
+    const loadConfigForStep2 = require('../config').loadConfig;
+    const cfgStep2 = loadConfigForStep2();
+    const storageRoot = path.isAbsolute(cfgStep2?.storage?.local_path || '')
+      ? cfgStep2.storage.local_path
+      : path.join(process.cwd(), cfgStep2?.storage?.local_path || './data/storage');
     let reference_image_urls = null;
     let reference_source = null;
     // 参考图映射说明：告诉图片AI每张参考图对应哪个角色/场景，防止模型模仿宫格布局
     let reference_context_note = null;
     /** 分镜 characters 列已显式配置时，不再用 Step2.3「台词是否出现人名」过滤参考图（以勾选为准） */
     let skipStep23PromptCharFilter = false;
+    const shotLooks=row.storyboard_id?require('./wardrobeService').getShot(db,row.storyboard_id).characters:[];
     if (row.reference_images) {
       try {
         const parsed = JSON.parse(row.reference_images);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          reference_image_urls = parsed;
+          const cleaned = [];
+          for (const rawRef of parsed.slice(0, refLimits.total)) {
+            let cRef = await getCleanSingleCharacterRef(storageRoot, rawRef, log);
+            cRef = await getCleanSingleSceneRef(storageRoot, cRef, null, db, log);
+            cleaned.push(cRef);
+          }
+          reference_image_urls = cleaned;
+          reference_context_note = reference_image_urls.map((_, i) => `Image ${i + 1}: supplied visual reference`).join('\n');
           reference_source = 'DB';
         }
       } catch (_) {}
     }
 
-    // ── 首尾帧专用：尾帧图生可选注入首帧作为“人物站位+构图锁”参考图（默认开启，可由 use_first_frame_layout_lock=0 关闭）──
+    // 尾帧始终参考首帧身份和服装；构图锁只控制是否同时保持站位、取景。
+    let hasFirstFrameLayoutLock = false;
+    let firstRefUrl = null;
     if (row.storyboard_id) {
       const isLastFrame = isLastFrameType(row.frame_type);
       const useFirstLayoutLock = rowUseFirstFrameLayoutLock(row);
-      if (isLastFrame && useFirstLayoutLock) {
+      if (isLastFrame) {
         try {
           const sbFirst = db.prepare(`
             SELECT first_frame_image_id, image_url, local_path,
@@ -760,21 +1030,36 @@ async function processImageGeneration(db, log, imageGenId) {
           }
 
           if (firstRef) {
-            const layoutLabel = 'Image LAYOUT_LOCK: 首帧构图与人物站位参考（CRITICAL: 必须保持与此图完全一致的左右站位、人物相对位置、相机取景、整体布局，仅演化姿态/表情/结果元素，严禁交换位置或重构画面）';
+            firstRefUrl = firstRef;
+            hasFirstFrameLayoutLock = !!useFirstLayoutLock;
+            const layoutLabel = useFirstLayoutLock
+              ? 'Image 1 LAYOUT_LOCK: 本镜首帧，人物身份和服装的权威参考；衣服款式、颜色、图案、层次、鞋子和配饰保持一致，并保持左右站位、相机取景与布局，仅演化姿态/表情/结果。'
+              : 'Image 1 WARDROBE_LOCK: 本镜首帧，保持人物身份和实际穿着的服装、颜色、款式、配饰；允许按镜头要求改变构图。 First-frame identity and wardrobe reference; camera composition may change.';
             if (!reference_image_urls || reference_image_urls.length === 0) {
               reference_image_urls = [firstRef];
               reference_context_note = layoutLabel;
               reference_source = 'auto-first-frame-for-last (layout lock)';
             } else {
               // 已存在参考时，优先插入到最前面（最高权重）
-              reference_image_urls = [firstRef, ...reference_image_urls].slice(0, refLimits.total);
-              reference_context_note = (reference_context_note ? reference_context_note + '\n' : '') + layoutLabel;
+              const oldLabels = (reference_context_note || '').split('\n');
+              const staticRelative = ref => {
+                try {
+                  const pathname = /^https?:/i.test(ref) ? new URL(ref).pathname : ref;
+                  return decodeURIComponent(pathname.replace(/^\/static\//, ''));
+                } catch { return ref; }
+              };
+              const kept = reference_image_urls.map((ref, i) => ({ ref, label: oldLabels[i] || 'supplied visual reference' }))
+                .filter(item => !imageClient.refListHasCanonical([staticRelative(firstRef)], staticRelative(item.ref))).slice(0, refLimits.total - 1);
+              reference_image_urls = [firstRef, ...kept.map(item => item.ref)];
+              reference_context_note = [layoutLabel, ...kept.map(item => item.label)]
+                .map((label, i) => label.replace(/^Image(?:\s+\d+)?(?=:|\s)/i, `Image ${i + 1}`)).join('\n');
               reference_source = (reference_source || 'mixed') + '+first-frame-layout-lock';
             }
             log.info('[图生] 尾帧自动注入首帧作为站位锁参考', {
               id: imageGenId,
               first_ref: String(firstRef).slice(0, 80),
-              total_refs: reference_image_urls.length
+              total_refs: reference_image_urls.length,
+              layout_lock: hasFirstFrameLayoutLock,
             });
           } else {
             log.warn('[图生] 尾帧生成但未找到可用的首帧参考图，无法强制站位锁', { id: imageGenId, storyboard_id: row.storyboard_id });
@@ -785,13 +1070,16 @@ async function processImageGeneration(db, log, imageGenId) {
       }
     }
 
-    // 尾帧可能已注入首帧站位锁参考，仍需合并当前勾选的角色/场景/道具参考图
+    // 尾帧合并参考图：
+    // 【关键防重复机制】：启用首帧站位锁且首帧有效时，首帧已包含本镜全部人物站位、服装与场景透视环境。
+    // 此时绝对不能追加冗余的角色单人卡/四视图或场景参考图，否则生图模型会误判为需在画面中额外画出独立人物，造成人物重复/克隆（如3人变5人）。
+    // 在首帧站位锁模式下，仅允许保留独立道具参考图（如有），严禁追加人物和场景卡。
     if (row.storyboard_id) {
       const sb = db.prepare('SELECT scene_id, characters, angle_s, shot_type FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(row.storyboard_id);
       if (sb) {
         const refs = [];
         const refLabels = [];
-        if (sb.scene_id) {
+        if (sb.scene_id && !hasFirstFrameLayoutLock) {
           const scene = db.prepare('SELECT image_url, local_path, location FROM scenes WHERE id = ? AND deleted_at IS NULL').get(sb.scene_id);
           if (scene) {
             const locationName = scene.location || 'scene';
@@ -811,10 +1099,13 @@ async function processImageGeneration(db, log, imageGenId) {
               }
             }
             if (sceneRef && imageClient.canAddStoryboardObjectRef(refLabels, refLimits)) {
-              refs.push(sceneRef);
-              refLabels.push(`Image ${refs.length}: scene background reference for "${locationName}"${isPanel ? ' (establishing wide shot from history panel)' : ' (current scene image)'} `);
+              const cleanSceneRef = await getCleanSingleSceneRef(storageRoot, sceneRef, sb.scene_id, db, log);
+              refs.push(cleanSceneRef);
+              refLabels.push(`Image ${refs.length}: scene background reference for "${locationName}"${isPanel ? ' (establishing wide shot from history panel)' : ' (establishing wide shot)'} `);
             }
           }
+        } else if (hasFirstFrameLayoutLock) {
+          log.info('[图生] 尾帧首帧站位锁已激活，跳过独立场景参考图，以首帧环境为准', { id: imageGenId });
         }
         /** 分镜 characters 列：null=未配置走兼容逻辑；数组=显式勾选（含空数组=不要任何角色参考） */
         let explicitDramaCharIds = null;
@@ -833,14 +1124,14 @@ async function processImageGeneration(db, log, imageGenId) {
             charListParsed = null;
           }
         }
-        if (charListParsed && charListParsed.length) {
+        if (charListParsed && charListParsed.length && !hasFirstFrameLayoutLock) {
           for (const item of charListParsed) {
             if (!imageClient.canAddStoryboardCharacterRef(refLabels, refLimits)) break;
             const cid = typeof item === 'object' && item != null ? item.id : item;
             const c = db.prepare('SELECT image_url, local_path, name FROM characters WHERE id = ? AND deleted_at IS NULL').get(Number(cid));
             if (!c) continue;
             // 优先使用 characters 表当前主图（image_url / local_path），只有当前字段为空才降级使用历史 quad_panel_1 面板
-            let charRef = c.local_path || c.image_url;
+            let charRef = shotLooks.find(look=>look.id===Number(cid))?.reference_image || c.local_path || c.image_url;
             let isPanel = false;
             if (!charRef) {
               const charPanel = db.prepare(
@@ -854,10 +1145,13 @@ async function processImageGeneration(db, log, imageGenId) {
               }
             }
             if (charRef) {
-              refs.push(charRef);
-              refLabels.push(`Image ${refs.length}: character appearance reference for "${c.name || 'character'}"${isPanel ? ' (front full-body view from history panel)' : ' (current character image)'}`);
+              const cleanRef = await getCleanSingleCharacterRef(storageRoot, charRef, log);
+              refs.push(cleanRef);
+              refLabels.push(`Image ${refs.length}: character appearance reference for "${c.name || 'character'}" (facial identity and outfit reference only; do NOT copy standing pose or placement)`);
             }
           }
+        } else if (hasFirstFrameLayoutLock) {
+          log.info('[图生] 尾帧首帧站位锁已激活，跳过独立角色参考图，以首帧角色形象与站位为准，防止多重克隆', { id: imageGenId });
         }
         // ── 分镜关联道具（storyboard_props）→ 参考图（前端「物品」与 DB 一致，此前未参与 Step2）──
         try {
@@ -883,56 +1177,61 @@ async function processImageGeneration(db, log, imageGenId) {
         } catch (_) {}
         // ── 补充：从 storyboard_characters 关联表查 character_libraries 的四视图 URL ──
         // 若分镜已显式配置 characters JSON，则只保留「当前勾选角色同名」的库条目，避免 UI 已去掉的人仍被当作参考图
-        const allowedLibNamesLower = new Set();
-        if (explicitDramaCharIds !== null && explicitDramaCharIds.length > 0) {
-          for (const cid of explicitDramaCharIds) {
-            const nm = db.prepare('SELECT name FROM characters WHERE id = ? AND deleted_at IS NULL').get(Number(cid));
-            if (nm?.name) allowedLibNamesLower.add(String(nm.name).trim().toLowerCase());
-          }
-        }
-        const restrictLibToExplicitSelection = explicitDramaCharIds !== null;
-        try {
-          const libLinks = db.prepare('SELECT character_id FROM storyboard_characters WHERE storyboard_id = ?').all(row.storyboard_id);
-          const coveredNames = new Set();
-          for (const link of libLinks) {
-            if (!imageClient.canAddStoryboardCharacterRef(refLabels, refLimits)) break;
-            const lib = db.prepare(
-              'SELECT id, name, four_view_image_url, image_url, local_path FROM character_libraries WHERE id = ? AND deleted_at IS NULL'
-            ).get(link.character_id);
-            if (!lib) continue;
-            if (restrictLibToExplicitSelection) {
-              const ln = String(lib.name || '').trim().toLowerCase();
-              if (!ln || !allowedLibNamesLower.has(ln)) continue;
+        // 站位锁模式下首帧已是权威参考，跳过角色库追加，避免出现克隆人物
+        if (!hasFirstFrameLayoutLock) {
+          const allowedLibNamesLower = new Set();
+          if (explicitDramaCharIds !== null && explicitDramaCharIds.length > 0) {
+            for (const cid of explicitDramaCharIds) {
+              const nm = db.prepare('SELECT name FROM characters WHERE id = ? AND deleted_at IS NULL').get(Number(cid));
+              if (nm?.name) allowedLibNamesLower.add(String(nm.name).trim().toLowerCase());
             }
-            if (coveredNames.has(lib.name)) continue;
-            // 优先使用角色库当前主图（four_view_image_url → image_url → local_path），只有当前字段为空才降级使用历史 quad_panel_1 面板
-            // 这样“重新生成角色四视图/主图”后，分镜图生成能立即取到最新图片
-            let libRef = lib.four_view_image_url || lib.local_path || lib.image_url;
-            let isPanel = false;
-            let isFourView = !!lib.four_view_image_url;
-            if (!libRef) {
-              const libPanel = db.prepare(
-                `SELECT local_path, image_url FROM image_generations
-                 WHERE character_id = ? AND frame_type = 'quad_panel_1' AND status = 'completed'
-                 ORDER BY id DESC LIMIT 1`
-              ).get(lib.id);
-              if (libPanel && (libPanel.local_path || libPanel.image_url)) {
-                libRef = libPanel.local_path || libPanel.image_url;
-                isPanel = true;
-                isFourView = false;
+          }
+          const restrictLibToExplicitSelection = explicitDramaCharIds !== null;
+          try {
+            const libLinks = db.prepare('SELECT character_id FROM storyboard_characters WHERE storyboard_id = ?').all(row.storyboard_id);
+            const coveredNames = new Set();
+            for (const link of libLinks) {
+              if (!imageClient.canAddStoryboardCharacterRef(refLabels, refLimits)) break;
+              const lib = db.prepare(
+                'SELECT id, name, four_view_image_url, image_url, local_path FROM character_libraries WHERE id = ? AND deleted_at IS NULL'
+              ).get(link.character_id);
+              if (!lib) continue;
+              if (restrictLibToExplicitSelection) {
+                const ln = String(lib.name || '').trim().toLowerCase();
+                if (!ln || !allowedLibNamesLower.has(ln)) continue;
+              }
+              if (coveredNames.has(lib.name)) continue;
+              // 优先使用角色库当前主图（four_view_image_url → image_url → local_path），只有当前字段为空才降级使用历史 quad_panel_1 面板
+              let libRef = lib.four_view_image_url || lib.local_path || lib.image_url;
+              let isPanel = false;
+              let isFourView = !!lib.four_view_image_url;
+              if (!libRef) {
+                const libPanel = db.prepare(
+                  `SELECT local_path, image_url FROM image_generations
+                   WHERE character_id = ? AND frame_type = 'quad_panel_1' AND status = 'completed'
+                   ORDER BY id DESC LIMIT 1`
+                ).get(lib.id);
+                if (libPanel && (libPanel.local_path || libPanel.image_url)) {
+                  libRef = libPanel.local_path || libPanel.image_url;
+                  isPanel = true;
+                  isFourView = false;
+                }
+              }
+              if (libRef) {
+                const cleanLibRef = await getCleanSingleCharacterRef(storageRoot, libRef, log);
+                if (!imageClient.refListHasCanonical(refs, cleanLibRef)) {
+                  refs.push(cleanLibRef);
+                  refLabels.push(`Image ${refs.length}: character appearance reference for "${lib.name || 'character'}" (facial identity and outfit reference only; do NOT copy standing pose or placement)`);
+                  coveredNames.add(lib.name);
+                }
               }
             }
-            if (libRef && !imageClient.refListHasCanonical(refs, libRef)) {
-              refs.push(libRef);
-              refLabels.push(`Image ${refs.length}: character appearance reference for "${lib.name || 'character'}"${isPanel ? ' (front full-body view from history panel)' : isFourView ? ' (four-view reference sheet)' : ' (character image)'}`);
-              coveredNames.add(lib.name);
-            }
-          }
-        } catch (_) {}
+          } catch (_) {}
+        }
 
         // ── Step 2.1: 文本补扫 — 检测 prompt/action/dialogue 中提及但未关联的角色 ────────────────
-        // 若用户已在分镜上显式勾选角色名单（含空数组），则不再根据台词把已去掉的角色塞回参考图。
-        if (row.drama_id && refs.length < refLimits.total) {
+        // 若启用站位锁或用户已显式配置角色，则跳过文本补扫，避免把既有角色重新作为独立图片插入
+        if (!hasFirstFrameLayoutLock && row.drama_id && refs.length < refLimits.total) {
           if (explicitDramaCharIds !== null && explicitDramaCharIds.length === 0) {
             // 显式清空：跳过文本补扫
           } else try {
@@ -959,12 +1258,20 @@ async function processImageGeneration(db, log, imageGenId) {
               if (explicitDramaCharIds !== null && !explicitDramaCharIds.includes(Number(dChar.id))) continue;
               if (coveredCharNames.has(dChar.name.toLowerCase())) continue;
               if (!scanText.includes(dChar.name.toLowerCase())) continue;
+              // 检查角色是否在对白/动作中被标注为画外音/不入画
+              const dName = dChar.name.toLowerCase();
+              const offscreenRegex = new RegExp(`(?:${dName})[\\s\\S]{0,20}(?:画外|不入画|画外音|不在画中|仅声音|offscreen|voiceover)`, 'i');
+              const offscreenPrefixRegex = new RegExp(`(?:画外|不入画|画外音)[\\s\\S]{0,12}(?:${dName})`, 'i');
+              if (offscreenRegex.test(sbScanText) || offscreenPrefixRegex.test(sbScanText)) {
+                log.info('[图生] Step2.1 检测到角色为画外/不入画，跳过添加视觉参考图', { id: imageGenId, name: dChar.name });
+                continue;
+              }
               if (!imageClient.canAddStoryboardCharacterRef(refLabels, refLimits)) break;
               const dCharRow = db.prepare(
                 'SELECT image_url, local_path FROM characters WHERE id = ? AND deleted_at IS NULL'
               ).get(Number(dChar.id));
               // 优先使用 characters 表当前主图（image_url / local_path），只有当前字段为空才降级使用历史 quad_panel_1 面板
-              let charRef = dCharRow?.local_path || dCharRow?.image_url;
+              let charRef = shotLooks.find(look=>look.id===Number(dChar.id))?.reference_image || dCharRow?.local_path || dCharRow?.image_url;
               let isPanel = false;
               if (!charRef) {
                 const charPanel = db.prepare(
@@ -977,23 +1284,26 @@ async function processImageGeneration(db, log, imageGenId) {
                   isPanel = true;
                 }
               }
-              if (charRef && !imageClient.refListHasCanonical(refs, charRef)) {
-                refs.push(charRef);
-                refLabels.push(`Image ${refs.length}: character appearance reference for "${dChar.name}"${isPanel ? ' (front full-body view from history panel)' : ' (character image)'}`);
-                coveredCharNames.add(dChar.name.toLowerCase());
-                log.info('[图生] Step2.1 文本补扫到未关联角色，已添加参考图', { id: imageGenId, name: dChar.name });
-                // 同步回写到 storyboards.characters，避免下次重复扫描
-                try {
-                  const sbCharRow = db.prepare('SELECT characters FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(Number(row.storyboard_id));
-                  let charList = [];
-                  try { charList = JSON.parse(sbCharRow?.characters || '[]'); } catch (_) { charList = []; }
-                  if (!charList.find((c) => Number(typeof c === 'object' && c != null ? c.id : c) === dChar.id)) {
-                    charList.push({ id: dChar.id, name: dChar.name });
-                    db.prepare('UPDATE storyboards SET characters = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL')
-                      .run(JSON.stringify(charList), new Date().toISOString(), Number(row.storyboard_id));
-                    log.info('[图生] Step2.1 已将角色写入 storyboards.characters', { id: imageGenId, name: dChar.name });
-                  }
-                } catch (_) {}
+              if (charRef) {
+                const cleanRef = await getCleanSingleCharacterRef(storageRoot, charRef, log);
+                if (!imageClient.refListHasCanonical(refs, cleanRef)) {
+                  refs.push(cleanRef);
+                  refLabels.push(`Image ${refs.length}: character appearance reference for "${dChar.name}" (facial identity and outfit reference only; do NOT copy standing pose or placement)`);
+                  coveredCharNames.add(dChar.name.toLowerCase());
+                  log.info('[图生] Step2.1 文本补扫到未关联角色，已添加参考图', { id: imageGenId, name: dChar.name });
+                  // 同步回写到 storyboards.characters，避免下次重复扫描
+                  try {
+                    const sbCharRow = db.prepare('SELECT characters FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(Number(row.storyboard_id));
+                    let charList = [];
+                    try { charList = JSON.parse(sbCharRow?.characters || '[]'); } catch (_) { charList = []; }
+                    if (!charList.find((c) => Number(typeof c === 'object' && c != null ? c.id : c) === dChar.id)) {
+                      charList.push({ id: dChar.id, name: dChar.name });
+                      db.prepare('UPDATE storyboards SET characters = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL')
+                        .run(JSON.stringify(charList), new Date().toISOString(), Number(row.storyboard_id));
+                      log.info('[图生] Step2.1 已将角色写入 storyboards.characters', { id: imageGenId, name: dChar.name });
+                    }
+                  } catch (_) {}
+                }
               }
             }
           } catch (scanErr) {
@@ -1001,7 +1311,8 @@ async function processImageGeneration(db, log, imageGenId) {
           }
         }
 
-        if (explicitDramaCharIds !== null) {
+        // 当显式配置的角色数 <= 1 时无需多角色比对过滤，但多角色时仍需按分镜实际内容过滤出在画角色
+        if (explicitDramaCharIds !== null && explicitDramaCharIds.length <= 1) {
           skipStep23PromptCharFilter = true;
         }
         if (refs.length > 0) {
@@ -1031,6 +1342,18 @@ async function processImageGeneration(db, log, imageGenId) {
               id: imageGenId,
               total_refs: reference_image_urls.length,
             });
+          }
+        }
+      }
+    }
+    // 站位锁模式下首帧已是造型与身份权威，不强制要求注入单独的 look.reference_image
+    if (!hasFirstFrameLayoutLock) {
+      for(const look of shotLooks){
+        if(look.reference_image) {
+          const cleanLookRef = await getCleanSingleCharacterRef(storageRoot, look.reference_image, log);
+          if (!imageClient.refListHasCanonical(reference_image_urls || [], look.reference_image) &&
+              !imageClient.refListHasCanonical(reference_image_urls || [], cleanLookRef)) {
+            throw new Error(`人物「${look.name}」的造型参考图未能加入，请减少其他参考图后重试`);
           }
         }
       }
@@ -1085,11 +1408,15 @@ async function processImageGeneration(db, log, imageGenId) {
           const nameMatch = label.match(/for\s+"([^"]+)"/i);
           const charName = nameMatch ? nameMatch[1].trim() : '';
           const nameInPrompt = charName && promptText.includes(charName.toLowerCase());
-          if (nameInPrompt || !charName) {
+          const isOffscreen = charName && (
+            new RegExp(`(?:${charName})[\\s\\S]{0,20}(?:画外|不入画|画外音|不在画中|仅声音|offscreen|voiceover)`, 'i').test(promptText) ||
+            new RegExp(`(?:画外|不入画|画外音)[\\s\\S]{0,12}(?:${charName})`, 'i').test(promptText)
+          );
+          if ((nameInPrompt && !isOffscreen) || !charName) {
             filteredRefs.push(reference_image_urls[fi]);
             filteredLabels.push(label);
           } else {
-            log.info('[图生] Step2.3 过滤不相关角色参考图', { id: imageGenId, name: charName });
+            log.info('[图生] Step2.3 过滤不相关或画外角色参考图', { id: imageGenId, name: charName, isOffscreen });
           }
         }
 
@@ -1305,6 +1632,8 @@ async function processImageGeneration(db, log, imageGenId) {
       }
     }
 
+    if (row.storyboard_id) finalPrompt += require('./wardrobeService').promptContext(db, row.storyboard_id, isLastFrameType(row.frame_type) ? 'last' : 'first');
+
     // ── Step 3.8: 单帧分镜注入防分割指令 ──────────────────────────────
     // 当有多张参考图时，部分模型（如 Doubao）会生成左右分栏/对比布局，加入负面约束抑制该行为
     if (isSingleStoryboard && reference_image_urls && reference_image_urls.length > 1) {
@@ -1315,12 +1644,73 @@ async function processImageGeneration(db, log, imageGenId) {
     }
 
     // ── Step 3.9: 尾帧站位锁强制文本指令（与视觉参考图双保险）────────────────
-    // 无论是否成功注入参考图，都给尾帧 prompt 追加强约束，防止模型脑补新布局
+    // 无论是否成功注入参考图，都给尾帧 prompt 追加强约束，防止模型脑补新布局或克隆重复人物
     const isLastFrameForLock = isLastFrameType(row.frame_type) && rowUseFirstFrameLayoutLock(row);
     if (isLastFrameForLock && row.storyboard_id) {
-      const layoutLockSuffix = '。【人物站位最高铁律】必须与本分镜的首帧图片保持100%一致的构图、人物左右站位（左/中/右位置、相对距离、朝向）、相机取景和空间布局，仅允许按result描述改变角色姿态、表情、细微动作和环境结果元素，严禁任何人物位置互换或画面重新构图。违反此规则视为生成失败。';
-      if (!finalPrompt.includes('人物站位最高铁律') && !finalPrompt.includes('CHARACTER POSITION LOCK')) {
+      let characterNames = [];
+      try {
+        const framePromptService = require('./framePromptService');
+        const anchors = framePromptService.loadStoryboardCharacterNames(db, row.storyboard_id);
+        const { parseNamesFromAnchorLines } = require('../utils/framePromptSanitize');
+        characterNames = parseNamesFromAnchorLines(anchors);
+      } catch (_) {}
+      if (!characterNames.length && Array.isArray(shotLooks)) {
+        characterNames = shotLooks.map(c => c.name).filter(Boolean);
+      }
+      const charCount = characterNames.length;
+      const countDescZh = charCount > 0
+        ? `画面总人数严格为 ${charCount} 人（出场角色：${characterNames.join('、')}），严禁在首帧人物旁边生成重复的克隆人物、分身或多余路人！每位角色在画面中只能且必须出现一次。`
+        : '严禁在首帧人物旁边生成重复的克隆人物、分身或多余路人！每位角色只能出现一次。';
+      const countDescEn = charCount > 0
+        ? ` STRICT RULE: Total number of people in the image must be exactly ${charCount} (${characterNames.join(', ')}). Maintain identical character composition from Image 1. DO NOT add extra people, clones, or duplicate figures.`
+        : ' STRICT RULE: Maintain identical character composition from Image 1. DO NOT add extra people, clones, or duplicate figures.';
+
+      const layoutLockSuffix = `。【人物站位与防重复最高铁律】必须与本分镜首帧图片保持100%一致的构图、人物左右站位（左/中/右相对位置、朝向）、相机取景和空间布局，仅允许按演化结果改变既有角色的姿态、表情和动作。${countDescZh}${countDescEn}`;
+      if (!finalPrompt.includes('人物站位与防重复最高铁律') && !finalPrompt.includes('人物站位最高铁律') && !finalPrompt.includes('CHARACTER POSITION LOCK')) {
         finalPrompt = finalPrompt.trimEnd() + layoutLockSuffix;
+      }
+    }
+
+    // ── Step 3.95: 分镜图出场人数与防克隆严格约束（适用于所有含角色参考的分镜图生成）──
+    if (row.storyboard_id && !isLastFrameForLock && reference_image_urls && reference_image_urls.length > 0) {
+      const charRefNames = [];
+      const charMappings = [];
+      const noteLines = (reference_context_note || '').split('\n');
+      for (const line of noteLines) {
+        const m = line.match(/^Image\s+(\d+):\s*character appearance reference for "([^"]+)"/i);
+        if (m && m[2] && !charRefNames.includes(m[2].trim())) {
+          const cName = m[2].trim();
+          charRefNames.push(cName);
+          let gender = '';
+          try {
+            const cRow = db.prepare('SELECT appearance, description FROM characters WHERE name = ? AND drama_id = ? AND deleted_at IS NULL').get(cName, row.drama_id);
+            const descText = [cRow?.appearance || '', cRow?.description || ''].join(' ');
+            if (/女性|女|female/i.test(descText)) gender = '女性';
+            else if (/男性|男|male/i.test(descText)) gender = '男性';
+          } catch (_) {}
+          charMappings.push({ imgNum: m[1], name: cName, gender });
+        }
+      }
+      if (charRefNames.length > 0) {
+        const charCount = charRefNames.length;
+        const countZh = charCount === 1
+          ? `【出场人数铁律】画面中出场人物严格且仅有 1 人（${charRefNames[0]}），严禁出现第二个人、多余路人、克隆分身、同人双重视角或画中画分屏！整张画面必须只有这 1 个人。`
+          : `【出场人数铁律】画面中出场人物严格为 ${charCount} 人（出场角色：${charRefNames.join('、')}），严禁生成第 ${charCount + 1} 个人或多余路人，严禁生成克隆分身或双重人物！每位角色在画面中只能且必须出现一次。`;
+        const countEn = charCount === 1
+          ? ` STRICT RULE: Exactly 1 person (${charRefNames[0]}) in the entire frame. DO NOT add any extra people, bystanders, clones, or duplicate views.`
+          : ` STRICT RULE: Exactly ${charCount} people (${charRefNames.join(', ')}) in the frame. DO NOT add extra people, clones, or duplicate figures.`;
+
+        let mappingClause = '';
+        if (charMappings.length > 1) {
+          const mapZh = charMappings.map(m => `角色「${m.name}」${m.gender ? `（${m.gender}）` : ''}严格对应 Image ${m.imgNum}，全图仅此 1 人，严禁克隆重复`).join('；');
+          const mapEn = charMappings.map(m => `"${m.name}"${m.gender ? ` (${m.gender})` : ''} MUST strictly correspond to Image ${m.imgNum} (single person, no duplicates)`).join('; ');
+          mappingClause = `【人物与参考图一对一绑定】${mapZh}。每张参考图对应独立的一位出场人物，严禁将同一角色在不同位置重复画成两个人！ MANDATORY 1-TO-1 MAPPING: ${mapEn}. Never duplicate any character in multiple positions.`;
+        }
+
+        const charCountSuffix = `。${countZh}${countEn}${mappingClause ? '。' + mappingClause : ''}`;
+        if (!finalPrompt.includes('出场人数铁律') && !finalPrompt.includes('STRICT RULE: Exactly')) {
+          finalPrompt = finalPrompt.trimEnd() + charCountSuffix;
+        }
       }
     }
 
@@ -1334,25 +1724,49 @@ async function processImageGeneration(db, log, imageGenId) {
     const isFrameIdentityLock =
       row.frame_type &&
       ['first', 'last', 'key', 'storyboard_first', 'storyboard_last'].includes(String(row.frame_type).toLowerCase());
-    if (isFrameIdentityLock && row.storyboard_id && finalPrompt) {
+    const shouldSanitizePrompt = (isFrameIdentityLock || (row.storyboard_id && reference_image_urls?.length > 0)) && row.storyboard_id && finalPrompt;
+    if (shouldSanitizePrompt) {
       try {
         const framePromptService = require('./framePromptService');
         const { sanitizeFramePrompt, parseNamesFromAnchorLines } = require('../utils/framePromptSanitize');
         const anchors = framePromptService.loadStoryboardCharacterNames(db, row.storyboard_id);
-        const allowed = parseNamesFromAnchorLines(anchors);
+        let allowed = parseNamesFromAnchorLines(anchors);
+        const charImageMap = {};
+        if (reference_context_note) {
+          const refCharNames = [];
+          for (const line of reference_context_note.split('\n')) {
+            const m = line.match(/^Image\s+(\d+):\s*character appearance reference for "([^"]+)"/i);
+            if (m && m[2]) {
+              const cName = m[2].trim();
+              refCharNames.push(cName);
+              let gender = '';
+              try {
+                const cRow = db.prepare('SELECT appearance, description FROM characters WHERE name = ? AND drama_id = ? AND deleted_at IS NULL').get(cName, row.drama_id);
+                const descText = [cRow?.appearance || '', cRow?.description || ''].join(' ');
+                if (/女性|女|female/i.test(descText)) gender = '女性';
+                else if (/男性|男|male/i.test(descText)) gender = '男性';
+              } catch (_) {}
+              charImageMap[cName] = { index: m[1], gender };
+            }
+          }
+          if (refCharNames.length > 0) {
+            allowed = refCharNames;
+          }
+        }
         const allDrama = framePromptService.loadDramaCharacterNamesForStoryboard(db, row.storyboard_id);
         const sanitized = sanitizeFramePrompt(finalPrompt, allowed, allDrama, {
           log,
           source: 'image_generation',
           storyboard_id: row.storyboard_id,
-          frame_kind: row.frame_type,
+          frame_kind: row.frame_type || 'image',
           image_gen_id: imageGenId,
+          charImageMap,
         });
         if (sanitized !== finalPrompt) {
           finalPrompt = sanitized;
         }
       } catch (sanitizeErr) {
-        log.warn('[图生] 首尾帧 prompt 清洗跳过', { id: imageGenId, error: sanitizeErr.message });
+        log.warn('[图生] 分镜 prompt 清洗跳过', { id: imageGenId, error: sanitizeErr.message });
       }
     }
     if (isFrameIdentityLock) {
@@ -1363,6 +1777,7 @@ async function processImageGeneration(db, log, imageGenId) {
       });
     }
 
+    if(row.storyboard_id && JSON.stringify(require('./wardrobeService').getShot(db,row.storyboard_id).characters)!==JSON.stringify(shotLooks))throw new Error('准备图片期间人物造型已变化，请按新造型重新生成');
     const result = await imageClient.callImageApi(db, log, {
       prompt: finalPrompt,
       model: row.model,
@@ -1396,6 +1811,10 @@ async function processImageGeneration(db, log, imageGenId) {
       }
       return;
     }
+
+    // Unsloth can reduce the output after its memory preflight refuses a large
+    // canvas. Preserve that real resolution instead of upscaling it back here.
+    if (result.size && result.width && result.height) imageSize = result.size;
 
     // ── Step 5: 保存图片到本地 ───────────────────────────────────────
     log.info('[图生] Step5 保存到本地 →', { id: imageGenId, elapsed: elapsed() });
@@ -1443,9 +1862,23 @@ async function processImageGeneration(db, log, imageGenId) {
     }
 
     // ── Step 6: 写库 & 任务完成 ──────────────────────────────────────
-    db.prepare(
-      'UPDATE image_generations SET status = ?, image_url = ?, local_path = ?, completed_at = ?, updated_at = ? WHERE id = ?'
+    // 关键防复活拦截：若任务已被用户取消或标记失败，跳过写库与关联更新
+    const curImg = db.prepare('SELECT status, error_msg FROM image_generations WHERE id = ?').get(imageGenId);
+    if (!curImg || curImg.status === 'failed' || curImg.status === 'cancelled') {
+      log.info('[图生] 任务已被用户取消或标记失败，跳过完成写库', { id: imageGenId });
+      return;
+    }
+    const updateRes = db.prepare(
+      "UPDATE image_generations SET status = ?, image_url = ?, local_path = ?, completed_at = ?, updated_at = ? WHERE id = ? AND status NOT IN ('failed', 'cancelled')"
     ).run('completed', persistedImageUrl, localPath, now2, now2, imageGenId);
+    if (!updateRes || updateRes.changes === 0) {
+      log.info('[图生] 记录已被取消，跳过关联更新', { id: imageGenId });
+      return;
+    }
+    if (row.storyboard_id) {
+      db.prepare("UPDATE storyboards SET error_msg = NULL WHERE id = ? AND error_msg LIKE 'Unsloth 图片生成失败%'")
+        .run(row.storyboard_id);
+    }
     if (row.task_id) {
       taskService.updateTaskResult(db, row.task_id, {
         image_generation_id: imageGenId,
@@ -1684,4 +2117,6 @@ module.exports = {
   processImageGeneration,
   aspectRatioToSize,
   syncStoryboardCharacters,
+  getCleanSingleCharacterRef,
+  getCleanSingleSceneRef,
 };

@@ -1,5 +1,6 @@
 // 角色库：与 Go character_library_service 对齐
 const path = require('path');
+const fs = require('fs');
 const crypto = require('crypto');
 const imageClient = require('./imageClient');
 const { aspectRatioToSize } = require('./imageService');
@@ -43,9 +44,31 @@ function appendPrompt(base, extra) {
   return current + ', ' + add;
 }
 
+// Only an explicitly uploaded reference conditions character creation. Existing
+// generated main/history images must not silently become source photographs.
+function characterPhotoOptions(cfg, character) {
+  const reference = String(character.ref_image || '').trim();
+  if (!reference) return {};
+  const storageRoot = path.resolve(storageRootPath(cfg));
+  let source = reference;
+  if (!/^(https?:\/\/|data:image\/)/i.test(source)) {
+    source = source.replace(/^\/?static\//, '');
+    const file = path.resolve(storageRoot, source);
+    if (!file.startsWith(storageRoot + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
+      throw new Error('角色参考照片不存在，请在编辑角色中重新上传并保存');
+    }
+  }
+  return {
+    reference_image_urls: [source],
+    files_base_url: cfg?.storage?.base_url || '',
+    storage_local_path: storageRoot,
+    system_prompt: '【人物身份优先·服装绝对隔离】参考照片是脸型、五官比例、年龄感和发型的身份依据；后续文字中如有不同的面部描述，以照片为准，不重新设计另一张脸。严禁从参考照片复制外套、夹克、领口样式或衣服颜色！所有面板（包括左竖栏 FACE HERO CLOSE-UP 特写和正面/背面全身）必须严格穿着文字设定的服装，绝不可画入照片中的外套。四视图中的所有视角必须是同一个人物，穿着文字指定的同套服装。\nImage 1: identity reference photo for this character; preserve the same facial features and hairstyle. Use the requested costume, art style and output layout. Do not copy the photo background, pose or framing. STRICT PROHIBITION: DO NOT copy any jacket, coat, outerwear, collar, or clothing from Image 1. In ALL panels including the left vertical column FACE HERO CLOSE-UP, any visible clothing/collar MUST strictly match the designated costume in FRONT VIEW, NEVER any coat or jacket from Image 1. 人物参考照片用于保持脸型、五官和发型；服装按角色设定，画风与布局按生成要求。',
+  };
+}
+
 function generateCharacterImage(db, log, cfg, characterId, modelName, style) {
   const charRow = db.prepare(
-    'SELECT id, drama_id, name, appearance, description, negative_prompt FROM characters WHERE id = ? AND deleted_at IS NULL'
+    'SELECT id, drama_id, name, appearance, description, negative_prompt, ref_image FROM characters WHERE id = ? AND deleted_at IS NULL'
   ).get(Number(characterId));
   if (!charRow) return { ok: false, error: 'character not found' };
   const drama = db.prepare('SELECT id, style, metadata FROM dramas WHERE id = ? AND deleted_at IS NULL').get(charRow.drama_id);
@@ -85,11 +108,13 @@ function generateCharacterImage(db, log, cfg, characterId, modelName, style) {
     if (meta && meta.aspect_ratio) imageSize = aspectRatioToSize(meta.aspect_ratio);
   } catch (_) {}
   imageSize = imageSize || '1920x1920';
+  const photo = characterPhotoOptions(cfg, charRow);
   const userNeg = imageClient.resolveAssetUserNegativeForApi(modelName, charRow.negative_prompt);
   const imageGen = imageClient.createAndGenerateImage(db, log, {
     drama_id: charRow.drama_id,
     character_id: charRow.id,
-    prompt,
+    prompt: photo.system_prompt ? photo.system_prompt + '\n' + prompt : prompt,
+    ...photo,
     model: modelName || undefined,
     size: imageSize,
     quality: 'standard',
@@ -321,7 +346,7 @@ function updateCharacter(db, log, characterId, req) {
   if (req.image_url != null) { updates.push('image_url = ?'); params.push(req.image_url); }
   if (req.local_path != null) { updates.push('local_path = ?'); params.push(req.local_path); }
   if (req.polished_prompt != null) { updates.push('polished_prompt = ?'); params.push(req.polished_prompt); }
-  if (req.stages != null) { updates.push('stages = ?'); params.push(typeof req.stages === 'string' ? req.stages : JSON.stringify(req.stages)); }
+  if (req.stages != null) { updates.push('stages = ?'); params.push(JSON.stringify(require('../utils/characterStages').normalizeStages(req.stages))); }
   if (req.negative_prompt !== undefined) { updates.push('negative_prompt = ?'); params.push(req.negative_prompt); }
   if (updates.length === 0) return { ok: true };
   if (req.image_url != null || req.local_path != null) {
@@ -531,7 +556,7 @@ async function generateCharacterPromptOnly(db, log, cfg, characterId, modelName,
 
 async function generateCharacterFourViewImage(db, log, cfg, characterId, modelName, style) {
   const charRow = db.prepare(
-    'SELECT id, drama_id, name, appearance, description, polished_prompt, negative_prompt FROM characters WHERE id = ? AND deleted_at IS NULL'
+    'SELECT id, drama_id, name, appearance, description, polished_prompt, negative_prompt, ref_image FROM characters WHERE id = ? AND deleted_at IS NULL'
   ).get(Number(characterId));
   if (!charRow) return { ok: false, error: 'character not found' };
   const dramaFull = db.prepare('SELECT id, style, metadata FROM dramas WHERE id = ? AND deleted_at IS NULL').get(charRow.drama_id);
@@ -587,11 +612,13 @@ async function generateCharacterFourViewImage(db, log, cfg, characterId, modelNa
     log.info('[四视图] Step1 完成，开始Step2生图', { character_id: characterId });
   }
 
+  const photo = characterPhotoOptions(cfg, charRow);
   const userNeg = imageClient.resolveAssetUserNegativeForApi(modelName, charRow.negative_prompt);
   const imageGen = imageClient.createAndGenerateImage(db, log, {
     drama_id: charRow.drama_id,
     character_id: charRow.id,
-    prompt: imagePrompt,
+    prompt: photo.system_prompt ? photo.system_prompt + '\n' + imagePrompt : imagePrompt,
+    ...photo,
     model: modelName || undefined,
     size: '1792x1024',
     quality: 'standard',

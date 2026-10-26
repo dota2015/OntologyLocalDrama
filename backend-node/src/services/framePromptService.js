@@ -366,6 +366,17 @@ ${ld}
   if (sb.movement) {
     parts.push(promptI18n.formatUserPrompt(cfg, 'movement_label', sb.movement));
   }
+  if (sb.last_frame_visuals) {
+    let lastVisuals = sb.last_frame_visuals;
+    if (typeof lastVisuals === 'string') {
+      try { lastVisuals = JSON.parse(lastVisuals); } catch (_) { lastVisuals = null; }
+    }
+    if (Array.isArray(lastVisuals) && lastVisuals.length > 0) {
+      const { compileLastFramePromptFromSlots } = require('../ontology/visualSlots');
+      const compiledLast = compileLastFramePromptFromSlots(sb, lastVisuals, { style: '' });
+      parts.push(`【尾帧终态构图与角色槽位约定】：${compiledLast}`);
+    }
+  }
   return parts.join('\n');
 }
 
@@ -381,7 +392,19 @@ function frameKindSuffix(cfg, frameKind) {
   return '尾帧静止画面，动作完成后的最终状态';
 }
 
-function buildFallbackPrompt(cfg, scene, frameKind) {
+function buildFallbackPrompt(cfg, scene, frameKind, sb = null) {
+  if (frameKind === 'last' && sb) {
+    const { compileLastFramePromptFromSlots, synthesizeLastFrameVisualSlots } = require('../ontology/visualSlots');
+    let lastVisuals = sb.last_frame_visuals;
+    if (typeof lastVisuals === 'string') {
+      try { lastVisuals = JSON.parse(lastVisuals); } catch (_) { lastVisuals = null; }
+    }
+    if (!Array.isArray(lastVisuals) || lastVisuals.length === 0) {
+      lastVisuals = synthesizeLastFrameVisualSlots(sb, []);
+    }
+    const style = (cfg?.style?.default_style || '').toString().trim();
+    return compileLastFramePromptFromSlots(sb, lastVisuals, { style });
+  }
   const parts = [];
   const isEn = promptI18n.isEnglish(cfg);
   if (scene) {
@@ -419,7 +442,7 @@ function saveFramePrompt(db, log, storyboardId, frameType, prompt, description, 
 }
 
 async function generateSingleFrame(db, log, cfg, sb, scene, characterNames, model, frameKind, sanitizeOpts = {}) {
-  const context = buildStoryboardContext(cfg, sb, scene, characterNames);
+  const context = buildStoryboardContext(cfg, sb, scene, characterNames) + (sb.wardrobe_context || '');
   const allowedCharNames = parseNamesFromAnchorLines(characterNames);
   const allDramaNames = sanitizeOpts.allDramaNames || allowedCharNames;
   const systemKey = frameKind === 'first' ? 'getFirstFramePrompt' : frameKind === 'key' ? 'getKeyFramePrompt' : 'getLastFramePrompt';
@@ -448,7 +471,7 @@ async function generateSingleFrame(db, log, cfg, sb, scene, characterNames, mode
     });
   } catch (err) {
     log.warn('Frame prompt AI failed, using fallback', { error: err.message });
-    const prompt = buildFallbackPrompt(cfg, scene, frameKind);
+    const prompt = buildFallbackPrompt(cfg, scene, frameKind, sb);
     const desc =
       frameKind === 'first'
         ? '镜头开始的静态画面，展示初始状态'
@@ -469,7 +492,7 @@ async function generateSingleFrame(db, log, cfg, sb, scene, characterNames, mode
     log.info('[帧提示词] PARSED RESULT prompt:\n' + cleanedPrompt);
     return { ...parsed, prompt: cleanedPrompt };
   }
-  const fallback = buildFallbackPrompt(cfg, scene, frameKind);
+  const fallback = buildFallbackPrompt(cfg, scene, frameKind, sb);
   log.warn('[帧提示词] JSON 解析失败，使用 FALLBACK prompt:\n' + fallback);
   return {
     prompt: fallback,
@@ -510,6 +533,7 @@ async function processFramePromptGeneration(db, log, taskId, storyboardId, frame
     }
   } catch (_) {}
 
+  sb.wardrobe_context = require('./wardrobeService').promptContext(db, storyboardId, frameType);
   const scene = loadScene(db, sb.scene_id);
   const characterNames = loadStoryboardCharacterNames(db, storyboardId);
   const allDramaNames = loadDramaCharacterNamesForStoryboard(db, storyboardId);
@@ -531,8 +555,9 @@ async function processFramePromptGeneration(db, log, taskId, storyboardId, frame
     if (frameType === 'first' || frameType === 'key' || frameType === 'last') {
       const frameKind = frameType;
       const single = await generateSingleFrame(db, log, cfg, sb, scene, characterNames, model, frameKind, sanitizeOpts);
-      saveFramePrompt(db, log, storyboardId, frameType, single.prompt, single.description, '');
-      combinedPrompt = single.prompt;
+      combinedPrompt = single.prompt + sb.wardrobe_context;
+      if(require('./wardrobeService').promptContext(db,storyboardId,frameType)!==sb.wardrobe_context)throw new Error('生成帧提示词期间人物造型已变化，请重试');
+      saveFramePrompt(db, log, storyboardId, frameType, combinedPrompt, single.description, '');
       description = single.description;
     } else if (frameType === 'panel') {
       const count = panelCount || 3;
@@ -560,6 +585,7 @@ async function processFramePromptGeneration(db, log, taskId, storyboardId, frame
         description = '分镜板组合提示词';
       }
       combinedPrompt = prompts.join('\n---\n');
+      if(require('./wardrobeService').promptContext(db,storyboardId,frameType)!==sb.wardrobe_context)throw new Error('生成帧提示词期间人物造型已变化，请重试');
       saveFramePrompt(db, log, storyboardId, frameType, combinedPrompt, description, layout);
     } else if (frameType === 'action') {
       layout = 'horizontal_5';
@@ -570,6 +596,7 @@ async function processFramePromptGeneration(db, log, taskId, storyboardId, frame
       const last = await generateSingleFrame(db, log, cfg, sb, scene, characterNames, model, 'last', sanitizeOpts);
       combinedPrompt = [first.prompt, key1.prompt, key2.prompt, key3.prompt, last.prompt].join('\n---\n');
       description = '动作序列组合提示词';
+      if(require('./wardrobeService').promptContext(db,storyboardId,frameType)!==sb.wardrobe_context)throw new Error('生成帧提示词期间人物造型已变化，请重试');
       saveFramePrompt(db, log, storyboardId, frameType, combinedPrompt, description, layout);
     } else {
       taskService.updateTaskError(db, taskId, '不支持的帧类型');

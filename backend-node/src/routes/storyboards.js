@@ -9,6 +9,7 @@ const promptI18n = require('../services/promptI18n');
 const angleService = require('../services/angleService');
 const { buildUniversalSegmentUserPromptBundle } = require('../services/universalSegmentPromptBundle');
 const { normalizeUniversalSegmentShotDurations } = require('../services/universalSegmentDurationNormalize');
+const { stripChineseExclusions } = require('../utils/framePromptSanitize');
 
 /** 润色接口：邻镜结构化摘要（含全能片段与其它提示词字段） */
 function formatNeighborShotPolishContext(row) {
@@ -46,9 +47,11 @@ function extractRetentionClausesFromVideoPrompts(draft, composed) {
   const out = [];
   const sources = [draft, composed].map((x) => (x != null ? String(x).trim() : '')).filter(Boolean);
   for (const full of sources) {
-    const pieces = full
+    const normalized = full
       .replace(/\r\n/g, '\n')
-      .trim()
+      .replace(/([”"’'」』）)》>])\s*(?=(?:场景|镜头标题|角色造型|动作|对话|对白|台词|解说旁白|旁白|结果|景别|镜头角度|运镜|氛围|情绪|情绪强度|配乐|音效|时长|风格|光线|=VideoRatio)[：:])/gi, '$1。')
+      .trim();
+    const pieces = normalized
       .split(/。+/)
       .map((x) => x.trim())
       .filter(Boolean);
@@ -381,6 +384,21 @@ function routes(db, log) {
         response.badRequest(res, err.message || '拆镜失败');
       }
     },
+    aiSplit: async (req, res) => {
+      try {
+        const id = Number(req.params.id);
+        if (!id) return response.badRequest(res, '缺少分镜 id');
+        const storyboardSplitService = require('../services/storyboardSplitService');
+        const result = await storyboardSplitService.splitStoryboardWithAi(db, log, id, req.body || {});
+        response.success(res, {
+          ...result,
+          message: `分镜已成功拆分为 ${result.count} 个连续镜头`,
+        });
+      } catch (err) {
+        log.error('storyboards aiSplit', { error: err.message, id: req.params.id });
+        response.badRequest(res, err.message || 'AI 拆分分镜失败');
+      }
+    },
     episodeStoryboardsGenerate: (req, res) => {
       try {
         const taskId = episodeStoryboardService.generateStoryboard(
@@ -494,7 +512,21 @@ function routes(db, log) {
           assetNames = [...nameSet].join(', ');
         } catch (_) {}
 
+        // 视听本体与世界观语义包上下文（注入角色锚点、道具真实物理尺度、场景地标）
+        let ontologyContext = '';
+        if (sb.episode_id) {
+          try {
+            const { compileDramaSemanticPackage } = require('../ontology/semanticPackage');
+            const semPkg = compileDramaSemanticPackage(db, sb.episode_id);
+            ontologyContext = semPkg.getSystemDigest();
+          } catch (_) {}
+        }
+
+        const userFeedback = (req.body?.user_feedback || req.body?.direction || req.body?.instruction || req.body?.feedback || '').toString().trim();
+
         const userPromptLines = [
+          ontologyContext ? `【不可变剧目本体世界观与实体资产契约（角色锚点/道具真实尺度/场景地标）】：\n${ontologyContext}` : null,
+          userFeedback ? `【导演针对本分镜特定元素定向微调指令·最高优先级·直指此元素精准调整】：\n${userFeedback}` : null,
           ...styleBlockLines,
           sb.image_prompt  ? `PROMPT: ${sb.image_prompt}`    : null,
           sb.action        ? `ACTION: ${sb.action}`          : null,
@@ -502,12 +534,13 @@ function routes(db, log) {
           sb.result        ? `RESULT: ${sb.result}`          : null,
           sb.atmosphere    ? `ATMOSPHERE: ${sb.atmosphere}`  : null,
           sb.shot_type     ? `SHOT_TYPE: ${sb.shot_type}`    : null,
+          sb.layout_description ? `LAYOUT_DESCRIPTION: ${sb.layout_description}` : null,
           `STYLE_TOKENS (repeat in output): ${styleForTokens}`,
           `ASSETS: ${assetNames || 'none'}`,
           prevContinuityState ? `PREV_CONTINUITY_STATE: ${JSON.stringify(prevContinuityState)}` : null,
           `CONTEXT_PREV: ${prevDesc}`,
           `CONTEXT_NEXT: ${nextDesc}`,
-          `REMINDER: Output a STATIC SINGLE-FRAME image prompt only. No camera motion, no transitions, no split panels.`,
+          `REMINDER: Output a STATIC SINGLE-FRAME image prompt only. No camera motion, no transitions, no split panels. Follow ontology physical scales and user targeted adjustments strictly.`,
         ].filter(Boolean);
 
         const polishedPrompt = await aiClient.generateText(
@@ -635,6 +668,7 @@ function routes(db, log) {
         return res.end();
       }
       let text = String(finalRaw).trim();
+      text = stripChineseExclusions(text);
       text = normalizeUniversalSegmentShotDurations(text, durationLabel, durationSec);
       text = normalizeUniversalSegmentAtImageSpacing(text);
       const nowIso = new Date().toISOString();
@@ -698,10 +732,12 @@ function routes(db, log) {
           .get(episodeId, storyboardNumber);
       } catch (_) {}
 
+      const userFeedback = (req.body?.user_feedback || req.body?.direction || req.body?.instruction || req.body?.feedback || '').toString().trim();
       const polishPassStamp = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
       const polishUserPrompt = [
         'TASK: POLISH_UNIVERSAL_OMNI_SEGMENT',
         `POLISH_PASS_STAMP: ${polishPassStamp}`,
+        userFeedback ? `USER_MODIFICATION_DIRECTIVE（用户特别调整意见/创作指令·最高优先级·必须严格遵循并在成稿中重点体现）:\n${userFeedback}` : null,
         'POLISH_REFRESH（多次点击「润色」时强制）: 在严格遵守 MULTI_BEAT_OUTPUT、子分镜秒数之和=TOTAL_CLIP_SECONDS、IMAGE_SLOT_MAP、不编造剧本外情节的前提下，**本轮输出须与 CURRENT_OMNI_DRAFT 在中文表述上有明显差异**（换动词/语序、合并或拆分从句、加强或收紧运镜与情绪描写均可；**第3行仍须与 LINE3_REQUIRED 完全一致**）。除第3行外，**禁止**与草稿逐字相同或仅标点差异；若 M 与秒数分配不变，子分镜正文也须重写措辞。',
         'DIALOGUE_RETENTION（硬性，与 system 全能润色一致）: BASE_OMNI_CONTRACT 内 STORYBOARD FIELDS 的 DIALOGUE、NARRATION、VIDEO_PROMPT 及 CURRENT_OMNI_DRAFT 中一切对白/旁白/引号句，成稿各「分镜k」行须**逐条以「」或明确旁白写出**，保留笑点、数字、剧名、奖项名等关键信息；禁止用「两人对话」「念词带过」等概括替代具体台词。总秒数与各 Tk 不变前提下提高信息密度：台词与反应优先，少写无推进的纯氛围叠句。',
         'You are refining the CURRENT omni multi-beat prompt for a short drama vertical-video shot.',
@@ -718,7 +754,7 @@ function routes(db, log) {
         '',
         '--- BASE_OMNI_CONTRACT（与生成接口相同的约束与分镜字段块）---',
         baseUser,
-      ].join('\n');
+      ].filter(Boolean).join('\n');
 
       res.status(200);
       res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
@@ -757,6 +793,7 @@ function routes(db, log) {
         return res.end();
       }
       let text = String(finalRaw).trim();
+      text = stripChineseExclusions(text);
       text = normalizeUniversalSegmentShotDurations(text, durationLabel, durationSec);
       text = normalizeUniversalSegmentAtImageSpacing(text);
       const nowIso = new Date().toISOString();
@@ -813,8 +850,8 @@ function routes(db, log) {
       const autoComposed = episodeStoryboardService.composeStoryboardVideoPrompt(sbRow, styleEn || styleZh, videoRatio);
       const draftRaw =
         req.body && req.body.draft_video_prompt != null ? String(req.body.draft_video_prompt) : '';
-      const draftTrim = draftRaw.trim();
-      const dbVp = sbRow.video_prompt != null ? String(sbRow.video_prompt).trim() : '';
+      const draftTrim = stripChineseExclusions(draftRaw.trim());
+      const dbVp = sbRow.video_prompt != null ? stripChineseExclusions(String(sbRow.video_prompt).trim()) : '';
       const currentDraft = draftTrim || dbVp;
       const anchor = currentDraft || String(autoComposed || '').trim();
       if (!anchor || anchor.length < 4) {
@@ -888,7 +925,7 @@ function routes(db, log) {
           if (sc) {
             const bits = [sc.location, sc.time].filter((x) => x != null && String(x).trim());
             const head = bits.join('，');
-            const pr = sc.prompt != null ? String(sc.prompt).trim() : '';
+            const pr = sc.prompt != null ? stripChineseExclusions(String(sc.prompt).trim()) : '';
             linkedSceneText = [head, pr ? `场景库文案摘要：${clipClassicCtx(pr, 280)}` : '']
               .filter(Boolean)
               .join('；');
@@ -936,10 +973,12 @@ function routes(db, log) {
         String(autoComposed || '').trim()
       );
 
+      const userFeedback = (req.body?.user_feedback || req.body?.direction || req.body?.instruction || req.body?.feedback || '').toString().trim();
       const polishPassStamp = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
       const polishUserPrompt = [
         'TASK: POLISH_CLASSIC_STORYBOARD_STILL_TO_VIDEO_PROMPT',
         `POLISH_PASS_STAMP: ${polishPassStamp}`,
+        userFeedback ? `USER_MODIFICATION_DIRECTIVE（用户特别调整意见/创作指令·最高优先级·必须严格遵循并在成稿中重点体现）:\n${userFeedback}` : null,
         'POLISH_REFRESH: 用户可多次润色；事实与时长不变，但须明显换表述；禁止与 CURRENT_VIDEO_DRAFT 仅标点或个别虚词差异。',
         'OUTPUT_GOAL: 单段、可直接送图生视频模型的专业提示词；首帧画面已由参考图锁定，文案负责动效、节奏、运镜意图、声画暗示与画风气质。',
         '',
@@ -975,7 +1014,7 @@ function routes(db, log) {
           : '(未解析到「场景：/配乐：/镜头角度：/=VideoRatio:」等标签分句；此时须把 CURRENT_VIDEO_DRAFT 全文信息等价写入成稿，禁止删减子句类别。)',
         '',
         `VISUAL_STYLE（须内化进成稿；中文气质描写 + 英文质感词均可）:\nSTYLE_ZH: ${styleZh || '(none)'}\nSTYLE_EN: ${styleEn || '(none)'}`,
-      ].join('\n');
+      ].filter(Boolean).join('\n');
 
       res.status(200);
       res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
@@ -1013,7 +1052,7 @@ function routes(db, log) {
         writeNd({ type: 'error', message: 'AI 返回内容过短，请检查文本模型配置' });
         return res.end();
       }
-      const text = String(finalRaw).trim();
+      const text = stripChineseExclusions(String(finalRaw).trim());
       const nowIso = new Date().toISOString();
       db.prepare('UPDATE storyboards SET video_prompt = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL').run(
         text,
@@ -1071,33 +1110,69 @@ function routes(db, log) {
         if (!episodeId) return response.badRequest(res, 'episode_id 必填');
 
         const rows = db.prepare(
-          'SELECT id, angle_s, shot_type, atmosphere, time, description, action, movement, lighting_style, depth_of_field FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL ORDER BY storyboard_number ASC'
+          'SELECT id, title, dialogue, bgm_prompt, angle, angle_h, angle_v, angle_s, shot_type, atmosphere, time, description, action, emotion, movement, lighting_style, depth_of_field FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL ORDER BY storyboard_number ASC'
         ).all(episodeId);
 
         let updated = 0;
         const now = new Date().toISOString();
         const stmt = db.prepare(
-          'UPDATE storyboards SET movement = COALESCE(?, movement), lighting_style = COALESCE(?, lighting_style), depth_of_field = COALESCE(?, depth_of_field), updated_at = ? WHERE id = ?'
+          `UPDATE storyboards SET
+            movement = COALESCE(?, movement),
+            lighting_style = COALESCE(?, lighting_style),
+            depth_of_field = COALESCE(?, depth_of_field),
+            bgm_prompt = COALESCE(?, bgm_prompt),
+            angle_h = COALESCE(?, angle_h),
+            angle_v = COALESCE(?, angle_v),
+            angle_s = COALESCE(?, angle_s),
+            shot_type = COALESCE(shot_type, ?),
+            updated_at = ?
+           WHERE id = ?`
         );
         const stmtOverwrite = db.prepare(
-          'UPDATE storyboards SET movement = ?, lighting_style = ?, depth_of_field = ?, updated_at = ? WHERE id = ?'
+          `UPDATE storyboards SET
+            movement = ?,
+            lighting_style = ?,
+            depth_of_field = ?,
+            bgm_prompt = ?,
+            angle_h = ?,
+            angle_v = ?,
+            angle_s = ?,
+            shot_type = COALESCE(shot_type, ?),
+            updated_at = ?
+           WHERE id = ?`
         );
 
         for (const row of rows) {
-          const inferred = angleService.inferPhotographyParams(row);
-          // 只更新缺少的字段（除非 overwrite=true）
-          const newMovement   = overwrite ? inferred.movement   : (row.movement      ? null : inferred.movement);
-          const newLighting   = overwrite ? inferred.lighting_style : (row.lighting_style ? null : inferred.lighting_style);
-          const newDof        = overwrite ? inferred.depth_of_field : (row.depth_of_field  ? null : inferred.depth_of_field);
+          const inferred = angleService.inferPhotographyParams(row, { upgradeStatic: true });
+          const inferredAngles = angleService.inferAngleTriple(row);
+          const inferredBgm = !row.dialogue ? angleService.inferBgmPrompt(row) : null;
+
+          const curMovement = angleService.normalizeMovement(row.movement);
+          const curLighting = angleService.normalizeLighting(row.lighting_style);
+          const curDof = angleService.normalizeDof(row.depth_of_field);
+          const curAngleH = row.angle_h;
+          const curAngleV = row.angle_v;
+          const curAngleS = row.angle_s;
+          const curBgm = row.bgm_prompt;
+
+          // 镜头少用固定：若当前为 static（或空），自动升级为推断的动态运镜；若已有明确的非 static 运镜且非 overwrite 则保留
+          const shouldUpdateMovement = overwrite || !curMovement || (curMovement === 'static' && inferred.movement !== 'static');
+          const newMovement = shouldUpdateMovement ? inferred.movement : curMovement;
+          const newLighting = overwrite ? inferred.lighting_style : (curLighting || inferred.lighting_style);
+          const newDof = overwrite ? inferred.depth_of_field : (curDof || inferred.depth_of_field);
+          const newAngleH = overwrite ? inferredAngles.h : (curAngleH || inferredAngles.h);
+          const newAngleV = overwrite ? inferredAngles.v : (curAngleV || inferredAngles.v);
+          const newAngleS = overwrite ? inferredAngles.s : (curAngleS || inferredAngles.s);
+          const fallbackShotType = newAngleS === 'close_up' ? '特写' : (newAngleS === 'wide' ? '远景' : '中景');
+          const newBgm = overwrite ? (inferredBgm || curBgm) : (curBgm || inferredBgm);
 
           if (overwrite) {
-            if (inferred.movement || inferred.lighting_style || inferred.depth_of_field) {
-              stmtOverwrite.run(inferred.movement, inferred.lighting_style, inferred.depth_of_field, now, row.id);
-              updated++;
-            }
+            stmtOverwrite.run(newMovement, newLighting, newDof, newBgm, newAngleH, newAngleV, newAngleS, fallbackShotType, now, row.id);
+            updated++;
           } else {
-            if (newMovement || newLighting || newDof) {
-              stmt.run(newMovement, newLighting, newDof, now, row.id);
+            const hasChange = (newMovement !== row.movement) || (newLighting !== row.lighting_style) || (newDof !== row.depth_of_field) || (!row.angle_h && newAngleH) || (!row.angle_v && newAngleV) || (!row.angle_s && newAngleS) || (!row.shot_type && fallbackShotType) || (!row.bgm_prompt && newBgm);
+            if (hasChange) {
+              stmt.run(newMovement, newLighting, newDof, newBgm, newAngleH, newAngleV, newAngleS, fallbackShotType, now, row.id);
               updated++;
             }
           }

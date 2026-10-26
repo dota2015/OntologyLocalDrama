@@ -68,4 +68,54 @@ describe('taskService.failOrphanedAsyncTasksOnStartup', () => {
     assert.equal(task.status, 'failed');
     assert.equal(task.error, taskService.USER_CANCEL_TASK_MSG);
   });
+
+  it('cancelTask synchronizes failure to video_generations and image_generations', () => {
+    const db = createTestDb();
+    db.exec(`
+      CREATE TABLE video_generations (
+        id INTEGER PRIMARY KEY,
+        task_id TEXT,
+        status TEXT,
+        error_msg TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        deleted_at TEXT
+      );
+      CREATE TABLE image_generations (
+        id INTEGER PRIMARY KEY,
+        task_id TEXT,
+        status TEXT,
+        error_msg TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        deleted_at TEXT
+      );
+    `);
+    const now = new Date().toISOString();
+    db.prepare(`INSERT INTO async_tasks (id, type, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`).run('task-vid', 'video_generation', 'processing', now, now);
+    db.prepare(`INSERT INTO video_generations (id, task_id, status, created_at, updated_at) VALUES (1, 'task-vid', 'processing', ?, ?)`).run(now, now);
+    db.prepare(`INSERT INTO image_generations (id, task_id, status, created_at, updated_at) VALUES (1, 'task-vid', 'processing', ?, ?)`).run(now, now);
+
+    const result = taskService.cancelTask(db, { info() {} }, 'task-vid', '用户取消任务');
+    assert.equal(result.ok, true);
+
+    const vid = db.prepare('SELECT status, error_msg FROM video_generations WHERE id = 1').get();
+    assert.equal(vid.status, 'failed');
+    assert.equal(vid.error_msg, '用户取消任务');
+
+    const img = db.prepare('SELECT status, error_msg FROM image_generations WHERE id = 1').get();
+    assert.equal(img.status, 'failed');
+    assert.equal(img.error_msg, '用户取消任务');
+
+    // Late completion attempts cannot overwrite the failed/cancelled status
+    const lateVidUpdate = db.prepare(
+      "UPDATE video_generations SET status = 'completed', updated_at = ? WHERE id = 1 AND status NOT IN ('failed', 'cancelled')"
+    ).run(now);
+    assert.equal(lateVidUpdate.changes, 0, 'cancelled video cannot be overwritten to completed');
+
+    const lateImgUpdate = db.prepare(
+      "UPDATE image_generations SET status = 'completed', updated_at = ? WHERE id = 1 AND status NOT IN ('failed', 'cancelled')"
+    ).run(now);
+    assert.equal(lateImgUpdate.changes, 0, 'cancelled image cannot be overwritten to completed');
+  });
 });

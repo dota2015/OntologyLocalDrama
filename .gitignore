@@ -26,4 +26,10 @@ frontweb-edu
 .worktrees
 build_edu
 node_modules
+.venv-video-bridge/
+__pycache__/
+generated_videos/
+.runtime/
+.migration/
+*.bak
 ohos_hap

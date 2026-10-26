@@ -1,3 +1,4 @@
+const { validateVideoSpeech } = require('./videoSpeechService');
 /** 轮询/同步返回的 video_url 须为 http(s)，避免中转 FAILURE 时 result_url 为错误文案 */
 function resolveRemoteVideoUrl(videoUrl, fallbackError) {
   if (videoUrl && videoClient.isPlausibleHttpVideoUrl(videoUrl)) {
@@ -256,25 +257,40 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
     return { ok: false, error: errMsg };
   }
 
+  // 关键防复活拦截：若任务已被用户取消或标记失败，严禁写入完成状态，严禁绑定到分镜
   try {
-    db.prepare(
-      'UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, completed_at = ?, updated_at = ? WHERE id = ?'
+    const cur = db.prepare('SELECT status, error_msg FROM video_generations WHERE id = ?').get(videoGenId);
+    if (!cur || cur.status === 'failed' || cur.status === 'cancelled') {
+      log.info('Video generation cancelled/failed by user, aborting finalize' + (logLabel ? ` (${logLabel})` : ''), { id: videoGenId });
+      return { ok: false, error: '任务已被取消' };
+    }
+  } catch (_) {}
+
+  let updateRes;
+  try {
+    updateRes = db.prepare(
+      "UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, completed_at = ?, updated_at = ? WHERE id = ? AND status NOT IN ('failed', 'cancelled')"
     ).run('completed', videoUrl, localPath, now, now, videoGenId);
   } catch (e) {
     if ((e.message || '').includes('completed_at')) {
-      db.prepare(
-        'UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, updated_at = ? WHERE id = ?'
+      updateRes = db.prepare(
+        "UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, updated_at = ? WHERE id = ? AND status NOT IN ('failed', 'cancelled')"
       ).run('completed', videoUrl, localPath, now, videoGenId);
     } else throw e;
   }
+  if (!updateRes || updateRes.changes === 0) {
+    log.info('Video generation was cancelled/failed concurrently, skip storyboard binding', { id: videoGenId });
+    return { ok: false, error: '任务已被取消' };
+  }
   if (row.storyboard_id) {
     try {
-      db.prepare('UPDATE storyboards SET video_url = ?, local_path = ?, updated_at = ? WHERE id = ?').run(
-        videoUrl, localPath, now, row.storyboard_id
+      db.prepare('UPDATE storyboards SET video_url = ?, selected_video_id = ?, updated_at = ? WHERE id = ?').run(
+        videoUrl, videoGenId, now, row.storyboard_id
       );
       log.info('Updated storyboard video' + (logLabel ? ` (${logLabel})` : ''), {
         storyboard_id: row.storyboard_id,
         video_url: videoUrl,
+        selected_video_id: videoGenId,
       });
     } catch (_) {}
   }
@@ -312,6 +328,13 @@ async function pollProviderTaskAndFinalize(db, log, videoGenId, row, rowForAspec
     POLL_INTERVAL_MS
   );
   const now = new Date().toISOString();
+  try {
+    const current = db.prepare('SELECT status, error_msg FROM video_generations WHERE id = ?').get(videoGenId);
+    if (!current || current.status === 'failed' || current.status === 'cancelled') {
+      log.info('Video generation already failed/cancelled, skipping finalization', { id: videoGenId });
+      return;
+    }
+  } catch (_) {}
   const polledVideo = resolveRemoteVideoUrl(pollResult.video_url, pollResult.error);
   if (polledVideo.ok) {
     await finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, polledVideo.video_url, 'after poll', config);
@@ -325,6 +348,18 @@ async function pollProviderTaskAndFinalize(db, log, videoGenId, row, rowForAspec
 /**
  * 恢复对厂商异步任务的轮询（需已持久化 provider_task_id；调用方须先将记录置为 processing）
  */
+function startVideoHeartbeat(db, taskId) {
+  if (!taskId) return () => {};
+  const timer = setInterval(() => {
+    try {
+      db.prepare("UPDATE async_tasks SET updated_at=? WHERE id=? AND status IN ('pending','processing')")
+        .run(new Date().toISOString(), taskId);
+    } catch (_) { /* Shutdown may close the database while a poll is finishing. */ }
+  }, 30000);
+  timer.unref();
+  return () => clearInterval(timer);
+}
+
 async function resumePollForVideoGeneration(db, log, videoGenId) {
   if (activeVideoPolls.has(videoGenId)) {
     log.info('Video poll already active, skip resume', { videoGenId });
@@ -343,6 +378,7 @@ async function resumePollForVideoGeneration(db, log, videoGenId) {
     return;
   }
 
+  const stopHeartbeat = startVideoHeartbeat(db, row.task_id);
   activeVideoPolls.add(videoGenId);
   log.info('Resuming video generation poll', {
     videoGenId,
@@ -362,6 +398,7 @@ async function resumePollForVideoGeneration(db, log, videoGenId) {
     if (row.task_id) taskService.updateTaskError(db, row.task_id, err.message);
     log.error('Video generation resume poll error', { id: videoGenId, error: err.message });
   } finally {
+    stopHeartbeat();
     activeVideoPolls.delete(videoGenId);
   }
 }
@@ -449,7 +486,7 @@ function resumeProcessingVideoGenerations(db, log) {
 
   const resumable = db
     .prepare(
-      `SELECT id FROM video_generations
+      `SELECT id, task_id FROM video_generations
        WHERE status = 'processing' AND deleted_at IS NULL
          AND provider_task_id IS NOT NULL AND TRIM(provider_task_id) != ''`
     )
@@ -458,6 +495,11 @@ function resumeProcessingVideoGenerations(db, log) {
     log.info('Resuming video generation polls', { count: resumable.length });
   }
   for (const r of resumable) {
+    if (r.task_id) {
+      try {
+        db.prepare("UPDATE async_tasks SET status = 'processing', error = NULL, message = '正在生成视频...' WHERE id = ?").run(r.task_id);
+      } catch (_) {}
+    }
     setImmediate(() => {
       resumePollForVideoGeneration(db, log, r.id).catch((e) => {
         log.error('resumePollForVideoGeneration unhandled', { videoGenId: r.id, error: e.message });
@@ -479,6 +521,7 @@ async function processVideoGeneration(db, log, videoGenId) {
     log.error('Video generation not found', { id: videoGenId });
     return;
   }
+  const stopHeartbeat = startVideoHeartbeat(db, row.task_id);
   const now = new Date().toISOString();
   try {
     db.prepare('UPDATE video_generations SET status = ?, updated_at = ? WHERE id = ?').run('processing', now, videoGenId);
@@ -494,6 +537,13 @@ async function processVideoGeneration(db, log, videoGenId) {
       if (row.task_id) taskService.updateTaskError(db, row.task_id, '未配置视频模型');
       return;
     }
+    // Persist the selected local model so history/recovery does not depend on a future default.
+    if (!row.model && videoClient.resolveVideoProtocol(config) === 'comfyui_wan22') {
+      row.model = config.default_model || (Array.isArray(config.model) ? config.model[0] : config.model);
+      row.provider = 'comfyui_wan22';
+      db.prepare('UPDATE video_generations SET model = ?, provider = ? WHERE id = ?')
+        .run(row.model, row.provider, videoGenId);
+    }
     let reference_urls = null;
     if (row.reference_image_urls) {
       try {
@@ -501,15 +551,10 @@ async function processVideoGeneration(db, log, videoGenId) {
         if (!Array.isArray(reference_urls)) reference_urls = null;
       } catch (_) {}
     }
-    // 优先使用分镜自身的镜头时长（storyboard.duration），其次用 video_generations.duration
-    let effectiveDuration = row.duration || null;
-    if (row.storyboard_id) {
-      const sb = db.prepare('SELECT duration FROM storyboards WHERE id = ?').get(row.storyboard_id);
-      if (sb && sb.duration > 0) {
-        effectiveDuration = sb.duration;
-        log.info('使用分镜镜头时长', { storyboard_id: row.storyboard_id, duration: effectiveDuration, video_gen_id: videoGenId });
-      }
-    }
+    // Revalidate queued/manual submissions with the actual model duration before GPU work.
+    const timing = validateVideoSpeech(db, row, config);
+    if (timing.error) throw new Error(timing.error);
+    const effectiveDuration = timing.duration;
     let aspectForVideo = row.aspect_ratio;
     if (aspectForVideo) {
       const n = videoClient.normalizeAspectRatioForApi(aspectForVideo);
@@ -529,17 +574,20 @@ async function processVideoGeneration(db, log, videoGenId) {
     }
     const rowForAspect = { ...row, aspect_ratio: aspectForVideo || row.aspect_ratio };
     const hasOmniRefs = !!(reference_urls && reference_urls.length > 0);
+    // H3 and local Wan distinguish explicit frame anchors from reference assets.
+    // Classic submissions also carry a duplicate reference list; retain their explicit frame roles.
+    const omitFrameFields = hasOmniRefs && !['minimax_h3', 'comfyui_wan22'].includes(videoClient.resolveVideoProtocol(config, row.model));
     if (row.task_id && hasOmniRefs) {
       taskService.updateTaskStatus(
         db,
         row.task_id,
         'processing',
         5,
-        `正在上传 ${reference_urls.length} 张参考图到图床…`
+        omitFrameFields ? `正在上传 ${reference_urls.length} 张参考图到图床…` : '正在准备视频输入图片…'
       );
     }
     const result = await videoClient.callVideoApi(db, log, {
-      prompt: row.prompt,
+      prompt: row.prompt+(row.storyboard_id?require('./wardrobeService').promptContext(db,row.storyboard_id):''),
       model: row.model,
       duration: effectiveDuration,
       aspect_ratio: rowForAspect.aspect_ratio,
@@ -550,9 +598,9 @@ async function processVideoGeneration(db, log, videoGenId) {
       provider: row.provider,
       drama_id: row.drama_id,
       storyboard_id: row.storyboard_id || undefined,
-      image_url: hasOmniRefs ? undefined : row.image_url,
-      first_frame_url: hasOmniRefs ? undefined : row.first_frame_url,
-      last_frame_url: hasOmniRefs ? undefined : row.last_frame_url,
+      image_url: omitFrameFields ? undefined : row.image_url,
+      first_frame_url: omitFrameFields ? undefined : row.first_frame_url,
+      last_frame_url: omitFrameFields ? undefined : row.last_frame_url,
       reference_urls,
       files_base_url: filesBaseUrl,
       storage_local_path: storageLocalPath,
@@ -567,6 +615,13 @@ async function processVideoGeneration(db, log, videoGenId) {
     }
     const directVideo = resolveRemoteVideoUrl(result.video_url, result.error);
     if (directVideo.ok) {
+      try {
+        const current = db.prepare('SELECT status, error_msg FROM video_generations WHERE id = ?').get(videoGenId);
+        if (!current || current.status === 'failed' || current.status === 'cancelled') {
+          log.info('Video generation already failed/cancelled, skipping direct finalization', { id: videoGenId });
+          return;
+        }
+      } catch (_) {}
       await finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, directVideo.video_url, '', config);
       return;
     }
@@ -577,9 +632,19 @@ async function processVideoGeneration(db, log, videoGenId) {
       return;
     }
     if (result.task_id) {
-      db.prepare(
-        'UPDATE video_generations SET status = ?, provider_task_id = ?, updated_at = ? WHERE id = ?'
+      // 关键防复活拦截：若在 callVideoApi 等待期间用户已取消任务，不可重置为 processing，直接退出
+      const cur = db.prepare('SELECT status, error_msg FROM video_generations WHERE id = ?').get(videoGenId);
+      if (!cur || cur.status === 'failed' || cur.status === 'cancelled') {
+        log.info('Video generation cancelled by user during API call, aborting poll', { id: videoGenId });
+        return;
+      }
+      const upd = db.prepare(
+        "UPDATE video_generations SET status = ?, provider_task_id = ?, updated_at = ? WHERE id = ? AND status NOT IN ('failed', 'cancelled')"
       ).run('processing', result.task_id, now2, videoGenId);
+      if (upd.changes === 0) {
+        log.info('Video generation status changed to failed/cancelled concurrently, aborting poll', { id: videoGenId });
+        return;
+      }
       await pollProviderTaskAndFinalize(db, log, videoGenId, row, rowForAspect, result.task_id, config);
       return;
     }
@@ -591,13 +656,20 @@ async function processVideoGeneration(db, log, videoGenId) {
     if (row && row.task_id) taskService.updateTaskError(db, row.task_id, err.message);
     log.error('Video generation error', { id: videoGenId, error: err.message });
   } finally {
+    stopHeartbeat();
     activeVideoPolls.delete(videoGenId);
   }
 }
 
 function deleteById(db, log, id) {
   const now = new Date().toISOString();
-  const result = db.prepare('UPDATE video_generations SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL').run(now, Number(id));
+  const numId = Number(id);
+  const result = db.prepare('UPDATE video_generations SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL').run(now, numId);
+  if (result.changes > 0) {
+    try {
+      db.prepare('UPDATE storyboards SET selected_video_id = NULL WHERE selected_video_id = ?').run(numId);
+    } catch (_) {}
+  }
   return result.changes > 0;
 }
 

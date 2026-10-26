@@ -77,6 +77,15 @@ function rowToTask(r) {
 const ORPHAN_ASYNC_TASK_MSG = '服务重启后任务中断，请重新操作';
 const USER_CANCEL_TASK_MSG = '用户已取消';
 
+function hasTable(db, tableName) {
+  try {
+    const row = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(tableName);
+    return !!row;
+  } catch (_) {
+    return false;
+  }
+}
+
 /**
  * 用户主动取消进行中的异步任务（无法中断已在执行的 AI 调用，但会停止前端轮询并防止恢复）。
  */
@@ -88,6 +97,64 @@ function cancelTask(db, log, taskId, reason) {
   }
   const msg = (reason || USER_CANCEL_TASK_MSG).toString().trim() || USER_CANCEL_TASK_MSG;
   updateTaskError(db, taskId, msg);
+  const now = new Date().toISOString();
+
+  if (hasTable(db, 'video_generations')) {
+    try {
+      db.prepare(`
+        UPDATE video_generations
+        SET status = 'failed', error_msg = ?, updated_at = ?
+        WHERE task_id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL
+      `).run(msg, now, taskId);
+    } catch (err) {
+      log?.error?.('cancelTask video_generations update failed', { task_id: taskId, error: err.message });
+    }
+  }
+
+  if (hasTable(db, 'image_generations')) {
+    try {
+      db.prepare(`
+        UPDATE image_generations
+        SET status = 'failed', error_msg = ?, updated_at = ?
+        WHERE task_id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL
+      `).run(msg, now, taskId);
+    } catch (err) {
+      log?.error?.('cancelTask image_generations update failed', { task_id: taskId, error: err.message });
+    }
+  }
+
+  if (hasTable(db, 'video_merges')) {
+    try {
+      db.prepare(`
+        UPDATE video_merges
+        SET status = 'failed', error_msg = ?
+        WHERE task_id = ? AND status IN ('pending', 'processing') AND deleted_at IS NULL
+      `).run(msg, taskId);
+    } catch (err) {
+      log?.error?.('cancelTask video_merges update failed', { task_id: taskId, error: err.message });
+    }
+  }
+
+  if (hasTable(db, 'generation_job_items')) {
+    try {
+      db.prepare(`
+        UPDATE generation_job_items
+        SET status = 'cancelled', error = ?
+        WHERE child_type = 'task' AND child_id = ? AND status IN ('pending', 'running')
+      `).run(msg, taskId);
+    } catch (_) {}
+  }
+
+  if (hasTable(db, 'video_batch_items') && hasTable(db, 'video_generations')) {
+    try {
+      db.prepare(`
+        UPDATE video_batch_items
+        SET status = 'cancelled', error = ?
+        WHERE video_gen_id IN (SELECT id FROM video_generations WHERE task_id = ?) AND status IN ('pending', 'running')
+      `).run(msg, taskId);
+    } catch (_) {}
+  }
+
   log.info('Task cancelled by user', { task_id: taskId, type: task.type });
   return { ok: true, task: getTask(db, taskId) };
 }
@@ -111,6 +178,7 @@ function failOrphanedAsyncTasksOnStartup(db, log) {
       previous_status: row.status,
     });
   }
+
   return rows.length;
 }
 

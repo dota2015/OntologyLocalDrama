@@ -1,8 +1,11 @@
+const referenceModes = require('./referenceImageModeService');
 // 与 Go ImageGenerationService.ExtractBackgroundsForEpisode + processBackgroundExtraction 对齐
 const taskService = require('./taskService');
 const aiClient = require('./aiClient');
 const promptI18n = require('./promptI18n');
 const sceneService = require('./sceneService');
+const reuse = require('./extractionReuseService');
+const episodeScenes = require('./episodeSceneService');
 const { safeParseAIJSON, extractFirstArray } = require('../utils/safeJson');
 
 function normalizeLanguage(language) {
@@ -37,23 +40,27 @@ async function translatePromptToChinese(db, log, model, prompt) {
 
 async function extractBackgroundsFromScript(db, cfg, log, scriptContent, dramaId, model, style) {
   if (!scriptContent || !scriptContent.trim()) return [];
-  const systemPrompt = promptI18n.getSceneExtractionPrompt(cfg, style);
-  const prompt = (promptI18n.getLanguage(cfg) === 'en' ? '[Script Content]\n' : '【剧本内容】\n') + scriptContent;
-  console.log('systemPrompt', systemPrompt);
-  console.log('prompt', prompt);
+  const systemPrompt = promptI18n.getSceneExtractionPrompt(cfg, style) + reuse.instructions('scene') + referenceModes.extractionInstructions('scene');
+  const prompt = (promptI18n.getLanguage(cfg) === 'en' ? '[Script Content]\n' : '【剧本内容】\n') + scriptContent
+    + reuse.promptContext(reuse.catalog(db, dramaId, 'scene'));
   const text = await aiClient.generateText(db, log, 'text', prompt, systemPrompt, { scene_key: 'scene_extraction', model: model || undefined, temperature: 0.7 });
   let list = [];
   try {
     const parsed = safeParseAIJSON(text, log);
-    list = extractFirstArray(parsed) || [];
+    list = extractFirstArray(parsed);
   } catch (_) {
-    list = [];
+    throw new Error('AI场景提取结果不是有效JSON数组，原有资源未修改');
   }
+  if (!Array.isArray(list)) throw new Error('AI场景提取结果不是有效JSON数组，原有资源未修改');
   return list.map((b) => ({
+    existing_id: b.existing_id,
+    library_id: b.library_id,
     location: b.location || '',
     time: b.time || '',
     prompt: b.prompt || '',
     atmosphere: b.atmosphere,
+    reference_image_mode: b.reference_image_mode,
+    reference_image_reason: b.reference_image_reason,
   }));
 }
 
@@ -135,26 +142,46 @@ async function processBackgroundExtraction(db, cfg, log, taskID, episodeId, mode
     );
     backgroundsInfo = translated;
   }
-  sceneService.deleteScenesByEpisodeId(db, log, episodeId);
   const scenes = [];
-  for (const bg of backgroundsInfo) {
-    const scene = sceneService.createSceneForEpisode(db, log, episode.drama_id, episodeId, {
-      location: bg.location,
-      time: bg.time,
-      prompt: bg.prompt,
-    });
-    if (scene) {
-      scenes.push(scene);
-      // polished_prompt 是完整四视图图片提示词，提取后始终为空，需要异步预生成
-      if (effectiveCfg) {
-        const capturedStyle = style;
-        setImmediate(() => {
-          sceneService.generateScenePromptOnly(db, log, effectiveCfg, scene.id, undefined, capturedStyle).catch((err) => {
-            log.warn('[提取场景] 预生成polished_prompt失败', { scene_id: scene.id, error: err.message });
+  const newScenes = [];
+  try {
+    db.transaction(() => {
+      // Validate every supplied ID before creating anything; transaction also protects new scene links.
+      const catalog = reuse.catalog(db, episode.drama_id, 'scene');
+      for (const bg of backgroundsInfo) reuse.resolve(catalog, bg);
+      const seen = new Set();
+      for (const bg of backgroundsInfo) {
+        const resolved = reuse.resolve(reuse.catalog(db, episode.drama_id, 'scene'), bg);
+        let scene = resolved.existing;
+        if (!scene) {
+          const source = resolved.library || resolved.fresh;
+          scene = sceneService.createSceneForEpisode(db, log, episode.drama_id, episodeId, {
+            location: source.location, time: source.time, prompt: source.prompt || source.description || '',
+            image_url: source.image_url, local_path: source.local_path,
           });
-        });
+          if (resolved.fresh) newScenes.push(scene.id);
+        }
+        episodeScenes.link(db, episode.drama_id, episodeId, scene.id);
+        if (seen.has(scene.id)) continue;
+        seen.add(scene.id);
+        referenceModes.saveAdvice(db, 'scene', scene.id, bg);
+        scenes.push(sceneService.getSceneById(db, scene.id));
       }
-    }
+    })();
+  } catch (err) {
+    log.error('Background reuse failed', { error: err.message, task_id: taskID });
+    taskService.updateTaskError(db, taskID, '场景复用失败，原有资源未修改：' + err.message);
+    return;
+  }
+  for (const id of newScenes) {
+    const scene = scenes.find(scene => scene.id === id);
+    const capturedStyle = style;
+    setImmediate(() => {
+      const generatePrompt = referenceModes.selectedMode(scene) === 'quad_grid' ? sceneService.generateScenePromptOnly : sceneService.generateSceneSinglePromptOnly;
+      generatePrompt(db, log, effectiveCfg, scene.id, undefined, capturedStyle).catch((err) => {
+        log.warn('[提取场景] 预生成polished_prompt失败', { scene_id: scene.id, error: err.message });
+      });
+    });
   }
   taskService.updateTaskResult(db, taskID, {
     scenes,
@@ -207,4 +234,6 @@ function extractBackgroundsForEpisode(db, cfg, log, episodeId, model, style, lan
 
 module.exports = {
   extractBackgroundsForEpisode,
+  extractBackgroundsFromScript,
+  processBackgroundExtraction,
 };

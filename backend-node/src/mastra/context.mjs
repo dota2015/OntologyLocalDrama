@@ -38,6 +38,13 @@ export function assertOwned(db, dramaId, type, id) {
     if (!row || Number(row.drama_id) !== dramaIdNum) return { ok: false, error: '这个场景不属于当前项目' };
     return { ok: true, label: row.location || String(id) };
   }
+  if (type === 'prop') {
+    const row = db.prepare(
+      'SELECT id, name, drama_id FROM props WHERE id = ? AND deleted_at IS NULL'
+    ).get(Number(id));
+    if (!row || Number(row.drama_id) !== dramaIdNum) return { ok: false, error: '这个道具不属于当前项目' };
+    return { ok: true, label: row.name || String(id) };
+  }
   if (type === 'storyboard') {
     const row = db.prepare(
       `SELECT s.id, s.storyboard_number, e.drama_id

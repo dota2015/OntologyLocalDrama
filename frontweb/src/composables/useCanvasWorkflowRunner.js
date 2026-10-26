@@ -1,3 +1,4 @@
+import { generationJobsAPI } from '@/api/generationJobs'
 import { taskAPI } from '@/api/task'
 import { imagesAPI } from '@/api/images'
 import { videosAPI } from '@/api/videos'
@@ -86,64 +87,17 @@ export async function runAudioStep(sb) {
   return { skipped: false }
 }
 
-/**
- * 对单个分镜按 pipeline 顺序执行生成
- * @param {'image'|'video'|'audio'}[] pipeline
- */
+/** The complete group is persisted in one request; hooks observe rather than dispatch. */
 export async function runStoryboardPipeline(drama, storyboardId, pipeline, hooks = {}) {
-  const found = findStoryboardInDrama(drama, storyboardId)
-  if (!found) throw new Error(`找不到分镜 ${storyboardId}`)
-  let { storyboard: sb } = found
-  const genOpts = {
-    ...getDramaGenerationOptions(drama),
-    ...(hooks.generationOptions || {}),
-  }
-  const steps = pipeline?.length ? pipeline : DEFAULT_PIPELINE
-  const results = []
-
-  for (const step of steps) {
-    hooks.onStepStart?.({ storyboardId, step, sb })
-    try {
-      if (step === 'image') {
-        await runImageStep(drama, sb, genOpts)
-        if (hooks.reloadStoryboard) {
-          sb = (await hooks.reloadStoryboard(storyboardId)) || sb
-        }
-      } else if (step === 'video') {
-        await runVideoStep(drama, sb, genOpts)
-        if (hooks.reloadStoryboard) {
-          sb = (await hooks.reloadStoryboard(storyboardId)) || sb
-        }
-      } else if (step === 'audio') {
-        const audioRes = await runAudioStep(sb)
-        results.push({ step, ...audioRes })
-      }
-      hooks.onStepComplete?.({ storyboardId, step, sb })
-    } catch (err) {
-      hooks.onStepError?.({ storyboardId, step, error: err })
-      throw err
-    }
-  }
-  return results
+  return runWorkflowGroup(drama, {storyboard_ids:[storyboardId],pipeline}, hooks)
 }
-
-/** 按工作流组顺序执行（组内分镜按 storyboard_ids 顺序） */
 export async function runWorkflowGroup(drama, group, hooks = {}) {
-  const pipeline = group.pipeline || DEFAULT_PIPELINE
-  const ids = group.storyboard_ids || []
-  const summary = { groupId: group.id, ok: [], failed: [] }
-
-  for (const sbId of ids) {
-    hooks.onStoryboardStart?.({ group, storyboardId: sbId })
-    try {
-      await runStoryboardPipeline(drama, sbId, pipeline, hooks)
-      summary.ok.push(sbId)
-      hooks.onStoryboardComplete?.({ group, storyboardId: sbId })
-    } catch (err) {
-      summary.failed.push({ storyboardId: sbId, error: err.message || String(err) })
-      hooks.onStoryboardError?.({ group, storyboardId: sbId, error: err })
-      if (hooks.stopOnError) break
-    }
-  }
-  return summary
+  const gen = {...getDramaGenerationOptions(drama),...(hooks.generationOptions || {})}
+  const job = await generationJobsAPI.create(drama.id, 'canvas_workflow', null, {
+    storyboard_ids:group.storyboard_ids, pipeline:group.pipeline || DEFAULT_PIPELINE,
+    style:gen.style,aspect_ratio:gen.aspectRatio,resolution:gen.videoResolution,
+    use_first_last:dramaUsesFirstLastFrame(drama),
+  })
+  hooks.onSubmitted?.(job)
+  return job
 }

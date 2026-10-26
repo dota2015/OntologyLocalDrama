@@ -66,6 +66,72 @@ function postUniversalSegmentNdjsonStream(url, body, onDelta) {
   })
 }
 
+/**
+ * @param {string} url
+ * @param {object} body
+ * @param {(delta: string) => void} [onDelta]
+ * @returns {Promise<{ video_prompt: string }>}
+ */
+function postClassicVideoPromptNdjsonStream(url, body, onDelta) {
+  return fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },
+    body: JSON.stringify(body || {}),
+  }).then(async (res) => {
+    if (!res.ok) {
+      let msg = `请求失败 (${res.status})`
+      try {
+        const j = await res.json()
+        if (j?.error?.message) msg = j.error.message
+      } catch (_) {
+        try {
+          const t = await res.text()
+          if (t) msg = t.slice(0, 200)
+        } catch (_) {}
+      }
+      throw new Error(msg)
+    }
+    const reader = res.body && res.body.getReader()
+    if (!reader) throw new Error('浏览器不支持流式读取')
+    const dec = new TextDecoder()
+    let buf = ''
+    let finalText = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += dec.decode(value, { stream: true })
+      let nl
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim()
+        buf = buf.slice(nl + 1)
+        if (!line) continue
+        let obj
+        try {
+          obj = JSON.parse(line)
+        } catch (_) {
+          continue
+        }
+        if (obj.type === 'delta' && obj.text && typeof onDelta === 'function') onDelta(String(obj.text))
+        if (obj.type === 'error') throw new Error(obj.message || '请求失败')
+        if (obj.type === 'done') {
+          finalText = (obj.video_prompt && String(obj.video_prompt).trim()) || ''
+        }
+      }
+    }
+    const tail = buf.trim()
+    if (tail) {
+      try {
+        const obj = JSON.parse(tail)
+        if (obj.type === 'error') throw new Error(obj.message || '请求失败')
+        if (obj.type === 'done') finalText = (obj.video_prompt && String(obj.video_prompt).trim()) || finalText
+      } catch (e) {
+        if (e instanceof Error && e.message && !e.message.includes('JSON')) throw e
+      }
+    }
+    return { video_prompt: finalText }
+  })
+}
+
 export const storyboardsAPI = {
   get(id) {
     return request.get(`/storyboards/${id}`)
@@ -89,8 +155,8 @@ export const storyboardsAPI = {
   saveFramePrompt(id, frameType, data) {
     return request.put(`/storyboards/${id}/frame-prompts/${frameType}`, data || {})
   },
-  polishPrompt(id) {
-    return request.post(`/storyboards/${id}/polish-prompt`, {})
+  polishPrompt(id, data = {}) {
+    return request.post(`/storyboards/${id}/polish-prompt`, data)
   },
   /** 全能模式：根据分镜内容 AI 生成片段描述（非流式，兼容旧调用） */
   generateUniversalSegmentPrompt(id, body = {}) {
@@ -111,6 +177,14 @@ export const storyboardsAPI = {
   polishUniversalSegmentPromptStream(id, body, onDelta) {
     return postUniversalSegmentNdjsonStream(
       `/api/v1/storyboards/${id}/universal-segment-polish-stream`,
+      body,
+      onDelta
+    )
+  },
+  /** 经典模式生视频提示词二次 AI 润色流式生成 */
+  polishClassicVideoPromptStream(id, body, onDelta) {
+    return postClassicVideoPromptNdjsonStream(
+      `/api/v1/storyboards/${id}/classic-video-prompt-polish-stream`,
       body,
       onDelta
     )
@@ -139,5 +213,9 @@ export const storyboardsAPI = {
   /** 按对白/旁白拆成多条分镜（每条仅一人说话或仅画外旁白） */
   splitByAudio(id) {
     return request.post(`/storyboards/${id}/split-by-audio`, {})
+  },
+  /** 一键 AI 智能拆分分镜（按单一动作单元拆为多个连续子分镜） */
+  aiSplit(id, data = {}) {
+    return request.post(`/storyboards/${id}/ai-split`, data)
   },
 }

@@ -1,0 +1,15 @@
+{
+  "comfy_url": "http://10.10.13.7:8189",
+  "workflow_path": "workflows/selfhost/video_minimax_h3_fp8.json",
+  "storage_dir": "generated_videos_h3",
+  "public_base_url": "http://10.10.13.15:5689",
+  "host": "0.0.0.0",
+  "port": 5689,
+  "engine": "minimax_h3",
+  "reference_model": "minimax_h3_ref2va_pruned_fp8_scaled.safetensors",
+  "comfy_urls": [
+    "http://10.10.13.7:8188",
+    "http://10.10.13.7:8189",
+    "http://10.10.13.7:8191"
+  ]
+}
