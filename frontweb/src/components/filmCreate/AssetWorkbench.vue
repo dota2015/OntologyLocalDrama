@@ -1074,11 +1074,16 @@ import { propAPI } from '@/api/props'
 import { sceneAPI } from '@/api/scenes'
 import { uploadAPI } from '@/api/upload'
 import { ontologyAPI } from '@/api/ontology'
+import { dramaAPI } from '@/api/drama'
+import { useFilmStore } from '@/stores/film'
+import { useCharacters } from '@/composables/filmCreate/useCharacters'
+import { useProps as usePropsComposable } from '@/composables/filmCreate/useProps'
+import { useScenes } from '@/composables/filmCreate/useScenes'
 
 const ctx = inject('filmCreateContext', {})
 
 // 基础项目与集上下文
-const store = ctx.store
+const store = ctx.store || useFilmStore()
 const dramaId = ctx.dramaId
 const currentEpisodeId = ctx.currentEpisodeId
 const currentEpisode = computed(() => store?.currentEpisode)
@@ -1089,204 +1094,133 @@ const storyboards = ctx.storyboards || computed(() => store?.storyboards || [])
 const pipelineRunning = ctx.pipelineRunning
 const serverGenerationJobs = ctx.serverGenerationJobs
 const generationJobsPanel = ctx.generationJobsPanel
-const loadDrama = ctx.loadDrama
-const getSelectedStyle = ctx.getSelectedStyle
+const loadDrama = ctx.loadDrama || (() => {})
+const getSelectedStyle = ctx.getSelectedStyle || (() => '')
 const submitGenerationJob = ctx.submitGenerationJob
 const hasAssetImage = ctx.hasAssetImage
 const assetImageUrl = ctx.assetImageUrl
 const openImagePreview = ctx.openImagePreview
+const onDubbingProfile = ctx.onDubbingProfile || (() => {})
 
-// 角色状态与方法
-const characterVoiceEditor = ctx.characterVoiceEditor
-const charactersGenerating = ctx.charactersGenerating
-const generatingCharIds = ctx.generatingCharIds
-const sd2CertifyingId = ctx.sd2CertifyingId
-const showCharSd2Cert = ctx.showCharSd2Cert
-const charSd2CertPayload = ctx.charSd2CertPayload
-const sd2VoiceUploadingId = ctx.sd2VoiceUploadingId
-const showCharLibrary = ctx.showCharLibrary
-const charLibraryList = ctx.charLibraryList
-const charLibraryLoading = ctx.charLibraryLoading
-const charLibraryPage = ctx.charLibraryPage
-const charLibraryPageSize = ctx.charLibraryPageSize
-const charLibraryTotal = ctx.charLibraryTotal
-const charLibraryKeyword = ctx.charLibraryKeyword
-const charLibraryTab = ctx.charLibraryTab
-const dramaAllCharList = ctx.dramaAllCharList
-const dramaAllCharLoading = ctx.dramaAllCharLoading
-const dramaAllCharPage = ctx.dramaAllCharPage
-const dramaAllCharPageSize = ctx.dramaAllCharPageSize
-const dramaAllCharTotal = ctx.dramaAllCharTotal
-const dramaAllCharKeyword = ctx.dramaAllCharKeyword
-const showEditCharLibrary = ctx.showEditCharLibrary
-const editCharLibraryForm = ctx.editCharLibraryForm
-const editCharLibrarySaving = ctx.editCharLibrarySaving
-const addingCharToLibraryId = ctx.addingCharToLibraryId
-const addingCharToMaterialId = ctx.addingCharToMaterialId
-const charRoleLabel = ctx.charRoleLabel
-const onGenerateCharacters = ctx.onGenerateCharacters
-const openAddCharacter = ctx.openAddCharacter
-const editCharacter = ctx.editCharacter
-const showEditCharacter = ctx.showEditCharacter
-const editCharacterForm = ctx.editCharacterForm
-const editCharacterSaving = ctx.editCharacterSaving
-const editCharacterPromptGenerating = ctx.editCharacterPromptGenerating
-const extractingCharAppearance = ctx.extractingCharAppearance
-const extractingAnchors = ctx.extractingAnchors
-const addCharRefImage = ctx.addCharRefImage
-const addCharRefFileInput = ctx.addCharRefFileInput
-const aiCompletingCharacter = ctx.aiCompletingCharacter
-const onAiCompleteCharacter = ctx.onAiCompleteCharacter
-const doGenerateCharacterPrompt = ctx.doGenerateCharacterPrompt
-const doExtractCharFromImage = ctx.doExtractCharFromImage
-const extractIdentityAnchors = ctx.extractIdentityAnchors
-const clearCharRefImage = ctx.clearCharRefImage
-const onCloseCharDialog = ctx.onCloseCharDialog
-const onDeleteCharacter = ctx.onDeleteCharacter
-const onGenerateCharacterImage = ctx.onGenerateCharacterImage
-const sd2ActionLabel = ctx.sd2ActionLabel
-const onSd2PrimaryAction = ctx.onSd2PrimaryAction
-const onSd2VoicePrimaryAction = ctx.onSd2VoicePrimaryAction
-const onSd2VoiceReplace = ctx.onSd2VoiceReplace
-const sd2VoiceActionLabel = ctx.sd2VoiceActionLabel
-const playSd2Voice = ctx.playSd2Voice
-const loadCharLibraryList = ctx.loadCharLibraryList
-const debouncedLoadCharLibrary = ctx.debouncedLoadCharLibrary
-const loadDramaAllCharList = ctx.loadDramaAllCharList
-const debouncedLoadDramaAllCharList = ctx.debouncedLoadDramaAllCharList
-const onCharLibraryDialogOpen = ctx.onCharLibraryDialogOpen
-const onCharLibraryTabChange = ctx.onCharLibraryTabChange
-const isCharAddToEpisodeLoading = ctx.isCharAddToEpisodeLoading
-const openEditCharLibrary = ctx.openEditCharLibrary
-const submitEditCharLibrary = ctx.submitEditCharLibrary
-const onDeleteCharLibrary = ctx.onDeleteCharLibrary
-const onAddCharacterToLibrary = ctx.onAddCharacterToLibrary
-const onAddCharacterToMaterialLibrary = ctx.onAddCharacterToMaterialLibrary
-const onAddCharFromLibrary = ctx.onAddCharFromLibrary
-const onAddDramaCharToEpisode = ctx.onAddDramaCharToEpisode
-const submitEditCharacter = ctx.submitEditCharacter
-const characterStagesUploading = ctx.characterStagesUploading || ref(false)
-const onDubbingProfile = ctx.onDubbingProfile
+const characterVoiceEditor = ref(null)
+const characterStagesUploading = ref(false)
 
-// 道具状态与方法
-const showAddProp = ctx.showAddProp
-const addPropSaving = ctx.addPropSaving
-const addPropForm = ctx.addPropForm
-const showEditProp = ctx.showEditProp
-const editPropForm = ctx.editPropForm
-const editPropSaving = ctx.editPropSaving
-const editPropPromptGenerating = ctx.editPropPromptGenerating
-const extractingPropDesc = ctx.extractingPropDesc
-const addPropRefImage = ctx.addPropRefImage
-const addPropRefFileInput = ctx.addPropRefFileInput
-const aiCompletingProp = ctx.aiCompletingProp
-const onAiCompleteProp = ctx.onAiCompleteProp
-const addPropAddRefImage = ctx.addPropAddRefImage
-const addPropAddRefFileInput = ctx.addPropAddRefFileInput
-const extractingPropAddDesc = ctx.extractingPropAddDesc
-const propsExtracting = ctx.propsExtracting
-const generatingPropIds = ctx.generatingPropIds
-const showPropLibrary = ctx.showPropLibrary
-const propLibraryList = ctx.propLibraryList
-const propLibraryLoading = ctx.propLibraryLoading
-const propLibraryPage = ctx.propLibraryPage
-const propLibraryPageSize = ctx.propLibraryPageSize
-const propLibraryTotal = ctx.propLibraryTotal
-const propLibraryKeyword = ctx.propLibraryKeyword
-const propLibraryTab = ctx.propLibraryTab
-const dramaAllPropList = ctx.dramaAllPropList
-const dramaAllPropLoading = ctx.dramaAllPropLoading
-const dramaAllPropPage = ctx.dramaAllPropPage
-const dramaAllPropPageSize = ctx.dramaAllPropPageSize
-const dramaAllPropTotal = ctx.dramaAllPropTotal
-const dramaAllPropKeyword = ctx.dramaAllPropKeyword
-const showEditPropLibrary = ctx.showEditPropLibrary
-const editPropLibraryForm = ctx.editPropLibraryForm
-const editPropLibrarySaving = ctx.editPropLibrarySaving
-const addingPropToLibraryId = ctx.addingPropToLibraryId
-const addingPropToMaterialId = ctx.addingPropToMaterialId
-const onExtractProps = ctx.onExtractProps
-const editProp = ctx.editProp
-const doGeneratePropPrompt = ctx.doGeneratePropPrompt
-const clearPropRefImage = ctx.clearPropRefImage
-const doExtractPropFromImage = ctx.doExtractPropFromImage
-const submitEditProp = ctx.submitEditProp
-const submitAddProp = ctx.submitAddProp
-const onClosePropDialog = ctx.onClosePropDialog
-const onDeleteProp = ctx.onDeleteProp
-const onGeneratePropImage = ctx.onGeneratePropImage
-const loadPropLibraryList = ctx.loadPropLibraryList
-const debouncedLoadPropLibrary = ctx.debouncedLoadPropLibrary
-const loadDramaAllPropList = ctx.loadDramaAllPropList
-const debouncedLoadDramaAllPropList = ctx.debouncedLoadDramaAllPropList
-const onPropLibraryDialogOpen = ctx.onPropLibraryDialogOpen
-const onPropLibraryTabChange = ctx.onPropLibraryTabChange
-const isPropAddToEpisodeLoading = ctx.isPropAddToEpisodeLoading
-const openEditPropLibrary = ctx.openEditPropLibrary
-const submitEditPropLibrary = ctx.submitEditPropLibrary
-const onDeletePropLibrary = ctx.onDeletePropLibrary
-const onAddPropToLibrary = ctx.onAddPropToLibrary
-const onAddPropToMaterialLibrary = ctx.onAddPropToMaterialLibrary
-const onAddPropFromLibrary = ctx.onAddPropFromLibrary
-const onAddDramaPropToEpisode = ctx.onAddDramaPropToEpisode
-const doExtractFromRef2 = ctx.doExtractFromRef2
+async function pollUntilResourceHasImage(checker, maxAttempts = 20, intervalMs = 3000) {
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise((r) => setTimeout(r, intervalMs))
+    await loadDrama()
+    if (checker()) return
+  }
+}
 
-// 场景状态与方法
-const showEditScene = ctx.showEditScene
-const editSceneForm = ctx.editSceneForm
-const editSceneSaving = ctx.editSceneSaving
-const editScenePromptGenerating = ctx.editScenePromptGenerating
-const extractingSceneDesc = ctx.extractingSceneDesc
-const addSceneRefImage = ctx.addSceneRefImage
-const addSceneRefFileInput = ctx.addSceneRefFileInput
-const aiCompletingScene = ctx.aiCompletingScene
-const onAiCompleteScene = ctx.onAiCompleteScene
-const scenesExtracting = ctx.scenesExtracting
-const generatingSceneIds = ctx.generatingSceneIds
-const showSceneLibrary = ctx.showSceneLibrary
-const sceneLibraryList = ctx.sceneLibraryList
-const sceneLibraryLoading = ctx.sceneLibraryLoading
-const sceneLibraryPage = ctx.sceneLibraryPage
-const sceneLibraryPageSize = ctx.sceneLibraryPageSize
-const sceneLibraryTotal = ctx.sceneLibraryTotal
-const sceneLibraryKeyword = ctx.sceneLibraryKeyword
-const sceneLibraryTab = ctx.sceneLibraryTab
-const dramaAllSceneList = ctx.dramaAllSceneList
-const dramaAllSceneLoading = ctx.dramaAllSceneLoading
-const dramaAllScenePage = ctx.dramaAllScenePage
-const dramaAllScenePageSize = ctx.dramaAllScenePageSize
-const dramaAllSceneTotal = ctx.dramaAllSceneTotal
-const dramaAllSceneKeyword = ctx.dramaAllSceneKeyword
-const showEditSceneLibrary = ctx.showEditSceneLibrary
-const editSceneLibraryForm = ctx.editSceneLibraryForm
-const editSceneLibrarySaving = ctx.editSceneLibrarySaving
-const addingSceneToLibraryId = ctx.addingSceneToLibraryId
-const addingSceneToMaterialId = ctx.addingSceneToMaterialId
-const onExtractScenes = ctx.onExtractScenes
-const openAddScene = ctx.openAddScene
-const editScene = ctx.editScene
-const doGenerateScenePrompt = ctx.doGenerateScenePrompt
-const doGenerateSceneSinglePrompt = ctx.doGenerateSceneSinglePrompt
-const clearSceneRefImage = ctx.clearSceneRefImage
-const doExtractSceneFromImage = ctx.doExtractSceneFromImage
-const submitEditScene = ctx.submitEditScene
-const onCloseSceneDialog = ctx.onCloseSceneDialog
-const onDeleteScene = ctx.onDeleteScene
-const onGenerateSceneImage = ctx.onGenerateSceneImage
-const loadSceneLibraryList = ctx.loadSceneLibraryList
-const debouncedLoadSceneLibrary = ctx.debouncedLoadSceneLibrary
-const loadDramaAllSceneList = ctx.loadDramaAllSceneList
-const debouncedLoadDramaAllSceneList = ctx.debouncedLoadDramaAllSceneList
-const onSceneLibraryDialogOpen = ctx.onSceneLibraryDialogOpen
-const onSceneLibraryTabChange = ctx.onSceneLibraryTabChange
-const isSceneAddToEpisodeLoading = ctx.isSceneAddToEpisodeLoading
-const openEditSceneLibrary = ctx.openEditSceneLibrary
-const submitEditSceneLibrary = ctx.submitEditSceneLibrary
-const onDeleteSceneLibrary = ctx.onDeleteSceneLibrary
-const onAddSceneToLibrary = ctx.onAddSceneToLibrary
-const onAddSceneToMaterialLibrary = ctx.onAddSceneToMaterialLibrary
-const onAddSceneFromLibrary = ctx.onAddSceneFromLibrary
-const onAddDramaSceneToEpisode = ctx.onAddDramaSceneToEpisode
+// ── Composable: Characters ────────────────────────────
+const {
+  charactersGenerating, generatingCharIds, sd2CertifyingId, showCharSd2Cert, charSd2CertPayload,
+  sd2VoiceUploadingId, showCharLibrary, charLibraryList, charLibraryLoading, charLibraryPage,
+  charLibraryPageSize, charLibraryTotal, charLibraryKeyword, charLibraryTab, dramaAllCharList,
+  dramaAllCharLoading, dramaAllCharPage, dramaAllCharPageSize, dramaAllCharTotal, dramaAllCharKeyword,
+  showEditCharLibrary, editCharLibraryForm, editCharacterSaving, editCharacterPromptGenerating,
+  extractingCharAppearance, extractingAnchors, addCharRefImage, addCharRefFileInput,
+  aiCompletingCharacter, onAiCompleteCharacter,
+  showEditCharacter, editCharacterForm,
+  editCharLibrarySaving, addingCharToLibraryId, addingCharToMaterialId, addingCharFromLibraryId,
+  charRoleLabel, onGenerateCharacters: onGenerateCharactersRaw, openAddCharacter, stopCharacterPromptPoll, editCharacter,
+  saveCharRefImageIfAny, submitEditCharacter, doGenerateCharacterPrompt, doExtractCharFromImage,
+  extractIdentityAnchors, clearCharRefImage, onCloseCharDialog, onDeleteCharacter, onGenerateCharacterImage, onSd2CertifyCharacter, onSd2CertifyRefresh, sd2ActionLabel, onSd2PrimaryAction, openCharSd2CertDialog,
+  onSd2VoicePrimaryAction, onSd2VoiceReplace, sd2VoiceActionLabel, playSd2Voice,
+  loadCharLibraryList, debouncedLoadCharLibrary, loadDramaAllCharList, debouncedLoadDramaAllCharList,
+  onCharLibraryDialogOpen, onCharLibraryTabChange, isCharAddToEpisodeLoading,
+  openEditCharLibrary, submitEditCharLibrary,
+  onDeleteCharLibrary, onAddCharacterToLibrary, onAddCharacterToMaterialLibrary,
+  onAddCharFromLibrary, onAddDramaCharToEpisode,
+} = useCharacters({
+  store,
+  dramaId,
+  currentEpisodeId,
+  getSelectedStyle,
+  loadDrama,
+  pollTask: ctx.pollTask,
+  pollUntilResourceHasImage,
+  hasAssetImage,
+  beforeSaveCharacter: () => characterVoiceEditor.value?.save()
+})
+
+async function onGenerateCharacters() {
+  await onGenerateCharactersRaw()
+}
+
+// ── Composable: Props ──────────────────────────────────
+const {
+  showAddProp, addPropSaving, addPropForm,
+  showEditProp, editPropForm, editPropSaving, editPropPromptGenerating,
+  extractingPropDesc, addPropRefImage, addPropRefFileInput,
+  aiCompletingProp, onAiCompleteProp,
+  addPropAddRefImage, addPropAddRefFileInput, extractingPropAddDesc,
+  propsExtracting, generatingPropIds,
+  showPropLibrary, propLibraryList, propLibraryLoading, propLibraryPage, propLibraryPageSize,
+  propLibraryTotal, propLibraryKeyword, propLibraryTab,
+  dramaAllPropList, dramaAllPropLoading, dramaAllPropPage, dramaAllPropPageSize, dramaAllPropTotal, dramaAllPropKeyword,
+  showEditPropLibrary, editPropLibraryForm,
+  editPropLibrarySaving, addingPropToLibraryId, addingPropToMaterialId, addingPropFromLibraryId,
+  onExtractProps: onExtractPropsRaw, stopPropPromptPoll, editProp, doGeneratePropPrompt, savePropRefImageIfAny,
+  clearPropRefImage, doExtractPropFromImage, submitEditProp, submitAddProp,
+  onClosePropDialog, onDeleteProp, onGeneratePropImage,
+  loadPropLibraryList, debouncedLoadPropLibrary, loadDramaAllPropList, debouncedLoadDramaAllPropList,
+  onPropLibraryDialogOpen, onPropLibraryTabChange, isPropAddToEpisodeLoading,
+  openEditPropLibrary, submitEditPropLibrary,
+  onDeletePropLibrary, onAddPropToLibrary, onAddPropToMaterialLibrary,
+  onAddPropFromLibrary, onAddDramaPropToEpisode,
+  doExtractFromRef2,
+} = usePropsComposable({
+  store,
+  dramaId,
+  currentEpisodeId,
+  getSelectedStyle,
+  loadDrama,
+  pollTask: ctx.pollTask,
+  pollUntilResourceHasImage,
+  hasAssetImage
+})
+
+async function onExtractProps() {
+  await onExtractPropsRaw()
+}
+
+// ── Composable: Scenes ─────────────────────────────────
+const {
+  showEditScene, editSceneForm, editSceneSaving, editScenePromptGenerating,
+  extractingSceneDesc, addSceneRefImage, addSceneRefFileInput,
+  aiCompletingScene, onAiCompleteScene,
+  scenesExtracting, generatingSceneIds,
+  showSceneLibrary, sceneLibraryList, sceneLibraryLoading, sceneLibraryPage, sceneLibraryPageSize,
+  sceneLibraryTotal, sceneLibraryKeyword, sceneLibraryTab,
+  dramaAllSceneList, dramaAllSceneLoading, dramaAllScenePage, dramaAllScenePageSize, dramaAllSceneTotal, dramaAllSceneKeyword,
+  showEditSceneLibrary, editSceneLibraryForm,
+  editSceneLibrarySaving, addingSceneToLibraryId, addingSceneToMaterialId, addingSceneFromLibraryId,
+  onExtractScenes: onExtractScenesRaw, openAddScene, stopScenePromptPoll, editScene, doGenerateScenePrompt, doGenerateSceneSinglePrompt,
+  saveSceneRefImageIfAny, clearSceneRefImage, doExtractSceneFromImage, submitEditScene,
+  onCloseSceneDialog, onDeleteScene, onGenerateSceneImage,
+  loadSceneLibraryList, debouncedLoadSceneLibrary, loadDramaAllSceneList, debouncedLoadDramaAllSceneList,
+  onSceneLibraryDialogOpen, onSceneLibraryTabChange, isSceneAddToEpisodeLoading,
+  openEditSceneLibrary, submitEditSceneLibrary,
+  onDeleteSceneLibrary, onAddSceneToLibrary, onAddSceneToMaterialLibrary,
+  onAddSceneFromLibrary, onAddDramaSceneToEpisode,
+} = useScenes({
+  store,
+  dramaId,
+  currentEpisodeId,
+  getSelectedStyle,
+  scriptLanguage: ctx.scriptLanguage || ref('zh'),
+  loadDrama,
+  pollTask: ctx.pollTask,
+  pollUntilResourceHasImage,
+  hasAssetImage,
+  dramaAPI
+})
+
+async function onExtractScenes() {
+  await onExtractScenesRaw()
+}
 
 // 面板折叠状态
 const resourcePanelCollapsed = ref(false)
@@ -1760,6 +1694,15 @@ async function onBatchCleanObsoleteAssets() {
   await loadDrama?.()
   ElMessage.success(`已成功清理 ${items.length} 项过时资产`)
 }
+
+defineExpose({
+  charactersGenerating,
+  generatingCharIds,
+  propsExtracting,
+  generatingPropIds,
+  scenesExtracting,
+  generatingSceneIds,
+})
 </script>
 
 <style scoped>

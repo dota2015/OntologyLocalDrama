@@ -184,7 +184,7 @@
       </section>
 
       <!-- 资源管理工作台：角色 / 道具 / 场景 -->
-      <AssetWorkbench />
+      <AssetWorkbench ref="assetWorkbenchRef" />
 
       <!-- 5. 分镜生成工作台 -->
       <StoryboardWorkbench />
@@ -280,9 +280,6 @@ import {
 } from '@/constants/styleOptions'
 import { useNavigation } from '@/composables/filmCreate/useNavigation'
 import { runGenerateStoryFromPremise } from '@/composables/useStoryGeneration'
-import { useCharacters } from '@/composables/filmCreate/useCharacters'
-import { useProps as usePropsComposable } from '@/composables/filmCreate/useProps'
-import { useScenes } from '@/composables/filmCreate/useScenes'
 import { useFullPipeline } from '@/composables/filmCreate/useFullPipeline'
 
 const route = useRoute()
@@ -353,7 +350,6 @@ const isStoryGenRunning = computed(() => {
   )
 })
 const generationStyle = ref('')
-const characterStagesUploading=ref(false)
 const narrativeStyleSaving = ref(false)
 const narrativeStyle = ref({ preset: 'dialogue_fast', speech_rate: 1.25, speech_mode: 'auto' })
 const customStylePrompt = ref('')
@@ -409,6 +405,7 @@ const scriptContent = computed({
 })
 const videoResolution = storeVideoResolution
 const finalMergeRef = ref(null)
+const assetWorkbenchRef = ref(null)
 
 const dramaId = computed(() => store.dramaId)
 const characters = computed(() => store.characters)
@@ -433,129 +430,6 @@ const universalOmniPolishAbort = ref(false)
 const universalOmniPolishProgress = ref({ current: 0, total: 0, label: '' })
 const sbTruncatedWarning = ref(false)
 const sbTruncatedDismissed = ref(false)
-
-
-// ── Composable: Characters ────────────────────────────
-const characterVoiceEditor = ref(null)
-const {
-  showEditCharacter, editCharacterForm, editCharacterSaving, editCharacterPromptGenerating,
-  extractingCharAppearance, extractingAnchors, addCharRefImage, addCharRefFileInput,
-  aiCompletingCharacter, onAiCompleteCharacter,
-  charactersGenerating, generatingCharIds, sd2CertifyingId, showCharSd2Cert, charSd2CertPayload,
-  sd2VoiceUploadingId,
-  showCharLibrary, charLibraryList, charLibraryLoading, charLibraryPage, charLibraryPageSize,
-  charLibraryTotal, charLibraryKeyword, charLibraryTab,
-  dramaAllCharList, dramaAllCharLoading, dramaAllCharPage, dramaAllCharPageSize, dramaAllCharTotal, dramaAllCharKeyword,
-  showEditCharLibrary, editCharLibraryForm,
-  editCharLibrarySaving, addingCharToLibraryId, addingCharToMaterialId, addingCharFromLibraryId,
-  charRoleLabel, onGenerateCharacters: onGenerateCharactersRaw, openAddCharacter, stopCharacterPromptPoll, editCharacter,
-  saveCharRefImageIfAny, submitEditCharacter, doGenerateCharacterPrompt, doExtractCharFromImage,
-  extractIdentityAnchors, clearCharRefImage, onCloseCharDialog, onDeleteCharacter, onGenerateCharacterImage, onSd2CertifyCharacter, onSd2CertifyRefresh, sd2ActionLabel, onSd2PrimaryAction, openCharSd2CertDialog,
-  onSd2VoicePrimaryAction, onSd2VoiceReplace, sd2VoiceActionLabel, playSd2Voice,
-  loadCharLibraryList, debouncedLoadCharLibrary, loadDramaAllCharList, debouncedLoadDramaAllCharList,
-  onCharLibraryDialogOpen, onCharLibraryTabChange, isCharAddToEpisodeLoading,
-  openEditCharLibrary, submitEditCharLibrary,
-  onDeleteCharLibrary, onAddCharacterToLibrary, onAddCharacterToMaterialLibrary,
-  onAddCharFromLibrary, onAddDramaCharToEpisode,
-} = useCharacters({ store, dramaId, currentEpisodeId, getSelectedStyle, loadDrama, pollTask, pollUntilResourceHasImage, hasAssetImage, beforeSaveCharacter: () => characterVoiceEditor.value?.save() })
-
-// ── Composable: Props ──────────────────────────────────
-const {
-  showAddProp, addPropSaving, addPropForm,
-  showEditProp, editPropForm, editPropSaving, editPropPromptGenerating,
-  extractingPropDesc, addPropRefImage, addPropRefFileInput,
-  aiCompletingProp, onAiCompleteProp,
-  addPropAddRefImage, addPropAddRefFileInput, extractingPropAddDesc,
-  propsExtracting, generatingPropIds,
-  showPropLibrary, propLibraryList, propLibraryLoading, propLibraryPage, propLibraryPageSize,
-  propLibraryTotal, propLibraryKeyword, propLibraryTab,
-  dramaAllPropList, dramaAllPropLoading, dramaAllPropPage, dramaAllPropPageSize, dramaAllPropTotal, dramaAllPropKeyword,
-  showEditPropLibrary, editPropLibraryForm,
-  editPropLibrarySaving, addingPropToLibraryId, addingPropToMaterialId, addingPropFromLibraryId,
-  onExtractProps: onExtractPropsRaw, stopPropPromptPoll, editProp, doGeneratePropPrompt, savePropRefImageIfAny,
-  clearPropRefImage, doExtractPropFromImage, submitEditProp, submitAddProp,
-  onClosePropDialog, onDeleteProp, onGeneratePropImage,
-  loadPropLibraryList, debouncedLoadPropLibrary, loadDramaAllPropList, debouncedLoadDramaAllPropList,
-  onPropLibraryDialogOpen, onPropLibraryTabChange, isPropAddToEpisodeLoading,
-  openEditPropLibrary, submitEditPropLibrary,
-  onDeletePropLibrary, onAddPropToLibrary, onAddPropToMaterialLibrary,
-  onAddPropFromLibrary, onAddDramaPropToEpisode,
-  doExtractFromRef2,
-} = usePropsComposable({ store, dramaId, currentEpisodeId, getSelectedStyle, loadDrama, pollTask, pollUntilResourceHasImage, hasAssetImage })
-
-// ── Composable: Scenes ─────────────────────────────────
-const {
-  showEditScene, editSceneForm, editSceneSaving, editScenePromptGenerating,
-  extractingSceneDesc, addSceneRefImage, addSceneRefFileInput,
-  aiCompletingScene, onAiCompleteScene,
-  scenesExtracting, generatingSceneIds,
-  // 场景多视角额外 state（由 FilmCreate 管理）
-  showSceneLibrary, sceneLibraryList, sceneLibraryLoading, sceneLibraryPage, sceneLibraryPageSize,
-  sceneLibraryTotal, sceneLibraryKeyword, sceneLibraryTab,
-  dramaAllSceneList, dramaAllSceneLoading, dramaAllScenePage, dramaAllScenePageSize, dramaAllSceneTotal, dramaAllSceneKeyword,
-  showEditSceneLibrary, editSceneLibraryForm,
-  editSceneLibrarySaving, addingSceneToLibraryId, addingSceneToMaterialId, addingSceneFromLibraryId,
-  onExtractScenes: onExtractScenesRaw, openAddScene, stopScenePromptPoll, editScene, doGenerateScenePrompt, doGenerateSceneSinglePrompt,
-  saveSceneRefImageIfAny, clearSceneRefImage, doExtractSceneFromImage, submitEditScene,
-  onCloseSceneDialog, onDeleteScene, onGenerateSceneImage,
-  loadSceneLibraryList, debouncedLoadSceneLibrary, loadDramaAllSceneList, debouncedLoadDramaAllSceneList,
-  onSceneLibraryDialogOpen, onSceneLibraryTabChange, isSceneAddToEpisodeLoading,
-  openEditSceneLibrary, submitEditSceneLibrary,
-  onDeleteSceneLibrary, onAddSceneToLibrary, onAddSceneToMaterialLibrary,
-  onAddSceneFromLibrary, onAddDramaSceneToEpisode,
-} = useScenes({ store, dramaId, currentEpisodeId, getSelectedStyle, scriptLanguage, loadDrama, pollTask, pollUntilResourceHasImage, hasAssetImage, dramaAPI })
-
-async function onGenerateCharacters() {
-  trackFilmCreateAction('generate_characters_click')
-  const beforeCount = (store.currentEpisode?.characters || []).length
-  try {
-    await onGenerateCharactersRaw()
-    const afterCount = (store.currentEpisode?.characters || []).length
-    trackFilmCreateAction('generate_characters_complete', {
-      extra: { before_count: beforeCount, after_count: afterCount },
-    })
-  } catch (e) {
-    trackFilmCreateAction('generate_characters_failed', {
-      extra: { message: String(e?.message || 'failed').slice(0, 120) },
-    })
-    throw e
-  }
-}
-
-async function onExtractProps() {
-  trackFilmCreateAction('extract_props_click')
-  const beforeCount = (store.props || []).length
-  try {
-    await onExtractPropsRaw()
-    const afterCount = (store.props || []).length
-    trackFilmCreateAction('extract_props_complete', {
-      extra: { before_count: beforeCount, after_count: afterCount },
-    })
-  } catch (e) {
-    trackFilmCreateAction('extract_props_failed', {
-      extra: { message: String(e?.message || 'failed').slice(0, 120) },
-    })
-    throw e
-  }
-}
-
-async function onExtractScenes() {
-  trackFilmCreateAction('extract_scenes_click')
-  const beforeCount = (store.currentEpisode?.scenes || []).length
-  try {
-    await onExtractScenesRaw()
-    const afterCount = (store.currentEpisode?.scenes || []).length
-    trackFilmCreateAction('extract_scenes_complete', {
-      extra: { before_count: beforeCount, after_count: afterCount },
-    })
-  } catch (e) {
-    trackFilmCreateAction('extract_scenes_failed', {
-      extra: { message: String(e?.message || 'failed').slice(0, 120) },
-    })
-    throw e
-  }
-}
-
 
 
 // 批量参考图与参考模式运行状态（供 ScriptWorkbench 与 AssetWorkbench 共享）
@@ -583,21 +457,21 @@ const navSteps = computed(() => {
   // 角色
   const charList = characters.value || []
   const charDone = charList.length > 0 && charList.every(c => hasAssetImage(c))
-  const charGen = charactersGenerating.value || generatingCharIds.size > 0
+  const charGen = assetWorkbenchRef.value?.charactersGenerating || assetWorkbenchRef.value?.generatingCharIds?.size > 0
     || epRunning.some((t) => t.resourceType === GEN_RESOURCE.CHAR_IMAGE || t.resourceType === GEN_RESOURCE.EXTRACT_CHARACTERS)
   const charStatus = charGen ? 'generating' : charDone ? 'done' : charList.length > 0 ? 'partial' : 'pending'
 
   // 道具
   const propList = props.value || []
   const propDone = propList.length > 0 && propList.every(p => hasAssetImage(p))
-  const propGen = propsExtracting.value || generatingPropIds.size > 0
+  const propGen = assetWorkbenchRef.value?.propsExtracting || assetWorkbenchRef.value?.generatingPropIds?.size > 0
     || epRunning.some((t) => t.resourceType === GEN_RESOURCE.PROP_IMAGE || t.resourceType === GEN_RESOURCE.EXTRACT_PROPS)
   const propStatus = propGen ? 'generating' : propDone ? 'done' : propList.length > 0 ? 'partial' : 'pending'
 
   // 场景
   const sceneList = scenes.value || []
   const sceneDone = sceneList.length > 0 && sceneList.every(s => hasAssetImage(s))
-  const sceneGen = scenesExtracting.value || generatingSceneIds.size > 0
+  const sceneGen = assetWorkbenchRef.value?.scenesExtracting || assetWorkbenchRef.value?.generatingSceneIds?.size > 0
     || epRunning.some((t) => t.resourceType === GEN_RESOURCE.SCENE_IMAGE || t.resourceType === GEN_RESOURCE.EXTRACT_SCENES)
   const sceneStatus = sceneGen ? 'generating' : sceneDone ? 'done' : sceneList.length > 0 ? 'partial' : 'pending'
 
@@ -2441,15 +2315,6 @@ function onDubbingUpdated(shots) {
   }
 }
 
-/** 无 task_id 时轮询刷新直到资源出现图片或超时（用于角色/道具/场景图生成） */
-async function pollUntilResourceHasImage(checker, maxAttempts = 20, intervalMs = 3000) {
-  for (let i = 0; i < maxAttempts; i++) {
-    await new Promise((r) => setTimeout(r, intervalMs))
-    await loadDrama()
-    if (checker()) return
-  }
-}
-
 function resolvePollMeta(meta = {}) {
   return {
     dramaId: meta.dramaId ?? dramaId.value,
@@ -2837,197 +2702,6 @@ provide('filmCreateContext', {
   storyboards,
   onReferenceModeSaving,
   onDubbingProfile,
-  characterStagesUploading,
-
-  // 角色状态与方法
-  characterVoiceEditor,
-  charactersGenerating,
-  generatingCharIds,
-  sd2CertifyingId,
-  showCharSd2Cert,
-  charSd2CertPayload,
-  sd2VoiceUploadingId,
-  showCharLibrary,
-  charLibraryList,
-  charLibraryLoading,
-  charLibraryPage,
-  charLibraryPageSize,
-  charLibraryTotal,
-  charLibraryKeyword,
-  charLibraryTab,
-  dramaAllCharList,
-  dramaAllCharLoading,
-  dramaAllCharPage,
-  dramaAllCharPageSize,
-  dramaAllCharTotal,
-  dramaAllCharKeyword,
-  showEditCharLibrary,
-  editCharLibraryForm,
-  editCharLibrarySaving,
-  addingCharToLibraryId,
-  addingCharToMaterialId,
-  charRoleLabel,
-  onGenerateCharacters,
-  openAddCharacter,
-  editCharacter,
-  showEditCharacter,
-  editCharacterForm,
-  editCharacterSaving,
-  editCharacterPromptGenerating,
-  extractingCharAppearance,
-  extractingAnchors,
-  addCharRefImage,
-  addCharRefFileInput,
-  aiCompletingCharacter,
-  onAiCompleteCharacter,
-  doGenerateCharacterPrompt,
-  doExtractCharFromImage,
-  extractIdentityAnchors,
-  clearCharRefImage,
-  onCloseCharDialog,
-  onDeleteCharacter,
-  onGenerateCharacterImage,
-  sd2ActionLabel,
-  onSd2PrimaryAction,
-  onSd2VoicePrimaryAction,
-  onSd2VoiceReplace,
-  sd2VoiceActionLabel,
-  playSd2Voice,
-  loadCharLibraryList,
-  debouncedLoadCharLibrary,
-  loadDramaAllCharList,
-  debouncedLoadDramaAllCharList,
-  onCharLibraryDialogOpen,
-  onCharLibraryTabChange,
-  isCharAddToEpisodeLoading,
-  openEditCharLibrary,
-  submitEditCharLibrary,
-  onDeleteCharLibrary,
-  onAddCharacterToLibrary,
-  onAddCharacterToMaterialLibrary,
-  onAddCharFromLibrary,
-  onAddDramaCharToEpisode,
-  submitEditCharacter,
-
-  // 道具状态与方法
-  showAddProp,
-  addPropSaving,
-  addPropForm,
-  showEditProp,
-  editPropForm,
-  editPropSaving,
-  editPropPromptGenerating,
-  extractingPropDesc,
-  addPropRefImage,
-  addPropRefFileInput,
-  aiCompletingProp,
-  onAiCompleteProp,
-  addPropAddRefImage,
-  addPropAddRefFileInput,
-  extractingPropAddDesc,
-  propsExtracting,
-  generatingPropIds,
-  showPropLibrary,
-  propLibraryList,
-  propLibraryLoading,
-  propLibraryPage,
-  propLibraryPageSize,
-  propLibraryTotal,
-  propLibraryKeyword,
-  propLibraryTab,
-  dramaAllPropList,
-  dramaAllPropLoading,
-  dramaAllPropPage,
-  dramaAllPropPageSize,
-  dramaAllPropTotal,
-  dramaAllPropKeyword,
-  showEditPropLibrary,
-  editPropLibraryForm,
-  editPropLibrarySaving,
-  addingPropToLibraryId,
-  addingPropToMaterialId,
-  onExtractProps,
-  editProp,
-  doGeneratePropPrompt,
-  clearPropRefImage,
-  doExtractPropFromImage,
-  submitEditProp,
-  submitAddProp,
-  onClosePropDialog,
-  onDeleteProp,
-  onGeneratePropImage,
-  loadPropLibraryList,
-  debouncedLoadPropLibrary,
-  loadDramaAllPropList,
-  debouncedLoadDramaAllPropList,
-  onPropLibraryDialogOpen,
-  onPropLibraryTabChange,
-  isPropAddToEpisodeLoading,
-  openEditPropLibrary,
-  submitEditPropLibrary,
-  onDeletePropLibrary,
-  onAddPropToLibrary,
-  onAddPropToMaterialLibrary,
-  onAddPropFromLibrary,
-  onAddDramaPropToEpisode,
-  doExtractFromRef2,
-
-  // 场景状态与方法
-  showEditScene,
-  editSceneForm,
-  editSceneSaving,
-  editScenePromptGenerating,
-  extractingSceneDesc,
-  addSceneRefImage,
-  addSceneRefFileInput,
-  aiCompletingScene,
-  onAiCompleteScene,
-  scenesExtracting,
-  generatingSceneIds,
-  showSceneLibrary,
-  sceneLibraryList,
-  sceneLibraryLoading,
-  sceneLibraryPage,
-  sceneLibraryPageSize,
-  sceneLibraryTotal,
-  sceneLibraryKeyword,
-  sceneLibraryTab,
-  dramaAllSceneList,
-  dramaAllSceneLoading,
-  dramaAllScenePage,
-  dramaAllScenePageSize,
-  dramaAllSceneTotal,
-  dramaAllSceneKeyword,
-  showEditSceneLibrary,
-  editSceneLibraryForm,
-  editSceneLibrarySaving,
-  addingSceneToLibraryId,
-  addingSceneToMaterialId,
-  onExtractScenes,
-  openAddScene,
-  editScene,
-  doGenerateScenePrompt,
-  doGenerateSceneSinglePrompt,
-  clearSceneRefImage,
-  doExtractSceneFromImage,
-  submitEditScene,
-  onCloseSceneDialog,
-  onDeleteScene,
-  onGenerateSceneImage,
-  loadSceneLibraryList,
-  debouncedLoadSceneLibrary,
-  loadDramaAllSceneList,
-  debouncedLoadDramaAllSceneList,
-  onSceneLibraryDialogOpen,
-  onSceneLibraryTabChange,
-  isSceneAddToEpisodeLoading,
-  openEditSceneLibrary,
-  submitEditSceneLibrary,
-  onDeleteSceneLibrary,
-  onAddSceneToLibrary,
-  onAddSceneToMaterialLibrary,
-  onAddSceneFromLibrary,
-  onAddDramaSceneToEpisode,
 })
 </script>
 
