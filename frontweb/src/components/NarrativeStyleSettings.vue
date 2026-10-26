@@ -64,7 +64,7 @@ function changeMode(mode){return commit({...props.modelValue,speech_mode:mode,..
 onMounted(load)
 </script>
 <style scoped>
-.narrative-settings{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px;margin:10px 0}
+.narrative-settings{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px;margin:0}
 .narrative-settings--compact{margin:0}
 .narrative-label{font-weight:500;color:var(--el-text-color-regular)}
 .narrative-help{color:var(--el-color-primary);cursor:help}

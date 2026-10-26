@@ -24,87 +24,101 @@
               />
 
               <!-- 全自动生成前置全局参数 -->
-              <div class="pipeline-config-box" style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px; background: var(--el-fill-color-lighter, #f8fafc); border: 1px solid var(--el-border-color-lighter, #e2e8f0); padding: 10px 14px; border-radius: 8px;">
-                <!-- 第一行：剧作与语速控制 -->
-                <div class="row gap" style="flex-wrap: wrap; align-items: center;">
-                  <span style="font-weight: 600; font-size: 13px; color: var(--el-text-color-primary);">剧作设定：</span>
-                  <el-select v-model="storyStyle" placeholder="故事风格" clearable style="width: 110px" @change="() => saveProjectSettings(false)">
-                    <el-option label="现代" value="modern" />
-                    <el-option label="古风" value="ancient" />
-                    <el-option label="奇幻" value="fantasy" />
-                    <el-option label="日常" value="daily" />
-                  </el-select>
-                  <el-select v-model="storyType" placeholder="剧本类型" clearable style="width: 110px" @change="() => saveProjectSettings(false)">
-                    <el-option label="剧情" value="drama" />
-                    <el-option label="喜剧" value="comedy" />
-                    <el-option label="冒险" value="adventure" />
-                  </el-select>
-                  <div style="display:flex;align-items:center;gap:6px;font-size:13px">
-                    <span>集数</span>
-                    <el-input-number
-                      v-model="storyEpisodeCount"
-                      :min="1"
-                      :step="1"
-                      :precision="0"
-                      controls-position="right"
-                      style="width: 90px"
+              <div class="pipeline-config-box">
+                <!-- 第一行：剧作设定与叙事风格 -->
+                <div class="pipeline-config-row">
+                  <div class="config-cluster">
+                    <span class="config-cluster-label">剧作设定：</span>
+                    <el-select v-model="storyStyle" placeholder="故事风格" clearable style="width: 105px" @change="() => saveProjectSettings(false)">
+                      <el-option label="现代" value="modern" />
+                      <el-option label="古风" value="ancient" />
+                      <el-option label="奇幻" value="fantasy" />
+                      <el-option label="日常" value="daily" />
+                    </el-select>
+                    <el-select v-model="storyType" placeholder="剧本类型" clearable style="width: 105px" @change="() => saveProjectSettings(false)">
+                      <el-option label="剧情" value="drama" />
+                      <el-option label="喜剧" value="comedy" />
+                      <el-option label="冒险" value="adventure" />
+                    </el-select>
+                    <div class="config-input-inline">
+                      <span class="inline-sublabel">集数</span>
+                      <el-input-number
+                        v-model="storyEpisodeCount"
+                        :min="1"
+                        :step="1"
+                        :precision="0"
+                        controls-position="right"
+                        style="width: 85px"
+                      />
+                    </div>
+                  </div>
+
+                  <div class="config-divider" />
+
+                  <div class="config-cluster">
+                    <NarrativeStyleSettings
+                      v-model="narrativeStyle"
+                      :drama-id="dramaId"
+                      :disabled="pipelineRunning || isStoryGenRunning || narrativeStyleSaving"
+                      @saving="narrativeStyleSaving = $event"
+                      @saved="onNarrativeStyleSaved"
                     />
                   </div>
-                  <span style="color:var(--el-border-color);margin:0 4px">|</span>
-                  <NarrativeStyleSettings
-                    v-model="narrativeStyle"
-                    :drama-id="dramaId"
-                    :disabled="pipelineRunning || isStoryGenRunning || narrativeStyleSaving"
-                    @saving="narrativeStyleSaving = $event"
-                    @saved="onNarrativeStyleSaved"
-                  />
                 </div>
 
                 <!-- 第二行：分镜视听参数（从分镜区提上来） -->
-                <div class="row gap" style="flex-wrap: wrap; align-items: center;">
-                  <span style="font-weight: 600; font-size: 13px; color: var(--el-text-color-primary);">视听分镜：</span>
-                  <el-tooltip content="显示本地生成的输入画布尺寸，按 32 像素对齐。H3 使用原生约百万像素、23 步；Wan 经典首尾帧模式跟随首帧比例，尺寸可能不同。这里不含下载后的缩放。" placement="top">
-                    <el-select v-model="projectAspectRatio" style="width: 220px" @change="() => saveProjectSettings(false)">
-                      <el-option label="16:9 横屏（1344×768）" value="16:9" />
-                      <el-option label="9:16 竖屏（768×1344）" value="9:16" />
-                      <el-option label="3:4 竖版（864×1152）" value="3:4" />
-                      <el-option label="1:1 方形（992×992）" value="1:1" />
-                      <el-option label="4:3 标准（1152×864）" value="4:3" />
-                      <el-option label="21:9 宽银幕（1536×672）" value="21:9" />
-                    </el-select>
-                  </el-tooltip>
-                  <StylePickerButton
-                    v-model="generationStyle"
-                    v-model:custom-prompt="customStylePrompt"
-                    :options="generationStyleOptions"
-                    @change="() => saveProjectSettings(true)"
-                  />
-                  <div style="display:flex;align-items:center;gap:6px;font-size:13px">
-                    <span>单镜时长</span>
-                    <el-input-number v-model="shotDurationMin" :min="4" :max="shotDurationMax" :step="1" size="small" style="width:85px" @change="saveShotDurationRange" />
-                    <span>至</span>
-                    <el-input-number v-model="shotDurationMax" :min="shotDurationMin" :max="15" :step="1" size="small" style="width:85px" @change="saveShotDurationRange" />
-                    <span>秒</span>
+                <div class="pipeline-config-row">
+                  <div class="config-cluster">
+                    <span class="config-cluster-label">视听分镜：</span>
+                    <el-tooltip content="显示本地生成的输入画布尺寸，按 32 像素对齐。H3 使用原生约百万像素、23 步；Wan 经典首尾帧模式跟随首帧比例，尺寸可能不同。这里不含下载后的缩放。" placement="top">
+                      <el-select v-model="projectAspectRatio" style="width: 195px" @change="() => saveProjectSettings(false)">
+                        <el-option label="16:9 横屏（1344×768）" value="16:9" />
+                        <el-option label="9:16 竖屏（768×1344）" value="9:16" />
+                        <el-option label="3:4 竖版（864×1152）" value="3:4" />
+                        <el-option label="1:1 方形（992×992）" value="1:1" />
+                        <el-option label="4:3 标准（1152×864）" value="4:3" />
+                        <el-option label="21:9 宽银幕（1536×672）" value="21:9" />
+                      </el-select>
+                    </el-tooltip>
+                    <StylePickerButton
+                      v-model="generationStyle"
+                      v-model:custom-prompt="customStylePrompt"
+                      :options="generationStyleOptions"
+                      @change="() => saveProjectSettings(true)"
+                    />
+                    <div class="config-input-inline">
+                      <span class="inline-sublabel">单镜时长</span>
+                      <el-input-number v-model="shotDurationMin" :min="4" :max="shotDurationMax" :step="1" size="small" style="width:75px" @change="saveShotDurationRange" />
+                      <span class="inline-sublabel">至</span>
+                      <el-input-number v-model="shotDurationMax" :min="shotDurationMin" :max="15" :step="1" size="small" style="width:75px" @change="saveShotDurationRange" />
+                      <span class="inline-sublabel">秒</span>
+                    </div>
                   </div>
-                  <el-checkbox v-model="storyboardUseFirstLastFrame" @change="onStoryboardUseFirstLastFrameChange">
-                    首尾帧参考图
-                  </el-checkbox>
-                  <el-checkbox v-model="storyboardIncludeNarration" @change="() => saveProjectSettings(false)">
-                    按需补充旁白
-                  </el-checkbox>
-                  <el-select v-model="scriptLanguage" placeholder="分镜语言" clearable style="width: 100px">
-                    <el-option label="中文" value="zh" />
-                    <el-option label="英文" value="en" />
-                  </el-select>
+
+                  <div class="config-divider" />
+
+                  <div class="config-cluster">
+                    <el-checkbox v-model="storyboardUseFirstLastFrame" @change="onStoryboardUseFirstLastFrameChange">
+                      首尾帧参考图
+                    </el-checkbox>
+                    <el-checkbox v-model="storyboardIncludeNarration" @change="() => saveProjectSettings(false)">
+                      按需补充旁白
+                    </el-checkbox>
+                    <el-select v-model="scriptLanguage" placeholder="分镜语言" clearable style="width: 95px">
+                      <el-option label="中文" value="zh" />
+                      <el-option label="英文" value="en" />
+                    </el-select>
+                  </div>
                 </div>
               </div>
 
               <!-- 操作按钮区：模式一（全体全流程） vs 模式二步骤一（分步手动剧本） -->
-              <div class="row gap" style="margin-top: 14px; flex-wrap: wrap; align-items: center;">
+              <div class="pipeline-action-bar">
                 <!-- 模式一：全体全流程 -->
                 <el-button
                   type="primary"
                   size="large"
+                  class="action-btn-primary"
                   :loading="pipelineRunning && !pipelinePaused"
                   :disabled="pipelineRunning || referenceBatchRunning || referenceSuggestionsRunning || savingReferenceModeIds.size > 0"
                   title="确定各种生成参数后一键全自动生成：梗概 ➔ 剧本 ➔ 资产提取 ➔ 参考图 ➔ 分镜首尾帧 ➔ 分镜视频 ➔ 配音成片（用户输入故事后静待成片）"
@@ -113,11 +127,10 @@
                   🚀 全体全流程一键成片
                 </el-button>
 
-                <span style="color:var(--el-border-color);margin:0 6px">｜</span>
-
                 <!-- 模式二步骤一：分步手动生成剧本 -->
                 <el-button
                   size="large"
+                  class="action-btn-secondary"
                   :loading="isStoryGenRunning"
                   :disabled="narrativeStyleSaving"
                   title="由导演智能体依据梗概创编全剧分集剧本，检查确认后可在下方各步骤继续分步手动制作"
@@ -130,12 +143,12 @@
             <div class="script-sub-divider" />
             <div id="anchor-script" class="script-sub-block">
               <h2 class="section-title">剧本</h2>
-              <div class="row gap" style="margin-bottom: 10px; flex-wrap: wrap;">
+              <div class="script-toolbar">
                 <el-select
                   v-model="selectedEpisodeId"
                   placeholder="选择集数"
                   clearable
-                  style="width: 130px"
+                  style="width: 140px"
                   :disabled="!dramaId || episodeScriptGenerating"
                   @change="onEpisodeSelect"
                 >
@@ -146,8 +159,8 @@
                     :value="ep.id"
                   />
                 </el-select>
-                <el-input v-model="scriptTitle" placeholder="集标题" style="width: 150px" :disabled="episodeScriptGenerating" />
-                <el-button v-if="dramaId" style="margin-left: auto" @click="onAddEpisode">
+                <el-input v-model="scriptTitle" placeholder="集标题" style="width: 160px" :disabled="episodeScriptGenerating" />
+                <el-button v-if="dramaId" class="script-add-ep-btn" @click="onAddEpisode">
                   <el-icon><Plus /></el-icon>添加一集
                 </el-button>
               </div>
@@ -159,8 +172,10 @@
                 placeholder="剧本内容将显示在这里，可直接编辑..."
                 class="story-textarea"
               />
-              <div class="row gap" style="margin-top: 8px; flex-wrap: wrap;">
+              <div class="script-bottom-actions">
                 <el-button
+                  type="primary"
+                  plain
                   :loading="scriptGenerating"
                   :disabled="episodeScriptGenerating || (!!dramaId && (store.drama?.episodes?.length > 0) && !currentEpisodeId)"
                   @click="onGenerateScript"
@@ -806,6 +821,111 @@ defineExpose({
 </script>
 
 <style scoped>
+/* 通用弹性工具类兜底 */
+.row {
+  display: flex;
+  align-items: center;
+}
+.gap {
+  gap: 10px;
+}
+
+/* 全局参数配置卡片 */
+.pipeline-config-box {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--bg-inner, #1c1c1e);
+  border: 1px solid var(--border-color, #27272a);
+  padding: 12px 14px;
+  border-radius: 8px;
+}
+:global(html.light) .pipeline-config-box {
+  background: var(--bg-inner, #f8fafc);
+  border-color: var(--border-color, #e2e8f0);
+}
+.pipeline-config-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+}
+.config-cluster {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.config-cluster-label {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-bright, #fafafa);
+  white-space: nowrap;
+}
+:global(html.light) .config-cluster-label {
+  color: var(--text-primary, #18181b);
+}
+.config-input-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+.inline-sublabel {
+  font-size: 13px;
+  color: var(--text-muted, #a1a1aa);
+  white-space: nowrap;
+}
+:global(html.light) .inline-sublabel {
+  color: var(--text-muted, #52525b);
+}
+.config-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--border-muted, #3f3f46);
+  flex-shrink: 0;
+}
+:global(html.light) .config-divider {
+  background: var(--border-muted, #d4d4d8);
+}
+@media (max-width: 900px) {
+  .config-divider {
+    display: none;
+  }
+}
+.pipeline-action-bar {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.action-btn-primary {
+  font-weight: 600;
+  padding: 12px 20px;
+}
+.action-btn-secondary {
+  padding: 12px 18px;
+}
+.script-toolbar {
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.script-add-ep-btn {
+  margin-left: auto;
+}
+.script-bottom-actions {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
 .script-workbench-unified {
   margin-bottom: 0;
 }
