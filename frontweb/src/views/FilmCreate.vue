@@ -195,107 +195,11 @@
         :drama-id="dramaId"
         :episode-id="currentEpisodeId"
         @updated="onDubbingUpdated"
-        @merge="onMergeWithDubbing"
+        @merge="(options) => finalMergeRef?.onMergeWithDubbing(options)"
       />
 
-      <!-- 7. 视频配置 + AI 模型配置 -->
-      <section class="section card">
-        <h2 class="section-title">视频配置</h2>
-        <div class="config-grid">
-          <el-form-item label="分辨率">
-            <el-select v-model="videoResolution" style="width: 160px">
-              <el-option label="480p" value="480p" />
-              <el-option label="720p" value="720p" />
-              <el-option label="1080p" value="1080p" />
-            </el-select>
-          </el-form-item>
-          <!--
-          <el-form-item label="配乐">
-            <el-select v-model="videoMusic" placeholder="无" clearable style="width: 160px">
-              <el-option label="无" value="" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="音效">
-            <el-select v-model="videoSfx" placeholder="无" clearable style="width: 160px">
-              <el-option label="无" value="" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="画质">
-            <el-select v-model="videoQuality" style="width: 120px">
-              <el-option label="高" value="high" />
-              <el-option label="中" value="medium" />
-            </el-select>
-          </el-form-item>
-          -->
-          <el-form-item label="字幕">
-            <div class="video-option-row">
-              <el-switch v-model="videoSubtitle" />
-              <span v-if="videoSubtitle" class="video-option-hint">开启后，合成整集时会检测解说旁白：若有文案则自动生成 SRT、按分镜时长合成旁白语音（过长加速 / 过短补静音）、与成片对齐后烧录字幕并混音。</span>
-            </div>
-          </el-form-item>
-          <el-form-item label="对白烧录">
-            <div class="video-option-row">
-              <el-switch v-model="videoBurnDialogue" />
-              <span v-if="videoBurnDialogue" class="video-option-hint">开启后，将把各镜对白 TTS 按分镜时长对齐并替换视频原声（有配音的镜头原声会替换；无对白及旁白的镜头保留原有音乐、音效）。可与旁白同时开启。可在上方「批量配音」中重配。</span>
-            </div>
-          </el-form-item>
-          <el-form-item label="水印">
-            <div class="video-option-row">
-              <el-switch v-model="videoWatermark" />
-              <el-input
-                v-if="videoWatermark"
-                v-model="videoWatermarkText"
-                placeholder="右下角水印文字"
-                maxlength="200"
-                show-word-limit
-                clearable
-                class="video-watermark-input"
-              />
-            </div>
-          </el-form-item>
-          <el-form-item label="片尾黑屏缓冲">
-            <div class="video-option-row">
-              <el-switch v-model="videoTailBlack" />
-              <span class="video-option-hint">默认开启（末尾追加 1 秒黑屏与静音）。防止上传至抖音、视频号、快手、小红书等社交平台时因播放器提前循环或截断导致成片丢失结尾画面与对白。</span>
-            </div>
-          </el-form-item>
-        </div>
-        <p class="config-tip">文本/图片/视频使用的模型以「<el-link type="primary" underline="never" @click="showAiConfigDialog = true">AI 配置</el-link>」中设为默认的为准。</p>
-      </section>
-
-      <!-- 8. 合成视频 -->
-      <section id="anchor-video" class="section card">
-        <h2 class="section-title">合成视频</h2>
-        <BackgroundMusicSettings ref="backgroundMusicPanel" :episode-id="currentEpisodeId" :disabled="videoStatus === 'generating'" />
-        <el-button
-          type="primary"
-          size="large"
-          :loading="videoStatus === 'generating'"
-          :disabled="!currentEpisodeId || storyboards.length === 0 || videoStatus === 'generating'"
-          @click="onGenerateVideo"
-        >
-          合成视频
-        </el-button>
-        <div v-if="videoStatus === 'generating'" class="video-progress">
-          <el-progress :percentage="videoProgress" :status="videoProgress >= 100 ? 'success' : undefined" />
-          <p>视频生成中...</p>
-        </div>
-        <div v-if="videoStatus === 'done'" class="video-done">
-          <el-alert type="success" title="视频生成完成" show-icon />
-        </div>
-        <div v-else-if="videoStatus === 'error'" class="video-error">
-          <el-alert type="error" :title="videoErrorMsg" show-icon />
-        </div>
-        <div v-if="currentEpisodeVideoUrl" class="video-preview-wrap">
-          <p class="video-preview-label">本集合成视频预览</p>
-          <video
-            :src="currentEpisodeVideoUrl"
-            controls
-            class="video-preview-player"
-            preload="metadata"
-          />
-        </div>
-      </section>
+      <!-- 视频配置与合成工作台 -->
+      <FinalMergeWorkbench ref="finalMergeRef" @open-ai-config="showAiConfigDialog = true" />
     </main>
 
 
@@ -355,7 +259,7 @@ import { canUseUniversalOmniVideoApi } from '@/utils/videoOmniSupport'
 import StylePickerButton from '@/components/StylePickerButton.vue'
 import AIConfigContent from '@/components/AIConfigContent.vue'
 import DialogueDubbingPanel from '@/components/DialogueDubbingPanel.vue'
-import BackgroundMusicSettings from '@/components/BackgroundMusicSettings.vue'
+import FinalMergeWorkbench from '@/components/filmCreate/FinalMergeWorkbench.vue'
 import H3ShotSettings from '@/components/H3ShotSettings.vue'
 import NarrativeStyleSettings from '@/components/NarrativeStyleSettings.vue'
 import ShotSpeechDelivery from '@/components/ShotSpeechDelivery.vue'
@@ -504,17 +408,7 @@ const scriptContent = computed({
   set: (v) => store.setScriptContent(v)
 })
 const videoResolution = storeVideoResolution
-const videoMusic = ref('')
-const videoSfx = ref('')
-const videoQuality = ref('high')
-const videoSubtitle = ref(false)
-/** 合成整集时把各镜对白 TTS（audio_local_path）按分镜时长对齐并混入成片 */
-const videoBurnDialogue = ref(false)
-const videoWatermark = ref(false)
-/** 水印开启时烧录到成片右下角 */
-const videoWatermarkText = ref('')
-/** 片尾 1 秒黑屏缓冲（防止社交平台播放器切断最后 1~2 秒） */
-const videoTailBlack = ref(true)
+const finalMergeRef = ref(null)
 
 const dramaId = computed(() => store.dramaId)
 const characters = computed(() => store.characters)
@@ -529,14 +423,6 @@ const videoStatus = computed(() => store.videoStatus)
 function trackFilmCreateAction(_action, _payload = {}) {
   // 单机版：无埋点上报
 }
-/** 当前集合成视频的播放地址（用于按钮下方预览） */
-const currentEpisodeVideoUrl = computed(() => {
-  const url = currentEpisode.value?.video_url
-  if (!url || !String(url).trim()) return ''
-  const s = String(url).trim()
-  if (s.startsWith('http://') || s.startsWith('https://')) return s
-  return '/static/' + s.replace(/^\//, '')
-})
 
 const storyboardGenerating = computed(() =>
   isEpisodeExtractRunning(genStore, dramaId.value, currentEpisodeId.value, GEN_RESOURCE.GENERATE_STORYBOARD)
@@ -547,7 +433,6 @@ const universalOmniPolishAbort = ref(false)
 const universalOmniPolishProgress = ref({ current: 0, total: 0, label: '' })
 const sbTruncatedWarning = ref(false)
 const sbTruncatedDismissed = ref(false)
-const videoErrorMsg = ref('')
 
 
 // ── Composable: Characters ────────────────────────────
@@ -1588,7 +1473,7 @@ async function recoverAndSyncEpisodeTasks(epId) {
       },
       onEpisodeMergeFailed: (err) => {
         store.setVideoStatus('error', did, eid)
-        videoErrorMsg.value = err || '视频生成失败'
+        finalMergeRef.value?.setVideoErrorMsg(err || '视频生成失败')
       },
     },
   })
@@ -2529,7 +2414,6 @@ async function refreshStoryboardsOnly() {
 }
 
 const dubbingPanel = ref(null)
-const backgroundMusicPanel = ref(null)
 const dubbingVoiceProfile = ref({})
 const speechSummaries = ref({})
 
@@ -2554,84 +2438,6 @@ function onDubbingUpdated(shots) {
   sbDialogueAudioPaths.value = { ...sbDialogueAudioPaths.value, ...paths }
   for (const sb of storyboards.value) {
     if (paths[sb.id]) sb.audio_local_path = paths[sb.id]
-  }
-}
-
-function onMergeWithDubbing(options) {
-  videoBurnDialogue.value = !!options.dialogue
-  videoSubtitle.value = !!options.narration
-  onGenerateVideo()
-}
-
-function getFinalizeMergeOptions() {
-  return {
-    burn_narration_subtitles: !!videoSubtitle.value,
-    burn_dialogue_audio: !!videoBurnDialogue.value,
-    watermark_text: videoWatermark.value ? String(videoWatermarkText.value || '').trim().slice(0, 200) : '',
-    tail_black_seconds: videoTailBlack.value ? 1.0 : 0,
-  }
-}
-
-async function onGenerateVideo() {
-  if (!currentEpisodeId.value) return
-  try { await backgroundMusicPanel.value?.flush() }
-  catch (e) { ElMessage.error(e.message); return }
-  const epId = currentEpisodeId.value
-  const did = dramaId.value
-  const dramaTitle = store.drama?.title || ''
-  const epNum = store.currentEpisode?.episode_number
-  const epLabel = dramaTitle ? `${dramaTitle} · 第${epNum ?? ''}集` : `第${epNum ?? ''}集`
-  const mergeMeta = {
-    dramaId: did,
-    episodeId: epId,
-    dramaTitle,
-    episodeNumber: epNum,
-    resourceType: GEN_RESOURCE.EPISODE_MERGE,
-    resourceId: epId,
-    label: `${epLabel} 合成视频`,
-  }
-  store.setVideoStatus('generating', did, epId)
-  store.setVideoProgress(5, did, epId)
-  genStore.markRunning(mergeMeta)
-  videoErrorMsg.value = ''
-  try {
-    const result = await dramaAPI.finalizeEpisode(epId, getFinalizeMergeOptions())
-    if (result?.task_id != null) {
-      store.setVideoProgress(10, did, epId)
-      ElMessage.success(result?.message || '视频合成任务已提交，请稍后查看')
-      const pollResult = await pollTask(result.task_id, () => loadDrama(), mergeMeta)
-      await loadDrama()
-      if (pollResult?.status === 'completed') {
-        store.setVideoProgress(100, did, epId)
-        if (currentEpisodeVideoUrl.value) {
-          store.setVideoStatus('done', did, epId)
-          ElMessage.success('视频生成完成')
-        } else {
-          store.setVideoStatus('error', did, epId)
-          videoErrorMsg.value = '视频生成完成但未获取到播放地址，请稍后刷新'
-          ElMessage.warning(videoErrorMsg.value)
-        }
-      } else if (pollResult?.status === 'failed') {
-        store.setVideoStatus('error', did, epId)
-        videoErrorMsg.value = pollResult?.error || '视频生成失败'
-      } else if (pollResult?.status === 'timeout') {
-        store.setVideoStatus('generating', did, epId)
-        videoErrorMsg.value = '任务仍在排队或生成中，请稍后刷新查看'
-        ElMessage.warning(videoErrorMsg.value)
-      }
-    } else {
-      store.setVideoStatus('error', did, epId)
-      const msg = result?.message || '本集没有可合成的视频片段'
-      videoErrorMsg.value = msg
-      ElMessage.warning(msg)
-    }
-  } catch (e) {
-    videoErrorMsg.value = e.message || '生成失败'
-    store.setVideoStatus('error', did, epId)
-  } finally {
-    if (store.getVideoStatus(did, epId) !== 'generating') {
-      genStore.markDone(mergeMeta)
-    }
   }
 }
 
@@ -2731,8 +2537,14 @@ const {
   shotDurationMax,
   storyboardIncludeNarration,
   storyboardUniversalOmni,
-  getFinalizeMergeOptions,
-  backgroundMusicPanel,
+  getFinalizeMergeOptions: () => finalMergeRef.value?.getFinalizeMergeOptions?.(),
+  backgroundMusicPanel: {
+    get value() {
+      return {
+        flush: () => finalMergeRef.value?.flushBackgroundMusic?.() ?? finalMergeRef.value?.backgroundMusicPanel?.flush?.()
+      }
+    }
+  },
   batchImageRunning,
   batchImageStopping,
   batchImageProgress,
@@ -4000,64 +3812,4 @@ html.light .empty-tip {
   background: #8b5cf6;
   flex-shrink: 0;
 }
-
-
-.config-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 12px 24px;
-  margin-bottom: 16px;
-}
-.video-option-hint {
-  flex: 1;
-  min-width: 200px;
-  font-size: 12px;
-  line-height: 1.45;
-  color: var(--el-text-color-secondary);
-}
-.video-option-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 10px 12px;
-}
-.video-watermark-input {
-  flex: 1;
-  min-width: 200px;
-  max-width: 360px;
-}
-.config-tip {
-  margin: 12px 0 0;
-  font-size: 0.9rem;
-  color: #a1a1aa;
-}
-.config-tip .el-link { font-size: inherit; }
-
-.sub-title {
-  font-size: 1rem;
-  margin: 16px 0 8px;
-  color: #e4e4e7;
-}
-.video-progress, .video-done, .video-error {
-  margin-top: 16px;
-}
-.video-preview-wrap {
-  margin-top: 20px;
-  padding-top: 16px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-}
-.video-preview-label {
-  margin: 0 0 10px;
-  font-size: 0.95rem;
-  color: #a1a1aa;
-}
-.video-preview-player {
-  display: block;
-  max-width: 100%;
-  max-height: 360px;
-  border-radius: 8px;
-  background: #1a1b24;
-}
-
-
 </style>
