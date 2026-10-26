@@ -3234,6 +3234,11 @@ provide('filmCreateContext', {
   videoModelChoices,
   getMovementLabel,
 })
+
+defineExpose({
+  stopBatchImageGeneration,
+  stopBatchVideoGeneration,
+})
 </script>
 
 <style scoped>
