@@ -2040,6 +2040,11 @@ async function getActiveVideoAiConfig(preferredModel) {
   return activeVideoAiConfigCache
 }
 
+function invalidateActiveVideoAiConfigCache() {
+  activeVideoAiConfigCache = null
+  activeVideoAiConfigCacheAt = 0
+}
+
 async function confirmUniversalNonSeedance2Video() {
   await ElMessageBox.confirm(
     '你当前视频模型不支持多图参考，全能模式将降级：优先用分镜主图，否则仅传场景参考图。是否继续？',
@@ -3238,6 +3243,7 @@ provide('filmCreateContext', {
 defineExpose({
   stopBatchImageGeneration,
   stopBatchVideoGeneration,
+  invalidateActiveVideoAiConfigCache,
 })
 </script>
 
