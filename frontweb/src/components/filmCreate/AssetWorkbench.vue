@@ -1802,6 +1802,11 @@ defineExpose({
   grid-template-columns: repeat(2, 1fr);
   gap: 16px;
 }
+@media (max-width: 1280px) {
+  .resource-block-body .asset-list-two {
+    grid-template-columns: 1fr;
+  }
+}
 .asset-actions { margin-bottom: 12px; }
 .asset-list {
   display: grid;
@@ -1823,14 +1828,14 @@ defineExpose({
   align-items: stretch;
 }
 .asset-item-left-right .asset-info {
-  flex: 1;
-  min-width: 0;
+  flex: 1 1 52%;
+  min-width: 260px;
   display: flex;
   flex-direction: column;
-  padding: 14px;
+  padding: 16px;
 }
 .asset-item-left-right .asset-name {
-  margin-bottom: 6px;
+  margin-bottom: 8px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1838,19 +1843,21 @@ defineExpose({
 }
 .asset-item-left-right .asset-desc-full {
   flex: 1;
-  font-size: 0.85rem;
+  font-size: 0.88rem;
   color: #7a7a88;
-  line-height: 1.5;
-  margin-bottom: 8px;
+  line-height: 1.6;
+  margin-bottom: 12px;
   white-space: pre-wrap;
   word-break: break-word;
 }
 .asset-item-left-right .asset-cover-wrap {
-  width: 180px;
+  width: 300px;
+  min-width: 280px;
+  max-width: 360px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  padding: 12px;
+  padding: 16px;
   border-left: 1px solid rgba(255, 255, 255, 0.06);
 }
 :global(html.light) .asset-item-left-right .asset-cover-wrap {
@@ -1911,10 +1918,17 @@ defineExpose({
 .asset-item-left-right .asset-name span { flex: 1; min-width: 0; }
 .asset-cover-actions {
   display: flex;
-  gap: 6px;
-  margin-top: 8px;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
 }
-.asset-cover-actions .el-button { flex: 1; justify-content: center; }
+.asset-cover-actions .el-button {
+  margin-left: 0 !important;
+  white-space: nowrap !important;
+  flex: 1 1 auto;
+  min-width: 82px;
+  justify-content: center;
+}
 
 .cover-placeholder {
   font-size: 12px;

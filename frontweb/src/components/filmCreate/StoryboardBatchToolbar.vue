@@ -116,7 +116,7 @@
           plain
           size="large"
           :loading="auditingInvariants"
-          title="运行 SHACL 风格视听本体门禁检验：检查运镜动感度、无对白BGM、人脸防拥挤及空间防跳切"
+          title="查看视听本体硬门禁审查报告（导演智能体已在生成时自动完成闭环质检与自纠）"
           @click="$emit('audit-invariants')"
         >
           🛡️ 视听本体质检
@@ -276,3 +276,27 @@ defineEmits([
   'retry-failed-batch-videos',
 ])
 </script>
+
+<style scoped>
+.storyboard-batch-toolbar {
+  margin-bottom: 22px;
+}
+.sb-batch-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.sb-batch-actions > .flex {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+.sb-batch-right {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+</style>

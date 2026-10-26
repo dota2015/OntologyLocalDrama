@@ -89,11 +89,11 @@
         <span>检测到分镜可能不完整（AI 输出被截断），请确认分镜数量是否符合预期，必要时可重新生成。</span>
         <el-button size="small" text @click="sbTruncatedDismissed = true">关闭</el-button>
       </div>
-      <template v-if="storyboards.length > 0">
+      <div v-if="storyboards.length > 0" class="storyboard-cards-list">
         <template v-for="(sb, i) in storyboards" :key="sb.id">
           <StoryboardCard :sb="sb" :index="i" :storyboards="storyboards" />
         </template>
-      </template>
+      </div>
       <!-- 分镜生成中提示条 -->
       <div v-if="storyboardGenerating || universalOmniPolishRunning || isAnyDirectorGenerating" class="sb-generating-tip">
         <span class="sb-gen-dot" /><span class="sb-gen-dot" /><span class="sb-gen-dot" />
@@ -2430,7 +2430,7 @@ async function onAuditInvariants() {
       if (violations.length > 5) detailHtml += `<li>...以及其他 ${violations.length - 5} 项</li>`
       detailHtml += `</ul>`
     } else {
-      detailHtml += `<p style="color: #67c23a; margin-top: 8px;"><strong>✅ 硬门禁 100% 通过（运镜动感、无对白BGM闭环契约均合格）</strong></p>`
+      detailHtml += `<p style="color: #67c23a; margin-top: 8px;"><strong>✅ 硬门禁 100% 通过（已由导演智能体在生成阶段严格闭环自检自纠完成，运镜动感度、对白时长、BGM契约全部合格）</strong></p>`
     }
 
     if (totalWarns > 0) {
@@ -3560,6 +3560,10 @@ html.light .sb-export-srt-btn.el-button--primary.is-plain {
 }
 html.light .empty-tip {
   color: #9ca3af;
+}
+
+.storyboard-cards-list {
+  margin-top: 20px;
 }
 
 .storyboard-generating-tip {

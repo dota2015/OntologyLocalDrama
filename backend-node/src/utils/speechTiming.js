@@ -61,27 +61,45 @@ function speechFingerprint(value) {
 }
 
 // Read explicit speech cues only; quoted visual descriptions are not dialogue.
+function cleanExtractedSpeech(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/（(?:仅限说话人|画面其余人物|双唇紧闭|严格保持|严禁开口|口型同步|无对白).*?）/gu, '')
+    .replace(/\((?:lip sync|all other|keep mouth|strictly no).*?\)/giu, '')
+    .replace(/（(?:无|无对白|无对话|无台词|none|null|n\/a)[。.!！\s]*）/giu, '')
+    .trim();
+}
+
 function speechFromPrompt(prompt) {
   const text = String(prompt || '');
   const dialogue = [];
   const narration = [];
-  const keywords = '场景|镜头标题|角色造型|动作|对话|对白|台词|解说旁白|旁白|结果|景别|镜头角度|运镜|氛围|情绪|情绪强度|配乐|音效|时长|风格|光线|=VideoRatio|narration|dialogue';
+  const keywords = '场景|镜头标题|角色造型|动作|对话|对白|台词|解说旁白|旁白|结果收束|结果|景别|镜头角度|运镜|角色动态与轨迹|口型状态|画面与口型要求|氛围|情绪|情绪强度|配乐|音效|时长|风格|光线|=VideoRatio|narration|dialogue';
   const labelled = new RegExp(
     `(?:【(对白|对话|台词|解说旁白|解说|旁白)】|(?:^|[\\n。\\s])(dialogue|narration|voice[ -]?over|对白|对话|台词|解说旁白|解说|旁白)\\s*[：:])\\s*([\\s\\S]*?)(?=【|(?:[。；;！？!?，,、…\\n\\s“”"’'「」『』）)》>])?\\s*(?:${keywords})\\s*[：:]|$)`,
     'gimu'
   );
   let match;
   while ((match = labelled.exec(text))) {
-    (/narration|voice|解说|旁白/iu.test(match[1] || match[2]) ? narration : dialogue).push(match[3]);
+    const speech = cleanExtractedSpeech(match[3]);
+    if (speech) {
+      (/narration|voice|解说|旁白/iu.test(match[1] || match[2]) ? narration : dialogue).push(speech);
+    }
   }
   const cues = /(?:说(?:道|着)?|喊(?:道)?|问(?:道)?|答(?:道)?|念(?:道)?|says?|speaks?)[：:,，\s]*[“"「『]([^”"」』]+)[”"」』]/giu;
   const quoted = [];
   const speakerQuotes = [];
-  while ((match = cues.exec(text))) quoted.push(match[1]);
+  while ((match = cues.exec(text))) {
+    const speech = cleanExtractedSpeech(match[1]);
+    if (speech) quoted.push(speech);
+  }
   // Explicit speaker labels also occur in manually edited universal prompts.
   const speakers = /(?:^|[\n。；;\s])(@?人物\d+|[\p{L}·]{1,16})[：:]\s*[“"「『]([^”"」』]+)[”"」』]/gu;
   while ((match = speakers.exec(text))) {
-    if (!/^(?:场景|标题|镜头标题|风格|造型|角色造型|动作|结果|音效|景别|镜头角度|运镜|氛围|情绪|情绪强度|配乐|时长|光线|style|title|dialogue|narration|action|result|movement|shot_type|atmosphere)$/iu.test(match[1])) speakerQuotes.push(match[2]);
+    if (!/^(?:场景|标题|镜头标题|风格|造型|角色造型|动作|结果收束|结果|音效|景别|镜头角度|运镜|角色动态与轨迹|口型状态|画面与口型要求|氛围|情绪|情绪强度|配乐|时长|光线|style|title|dialogue|narration|action|result|movement|shot_type|atmosphere)$/iu.test(match[1])) {
+      const speech = cleanExtractedSpeech(match[2]);
+      if (speech) speakerQuotes.push(speech);
+    }
   }
   const labelledShot = { dialogue: dialogue.join('\n'), narration: narration.join('\n') };
   const quoteShot = [quoted, speakerQuotes].map(lines => ({ dialogue: lines.join('\n') }))
@@ -95,10 +113,11 @@ function assessVideoSpeech(shot, prompt, duration, options = {}) {
   const parsed = speechFromPrompt(prompt);
   const merged = {};
   for (const key of ['dialogue', 'narration']) {
-    const stored = shot?.[key] || '';
-    merged[key] = secondsForText(stored).seconds >= secondsForText(parsed[key]).seconds ? stored : parsed[key];
+    const stored = cleanExtractedSpeech(shot?.[key] || '');
+    const candidate = cleanExtractedSpeech(parsed[key] || '');
+    merged[key] = secondsForText(stored).seconds >= secondsForText(candidate).seconds ? stored : candidate;
   }
   return assessSpeechTiming(merged, duration, options);
 }
 
-module.exports = { speechFromPrompt, assessSpeechTiming, assessVideoSpeech, timingError, timingInstructions, spokenText, speechFingerprint };
+module.exports = { speechFromPrompt, assessSpeechTiming, assessVideoSpeech, timingError, timingInstructions, spokenText, speechFingerprint, cleanExtractedSpeech };

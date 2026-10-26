@@ -695,7 +695,10 @@ const shotRangeEnd = computed(() => {
 
 <style scoped>
 .storyboard-card-wrapper {
-  margin-bottom: 16px;
+  margin-bottom: 20px;
+}
+.storyboard-card-wrapper:first-of-type {
+  margin-top: 18px;
 }
 .segment-header {
   margin: 24px 0 14px;
