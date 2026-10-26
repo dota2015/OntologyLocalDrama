@@ -18,7 +18,7 @@
               <el-input
                 v-model="storyInput"
                 type="textarea"
-                :rows="3"
+                :autosize="{ minRows: 9, maxRows: 24 }"
                 placeholder="例如：一个少女在森林里遇见会说话的狐狸，一起寻找失落的宝石..."
                 class="story-textarea"
               />

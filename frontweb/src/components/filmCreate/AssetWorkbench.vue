@@ -470,7 +470,7 @@
     </el-dialog>
 
     <!-- 添加/编辑角色弹窗 -->
-    <el-dialog v-model="showEditCharacter" :title="editCharacterForm?.id ? '编辑角色' : '添加角色'" width="75%" @close="onCloseCharDialog">
+    <el-dialog v-model="showEditCharacter" :title="editCharacterForm?.id ? '编辑角色' : '添加角色'" width="75%" top="4vh" append-to-body class="asset-edit-dialog" @close="onCloseCharDialog">
       <el-form v-if="editCharacterForm" label-width="90px">
         <!-- 参考图上传区（新增/编辑均显示） -->
         <el-form-item label="参考图">
@@ -629,7 +629,7 @@
     </el-dialog>
 
     <!-- 编辑道具弹窗 -->
-    <el-dialog v-model="showEditProp" :title="editPropForm?.id ? '编辑道具' : '添加道具'" width="75%" @close="onClosePropDialog">
+    <el-dialog v-model="showEditProp" :title="editPropForm?.id ? '编辑道具' : '添加道具'" width="75%" top="4vh" append-to-body class="asset-edit-dialog" @close="onClosePropDialog">
       <el-form v-if="editPropForm" label-width="90px">
         <!-- 参考图上传区（新增/编辑均显示） -->
         <el-form-item label="参考图">
@@ -696,7 +696,7 @@
     </el-dialog>
 
     <!-- 添加/编辑场景弹窗 -->
-    <el-dialog v-model="showEditScene" :title="editSceneForm?.id ? '编辑场景' : '添加场景'" width="75%" @close="onCloseSceneDialog">
+    <el-dialog v-model="showEditScene" :title="editSceneForm?.id ? '编辑场景' : '添加场景'" width="75%" top="4vh" append-to-body class="asset-edit-dialog" @close="onCloseSceneDialog">
       <el-form v-if="editSceneForm" label-width="90px">
         <!-- 参考图上传区（新增/编辑均显示） -->
         <el-form-item label="参考图">
@@ -1787,10 +1787,10 @@ defineExpose({
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #e4e4e7;
+  color: var(--text-bright, #fafafa);
 }
-:global(html.light) .resource-block-title {
-  color: #1e1b4b;
+:global(html.light .resource-block-title) {
+  color: #1e1b4b !important;
 }
 .resource-block-body {
   margin-top: 12px;
@@ -1899,14 +1899,14 @@ defineExpose({
   pointer-events: none;
 }
 .asset-info { padding: 10px; }
-.asset-name { font-weight: 600; margin-bottom: 4px; color: #e4e4e7; }
-:global(html.light) .asset-name { color: #1e1b4b; }
+.asset-name { font-weight: 600; margin-bottom: 4px; color: var(--text-bright, #fafafa); }
+:global(html.light .asset-name) { color: #1e1b4b !important; }
 .asset-desc-full {
   font-size: 0.85rem;
-  color: #7a7a88;
+  color: var(--text-muted, #7a7a88);
   margin-bottom: 8px;
 }
-:global(html.light) .asset-desc-full { color: #64748b; }
+:global(html.light .asset-desc-full) { color: #4b5563 !important; }
 .asset-btns { display: flex; gap: 6px; flex-wrap: wrap; margin-top: auto; }
 .asset-item-left-right .asset-name span { flex: 1; min-width: 0; }
 .asset-cover-actions {
@@ -2143,5 +2143,27 @@ defineExpose({
   color: #71717a;
   padding: 24px;
   font-size: 13px;
+}
+
+:global(.asset-edit-dialog) {
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+}
+:global(.asset-edit-dialog .el-dialog__header) {
+  flex-shrink: 0;
+  margin-right: 0;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-color, #27272a);
+}
+:global(.asset-edit-dialog .el-dialog__body) {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px;
+}
+:global(.asset-edit-dialog .el-dialog__footer) {
+  flex-shrink: 0;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border-color, #27272a);
 }
 </style>

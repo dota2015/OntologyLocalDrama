@@ -1820,7 +1820,10 @@ html.light :deep(.section-title) { color: #1e1b4b; }
 
 .image-preview-overlay {
   position: fixed;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
   z-index: 9999;
   background: rgba(10, 10, 15, 0.88);
   backdrop-filter: blur(8px);

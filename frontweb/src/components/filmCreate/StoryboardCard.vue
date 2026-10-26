@@ -843,12 +843,12 @@ const shotRangeEnd = computed(() => {
   box-shadow: 0 0 24px rgba(168, 85, 247, 0.55) !important;
   transform: translateY(-2px);
 }
-:global(html.light) .storyboard-row {
+:global(html.light .storyboard-row) {
   background: rgba(255, 255, 255, 0.7);
   border-color: rgba(139, 92, 246, 0.06);
   box-shadow: 0 1px 0 rgba(255,255,255,0.7) inset, 0 2px 12px rgba(99, 102, 241, 0.04);
 }
-:global(html.light) .storyboard-row:hover {
+:global(html.light .storyboard-row:hover) {
   border-color: rgba(139, 92, 246, 0.18);
   box-shadow: 0 1px 0 rgba(255,255,255,0.7) inset, 0 6px 24px rgba(99, 102, 241, 0.08);
   transform: translateY(-1px);

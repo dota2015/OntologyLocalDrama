@@ -36,9 +36,23 @@ html.light {
 }
 
 /* ── 通用基础 ── */
+html, body {
+  transform: none !important;
+  filter: none !important;
+  perspective: none !important;
+}
 html, body, #app, .app {
   background: var(--bg-page) !important;
   color: var(--text-primary) !important;
+}
+
+/* 亮色模式下资源区标题与名称强化 */
+html.light .resource-block-title,
+html.light .asset-name {
+  color: #1e1b4b !important;
+}
+html.light .asset-desc-full {
+  color: #4b5563 !important;
 }
 
 /* ── 各页面结构 ── */
