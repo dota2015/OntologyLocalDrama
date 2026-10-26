@@ -19,8 +19,43 @@ const {
   jwtPartLengths,
 } = require('./klingJwt');
 
+const VideoProviderFactory = require('./video/videoProviderFactory');
+const {
+  isAgnesVideo25Model,
+  isAgnesVideo25FlashModel,
+  normalizeAgnesVideo25Duration,
+  normalizeAgnesVideo25Size,
+  normalizeAgnesVideo25AspectRatio,
+  getAgnesApiRoot,
+  buildAgnesVideo25Body,
+  buildAgnesVideoImagePayload,
+  buildAgnesPollUrl,
+  extractAgnesVideoUrl,
+} = require('./video/providers/agnesProvider');
+const {
+  isMinimaxH3Model,
+  getMinimaxApiRoot,
+  normalizeMinimaxH3Duration,
+  normalizeMinimaxH3Resolution,
+  buildMinimaxH3CreateUrl,
+  buildMinimaxH3PollUrl,
+  extractMinimaxH3VideoUrl,
+} = require('./video/providers/minimaxH3Provider');
+const {
+  VOLC_MODEL_ALIASES,
+  normalizeVolcModel,
+  isSeedance2FamilyModel,
+  shouldUseVolcOmniMultiReference,
+  normalizeVolcengineDuration,
+  isCheapSeedance2Provider,
+  configSupportsUniversalOmni,
+  normalizeCheapSeedance2Duration,
+  normalizeCheapSeedance2Size,
+  buildCheapSeedance2ContentUrl,
+} = require('./video/providers/volcengineProvider');
+
 /**
- * ?? provider ??????????api_protocol ??????????
+ * 根据 provider 推断默认的 api_protocol
  */
 function inferVideoProtocol(provider) {
   const p = String(provider || '').toLowerCase();
@@ -37,73 +72,6 @@ function inferVideoProtocol(provider) {
   if (p === 'comfyui_wan22') return 'comfyui_wan22';
   if (p === 'minimax_h3') return 'minimax_h3';
   return 'openai';
-}
-
-function isCheapSeedance2Provider(provider) {
-  return String(provider || '').trim().toLowerCase() === 'cheap_seedance2';
-}
-
-/** AI 配置 settings.supports_universal_omni 或低价 Seedance2 */
-function configSupportsUniversalOmni(config) {
-  if (isCheapSeedance2Provider(config?.provider)) return true;
-  let s = {};
-  try {
-    if (typeof config?.settings === 'string') s = JSON.parse(config.settings || '{}') || {};
-    else if (config?.settings && typeof config.settings === 'object') s = config.settings;
-  } catch (_) {
-    s = {};
-  }
-  return s.supports_universal_omni === true || s.supports_universal_omni === 1 || s.supports_universal_omni === 'true';
-}
-
-/**
- * ohmybb Seedance 时长档：fast 5/10/15，2.5 为 5/10。就近映射。
- * @returns {string} seconds 字符串
- */
-function normalizeCheapSeedance2Duration(duration, model) {
-  const modelLower = String(model || '').toLowerCase();
-  const is25 = /wb-seedance-2\.5|seedance-2\.5|seedance2\.5/.test(modelLower);
-  const allowed = is25 ? [5, 10] : [5, 10, 15];
-  const raw = duration == null || duration === '' ? NaN : Number(duration);
-  let target;
-  if (!Number.isFinite(raw) || raw <= 0) {
-    target = 10;
-  } else if (raw <= 5) {
-    target = 5;
-  } else if (raw <= 10) {
-    target = 10;
-  } else {
-    target = is25 ? 10 : 15;
-  }
-  if (!allowed.includes(target)) target = allowed[allowed.length - 1];
-  return String(target);
-}
-
-/** ohmybb 支持的 size：1280x720 / 720x1280 / 1024x1024 / 960x720 / 720x960 */
-function normalizeCheapSeedance2Size(aspectRatio) {
-  const sizeMap = {
-    '16:9': '1280x720',
-    '9:16': '720x1280',
-    '1:1': '1024x1024',
-    '4:3': '960x720',
-    '3:4': '720x960',
-  };
-  return sizeMap[String(aspectRatio || '').trim()] || '1280x720';
-}
-
-/** 完成态无直链时，拼 Sora 兼容 content 下载地址 */
-function buildCheapSeedance2ContentUrl(config, taskId) {
-  const id = String(taskId || '').trim();
-  if (!id) return null;
-  const base = String(config?.base_url || '').replace(/\/$/, '');
-  if (!base) return null;
-  return `${base}/v1/videos/${encodeURIComponent(id)}/content`;
-}
-
-/** 官方模型 ID：MiniMax-H3（Video Generation V2） */
-function isMinimaxH3Model(name) {
-  const m = String(name || '').trim().toLowerCase();
-  return m === 'minimax-h3' || m === 'minimax_h3' || /^minimax[-_]?h3\b/.test(m);
 }
 
 /**
@@ -550,58 +518,6 @@ async function resolveImageInputForAgnesAsync(db, rawUrl, files_base_url, storag
   return null;
 }
 
-/**
- * Seedance 2.x 家族：官方 doubao/jimeng 名称 + 中转别名（如 mingiz-sd2）。
- * 用于时长归一、音色参考注入、content 是否带 reference_audio。
- */
-function isSeedance2FamilyModel(modelName) {
-  const m = String(modelName || '').toLowerCase().trim();
-  if (!m) return false;
-  if (/seedance[-_]?2|seedance2/.test(m)) return true;
-  if (/2[-_]0[-_]/.test(m)) return true;
-  // 网关别名：mingiz-sd2、foo_sd2、sd2-bar
-  if (/(^|[-_./])sd2($|[-_./])/.test(m)) return true;
-  return false;
-}
-
-/**
- * 经典「火山引擎」协议下是否应改走「全能/多图参考」实现：
- * 方舟 Seedance 2.x（含 doubao-seedance-2.5-260628 等新版本）本身支持多图参考，
- * 但配置常选标准 volcengine 协议；此时不能按经典首尾帧逻辑把多出的参考图丢掉。
- */
-function shouldUseVolcOmniMultiReference(protocol, modelName, referenceUrls) {
-  if (String(protocol || '').toLowerCase() !== 'volcengine') return false;
-  if (!isSeedance2FamilyModel(modelName)) return false;
-  const refs = Array.isArray(referenceUrls) ? referenceUrls.filter(Boolean) : [];
-  return refs.length > 0;
-}
-
-/**
- * 火山 Seedance 系列：按模型版本归一化时长（秒）。
- * - 2.x：4–15
- * - 1.5 Pro/Lite：5–12（官方文档）
- * - 1.0 Pro/Lite：仅 5 或 10
- */
-function normalizeVolcengineDuration(modelName, durationNum) {
-  const m = String(modelName || '').toLowerCase();
-  const d = Number(durationNum);
-  const safe = Number.isFinite(d) && d > 0 ? Math.round(d) : 5;
-
-  if (isSeedance2FamilyModel(m)) {
-    return Math.min(15, Math.max(4, safe));
-  }
-
-  if (/seedance[-_]?1[-_.]?5|1-5-pro|1-5-lite|251215/.test(m)) {
-    return Math.min(12, Math.max(5, safe));
-  }
-
-  if (/seedance|doubao-seedance/.test(m)) {
-    return safe <= 7 ? 5 : 10;
-  }
-
-  return Math.min(12, Math.max(5, safe));
-}
-
 /** @deprecated 名称保留，实现与 normalizeVolcengineDuration 一致 */
 function normalizeVolcOmniDuration(modelName, durationNum) {
   return normalizeVolcengineDuration(modelName, durationNum);
@@ -1037,105 +953,7 @@ function buildVideoUrl(config, options = {}) {
   return base + ep;
 }
 
-/**
- * Agnes / new-api 渠道根地址（与 new-api agnes.apiOrigin 一致）：
- * 配置里常带 .../v1 或 .../v1/videos，需剥掉后再拼 /v1/videos/{task_id}。
- */
-function getAgnesApiRoot(baseUrl) {
-  let base = String(baseUrl || 'https://apihub.agnes-ai.com').replace(/\/$/, '');
-  for (const suf of ['/v1/videos', '/v1']) {
-    if (base.length >= suf.length && base.slice(-suf.length).toLowerCase() === suf) {
-      base = base.slice(0, -suf.length).replace(/\/$/, '');
-    }
-  }
-  return base || 'https://apihub.agnes-ai.com';
-}
 
-/** 内置/历史默认查询路径：由代码统一按 new-api 拼装，忽略配置里的旧值 */
-function isAgnesBuiltinQueryEndpoint(ep) {
-  const s = String(ep || '').trim();
-  if (!s) return true;
-  return (
-    /^\/?(v1\/)?videos\/\{(taskId|task_id|id|videoId|video_id)\}\/?$/i.test(s) ||
-    /^\/?agnesapi(\?|$)/i.test(s)
-  );
-}
-
-/**
- * Agnes 结果查询：
- * - Video 2.5 / 2.5 Flash：GET {origin}/agnesapi?video_id=&model_name=
- * - Video V2.0：GET {origin}/v1/videos/{task_id}
- */
-function isAgnesVideo25Model(model) {
-  return /agnes-video-2\.5/i.test(String(model || ''));
-}
-
-function isAgnesVideo25FlashModel(model) {
-  return /agnes-video-2\.5-flash/i.test(String(model || ''));
-}
-
-function resolveAgnesVideoModel(config, explicitModel) {
-  const named = String(explicitModel || '').trim();
-  if (named) return named;
-  return getModelFromConfig(config) || '';
-}
-
-function buildAgnesPollUrl(config, pollId, explicitModel) {
-  const root = getAgnesApiRoot(config.base_url);
-  const id = String(pollId || '').trim();
-  const cfgEp = String(config.query_endpoint || '').trim();
-  const model = resolveAgnesVideoModel(config, explicitModel);
-
-  if (cfgEp && !isAgnesBuiltinQueryEndpoint(cfgEp)) {
-    const base = (config.base_url || '').replace(/\/$/, '');
-    let ep = cfgEp;
-    ep = String(ep)
-      .replace(/\{videoId\}/gi, encodeURIComponent(id))
-      .replace(/\{video_id\}/gi, encodeURIComponent(id))
-      .replace(/\{taskId\}/gi, encodeURIComponent(id))
-      .replace(/\{task_id\}/gi, encodeURIComponent(id))
-      .replace(/\{id\}/gi, encodeURIComponent(id))
-      .replace(/\{model\}/gi, encodeURIComponent(model))
-      .replace(/\{model_name\}/gi, encodeURIComponent(model));
-    if (!ep.startsWith('/')) ep = '/' + ep;
-    return base + ep;
-  }
-
-  if (isAgnesVideo25Model(model)) {
-    const params = new URLSearchParams({ video_id: id, model_name: model });
-    return `${root}/agnesapi?${params.toString()}`;
-  }
-
-  return `${root}/v1/videos/${encodeURIComponent(id)}`;
-}
-
-/**
- * 对齐 new-api：extractVideoURL + taskcommon.ExtractVideoURLFromJSON，
- * 并兼容当前 Agnes 完成态把直链放在 metadata.url（实测 2026-07）。
- */
-function extractAgnesVideoUrl(data) {
-  if (!data || typeof data !== 'object') return null;
-  const nested = (obj, key) =>
-    obj && typeof obj === 'object' && !Array.isArray(obj) ? obj[key] : null;
-  const candidates = [
-    data.video_url,
-    nested(data.content, 'video_url'),
-    nested(data.data, 'video_url'),
-    nested(data.data, 'url'),
-    // 当前官方完成态：metadata.url 才是 MP4 直链
-    nested(data.metadata, 'url'),
-    nested(data.metadata, 'video_url'),
-    nested(data.metadata, 'result_url'),
-    data.remixed_from_video_id,
-    nested(data.data, 'remixed_from_video_id'),
-    data.url,
-  ];
-  for (const c of candidates) {
-    const u = coerceHttpVideoUrl(c);
-    if (u) return u;
-  }
-  return pickProxyVideoUrl(data);
-}
 
 function buildQueryUrl(config, taskId, extras = {}) {
   const p = (config.provider || '').toLowerCase();
@@ -1159,33 +977,6 @@ function buildQueryUrl(config, taskId, extras = {}) {
   ep = String(ep).replace(/\{taskId\}/gi, encodeURIComponent(taskId)).replace(/\{task_id\}/gi, encodeURIComponent(taskId)).replace(/\{id\}/gi, encodeURIComponent(taskId));
   if (!ep.startsWith('/')) ep = '/' + ep;
   return base + ep;
-}
-
-// ????????? ? API ?? ID ???API ????+???????
-const VOLC_MODEL_ALIASES = {
-  'doubao-seedance-1.0-pro-fast':  'doubao-seedance-1-0-pro-250528',
-  'doubao-seedance-1.0-pro':       'doubao-seedance-1-0-pro-250528',
-  'doubao-seedance-1-0-pro':       'doubao-seedance-1-0-pro-250528',
-  'doubao-seedance-1.0-lite':      'doubao-seedance-1-0-lite-250428',
-  'doubao-seedance-1-0-lite':      'doubao-seedance-1-0-lite-250428',
-  'doubao-seedance-1.5-pro':       'doubao-seedance-1-5-pro-251215',
-  'doubao-seedance-1-5-pro':       'doubao-seedance-1-5-pro-251215',
-  'doubao-seedance-2.0-pro':       'doubao-seedance-2-0-260128',
-  'doubao-seedance-2-0-pro':       'doubao-seedance-2-0-260128',
-  'doubao-seedance-2.0-fast':      'doubao-seedance-2-0-fast-260128',
-  'doubao-seedance-2-0-fast':      'doubao-seedance-2-0-fast-260128',
-};
-
-function isOfficialArkVideoConfig(config) {
-  return String(config?.base_url || '').toLowerCase().includes('volces.com');
-}
-
-function normalizeVolcModel(name, config) {
-  const id = pickModelId(name);
-  if (!id) return name;
-  const aliased = VOLC_MODEL_ALIASES[id.toLowerCase()] || id;
-  if (!isOfficialArkVideoConfig(config)) return aliased;
-  return ARK_RETIRED_VIDEO_MODELS[String(aliased).toLowerCase()] || aliased;
 }
 
 function getModelFromConfig(config, preferredModel) {
@@ -2487,85 +2278,6 @@ const AGNES_VIDEO_25_RATIO_VALUES = [
   ['9:16', 9 / 16],
 ];
 
-function normalizeAgnesVideo25Duration(duration) {
-  const n = Math.round(Number(duration) || 5);
-  if (!Number.isFinite(n)) return '5';
-  return String(Math.min(12, Math.max(4, n)));
-}
-
-function normalizeAgnesVideo25AspectRatio(ratio) {
-  const normalized = normalizeAspectRatioForApi(ratio);
-  const allowed = new Set(AGNES_VIDEO_25_RATIO_VALUES.map(([label]) => label));
-  if (normalized && allowed.has(normalized)) return normalized;
-  const raw = String(ratio || '').trim().replace(/\uFF1A/g, ':').replace(/[×xX＊*]/g, ':');
-  if (allowed.has(raw)) return raw;
-  // 2:3 / 3:2 等映射到最接近的 2.5 支持画幅
-  const match = raw.match(/^(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)$/);
-  if (match) {
-    const r = Number(match[1]) / Number(match[2]);
-    let best = '16:9';
-    let bestD = Infinity;
-    for (const [label, tr] of AGNES_VIDEO_25_RATIO_VALUES) {
-      const d = Math.abs(Math.log(r) - Math.log(tr));
-      if (d < bestD) {
-        bestD = d;
-        best = label;
-      }
-    }
-    return best;
-  }
-  return '16:9';
-}
-
-function normalizeAgnesVideo25Size(model, resolution) {
-  if (isAgnesVideo25FlashModel(model)) return '720P';
-  const r = String(resolution || '').toUpperCase();
-  if (/2K|1080|1440|2160|4K/.test(r)) return '2K';
-  return '720P';
-}
-
-/**
- * Agnes Video 2.5 / 2.5 Flash：OpenAI Videos 兼容参数（mode / seconds / size / aspect_ratio）
- */
-function buildAgnesVideo25Body({
-  model,
-  prompt,
-  duration,
-  aspect_ratio,
-  resolution,
-  useOmniReference,
-  resolvedRefs,
-  firstResolved,
-  lastResolved,
-}) {
-  const flash = isAgnesVideo25FlashModel(model);
-  const body = {
-    model: model || 'agnes-video-2.5-flash',
-    prompt: prompt || '',
-    seconds: normalizeAgnesVideo25Duration(duration),
-    size: normalizeAgnesVideo25Size(model, resolution),
-    aspect_ratio: normalizeAgnesVideo25AspectRatio(aspect_ratio),
-  };
-  const refs = Array.isArray(resolvedRefs) ? resolvedRefs.filter(Boolean) : [];
-  if (useOmniReference && refs.length) {
-    const maxImages = flash ? 5 : 9;
-    body.mode = 'reference';
-    body.images = refs.slice(0, maxImages);
-    return {
-      body,
-      strategy: refs.length > 1 ? 'v25_reference' : 'v25_reference_single',
-    };
-  }
-  if (firstResolved || lastResolved) {
-    body.mode = 'keyframe';
-    if (firstResolved) body.first_frame = firstResolved;
-    if (lastResolved && lastResolved !== firstResolved) body.last_frame = lastResolved;
-    return { body, strategy: 'v25_keyframe' };
-  }
-  body.mode = 'text';
-  return { body, strategy: 'v25_text' };
-}
-
 /** 调试日志：base64 只记长度，http(s) URL 保留完整以便核对参考图 */
 function summarizeMediaValueForLog(value) {
   if (value == null) return value;
@@ -2654,41 +2366,6 @@ function agnesSnapNumFrames(durationSec, frameRate = 24) {
     if (Math.abs(v - target) < Math.abs(best - target)) best = v;
   }
   return best;
-}
-
-/**
- * Agnes 视频入参图片策略（可单测）：
- * - 顶层 image 仅支持 string（服务端 Go 结构体不接受 array）
- * - 全能多图参考：extra_body.image 数组，且禁止 mode: keyframes
- * - 经典首尾帧：extra_body.mode = keyframes + 恰好两张图
- */
-function buildAgnesVideoImagePayload({ useOmniReference, resolvedRefs, firstResolved, lastResolved }) {
-  const refs = Array.isArray(resolvedRefs) ? resolvedRefs.filter(Boolean) : [];
-  if (useOmniReference && refs.length >= 2) {
-    return {
-      strategy: 'omni_reference_extra_body',
-      extra_body: { image: refs.slice(0, 10) },
-    };
-  }
-  if (useOmniReference && refs.length === 1) {
-    return {
-      strategy: 'omni_reference_single',
-      image: refs[0],
-    };
-  }
-  if (!useOmniReference && firstResolved && lastResolved && firstResolved !== lastResolved) {
-    return {
-      strategy: 'classic_keyframes',
-      extra_body: { mode: 'keyframes', image: [firstResolved, lastResolved] },
-    };
-  }
-  if (firstResolved) {
-    return {
-      strategy: 'classic_i2v',
-      image: firstResolved,
-    };
-  }
-  return { strategy: 'text_only' };
 }
 
 async function callAgnesVideoApi(db, config, log, opts) {
@@ -3818,75 +3495,6 @@ function resolveVolcClassicImage(rawUrl, files_base_url, storage_local_path, log
   return u;
 }
 
-/** MiniMax 国内/海外根域名：去掉末尾 /v1 /v2，便于拼 V2 路径 */
-function getMinimaxApiRoot(baseUrl) {
-  let root = String(baseUrl || 'https://api.minimaxi.com').trim().replace(/\/$/, '');
-  for (const suf of ['/v2', '/v1']) {
-    if (root.toLowerCase().endsWith(suf)) {
-      root = root.slice(0, -suf.length).replace(/\/$/, '');
-      break;
-    }
-  }
-  return root || 'https://api.minimaxi.com';
-}
-
-function normalizeMinimaxH3Duration(duration) {
-  const n = Math.round(Number(duration));
-  const safe = Number.isFinite(n) && n > 0 ? n : 5;
-  return Math.min(15, Math.max(4, safe));
-}
-
-function normalizeMinimaxH3Resolution(resolution) {
-  const s = String(resolution || '').trim().toLowerCase();
-  if (!s) return '768P';
-  if (s === '2k' || s.includes('2k') || s.includes('1080') || s === '1080p') return '2K';
-  if (s.includes('768') || s === '768p') return '768P';
-  return '768P';
-}
-
-function buildMinimaxH3CreateUrl(config) {
-  const root = getMinimaxApiRoot(config.base_url);
-  let ep = (config.endpoint || '/v2/video_generation').toString().trim();
-  if (!ep.startsWith('/')) ep = '/' + ep;
-  // 用户若误配旧海螺 /video_generation，在 H3 协议下纠正为 V2
-  if (/^\/video_generation\/?$/i.test(ep) || /^\/v1\/video_generation\/?$/i.test(ep)) {
-    ep = '/v2/video_generation';
-  }
-  return root + ep;
-}
-
-function buildMinimaxH3PollUrl(config, taskId) {
-  const root = getMinimaxApiRoot(config.base_url);
-  const id = String(taskId || '').trim();
-  let ep = (config.query_endpoint || '/v2/query/video_generation/{taskId}').toString().trim();
-  if (!ep.startsWith('/')) ep = '/' + ep;
-  if (/query\/video_generation\?task_id=/i.test(ep) || /^\/v1\/query\//i.test(ep)) {
-    ep = '/v2/query/video_generation/{taskId}';
-  }
-  ep = ep
-    .replace(/\{taskId\}/gi, encodeURIComponent(id))
-    .replace(/\{task_id\}/gi, encodeURIComponent(id))
-    .replace(/\{id\}/gi, encodeURIComponent(id));
-  // 兼容仅写目录的配置：/v2/query/video_generation → 追加 /{taskId}
-  if (/\/v2\/query\/video_generation\/?$/i.test(ep) && id) {
-    ep = ep.replace(/\/?$/, '/') + encodeURIComponent(id);
-  }
-  return root + ep;
-}
-
-function extractMinimaxH3VideoUrl(data) {
-  if (!data || typeof data !== 'object') return null;
-  const task = data.task && typeof data.task === 'object' ? data.task : data;
-  const content = task.content && typeof task.content === 'object' ? task.content : null;
-  return (
-    coerceHttpVideoUrl(content?.url) ||
-    coerceHttpVideoUrl(task.video_url) ||
-    coerceHttpVideoUrl(task.url) ||
-    pickProxyVideoUrl(data) ||
-    null
-  );
-}
-
 function extractMinimaxH3TaskStatus(data) {
   if (!data || typeof data !== 'object') return '';
   const task = data.task && typeof data.task === 'object' ? data.task : data;
@@ -4984,4 +4592,5 @@ module.exports = {
   normalizeCheapSeedance2Duration,
   normalizeCheapSeedance2Size,
   buildCheapSeedance2ContentUrl,
+  VideoProviderFactory,
 };
