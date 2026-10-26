@@ -133,7 +133,7 @@
 
     <main class="main">
       <!-- 剧本工作台：单卡片 + 选项卡（创作 / 选择） -->
-      <ScriptWorkbench />
+      <ScriptWorkbench ref="scriptWorkbenchRef" />
 
       <!-- 全体全流程流水线后台监控与状态 -->
       <GenerationJobs ref="generationJobsPanel" :drama-id="dramaId" :episode-id="currentEpisodeId" kinds="pipeline,repair,text_framework,extraction" @jobs-change="applyGenerationJobs" @updated="onGenerationJobsUpdated" />
@@ -279,7 +279,6 @@ import {
   CUSTOM_STYLE_VALUE,
 } from '@/constants/styleOptions'
 import { useNavigation } from '@/composables/filmCreate/useNavigation'
-import { runGenerateStoryFromPremise } from '@/composables/useStoryGeneration'
 import { useFullPipeline } from '@/composables/filmCreate/useFullPipeline'
 
 const route = useRoute()
@@ -312,29 +311,7 @@ const storyStyle = ref('')
 const storyType = ref('')
 const storyEpisodeCount = ref(1)
 const storyGenerating = ref(false)
-/** 剧本工作台：create 创作 | select 选择预览 */
-const scriptWorkbenchMode = ref('create')
-const showSelectScriptDialog = ref(false)
-const selectScriptLoading = ref(false)
-const selectScriptImporting = ref(false)
-const selectScriptDramas = ref([])
-/** 选择剧本弹窗列表：排除当前打开的项目，避免误点「导入」到自身 */
-const selectableScriptDramas = computed(() => {
-  const cur = store.dramaId
-  const list = selectScriptDramas.value || []
-  if (cur == null) return list
-  return list.filter((d) => Number(d.id) !== Number(cur))
-})
-const selectPreviewEpisodeId = ref('')
-// P1-2: 小说导入
-const showNovelImport = ref(false)
-const novelImportMode = ref('text')
-const novelText = ref('')
-const novelFileName = ref('')
-const novelFileContent = ref('')
-const novelMaxChapters = ref(10)
-const novelAiSummarize = ref(false)
-const novelImporting = ref(false)
+const scriptWorkbenchRef = ref(null)
 const scriptTitle = ref('')
 const selectedEpisodeId = ref(null)
 /** 保存剧本后用于恢复选中集（后端重插后 id 会变，用 episode_number 匹配） */
@@ -342,9 +319,8 @@ const savedCurrentEpisodeNumber = ref(1)
 const scriptLanguage = ref('zh')
 const scriptStoryboardStyle = ref('')
 const scriptGenerating = ref(false)
-const episodeScriptGenerating = ref(false)
 const isStoryGenRunning = computed(() => {
-  if (storyGenerating.value || scriptGenerating.value || episodeScriptGenerating.value) return true
+  if (storyGenerating.value || scriptGenerating.value || scriptWorkbenchRef.value?.episodeScriptGenerating) return true
   return genStore.getAllRunningTasks().some(
     (t) => Number(t.dramaId) === Number(dramaId.value) && t.resourceType === GEN_RESOURCE.GENERATE_STORY
   )
@@ -1717,109 +1693,6 @@ function updateStoryboardDialogue(sbId) {
   // 可在此防抖后调用后端更新 dialogue
 }
 
-/** 将当前剧本内容保存到后端（创建/更新项目与集数），供「保存剧本」与「AI 生成」后自动保存共用 */
-async function saveScriptToBackend(content) {
-  const trimmed = (content ?? '').toString().trim()
-  if (!trimmed) return
-  const parsed = parseScriptIntoEpisodes(trimmed)
-  const multiFromMarkers = parsed.split && parsed.episodes.length >= 2
-  const toPayload = (list) =>
-    list.map((e, i) => ({
-      episode_number: i + 1,
-      title: (e.title && String(e.title).trim()) || '第' + (i + 1) + '集',
-      script_content: e.script_content ?? '',
-      description: null,
-      duration: 0,
-    }))
-
-  let dramaId = store.dramaId
-  const curEp = store.currentEpisode
-  if (!dramaId) {
-    const drama = await dramaAPI.create({
-      title: scriptTitle.value || '新故事',
-      description: storyInput.value?.trim() || trimmed.slice(0, 200),
-      genre: storyType.value || undefined,
-      style: generationStyle.value || undefined,
-      metadata: {
-        ...projectStylePromptMetadata(),
-        story_style: storyStyle.value || undefined,
-        narrative_style: { ...narrativeStyle.value },
-        aspect_ratio: projectAspectRatio.value || '16:9',
-      },
-    })
-    store.setDrama(drama)
-    dramaId = drama.id
-    savedCurrentEpisodeNumber.value = 1
-    const first = parsed.episodes[0] || { title: '', script_content: trimmed }
-    const episodes = multiFromMarkers
-      ? toPayload(parsed.episodes)
-      : [
-          {
-            episode_number: 1,
-            title: scriptTitle.value || first.title || '第1集',
-            script_content: first.script_content || trimmed,
-          },
-        ]
-    await dramaAPI.saveEpisodes(dramaId, episodes)
-    await loadDrama()
-    if (route.params.id === 'new') {
-      router.replace('/film/' + dramaId)
-    }
-    if (multiFromMarkers) {
-      ElMessage.success(`已按「第N集/章/节」拆分为 ${episodes.length} 集`)
-    }
-    return { created: true }
-  }
-  if (multiFromMarkers && !curEp?.id) {
-    savedCurrentEpisodeNumber.value = 1
-    const payload = toPayload(parsed.episodes)
-    await dramaAPI.saveEpisodes(dramaId, payload)
-    if (storyInput.value?.trim()) {
-      await dramaAPI.saveOutline(dramaId, {
-        summary: storyInput.value.trim(),
-        genre: storyType.value || undefined,
-        style: generationStyle.value || undefined,
-        metadata: {
-          ...projectStylePromptMetadata(),
-          story_style: storyStyle.value || undefined,
-        narrative_style: { ...narrativeStyle.value },
-          aspect_ratio: projectAspectRatio.value || '16:9',
-        },
-      }).catch(() => {})
-    }
-    await loadDrama()
-    ElMessage.success(`已按「第N集/章/节」拆分为 ${payload.length} 集`)
-    return { created: false, splitEpisodes: true }
-  }
-  savedCurrentEpisodeNumber.value = curEp?.episode_number ?? 1
-  const first = parsed.episodes[0]
-  const singleTitle = first?.title && String(first.title).trim()
-  const singleBody = parsed.episodes.length === 1 && singleTitle ? first.script_content : trimmed
-  if (curEp?.id) {
-    await dramaAPI.saveEpisodeScript(curEp.id, {
-      title: scriptTitle.value || singleTitle || '第' + curEp.episode_number + '集',
-      script_content: singleBody,
-    })
-  } else {
-    await dramaAPI.saveEpisodes(dramaId, [{ episode_number: 1, title: scriptTitle.value || '第1集', script_content: trimmed }])
-  }
-  if (storyInput.value?.trim()) {
-    await dramaAPI.saveOutline(dramaId, {
-      summary: storyInput.value.trim(),
-      genre: storyType.value || undefined,
-      style: generationStyle.value || undefined,
-      metadata: {
-        ...projectStylePromptMetadata(),
-        story_style: storyStyle.value || undefined,
-        narrative_style: { ...narrativeStyle.value },
-        aspect_ratio: projectAspectRatio.value || '16:9',
-      },
-    }).catch(() => {})
-  }
-  await loadDrama()
-  return { created: false }
-}
-
 /**
  * @param {boolean} includeGenerationStyle - 仅在选择「画面风格」为 true：写入 dramas.style 与 style_prompt_*。
  * 其它项目设置改为 false，避免界面未刷新时仍用旧的 generationStyle 覆盖外部已更新的画风（如直接调 API PUT outline）。
@@ -1864,406 +1737,6 @@ function onDubbingProfile(profile) {
   dubbingVoiceProfile.value = profile
   if (profile?.speed && store.drama?.metadata?.narrative_style) onNarrativeStyleSaved({ ...narrativeStyle.value, speech_rate: profile.speed, speech_mode: profile.speed !== narrativeStyle.value.speech_rate ? 'fixed' : narrativeStyle.value.speech_mode })
 }
-
-async function onGenerateStory() {
-  trackFilmCreateAction('generate_script_click')
-  await runGenerateStoryFromPremise({
-    premise: storyInput.value,
-    narrativeStyle: { ...narrativeStyle.value },
-    storyStyle: storyStyle.value,
-    storyType: storyType.value,
-    storyEpisodeCount: storyEpisodeCount.value,
-    scriptTitle: scriptTitle.value,
-    generationStyle: generationStyle.value,
-    customStylePrompt: customStylePrompt.value,
-    projectAspectRatio: projectAspectRatio.value,
-    store,
-    router,
-    route,
-    loadDrama,
-    savedCurrentEpisodeNumber,
-    selectedEpisodeId,
-    onEpisodeSelect,
-  storyGenerating,
-  scriptGenerating,
-  pollTask,
-  replaceRouteWhenNew: true,
-    skipPostLoad: false,
-    onComplete: ({ episodeCount }) => {
-      trackFilmCreateAction('generate_script_complete', {
-        extra: { episode_count: episodeCount },
-      })
-    },
-  })
-}
-
-function openSelectScriptDialog() {
-  showSelectScriptDialog.value = true
-}
-
-async function loadSelectScriptList() {
-  selectScriptLoading.value = true
-  try {
-    const res = await dramaAPI.list({ page: 1, page_size: 100 })
-    const items = res?.items ?? []
-    selectScriptDramas.value = items.filter((d) => d?.metadata?.script_template === true)
-  } catch {
-    selectScriptDramas.value = []
-  } finally {
-    selectScriptLoading.value = false
-  }
-}
-
-/**
- * 将源剧本的梗概 + 各集剧本写入当前工程（不跳转、不导入角色/分镜/视频）。
- * 在「新建故事」且尚未落库时，会创建新项目并跳转。
- */
-async function onPickScriptFromDialog(sourceId) {
-  if (!sourceId || selectScriptImporting.value) return
-  const srcNum = Number(sourceId)
-  const routeId = route.params.id
-  const targetFromRoute = routeId && routeId !== 'new' ? Number(routeId) : null
-  const targetId = store.dramaId ?? targetFromRoute ?? null
-
-  if (targetId != null && Number(targetId) === srcNum) {
-    ElMessage.info('当前打开的就是该项目')
-    return
-  }
-
-  if (targetId != null) {
-    try {
-      await ElMessageBox.confirm(
-        '将把所选剧本的「故事梗概」与「各集剧本正文」写入当前工程。不会导入角色、场景、分镜与视频。若源剧本集数更少，多出来的分集将从本工程移除（原分镜可能失效）。是否继续？',
-        '导入剧本到当前工程',
-        { type: 'warning', confirmButtonText: '导入', cancelButtonText: '取消' }
-      )
-    } catch {
-      return
-    }
-  }
-
-  selectScriptImporting.value = true
-  try {
-    const src = await dramaAPI.get(srcNum)
-    const rawEps = [...(src.episodes || [])].sort(
-      (a, b) => (Number(a.episode_number) || 0) - (Number(b.episode_number) || 0)
-    )
-    const summary = (src.description || '').toString().trim()
-    const episodesPayload = rawEps.map((ep, i) => ({
-      episode_number: ep.episode_number != null ? Number(ep.episode_number) : i + 1,
-      title: (ep.title || '').toString(),
-      script_content: ep.script_content ?? '',
-      description: ep.description ?? null,
-      duration: ep.duration ?? 0,
-    }))
-
-    if (!targetId) {
-      if (episodesPayload.length === 0 && !summary) {
-        ElMessage.warning('所选剧本没有可导入的梗概或分集正文')
-        return
-      }
-      const title = (src.title || '新故事').toString().trim() || '新故事'
-      const created = await dramaAPI.create({
-        title,
-        description: summary || undefined,
-        metadata: {},
-      })
-      const workId = created.id
-      store.setDrama({ id: workId })
-      if (episodesPayload.length > 0) {
-        await dramaAPI.saveEpisodes(workId, episodesPayload)
-      }
-      if (summary) {
-        await dramaAPI.saveOutline(workId, { summary }).catch(() => {})
-      }
-      showSelectScriptDialog.value = false
-      router.replace('/film/' + workId)
-      ElMessage.success('已根据所选剧本创建项目并导入梗概与正文')
-      scriptWorkbenchMode.value = 'select'
-      return
-    }
-
-    if (summary) {
-      await dramaAPI.saveOutline(targetId, { summary }).catch(() => {})
-    }
-    if (episodesPayload.length > 0) {
-      await dramaAPI.saveEpisodes(targetId, episodesPayload)
-    } else if (!summary) {
-      ElMessage.warning('所选剧本没有可导入的梗概或分集正文')
-      return
-    }
-
-    showSelectScriptDialog.value = false
-    await loadDrama()
-    ElMessage.success('已导入故事梗概与剧本（当前工程未切换）')
-    scriptWorkbenchMode.value = 'select'
-  } catch (e) {
-    ElMessage.error(e.message || '导入失败')
-  } finally {
-    selectScriptImporting.value = false
-  }
-}
-
-watch(
-  () => [store.drama?.episodes, selectedEpisodeId.value],
-  () => {
-    const eps = store.drama?.episodes || []
-    if (eps.length > 1) {
-      const cur = selectedEpisodeId.value
-      const hit = cur != null && eps.some((e) => Number(e.id) === Number(cur))
-      selectPreviewEpisodeId.value = hit ? String(cur) : String(eps[0].id)
-    } else {
-      selectPreviewEpisodeId.value = ''
-    }
-  },
-  { deep: true, immediate: true }
-)
-
-function novelImportReset() {
-  novelText.value = ''
-  novelFileName.value = ''
-  novelFileContent.value = ''
-}
-
-function onNovelFileChange(file) {
-  novelFileName.value = file.name
-  const reader = new FileReader()
-  reader.onload = (ev) => { novelFileContent.value = ev.target.result }
-  reader.readAsText(file.raw || file, 'utf-8')
-}
-
-async function onImportNovel() {
-  const text = novelImportMode.value === 'file' ? novelFileContent.value : novelText.value
-  if (!text?.trim()) {
-    ElMessage.warning('请输入或上传小说内容')
-    return
-  }
-  novelImporting.value = true
-  try {
-    const formData = new FormData()
-    if (novelImportMode.value === 'file' && novelFileContent.value) {
-      const blob = new Blob([novelFileContent.value], { type: 'text/plain' })
-      formData.append('file', blob, novelFileName.value || 'novel.txt')
-    } else {
-      formData.append('text', text)
-    }
-    formData.append('title', scriptTitle.value || '导入小说')
-    formData.append('max_chapters', String(novelMaxChapters.value))
-    formData.append('ai_summarize', String(novelAiSummarize.value))
-    const { default: axios } = await import('axios')
-    const baseURL = (await import('@/utils/request')).default.defaults.baseURL || '/api/v1'
-    const res = await axios.post(`${baseURL}/dramas/import-novel`, formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
-    })
-    let chapters = res.data?.data?.chapters || res.data?.chapters || []
-    if (!chapters.length) {
-      ElMessage.warning('未能识别到章节内容')
-      return
-    }
-    // 若后端只识别出 1 章，但正文里有多处「第N集」行首标题，用前端规则再拆（与保存剧本一致）
-    const clientParsed = parseScriptIntoEpisodes(text)
-    if (clientParsed.split && clientParsed.episodes.length > chapters.length) {
-      chapters = clientParsed.episodes.map((e, i) => ({
-        index: i + 1,
-        title: e.title,
-        content: e.script_content,
-        script: e.script_content,
-      }))
-    }
-    const toEpisodeRow = (ch, i) => ({
-      episode_number: i + 1,
-      title: (ch.title && String(ch.title).trim()) || '第' + (i + 1) + '集',
-      script_content: String(ch.script ?? ch.content ?? '').trimEnd(),
-      description: null,
-      duration: 0,
-    })
-    const rows = chapters.map(toEpisodeRow)
-    const plainScript = episodesListToPlainScript(
-      rows.map((r) => ({ title: r.title, script_content: r.script_content }))
-    )
-    if (store.dramaId && rows.length >= 2) {
-      await dramaAPI.saveEpisodes(store.dramaId, rows)
-      await loadDrama()
-      ElMessage.success(`已导入并拆分为 ${rows.length} 集`)
-    } else {
-      store.setScriptContent(plainScript || rows[0]?.script_content || '')
-      ElMessage.success(
-        rows.length >= 2
-          ? `已导入 ${rows.length} 个章节（保存剧本时将写入多集）`
-          : `成功导入 ${rows.length} 个章节，请继续编辑剧本`
-      )
-    }
-    showNovelImport.value = false
-    novelImportReset()
-  } catch (e) {
-    ElMessage.error(e.message || '导入失败')
-  } finally {
-    novelImporting.value = false
-  }
-}
-
-async function onRegenerateEpisodeScript() {
-  const episodeId = currentEpisodeId.value
-  if (!episodeId || episodeScriptGenerating.value) return
-  const projectId = dramaId.value
-  const originalContent = scriptContent.value
-  const originalTitle = scriptTitle.value
-  episodeScriptGenerating.value = true
-  try {
-    const draft = await dramaAPI.generateEpisodeScript(episodeId, { premise: storyInput.value })
-    if (Number(currentEpisodeId.value) !== Number(episodeId) || Number(dramaId.value) !== Number(projectId)
-        || scriptContent.value !== originalContent || scriptTitle.value !== originalTitle) {
-      ElMessage.info('当前集或编辑内容已变化，未替换编辑框；需要时请重新生成。')
-      return
-    }
-    scriptContent.value = draft.script_content
-    scriptTitle.value = draft.title
-    ElMessage.success(`第${draft.episode_number}集草稿已生成，请检查后点击「保存当前集」。已有分镜需另行重新生成。`)
-  } catch (e) {
-    ElMessage.error(e.message || '当前集剧本生成失败，原剧本已保留')
-  } finally {
-    episodeScriptGenerating.value = false
-  }
-}
-
-async function onGenerateScript() {
-  trackFilmCreateAction('save_script_click')
-  const content = (scriptContent.value ?? store.scriptContent ?? '').toString().trim()
-  if (!content) {
-    ElMessage.warning('请先在「故事生成」中点击 AI 生成，或手动输入剧本内容')
-    return
-  }
-  scriptGenerating.value = true
-  try {
-    const result = await saveScriptToBackend(content)
-    if (result?.created) {
-      ElMessage.success('项目已创建，剧本已保存')
-    } else {
-      ElMessage.success('剧本已保存')
-    }
-    trackFilmCreateAction('save_script_complete', {
-      extra: { created_project: !!result?.created },
-    })
-  } catch (e) {
-    ElMessage.error(e.message || '保存失败')
-  } finally {
-    scriptGenerating.value = false
-  }
-}
-
-async function onAddEpisode() {
-  if (!store.dramaId) return
-  const list = store.drama?.episodes || []
-  const nextNum = list.length > 0
-    ? Math.max(...list.map((e) => Number(e.episode_number) || 0), 0) + 1
-    : 1
-  const updated = list.map((ep, i) => ({
-    episode_number: ep.episode_number ?? i + 1,
-    title: ep.title || '第' + (ep.episode_number ?? i + 1) + '集',
-    script_content: ep.script_content || '',
-    description: ep.description,
-    duration: ep.duration
-  }))
-  updated.push({
-    episode_number: nextNum,
-    title: '第' + nextNum + '集',
-    script_content: '',
-    description: null,
-    duration: 0
-  })
-  try {
-    await dramaAPI.saveEpisodes(store.dramaId, updated)
-    savedCurrentEpisodeNumber.value = nextNum
-    await loadDrama()
-    ElMessage.success('已添加第' + nextNum + '集')
-  } catch (e) {
-    ElMessage.error(e.message || '添加失败')
-  }
-}
-
-
-
-
-
-async function onDirectorFullPipeline() {
-  if (!dramaId.value) return
-  const premise = (storyInput.value || store.drama?.description || store.drama?.summary || '').trim()
-  if (!premise) {
-    ElMessage.warning('请先在上方输入故事梗概，导演智能体将以此为原点创编全套剧作与视听资产！')
-    return
-  }
-
-  try {
-    await ElMessageBox.confirm(
-      `将启动【全生命周期导演智能体（Full-Lifecycle Director Agent）】执行全流程闭环：\n\n1. 【剧作阶段】依据故事梗概规划并创作 ${storyEpisodeCount.value || 3} 集剧本正文；\n2. 【世界观本体】自动抽取核心角色（外貌锚点）、道具（真实物理尺度与时代校验）、场地场景（空间地标）；\n3. 【视听导演调度】编排全集高流动感运镜（固定镜头<15%），并为无对白镜头配齐原生 BGM 提示词（供 H3）；\n4. 【SHACL门禁自检】门禁规则审查，自省纠错直到 100% 合格入库。\n\n是否立即启动导演智能体全流程创作？`,
-      '启动导演智能体全生命周期推演',
-      {
-        confirmButtonText: '立即启动全流程推演',
-        cancelButtonText: '取消',
-        type: 'warning',
-        distinguishCancelAndClose: true,
-      }
-    )
-  } catch {
-    return
-  }
-
-  directorGenerating.value = true
-  try {
-    const res = await ontologyAPI.directorFullPipeline(dramaId.value, {
-      premise,
-      episode_count: storyEpisodeCount.value || 3,
-      style: storyStyle.value || 'modern',
-      genre: storyType.value || 'drama',
-    })
-    const taskData = res?.data ?? res
-    const taskId = taskData?.task_id
-    if (!taskId) throw new Error(taskData?.message || '未能创建全流程导演智能体任务')
-
-    ElMessage.info('🎬 全流程导演智能体推演已在后台启动，正在规划剧本、抽取本体资产并编排动态分镜...')
-    pollDirectorFullPipelineTask(taskId)
-  } catch (e) {
-    ElMessage.error(e.message || '全流程导演智能体启动失败')
-    directorGenerating.value = false
-  }
-}
-
-async function pollDirectorFullPipelineTask(taskId) {
-  const maxAttempts = 180
-  for (let i = 0; i < maxAttempts; i++) {
-    await new Promise((r) => setTimeout(r, 2500))
-    try {
-      const tr = await taskAPI.get(taskId)
-      const task = tr?.data ?? tr
-      if (!task) continue
-
-      if (task.status === 'completed') {
-        directorGenerating.value = false
-        await loadDrama()
-        const result = task.result || {}
-        ElNotification({
-          title: '🎬 全生命周期导演推演完成',
-          message: result.summary || `全流程闭环推演完成！剧本、角色、道具尺度、场景及全集 ${result.total_shots || 0} 个高质量运镜分镜已全部就绪。`,
-          type: 'success',
-          duration: 10000,
-        })
-        return
-      }
-
-      if (task.status === 'failed') {
-        directorGenerating.value = false
-        ElMessage.error(task.error || '全流程导演智能体推演失败')
-        return
-      }
-    } catch (err) {
-      // transient poll error, continue
-    }
-  }
-  directorGenerating.value = false
-  ElMessage.warning('全流程导演智能体推演任务仍在后台执行，请稍后刷新查看。')
-}
-
-
 
 /** 生成期间轻量刷新分镜列表（只更新指定集 storyboards，不重载整个 drama） */
 async function refreshStoryboardsForEpisode(episodeId) {
@@ -2505,12 +1978,13 @@ watch(
 
 // Provide context for StoryboardCard, ScriptWorkbench and child components
 provide('filmCreateContext', {
-  // 剧本工作台状态与方法
-  scriptWorkbenchMode,
+  // 剧本工作台全局共享参数
   storyInput,
   storyStyle,
   storyType,
   storyEpisodeCount,
+  storyGenerating,
+  savedCurrentEpisodeNumber,
   narrativeStyleSaving,
   onNarrativeStyleSaved,
   generationStyle,
@@ -2528,37 +2002,13 @@ provide('filmCreateContext', {
   savingReferenceModeIds,
   onStartEndToEndFullPipeline,
   isStoryGenRunning,
-  onGenerateStory,
   selectedEpisodeId,
-  episodeScriptGenerating,
   onEpisodeSelect,
   scriptTitle,
-  onAddEpisode,
   scriptContent,
   scriptGenerating,
   currentEpisodeId,
-  onGenerateScript,
-  onRegenerateEpisodeScript,
-  openSelectScriptDialog,
-  selectPreviewEpisodeId,
-  showSelectScriptDialog,
-  loadSelectScriptList,
-  selectScriptLoading,
-  selectScriptImporting,
-  selectableScriptDramas,
-  selectScriptDramas,
-  onPickScriptFromDialog,
   saveProjectSettings,
-  showNovelImport,
-  novelImportReset,
-  novelImportMode,
-  novelText,
-  onNovelFileChange,
-  novelFileName,
-  novelMaxChapters,
-  novelAiSummarize,
-  novelImporting,
-  onImportNovel,
   dramaId,
   characters,
   scenes,
