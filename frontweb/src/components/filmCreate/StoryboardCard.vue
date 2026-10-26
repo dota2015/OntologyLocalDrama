@@ -54,7 +54,13 @@
     </div>
 
     <!-- 卡片主体（三栏布局） -->
-    <div :id="'sb-' + sb.id" class="storyboard-row" @click="agentContext.setFocusedTarget({ type: 'storyboard', id: sb.id, number: sb.storyboard_number, title: sb.title || ('第' + sb.storyboard_number + '镜') })">
+    <div
+      :id="'sb-' + sb.id"
+      class="storyboard-row"
+      :class="{ 'sb-row--portrait': isPortrait, 'sb-row--dual': isDualFrame }"
+      :style="{ '--sb-aspect-ratio': cssAspectRatio }"
+      @click="agentContext.setFocusedTarget({ type: 'storyboard', id: sb.id, number: sb.storyboard_number, title: sb.title || ('第' + sb.storyboard_number + '镜') })"
+    >
       <!-- 左：分镜脚本 -->
       <div class="sb-panel sb-script">
         <div class="sb-script-row sb-script-selects">
@@ -245,7 +251,14 @@
       </div>
 
       <!-- 中：经典模式=分镜参考图；全能模式=片段描述（独立字段，与参考图并存） -->
-      <div class="sb-panel sb-image" :class="{ 'sb-image--universal': ctx.isSbUniversalMode(sb.id) }">
+      <div
+        class="sb-panel sb-image"
+        :class="{
+          'sb-image--universal': ctx.isSbUniversalMode(sb.id),
+          'sb-image--dual': isDualFrame,
+          'sb-image--portrait': isPortrait,
+        }"
+      >
         <template v-if="ctx.isSbUniversalMode(sb.id)">
           <div class="sb-prompt-label sb-universal-label-row">
             <div class="sb-universal-label-left">
@@ -515,151 +528,160 @@
       </div>
 
       <!-- 右：分镜视频 -->
-      <div class="sb-panel sb-video">
-        <div v-if="ctx.getSbVideo(sb.id)" class="sb-video-area">
-          <video
-            v-if="ctx.assetVideoUrl(ctx.getSbVideo(sb.id))"
-            :key="ctx.sbMainVideoPlayerKey(sb.id)"
-            :src="ctx.assetVideoUrl(ctx.getSbVideo(sb.id))"
-            controls
-            class="sb-video-player"
-            preload="metadata"
-          />
-          <div
-            v-else
-            class="sb-video-error"
-            :title="ctx.getSbVideoError(sb.id) || '视频地址无效'"
-          >
-            <span>{{ ctx.getSbVideoError(sb.id) || '视频地址无效，请重新生成' }}</span>
-            <el-button
-              v-if="ctx.getSbResumableFailedVideo(sb.id)"
-              type="warning"
-              link
-              size="small"
-              class="sb-resume-poll-btn"
-              :loading="ctx.isSbVideoGenerating(sb.id)"
-              @click="ctx.onResumeSbVideoPoll(sb)"
-            >
-              继续查询
-            </el-button>
-          </div>
-          <span v-if="ctx.isSbVideoGenerating(sb.id)" class="sb-video-regenerating-overlay">
-            <el-icon class="is-loading"><Loading /></el-icon>
-            正在重新生成...
-          </span>
-        </div>
-        <div v-else class="sb-video-area sb-video-placeholder">
-          <span v-if="ctx.isSbVideoGenerating(sb.id)" class="sb-video-generating-text">
-            <el-icon class="is-loading"><Loading /></el-icon>
-            正在生成视频...
-          </span>
-          <template v-else>
-            <div v-if="ctx.getSbVideoError(sb.id)" class="sb-video-error">
-              <span>{{ ctx.getSbVideoError(sb.id) }}</span>
-              <el-button
-                v-if="ctx.getSbResumableFailedVideo(sb.id)"
-                type="warning"
-                link
-                size="small"
-                class="sb-resume-poll-btn"
-                :loading="ctx.isSbVideoGenerating(sb.id)"
-                @click="ctx.onResumeSbVideoPoll(sb)"
+      <div class="sb-panel sb-video" :class="{ 'sb-video--portrait': isPortrait }">
+        <div class="sb-video-body-grid">
+          <!-- 视频媒体侧 -->
+          <div class="sb-video-media-side">
+            <div v-if="ctx.getSbVideo(sb.id)" class="sb-video-area">
+              <video
+                v-if="ctx.assetVideoUrl(ctx.getSbVideo(sb.id))"
+                :key="ctx.sbMainVideoPlayerKey(sb.id)"
+                :src="ctx.assetVideoUrl(ctx.getSbVideo(sb.id))"
+                controls
+                class="sb-video-player"
+                preload="metadata"
+              />
+              <div
+                v-else
+                class="sb-video-error"
+                :title="ctx.getSbVideoError(sb.id) || '视频地址无效'"
               >
-                继续查询
-              </el-button>
+                <span>{{ ctx.getSbVideoError(sb.id) || '视频地址无效，请重新生成' }}</span>
+                <el-button
+                  v-if="ctx.getSbResumableFailedVideo(sb.id)"
+                  type="warning"
+                  link
+                  size="small"
+                  class="sb-resume-poll-btn"
+                  :loading="ctx.isSbVideoGenerating(sb.id)"
+                  @click="ctx.onResumeSbVideoPoll(sb)"
+                >
+                  继续查询
+                </el-button>
+              </div>
+              <span v-if="ctx.isSbVideoGenerating(sb.id)" class="sb-video-regenerating-overlay">
+                <el-icon class="is-loading"><Loading /></el-icon>
+                正在重新生成...
+              </span>
             </div>
-            <el-button
-              type="primary"
-              size="small"
-              class="sb-generate-video-btn"
-              :loading="ctx.isSbVideoGenerating(sb.id)"
-              :disabled="!ctx.sbCanSubmitVideo(sb) || ctx.isSbVideoGenerating(sb.id)"
-              @click="ctx.onGenerateSbVideo(sb)"
-            >
-              生成分镜视频
-            </el-button>
-          </template>
-        </div>
+            <div v-else class="sb-video-area sb-video-placeholder">
+              <span v-if="ctx.isSbVideoGenerating(sb.id)" class="sb-video-generating-text">
+                <el-icon class="is-loading"><Loading /></el-icon>
+                正在生成视频...
+              </span>
+              <template v-else>
+                <div v-if="ctx.getSbVideoError(sb.id)" class="sb-video-error">
+                  <span>{{ ctx.getSbVideoError(sb.id) }}</span>
+                  <el-button
+                    v-if="ctx.getSbResumableFailedVideo(sb.id)"
+                    type="warning"
+                    link
+                    size="small"
+                    class="sb-resume-poll-btn"
+                    :loading="ctx.isSbVideoGenerating(sb.id)"
+                    @click="ctx.onResumeSbVideoPoll(sb)"
+                  >
+                    继续查询
+                  </el-button>
+                </div>
+                <el-button
+                  type="primary"
+                  size="small"
+                  class="sb-generate-video-btn"
+                  :loading="ctx.isSbVideoGenerating(sb.id)"
+                  :disabled="!ctx.sbCanSubmitVideo(sb) || ctx.isSbVideoGenerating(sb.id)"
+                  @click="ctx.onGenerateSbVideo(sb)"
+                >
+                  生成分镜视频
+                </el-button>
+              </template>
+            </div>
 
-        <!-- 视频历史条 -->
-        <div v-if="ctx.getVideoStripItems(sb.id).length" class="sb-videos-strip">
-          <el-tooltip content="历史视频：按时间顺序从左往右排列，点击设为当前视频" placement="top" :show-arrow="false">
-            <el-icon class="sb-strip-hint-icon"><InfoFilled /></el-icon>
-          </el-tooltip>
-          <div
-            v-for="item in ctx.getVideoStripItems(sb.id)"
-            :key="item.key"
-            class="sb-video-thumb"
-            :class="{ 'sb-video-thumb--active': item.isActive }"
-            :title="`${item.label}${item.isActive ? '（当前主视频）' : '（点击设为当前视频）'}`"
-            @click="ctx.onSelectSbMainVideo(sb, item.video)"
-          >
-            <video :src="item.src" preload="metadata" class="sb-video-thumb-player" />
-            <span class="sb-video-thumb-label">{{ item.label }}</span>
-            <button
-              v-if="item.video?.id"
-              type="button"
-              class="extra-thumb-remove"
-              title="删除历史视频"
-              @click.stop="ctx.onRemoveSbHistoryVideo(sb.id, item.video.id)"
-            >×</button>
+            <!-- 视频历史条 -->
+            <div v-if="ctx.getVideoStripItems(sb.id).length" class="sb-videos-strip">
+              <el-tooltip content="历史视频：按时间顺序从左往右排列，点击设为当前视频" placement="top" :show-arrow="false">
+                <el-icon class="sb-strip-hint-icon"><InfoFilled /></el-icon>
+              </el-tooltip>
+              <div
+                v-for="item in ctx.getVideoStripItems(sb.id)"
+                :key="item.key"
+                class="sb-video-thumb"
+                :class="{ 'sb-video-thumb--active': item.isActive }"
+                :title="`${item.label}${item.isActive ? '（当前主视频）' : '（点击设为当前视频）'}`"
+                @click="ctx.onSelectSbMainVideo(sb, item.video)"
+              >
+                <video :src="item.src" preload="metadata" class="sb-video-thumb-player" />
+                <span class="sb-video-thumb-label">{{ item.label }}</span>
+                <button
+                  v-if="item.video?.id"
+                  type="button"
+                  class="extra-thumb-remove"
+                  title="删除历史视频"
+                  @click.stop="ctx.onRemoveSbHistoryVideo(sb.id, item.video.id)"
+                >×</button>
+              </div>
+            </div>
           </div>
-        </div>
 
-        <!-- 视频操作栏：双向衔接 -->
-        <div v-if="ctx.getSbVideo(sb.id)" class="sb-video-actions">
-          <el-button size="small" :loading="ctx.isSbVideoGenerating(sb.id)" :disabled="!ctx.sbCanSubmitVideo(sb) || ctx.isSbVideoGenerating(sb.id)" @click="ctx.onGenerateSbVideo(sb)">重新生成</el-button>
-          <el-tooltip v-if="ctx.getPrevStoryboard(sb.id)" content="提取本视频首帧，设为上一个分镜的尾帧" placement="top">
-            <el-button size="small" :loading="ctx.linkingFirstFrameIds.has(sb.id)" @click="ctx.onLinkFirstFrameToPrev(sb)">首帧衔接</el-button>
-          </el-tooltip>
-          <el-tooltip v-if="ctx.getNextStoryboard(sb.id)" content="提取本视频尾帧，设为下一个分镜的首帧" placement="top">
-            <el-button size="small" :loading="ctx.linkingTailFrameIds.has(sb.id)" @click="ctx.onLinkTailFrameToNext(sb)">尾帧衔接</el-button>
-          </el-tooltip>
-          <el-button size="small" text type="danger" @click="ctx.onRemoveSbHistoryVideo(sb.id, ctx.getSbVideo(sb.id).id)">删除视频</el-button>
-        </div>
+          <!-- 右侧：控制面板与信息栏 -->
+          <div class="sb-video-controls-side">
+            <!-- 视频动作与模型高级配置 -->
+            <div class="sb-video-action-settings-row">
+              <div v-if="ctx.getSbVideo(sb.id)" class="sb-video-actions">
+                <el-button size="small" :loading="ctx.isSbVideoGenerating(sb.id)" :disabled="!ctx.sbCanSubmitVideo(sb) || ctx.isSbVideoGenerating(sb.id)" @click="ctx.onGenerateSbVideo(sb)">重新生成</el-button>
+                <el-tooltip v-if="ctx.getPrevStoryboard(sb.id)" content="提取本视频首帧，设为上一个分镜的尾帧" placement="top">
+                  <el-button size="small" :loading="ctx.linkingFirstFrameIds.has(sb.id)" @click="ctx.onLinkFirstFrameToPrev(sb)">首帧衔接</el-button>
+                </el-tooltip>
+                <el-tooltip v-if="ctx.getNextStoryboard(sb.id)" content="提取本视频尾帧，设为下一个分镜的首帧" placement="top">
+                  <el-button size="small" :loading="ctx.linkingTailFrameIds.has(sb.id)" @click="ctx.onLinkTailFrameToNext(sb)">尾帧衔接</el-button>
+                </el-tooltip>
+                <el-button size="small" text type="danger" @click="ctx.onRemoveSbHistoryVideo(sb.id, ctx.getSbVideo(sb.id).id)">删除</el-button>
+              </div>
 
-        <!-- 对白与旁白 -->
-        <div class="sb-speech-toolbar">
-          <div class="sb-tags-group">
-            <el-tag :type="ctx.speechStatus(sb).pending ? 'warning' : (ctx.speechStatus(sb).dialogue ? 'success' : 'info')" size="small">对白：{{ ctx.speechStatus(sb).pending ? '待提取' : (ctx.speechStatus(sb).dialogue ? '有' : '无') }}</el-tag>
-            <el-tag :type="ctx.speechStatus(sb).pending ? 'warning' : (ctx.speechStatus(sb).narration ? 'success' : 'info')" size="small">旁白：{{ ctx.speechStatus(sb).pending ? '待提取' : (ctx.speechStatus(sb).narration ? '有' : '无') }}</el-tag>
+              <div class="sb-model-config-row">
+                <div class="sb-model-select-wrap">
+                  <span class="sb-config-label">模型</span>
+                  <el-select
+                    :model-value="sb.video_model || ''"
+                    :empty-values="[null, undefined]"
+                    size="small"
+                    class="sb-model-select"
+                    :disabled="ctx.savingVideoModelIds.has(sb.id) || ctx.isSbVideoGenerating(sb.id)"
+                    @visible-change="$event && ctx.loadVideoModelChoices()"
+                    @change="ctx.setShotVideoModel(sb, $event)"
+                  >
+                    <el-option :value="''" :label="'默认（' + (ctx.videoModelLabel(ctx.defaultShotModel(sb)) || 'H3') + '）'" />
+                    <el-option v-for="option in (ctx.videoModelChoices?.value || ctx.videoModelChoices || [])" :key="option.model" :value="option.model" :label="option.label" />
+                  </el-select>
+                </div>
+                <WardrobeSettings :key="'wardrobe-shot-' + sb.id" :drama-id="ctx.dramaId?.value || ctx.dramaId" :storyboard-id="sb.id" :disabled="ctx.isSbVideoGenerating(sb.id)" />
+                <H3ShotSettings v-if="isH3VideoModel(ctx.selectedShotModel(sb))" :key="'h3-' + sb.id" :drama-id="ctx.dramaId?.value || ctx.dramaId" :storyboard-id="sb.id" :aspect-ratio="ctx.projectAspectRatio?.value || ctx.projectAspectRatio" :disabled="ctx.isSbVideoGenerating(sb.id)" />
+                <ShotSpeechDelivery :shot="sb" :narrative-style="ctx.narrativeStyle?.value || ctx.narrativeStyle" />
+              </div>
+            </div>
+
+            <!-- 对白与旁白 -->
+            <div class="sb-speech-toolbar">
+              <div class="sb-tags-group">
+                <el-tag :type="ctx.speechStatus(sb).pending ? 'warning' : (ctx.speechStatus(sb).dialogue ? 'success' : 'info')" size="small">对白：{{ ctx.speechStatus(sb).pending ? '待提取' : (ctx.speechStatus(sb).dialogue ? '有' : '无') }}</el-tag>
+                <el-tag :type="ctx.speechStatus(sb).pending ? 'warning' : (ctx.speechStatus(sb).narration ? 'success' : 'info')" size="small">旁白：{{ ctx.speechStatus(sb).pending ? '待提取' : (ctx.speechStatus(sb).narration ? '有' : '无') }}</el-tag>
+              </div>
+              <el-button size="small" @click="ctx.speechEditor?.value?.open(sb, true)">生成对话</el-button>
+              <el-button size="small" link type="primary" @click="ctx.speechEditor?.value?.open(sb)">编辑文本</el-button>
+              <el-button size="small" :loading="ctx.ttsSbIds.has(sb.id)" :disabled="!ctx.speechStatus(sb).dialogue" @click="ctx.onTtsSbDialogue(sb)">对白配音</el-button>
+              <el-button v-if="ctx.sbDialogueAudioRelPath(sb)" size="small" @click="ctx.playSbDialogueTts(sb)">试听对白</el-button>
+              <el-button size="small" :loading="ctx.ttsSbNarrationIds.has(sb.id)" :disabled="!ctx.speechStatus(sb).narration" @click="ctx.onTtsSbNarration(sb)">旁白配音</el-button>
+              <el-button v-if="ctx.sbNarrationAudioRelPath(sb)" size="small" @click="ctx.playSbNarrationTts(sb)">试听旁白</el-button>
+            </div>
+
+            <!-- 视频提示词 -->
+            <div class="sb-video-prompt-compact">
+              <span class="sb-dot"></span>
+              <span class="sb-prompt-name">视频词</span>
+              <span class="sb-video-prompt-text sb-video-prompt-text--preview" :title="sb.video_prompt">{{ sb.video_prompt || '暂无视频提示词（在「分镜配置」保存后自动生成）' }}</span>
+              <el-button size="small" link type="primary" class="sb-prompt-edit-btn" @click="ctx.onOpenSbPromptDialog(sb, 'video')">编辑</el-button>
+            </div>
           </div>
-          <el-button size="small" @click="ctx.speechEditor?.value?.open(sb, true)">生成对话</el-button>
-          <el-button size="small" link type="primary" @click="ctx.speechEditor?.value?.open(sb)">编辑文本</el-button>
-          <el-button size="small" :loading="ctx.ttsSbIds.has(sb.id)" :disabled="!ctx.speechStatus(sb).dialogue" @click="ctx.onTtsSbDialogue(sb)">对白配音</el-button>
-          <el-button v-if="ctx.sbDialogueAudioRelPath(sb)" size="small" @click="ctx.playSbDialogueTts(sb)">试听对白</el-button>
-          <el-button size="small" :loading="ctx.ttsSbNarrationIds.has(sb.id)" :disabled="!ctx.speechStatus(sb).narration" @click="ctx.onTtsSbNarration(sb)">旁白配音</el-button>
-          <el-button v-if="ctx.sbNarrationAudioRelPath(sb)" size="small" @click="ctx.playSbNarrationTts(sb)">试听旁白</el-button>
-        </div>
-
-        <!-- 视频模型与镜头高级配置（合并单行，消除冗余解释文案） -->
-        <div class="sb-model-config-row">
-          <div class="sb-model-select-wrap">
-            <span class="sb-config-label">模型</span>
-            <el-select
-              :model-value="sb.video_model || ''"
-              :empty-values="[null, undefined]"
-              size="small"
-              class="sb-model-select"
-              :disabled="ctx.savingVideoModelIds.has(sb.id) || ctx.isSbVideoGenerating(sb.id)"
-              @visible-change="$event && ctx.loadVideoModelChoices()"
-              @change="ctx.setShotVideoModel(sb, $event)"
-            >
-              <el-option :value="''" :label="'默认（' + (ctx.videoModelLabel(ctx.defaultShotModel(sb)) || 'H3') + '）'" />
-              <el-option v-for="option in (ctx.videoModelChoices?.value || ctx.videoModelChoices || [])" :key="option.model" :value="option.model" :label="option.label" />
-            </el-select>
-          </div>
-          <WardrobeSettings :key="'wardrobe-shot-' + sb.id" :drama-id="ctx.dramaId?.value || ctx.dramaId" :storyboard-id="sb.id" :disabled="ctx.isSbVideoGenerating(sb.id)" />
-          <H3ShotSettings v-if="isH3VideoModel(ctx.selectedShotModel(sb))" :key="'h3-' + sb.id" :drama-id="ctx.dramaId?.value || ctx.dramaId" :storyboard-id="sb.id" :aspect-ratio="ctx.projectAspectRatio?.value || ctx.projectAspectRatio" :disabled="ctx.isSbVideoGenerating(sb.id)" />
-          <ShotSpeechDelivery :shot="sb" :narrative-style="ctx.narrativeStyle?.value || ctx.narrativeStyle" />
-        </div>
-
-        <!-- 视频提示词（紧凑行合并） -->
-        <div class="sb-video-prompt-compact">
-          <span class="sb-dot"></span>
-          <span class="sb-prompt-name">视频词</span>
-          <span class="sb-video-prompt-text sb-video-prompt-text--preview" :title="sb.video_prompt">{{ sb.video_prompt || '暂无视频提示词（在「分镜配置」保存后自动生成）' }}</span>
-          <el-button size="small" link type="primary" class="sb-prompt-edit-btn" @click="ctx.onOpenSbPromptDialog(sb, 'video')">编辑</el-button>
         </div>
       </div>
     </div>
@@ -695,6 +717,25 @@ const props = defineProps({
 
 const ctx = inject('filmCreateContext', {})
 const agentContext = useAgentContext()
+
+const cssAspectRatio = computed(() => {
+  const ar = ctx.projectAspectRatio?.value || ctx.projectAspectRatio || '16:9'
+  if (ar === '9:16') return '9 / 16'
+  if (ar === '1:1') return '1 / 1'
+  if (ar === '4:3') return '4 / 3'
+  if (ar === '3:4') return '3 / 4'
+  if (ar === '21:9') return '21 / 9'
+  return '16 / 9'
+})
+
+const isPortrait = computed(() => {
+  const ar = ctx.projectAspectRatio?.value || ctx.projectAspectRatio || '16:9'
+  return ar === '9:16' || ar === '3:4'
+})
+
+const isDualFrame = computed(() => {
+  return !ctx.isSbUniversalMode(props.sb.id) && (ctx.storyboardUseFirstLastFrame?.value ?? ctx.storyboardUseFirstLastFrame)
+})
 
 const shotRangeEnd = computed(() => {
   const list = props.storyboards || []
@@ -883,17 +924,32 @@ const shotRangeEnd = computed(() => {
 .sb-panel:last-child { border-right: none; }
 
 .sb-script {
-  flex: 0 0 250px;
-  max-width: 270px;
+  flex: 0 0 240px;
+  width: 240px;
+  max-width: 240px;
   padding-top: 10px;
 }
 .sb-image {
-  flex: 1 1 360px;
-  min-width: 280px;
+  flex: 0 0 330px;
+  width: 330px;
+  max-width: 350px;
+}
+.sb-image.sb-image--dual {
+  flex: 0 0 440px;
+  width: 440px;
+  max-width: 460px;
+}
+.sb-image.sb-image--portrait {
+  flex: 0 0 190px;
+  width: 190px;
+}
+.sb-image.sb-image--universal {
+  flex: 0 0 350px;
+  width: 350px;
 }
 .sb-video {
-  flex: 1.1 1 400px;
-  min-width: 320px;
+  flex: 1 1 0;
+  min-width: 460px;
 }
 .sb-script-row {
   display: flex;
@@ -987,26 +1043,21 @@ const shotRangeEnd = computed(() => {
 .sb-prompt-text { flex: 1; min-width: 0; font-size: 0.85rem; color: #a1a1aa; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 
 .sb-image-area {
-  flex: 1;
-  min-height: 180px;
-  max-height: 280px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
+  width: 100%;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0;
+  background: #0d0e14;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 8px;
   overflow: hidden;
   position: relative;
-  transition: border-color 0.2s, background 0.2s;
+  transition: border-color 0.2s;
+}
+:global(html.dark .sb-image-area) {
+  background: #12131b;
+  border-color: rgba(255, 255, 255, 0.08);
 }
 .sb-image-area:hover { border-color: rgba(124, 58, 237, 0.35); }
-:global(html.dark .sb-image-area) {
-  background: linear-gradient(145deg, #1a1b24 0%, #1e1f28 60%, #1c1d26 100%);
-  border: 1px dashed rgba(255, 255, 255, 0.08);
-}
 :global(html.dark .sb-image-area:hover) { border-color: rgba(255, 255, 255, 0.15); }
 .sb-image-area--dragover {
   outline: 2px dashed var(--el-color-primary);
@@ -1262,39 +1313,39 @@ const shotRangeEnd = computed(() => {
 .sb-video-thumb:hover .extra-thumb-remove { opacity: 1; }
 
 .sb-main-image-wrap {
+  width: 100%;
+  aspect-ratio: var(--sb-aspect-ratio, 16 / 9);
+  position: relative;
+  background: #000;
+  overflow: hidden;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  width: 100%;
-  flex: 1;
-  min-height: 80px;
-  overflow: hidden;
 }
 .sb-main-image-wrap .sb-generated-img {
-  max-height: 185px;
-  width: auto;
-  max-width: 100%;
+  width: 100%;
+  height: 100%;
   object-fit: contain;
+  display: block;
 }
 .sb-main-img-prompt {
-  width: 100%;
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 4px 6px;
   font-size: 10px;
-  color: var(--el-text-color-secondary);
-  background: rgba(0, 0, 0, 0.02);
-  border-top: 1px solid var(--el-border-color-lighter);
-  padding: 3px 6px;
-  line-height: 1.35;
-  max-height: 32px;
+  color: #fff;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.85) 0%, rgba(0, 0, 0, 0.4) 60%, transparent 100%);
+  line-height: 1.3;
+  max-height: 2.8em;
   overflow: hidden;
+  text-overflow: ellipsis;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   word-break: break-all;
-  cursor: default;
-}
-:global(html.dark .sb-main-img-prompt) {
-  background: rgba(255, 255, 255, 0.03);
+  pointer-events: none;
 }
 
 .sb-shot-meta-footer {
@@ -1355,32 +1406,71 @@ const shotRangeEnd = computed(() => {
   padding: 4px 8px;
 }
 
-/* 视频栏 */
-.sb-video-area {
+/* 视频栏与响应式控制栅格 */
+.sb-video-body-grid {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+}
+.sb-video-media-side {
+  flex: 0 0 310px;
+  width: 310px;
+  max-width: 330px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.sb-video--portrait .sb-video-media-side {
+  flex: 0 0 170px;
+  width: 170px;
+}
+.sb-video-controls-side {
   flex: 1;
-  min-height: 180px;
-  max-height: 250px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
+  min-width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sb-video-area {
+  width: 100%;
+  aspect-ratio: var(--sb-aspect-ratio, 16 / 9);
+  background: #000;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow: hidden;
+  position: relative;
   transition: border-color 0.2s;
 }
 :global(html.dark .sb-video-area) {
-  background: linear-gradient(145deg, #1a1b24 0%, #1e1f28 60%, #1c1d26 100%);
-  border: 1px dashed rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.08);
 }
 .sb-video-placeholder {
+  width: 100%;
+  aspect-ratio: var(--sb-aspect-ratio, 16 / 9);
   color: #71717a;
   font-size: 0.85rem;
+  display: flex;
   flex-direction: column;
+  align-items: center;
+  justify-content: center;
   gap: 8px;
   text-align: center;
   padding: 12px;
+  background: #f8fafc;
+  border: 1px dashed #cbd5e1;
+  border-radius: 8px;
 }
 :global(html.light .sb-video-placeholder) { color: #7c3aed; }
+:global(html.dark .sb-video-placeholder) {
+  background: linear-gradient(145deg, #1a1b24 0%, #1e1f28 60%, #1c1d26 100%);
+  border-color: rgba(255, 255, 255, 0.12);
+}
 .sb-video-generating-text {
   display: flex;
   align-items: center;
@@ -1408,37 +1498,52 @@ const shotRangeEnd = computed(() => {
 .sb-resume-poll-btn { flex-shrink: 0; }
 .sb-video-player {
   width: 100%;
-  max-height: 240px;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  background: #000;
   border-radius: 8px;
+}
+
+.sb-video-action-settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  padding-bottom: 2px;
 }
 .sb-video-actions {
   display: flex;
-  gap: 8px;
-  margin-top: 6px;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
   flex-shrink: 0;
-  padding-top: 4px;
 }
 .sb-video-regenerating-overlay {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  margin-top: 6px;
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
   font-size: 0.82rem;
   color: #a78bfa;
 }
 .sb-videos-strip {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-top: 6px;
-  flex-wrap: wrap;
+  gap: 4px;
+  overflow-x: auto;
+  margin-top: 2px;
+  flex-wrap: nowrap;
 }
 .sb-video-thumb {
   position: relative;
-  width: 68px;
-  height: 44px;
-  border-radius: 5px;
+  width: 60px;
+  height: 38px;
+  border-radius: 4px;
   overflow: hidden;
   cursor: pointer;
   border: 1.5px solid transparent;
@@ -1481,8 +1586,11 @@ const shotRangeEnd = computed(() => {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-  margin-top: 6px;
-  padding-top: 4px;
+  padding: 4px 0;
+  border-top: 1px solid rgba(0, 0, 0, 0.04);
+}
+:global(html.dark .sb-speech-toolbar) {
+  border-top-color: rgba(255, 255, 255, 0.05);
 }
 .sb-tags-group {
   display: inline-flex;
@@ -1495,12 +1603,6 @@ const shotRangeEnd = computed(() => {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  margin-top: 6px;
-  padding: 4px 0;
-  border-top: 1px solid rgba(0, 0, 0, 0.04);
-}
-:global(html.dark .sb-model-config-row) {
-  border-top-color: rgba(255, 255, 255, 0.05);
 }
 .sb-model-select-wrap {
   display: inline-flex;
@@ -1514,7 +1616,7 @@ const shotRangeEnd = computed(() => {
   flex-shrink: 0;
 }
 .sb-model-select {
-  width: 160px !important;
+  width: 140px !important;
 }
 
 /* 紧凑视频提示词栏 */
@@ -1522,8 +1624,7 @@ const shotRangeEnd = computed(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-top: 6px;
-  padding: 4px 8px;
+  padding: 5px 8px;
   background: rgba(0, 0, 0, 0.02);
   border-radius: 6px;
   border: 1px solid rgba(0, 0, 0, 0.04);
@@ -1557,5 +1658,18 @@ const shotRangeEnd = computed(() => {
 }
 :global(html.dark .sb-video-prompt-text--preview) {
   color: #94a3b8;
+}
+
+@media (max-width: 1250px) {
+  .sb-video-body-grid {
+    flex-direction: column;
+  }
+  .sb-video-media-side {
+    width: 100%;
+    max-width: 340px;
+  }
+  .sb-video-controls-side {
+    width: 100%;
+  }
 }
 </style>
