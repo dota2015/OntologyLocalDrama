@@ -67,14 +67,17 @@
           <BatchSpeechGeneration
             :drama-id="dramaId"
             :episode-id="currentEpisodeId"
-            :disabled="pipelineRunning || storyboardGenerating || universalOmniPolishRunning"
+            :disabled="pipelineRunning || storyboardGenerating || universalOmniPolishRunning || isAnyDirectorGenerating"
             @updated="onBatchSpeechUpdated"
           />
         </template>
       </StoryboardBatchToolbar>
-      <div v-if="storyboardGenerating || universalOmniPolishRunning" class="storyboard-generating-tip">
+      <div v-if="storyboardGenerating || universalOmniPolishRunning || isAnyDirectorGenerating" class="storyboard-generating-tip">
         <el-icon class="is-loading"><Loading /></el-icon>
-        <span v-if="universalOmniPolishRunning">
+        <span v-if="isAnyDirectorGenerating">
+          🎬 导演智能体推演中{{ effectiveDirectorProgress ? ` (${effectiveDirectorProgress}%)` : '' }}：{{ effectiveDirectorMessage || '正在规划场面调度、机位构图与动感运镜，请稍候...' }}
+        </span>
+        <span v-else-if="universalOmniPolishRunning">
           正在润色全能提示词：第 {{ universalOmniPolishProgress.current }} / {{ universalOmniPolishProgress.total }} 镜
           <template v-if="universalOmniPolishProgress.label">（{{ universalOmniPolishProgress.label }}）</template>
           …
@@ -92,9 +95,12 @@
         </template>
       </template>
       <!-- 分镜生成中提示条 -->
-      <div v-if="storyboardGenerating || universalOmniPolishRunning" class="sb-generating-tip">
+      <div v-if="storyboardGenerating || universalOmniPolishRunning || isAnyDirectorGenerating" class="sb-generating-tip">
         <span class="sb-gen-dot" /><span class="sb-gen-dot" /><span class="sb-gen-dot" />
-        <span v-if="universalOmniPolishRunning" class="sb-gen-text">
+        <span v-if="isAnyDirectorGenerating" class="sb-gen-text">
+          🎬 导演智能体推演中{{ effectiveDirectorProgress ? ` (${effectiveDirectorProgress}%)` : '' }}：{{ effectiveDirectorMessage || '正在规划场面调度与自纠质检，客官稍等片刻…' }}
+        </span>
+        <span v-else-if="universalOmniPolishRunning" class="sb-gen-text">
           全能片段润色中 {{ universalOmniPolishProgress.current }}/{{ universalOmniPolishProgress.total }}
           <template v-if="universalOmniPolishProgress.label"> · {{ universalOmniPolishProgress.label }}</template>
         </span>
@@ -703,6 +709,26 @@ const getSbSelectedScene = ctx.getSbSelectedScene
 const getSbSelectedProps = ctx.getSbSelectedProps
 const baseUrl = ctx.baseUrl || ref('')
 const genStore = ctx.genStore
+const directorTaskMessage = ref('')
+const directorTaskProgress = ref(0)
+
+const activeDirectorTask = computed(() => {
+  if (!genStore || !currentEpisodeId?.value) return null
+  const running = genStore.getRunningForEpisode(dramaId?.value, currentEpisodeId?.value) || []
+  return running.find((t) => t.resourceType === GEN_RESOURCE.GENERATE_STORYBOARD)
+})
+
+const effectiveDirectorMessage = computed(() => {
+  return activeDirectorTask.value?.message || directorTaskMessage.value || ''
+})
+
+const effectiveDirectorProgress = computed(() => {
+  return activeDirectorTask.value?.progress ?? directorTaskProgress.value ?? 0
+})
+
+const isAnyDirectorGenerating = computed(() => {
+  return Boolean((directorGenerating && directorGenerating.value) || activeDirectorTask.value)
+})
 
 const agentContext = useAgentContext()
 
@@ -2495,6 +2521,8 @@ async function onDirectorAgentGenerate() {
   }
 
   directorGenerating.value = true
+  directorTaskMessage.value = '正在启动导演智能体...'
+  directorTaskProgress.value = 5
   try {
     const res = await ontologyAPI.directorGenerate(currentEpisodeId.value)
     const taskData = res?.data ?? res
@@ -2503,16 +2531,32 @@ async function onDirectorAgentGenerate() {
       throw new Error(taskData?.message || '未能创建导演智能体任务')
     }
 
+    const meta = {
+      dramaId: dramaId.value,
+      episodeId: currentEpisodeId.value,
+      dramaTitle: store.drama?.title,
+      episodeNumber: store.currentEpisode?.episode_number,
+      resourceType: GEN_RESOURCE.GENERATE_STORYBOARD,
+      resourceId: Number(currentEpisodeId.value),
+      label: `${store.currentEpisode?.title || '当前集'} 导演生成分镜`,
+      taskId,
+    }
+    if (genStore) {
+      genStore.markRunning(meta)
+    }
+
     ElMessage.info('🎬 导演智能体推演已在后台启动，正在规划分镜与自纠质检...')
-    pollDirectorTask(taskId)
+    pollDirectorTask(taskId, meta)
   } catch (e) {
     ElMessage.error(e.message || '导演智能体启动失败')
     directorGenerating.value = false
+    directorTaskMessage.value = ''
+    directorTaskProgress.value = 0
   }
 }
 
-async function pollDirectorTask(taskId) {
-  const maxAttempts = 120
+async function pollDirectorTask(taskId, meta = null) {
+  const maxAttempts = 600
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise((r) => setTimeout(r, 2000))
     try {
@@ -2520,8 +2564,18 @@ async function pollDirectorTask(taskId) {
       const task = tr?.data ?? tr
       if (!task) continue
 
+      if (task.message) {
+        directorTaskMessage.value = task.message
+      }
+      if (typeof task.progress === 'number' && task.progress > 0) {
+        directorTaskProgress.value = task.progress
+      }
+
       if (task.status === 'completed') {
         directorGenerating.value = false
+        directorTaskMessage.value = ''
+        directorTaskProgress.value = 0
+        if (genStore && meta) genStore.markDone(meta)
         await loadDrama()
         const result = task.result || {}
         ElNotification({
@@ -2535,6 +2589,9 @@ async function pollDirectorTask(taskId) {
 
       if (task.status === 'failed') {
         directorGenerating.value = false
+        directorTaskMessage.value = ''
+        directorTaskProgress.value = 0
+        if (genStore && meta) genStore.markFailed(meta, task.error || '导演智能体推演失败')
         ElMessage.error(task.error || '导演智能体推演失败')
         return
       }
@@ -2543,6 +2600,8 @@ async function pollDirectorTask(taskId) {
     }
   }
   directorGenerating.value = false
+  directorTaskMessage.value = ''
+  directorTaskProgress.value = 0
   ElMessage.warning('导演智能体推演任务仍在后台执行，请稍后刷新查看。')
 }
 

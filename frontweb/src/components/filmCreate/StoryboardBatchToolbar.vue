@@ -93,7 +93,8 @@
           title="由导演智能体根据剧本与视听本体库闭环编排分镜脚本"
           @click="$emit('director-generate')"
         >
-          🎬 导演生成分镜脚本{{ hasStoryboards ? '（重编）' : '' }}
+          <template v-if="directorGenerating">🎬 导演正在推演编排分镜...</template>
+          <template v-else>🎬 导演生成分镜脚本{{ hasStoryboards ? '（重编）' : '' }}</template>
         </el-button>
         <el-button type="info" plain size="large" @click="$emit('add-storyboard')">
           添加一个分镜

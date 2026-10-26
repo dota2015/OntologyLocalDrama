@@ -559,6 +559,7 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
           prop_extraction: { resourceType: GEN_RESOURCE.EXTRACT_PROPS, label: `${epLabel} 提取道具` },
           background_extraction: { resourceType: GEN_RESOURCE.EXTRACT_SCENES, label: `${epLabel} 提取场景` },
           storyboard_generation: { resourceType: GEN_RESOURCE.GENERATE_STORYBOARD, label: `${epLabel} AI生成分镜` },
+          director_storyboard_generation: { resourceType: GEN_RESOURCE.GENERATE_STORYBOARD, label: `${epLabel} 导演生成分镜` },
         }
         const extractCfg = extractTypeMap[t.type]
         if (extractCfg) {

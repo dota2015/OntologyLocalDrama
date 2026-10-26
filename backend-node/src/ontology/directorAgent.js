@@ -33,9 +33,14 @@ const { generateStory } = require('../services/storyGenerationService');
  * @param {object} [options] - 选项 (storyboardCount, premise, forceExtractEntities)
  * @returns {Promise<{ storyboards: Array, audit: object, semantic_revision: string }>}
  */
-async function runDirectorAgent(db, log, cfg, episodeId, options = {}) {
+async function runDirectorAgent(db, log, cfg, episodeId, options = {}, progressCallback = null) {
   const epId = Number(episodeId);
+  const onProgress = typeof options.onProgress === 'function'
+    ? options.onProgress
+    : (typeof progressCallback === 'function' ? progressCallback : () => {});
+
   log.info('[导演Agent] 启动剧集视听本体调度', { episode_id: epId });
+  onProgress(5, '启动剧集视听本体调度，准备解析剧本...');
 
   // 确保 storyboards 具有 character_visuals, last_frame_visuals, video_slots 槽位列
   try {
@@ -58,6 +63,7 @@ async function runDirectorAgent(db, log, cfg, episodeId, options = {}) {
   // 阶段零：故事与分集剧本创编（若提供了梗概 premise 或原剧本为空）
   let scriptContent = (epRow.script_content || '').trim();
   if (options.premise || !scriptContent) {
+    onProgress(10, '根据故事梗概推演剧本戏剧冲突与正文...');
     log.info('[导演Agent] 阶段零：根据故事梗概推演剧本戏剧冲突与正文...', { episode_id: epId });
     const premiseText = (options.premise || epRow.title || '精彩短剧').trim();
     const dramaRow = db.prepare('SELECT title, genre, style FROM dramas WHERE id = ?').get(dramaId) || {};
@@ -90,11 +96,13 @@ ${premiseText}
 
   let extractedAssets = null;
   if (options.forceExtractEntities || existingChars.length === 0 || existingScenes.length === 0) {
+    onProgress(20, '自动抽取全量世界观实体资产（角色、道具真实尺度、场景地标）...');
     log.info('[导演Agent] 阶段一：自动抽取全量世界观实体资产（角色、道具真实尺度、场景地标）...', { drama_id: dramaId, episode_id: epId });
     extractedAssets = await extractAllEntitiesFromScript(db, log, cfg, epId);
   }
 
   // 阶段二：编译不可变剧目语义包（Semantic Package）
+  onProgress(30, '编译不可变剧目语义包与镜头时长预算...');
   const semPkg = compileDramaSemanticPackage(db, epId);
 
   const targetCount = options.storyboardCount || options.storyboard_count || Math.max(6, Math.min(35, Math.ceil(scriptContent.length / 45)));
@@ -191,6 +199,7 @@ ${scriptContent}
 
 只返回纯 JSON，不要 markdown。`;
 
+  onProgress(40, '导演智能体正在规划场面调度、机位构图与动感运镜...');
   log.info('[导演Agent] 阶段一：初稿推演生成中...');
   const firstDraftRaw = await aiClient.generateText(db, log, 'text', userPrompt, systemPrompt, { max_tokens: 8000 });
   const parsedFirstDraft = safeParseAIJSON(firstDraftRaw, null, log);
@@ -201,11 +210,13 @@ ${scriptContent}
   }
 
   // 3. 阶段二：运行视听本体质量门禁（SHACL Invariants Check）
+  onProgress(70, '初稿分镜推演完成，正在执行视听本体硬门禁审查...');
   log.info('[导演Agent] 阶段二：执行视听本体硬门禁审查', { shot_count: shots.length });
   let audit = validateAllInvariants(shots, { db, props: semPkg.catalogs.props, dramaEra: semPkg.drama.era });
 
   // 4. 阶段三：反思自纠环（Critic & Reflection Loop）
   if (!audit.valid && audit.error_count > 0) {
+    onProgress(75, '检测到门禁规则瑕疵，触发导演智能体自省纠偏推理中...');
     log.warn('[导演Agent] 阶段三：发现硬门禁违规，触发自省纠偏环', { violations: audit.violations });
     const reflectionPrompt = `你在刚才推演的分镜草稿中违反了视听本体硬门禁规则：
 ${audit.violations.map(v => `- [${v.rule}] 镜头 ${v.shot_number || '全局'}: ${v.message}`).join('\n')}
@@ -228,6 +239,7 @@ ${audit.violations.map(v => `- [${v.rule}] 镜头 ${v.shot_number || '全局'}: 
         shots = repairedShots;
         audit = validateAllInvariants(shots, { db, props: semPkg.catalogs.props, dramaEra: semPkg.drama.era });
         log.info('[导演Agent] 自省纠偏完成，重新质检', { valid: audit.valid, remaining_errors: audit.error_count });
+        onProgress(82, '自省纠偏完成，视听门禁质检通过...');
       }
     } catch (refErr) {
       log.warn('[导演Agent] 自我纠偏推理异常，回退使用工程兜底修复', { error: refErr.message });
@@ -235,6 +247,7 @@ ${audit.violations.map(v => `- [${v.rule}] 镜头 ${v.shot_number || '全局'}: 
   }
 
   // 5. 阶段四：实体对齐与工程终检（确保每个镜头的数据完整性）
+  onProgress(86, '正在校准对白节奏与分镜时长安全区间...');
   const speechDelivery = require('../services/speechDeliveryService');
   const { planShotDuration } = require('../utils/shotDurationRange');
   const { assessVideoSpeech } = require('../utils/speechTiming');
@@ -373,6 +386,7 @@ ${audit.violations.map(v => `- [${v.rule}] 镜头 ${v.shot_number || '全局'}: 
   });
 
   // 6. 阶段五：原子化持久化入库（软删除历史分镜，插入新分镜并生成完整图片与视频提示词）
+  onProgress(92, '视听本体质检通过，正在持久化写入分镜数据...');
   const now = new Date().toISOString();
   let totalDuration = 0;
 
@@ -517,6 +531,8 @@ ${audit.violations.map(v => `- [${v.rule}] 镜头 ${v.shot_number || '全局'}: 
     total_duration: totalDuration,
     semantic_revision: semPkg.semantic_revision,
   });
+
+  onProgress(100, `导演智能体分镜推演完成，共生成 ${finalShots.length} 个分镜。`);
 
   return {
     storyboards: finalShots,

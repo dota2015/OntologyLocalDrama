@@ -381,8 +381,9 @@ function trackFilmCreateAction(_action, _payload = {}) {
   // 单机版：无埋点上报
 }
 
+const directorGenerating = ref(false)
 const storyboardGenerating = computed(() =>
-  isEpisodeExtractRunning(genStore, dramaId.value, currentEpisodeId.value, GEN_RESOURCE.GENERATE_STORYBOARD)
+  directorGenerating.value || isEpisodeExtractRunning(genStore, dramaId.value, currentEpisodeId.value, GEN_RESOURCE.GENERATE_STORYBOARD)
 )
 /** 分镜批量生成结束后，按镜序逐个润色全能片段（仅勾选全能模式且各镜为 universal 且有正文时） */
 const universalOmniPolishRunning = ref(false)
@@ -408,7 +409,6 @@ const batchImageStopping = ref(false)
 const batchImageProgress = ref({ current: 0, total: 0, failed: 0 })
 const inferringParams = ref(false)
 const auditingInvariants = ref(false)
-const directorGenerating = ref(false)
 const showVideoParamsDialog = ref(false)
 const videoParamsTarget = ref(null)
 const videoParamsSaving = ref(false)
@@ -928,6 +928,7 @@ const {
   hasSbImage,
   getSbAllVideos,
   assetWorkbenchRef,
+  directorGenerating,
   storyboardGenerating,
   universalOmniPolishRunning,
   universalOmniPolishProgress,

@@ -96,11 +96,16 @@ function ontologyRoutes(db, log) {
 
         // 异步后台运行导演智能体
         (async () => {
-          taskService.updateTaskStatus(db, taskId, 'processing', 10, '导演智能体正在阅读剧本并编译本体语义包...');
+          taskService.updateTaskStatus(db, taskId, 'processing', 5, '导演智能体正在准备视听本体调度...');
           try {
-            taskService.updateTaskStatus(db, taskId, 'processing', 40, '导演智能体正在推演场面调度与动态机位...');
-            const result = await runDirectorAgent(db, log, cfg, episodeId, req.body || {});
-            taskService.updateTaskStatus(db, taskId, 'processing', 85, '视听本体硬门禁审查与自纠完毕，正在入库...');
+            const options = {
+              ...(req.body || {}),
+              onProgress: (pct, msg) => {
+                taskService.updateTaskStatus(db, taskId, 'processing', pct, msg);
+              },
+            };
+            const result = await runDirectorAgent(db, log, cfg, episodeId, options);
+            taskService.updateTaskStatus(db, taskId, 'completed', 100, '视听本体硬门禁审查与自纠完毕，分镜已入库。');
             taskService.updateTaskResult(db, taskId, result);
           } catch (agentErr) {
             log.error('directorGenerate task failed', { error: agentErr.message, task_id: taskId });

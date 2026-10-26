@@ -17,6 +17,7 @@ export function useTaskNavigation({
   hasSbImage,
   getSbAllVideos,
   assetWorkbenchRef,
+  directorGenerating,
   storyboardGenerating,
   universalOmniPolishRunning,
   universalOmniPolishProgress,
@@ -78,7 +79,7 @@ export function useTaskNavigation({
     // 分镜脚本
     const sbList = storyboards.value || []
     const sbScriptDone = sbList.length > 0
-    const sbScriptGen = storyboardGenerating.value || universalOmniPolishRunning.value || serverGenerationJobs.value.some(j=>Number(j.episode_id)===Number(currentEpisodeId.value) && j.kind==='storyboards' && activeGenerationJob(j))
+    const sbScriptGen = (directorGenerating && directorGenerating.value) || storyboardGenerating.value || universalOmniPolishRunning.value || serverGenerationJobs.value.some(j=>Number(j.episode_id)===Number(currentEpisodeId.value) && j.kind==='storyboards' && activeGenerationJob(j))
       || epRunning.some((t) => t.resourceType === GEN_RESOURCE.GENERATE_STORYBOARD)
     const sbScriptStatus = sbScriptGen ? 'generating' : sbScriptDone ? 'done' : 'pending'
 
