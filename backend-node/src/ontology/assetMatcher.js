@@ -180,6 +180,7 @@ function isAssetUsedInShots(type, assetId, shots = []) {
 
   if (type === 'prop') {
     return shots.some(s => {
+      if (s.prop_id != null && Number(s.prop_id) === targetId) return true;
       const pids = Array.isArray(s.prop_ids) ? s.prop_ids : [];
       return pids.some(pid => Number(pid) === targetId);
     });

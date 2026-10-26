@@ -17,8 +17,10 @@ class ObsoleteAssetsRule extends BaseInvariantRule {
 
   evaluate(context) {
     const catalogs = context.catalogs || {};
-    const scriptContent = context.scriptContent || '';
+    const scriptContent = context.scriptContent || context.fullDramaScript || '';
     const shots = context.shots || [];
+    const dramaShots = context.dramaShots || [];
+    const shotsToCheck = (Array.isArray(dramaShots) && dramaShots.length > 0) ? dramaShots : shots;
     const options = context.options || {};
     const violations = [];
 
@@ -32,14 +34,14 @@ class ObsoleteAssetsRule extends BaseInvariantRule {
     for (const c of characters) {
       const name = String(c.name || '').trim();
       if (!name) continue;
-      if (isAssetObsolete('character', c, { script, shots, ...options })) {
+      if (isAssetObsolete('character', c, { script, shots: shotsToCheck, ...options })) {
         violations.push({
           rule: 'INVARIANT_OBSOLETE_ASSET',
           severity: this.defaultSeverity,
           asset_type: 'character',
           asset_id: c.id,
           asset_name: name,
-          message: `角色「${name}」在当前剧本正文与分镜中均未发现出场，疑似废弃或剧情调整后的残留，建议删除。`,
+          message: `角色「${name}」在剧本正文与分镜中均未发现出场，疑似废弃或剧情调整后的残留，建议删除。`,
         });
       }
     }
@@ -47,14 +49,14 @@ class ObsoleteAssetsRule extends BaseInvariantRule {
     for (const p of props) {
       const name = String(p.name || '').trim();
       if (!name) continue;
-      if (isAssetObsolete('prop', p, { script, shots, ...options })) {
+      if (isAssetObsolete('prop', p, { script, shots: shotsToCheck, ...options })) {
         violations.push({
           rule: 'INVARIANT_OBSOLETE_ASSET',
           severity: this.defaultSeverity,
           asset_type: 'prop',
           asset_id: p.id,
           asset_name: name,
-          message: `道具「${name}」在当前剧本正文与分镜中未见使用记录，建议删除以精简世界观。`,
+          message: `道具「${name}」在剧本正文与分镜中未见使用记录，建议删除以精简世界观。`,
         });
       }
     }
@@ -62,14 +64,14 @@ class ObsoleteAssetsRule extends BaseInvariantRule {
     for (const sc of scenes) {
       const loc = String(sc.location || '').trim();
       if (!loc) continue;
-      if (isAssetObsolete('scene', sc, { script, shots, ...options })) {
+      if (isAssetObsolete('scene', sc, { script, shots: shotsToCheck, ...options })) {
         violations.push({
           rule: 'INVARIANT_OBSOLETE_ASSET',
           severity: this.defaultSeverity,
           asset_type: 'scene',
           asset_id: sc.id,
           asset_name: loc,
-          message: `场地「${loc}」在当前剧本与分镜中均未被涉及，建议删除。`,
+          message: `场地「${loc}」在剧本与分镜中均未被涉及，建议删除。`,
         });
       }
     }

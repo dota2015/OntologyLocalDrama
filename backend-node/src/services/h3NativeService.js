@@ -21,7 +21,7 @@ function load(db, dramaId, shotId) {
     WHERE s.id=? AND e.drama_id=? AND s.deleted_at IS NULL AND e.deleted_at IS NULL`).get(Number(shotId), Number(dramaId));
   if (!project || !shot) throw new Error('H3 分镜不属于当前项目或已删除');
   const metadata = layout.parseMetadata(project.metadata);
-  const continuity = metadata.h3_shots?.[shot.id]?.continuity || 'auto';
+  const continuity = metadata.h3_shots?.[shot.id]?.continuity || 'off';
   return { project, shot, continuity };
 }
 function sameScene(a, b) {

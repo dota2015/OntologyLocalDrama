@@ -2434,7 +2434,7 @@ async function onAuditInvariants() {
     }
 
     if (totalWarns > 0) {
-      detailHtml += `<p style="color: #e6a23c; margin-top: 6px;"><strong>⚠️ 建议项 (${totalWarns} 处):</strong></p><ul style="padding-left: 18px; margin: 4px 0; color: #e6a23c;">`
+      detailHtml += `<p style="color: #e6a23c; margin-top: 6px;"><strong>💡 优化建议 (${totalWarns} 处，非阻断项):</strong></p><ul style="padding-left: 18px; margin: 4px 0; color: #e6a23c;">`
       for (const w of warnings.slice(0, 3)) {
         const prefix = w.asset_name
           ? `【${w.asset_type === 'prop' ? '道具' : w.asset_type === 'character' ? '角色' : '场地'} · ${w.asset_name}】: `

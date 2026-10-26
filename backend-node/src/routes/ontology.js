@@ -41,12 +41,46 @@ function ontologyRoutes(db, log) {
         const pkg = compileDramaSemanticPackage(db, episodeId);
         const shots = db.prepare('SELECT * FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL ORDER BY storyboard_number ASC').all(episodeId);
 
+        // 挂载当前集各分镜关联的道具 ID（storyboard_props）
+        const sbIds = shots.map(s => s.id);
+        if (sbIds.length > 0) {
+          const placeholders = sbIds.map(() => '?').join(',');
+          const spRows = db.prepare(`SELECT storyboard_id, prop_id FROM storyboard_props WHERE storyboard_id IN (${placeholders})`).all(...sbIds);
+          const propMap = {};
+          for (const row of spRows) {
+            if (!propMap[row.storyboard_id]) propMap[row.storyboard_id] = [];
+            propMap[row.storyboard_id].push(row.prop_id);
+          }
+          for (const s of shots) {
+            s.prop_ids = propMap[s.id] || [];
+          }
+        }
+
+        // 读取全剧剧本与全剧分镜，作为跨集世界观资产生命周期的判定依据，防止将其他集专属道具/角色误报为废弃
+        const dramaId = pkg.episode?.drama_id || pkg.drama?.id;
+        let fullDramaScript = pkg.episode.script_content || '';
+        let allDramaShots = shots;
+        if (dramaId) {
+          try {
+            const allEps = db.prepare('SELECT script_content FROM episodes WHERE drama_id = ? AND deleted_at IS NULL').all(dramaId);
+            fullDramaScript = allEps.map(e => e.script_content || '').join('\n');
+            allDramaShots = db.prepare(`
+              SELECT s.id, s.scene_id, s.characters, sp.prop_id
+              FROM storyboards s
+              JOIN episodes e ON e.id = s.episode_id
+              LEFT JOIN storyboard_props sp ON sp.storyboard_id = s.id
+              WHERE e.drama_id = ? AND s.deleted_at IS NULL
+            `).all(dramaId);
+          } catch (_) {}
+        }
+
         const audit = validateAllInvariants(shots, {
           db,
           props: pkg.catalogs.props,
           dramaEra: pkg.drama.era,
           catalogs: pkg.catalogs,
-          scriptContent: pkg.episode.script_content,
+          scriptContent: fullDramaScript,
+          dramaShots: allDramaShots,
         });
 
         response.success(res, {

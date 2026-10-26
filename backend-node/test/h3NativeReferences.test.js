@@ -205,6 +205,13 @@ test('automatic continuity extracts the selected previous video final decoded fr
   const ffmpeg = require('../src/utils/ffmpegPath').getFfmpegPath();
   await run(ffmpeg, ['-v','error','-y','-f','lavfi','-i','testsrc2=s=128x96:r=24:d=1','-c:v','libx264','-pix_fmt','yuv420p',path.join(root,'previous.mp4')]);
   db.prepare('UPDATE storyboards SET local_path=? WHERE id=1').run('previous.mp4');
+  // Default is 'off' (uses own first frame)
+  assert.equal(native.getSettings(db, 1, 2).continuity, 'off');
+  const defaultOff = await native.prepare(db, log, { ...opts, first_frame_url: 'first.png' });
+  assert.equal(defaultOff.first_frame_url, 'data:image/png;base64,' + fs.readFileSync(path.join(root,'first.png')).toString('base64'));
+
+  // When explicitly enabled to 'auto', uses previous video tail
+  native.saveSettings(db, 1, 2, { continuity: 'auto' });
   const result = await native.prepare(db, log, { ...opts, first_frame_url: 'first.png' });
   assert.ok(result.first_frame_url.startsWith('data:image/png;base64,'));
   assert.notEqual(result.first_frame_url, result.reference_urls[3]);

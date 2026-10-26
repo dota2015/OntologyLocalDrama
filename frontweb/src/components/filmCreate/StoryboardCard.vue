@@ -230,6 +230,18 @@
             </el-tooltip>
           </div>
         </template>
+
+        <!-- 镜头指令与剧情动作快照（填补空白，提升导演可读性） -->
+        <div v-if="sb.shot_type || sb.angle || sb.action || sb.atmosphere" class="sb-shot-meta-footer">
+          <div v-if="sb.shot_type || sb.angle || sb.atmosphere" class="sb-meta-tags">
+            <span v-if="sb.shot_type" class="sb-meta-tag">{{ sb.shot_type }}</span>
+            <span v-if="sb.angle" class="sb-meta-tag">{{ sb.angle }}</span>
+            <span v-if="sb.atmosphere" class="sb-meta-tag">{{ sb.atmosphere }}</span>
+          </div>
+          <div v-if="sb.action" class="sb-meta-action" :title="sb.action">
+            <span class="sb-meta-label">动作：</span>{{ sb.action }}
+          </div>
+        </div>
       </div>
 
       <!-- 中：经典模式=分镜参考图；全能模式=片段描述（独立字段，与参考图并存） -->
@@ -607,9 +619,11 @@
         </div>
 
         <!-- 对白与旁白 -->
-        <div class="sb-video-actions" style="flex-wrap:wrap">
-          <el-tag :type="ctx.speechStatus(sb).pending ? 'warning' : (ctx.speechStatus(sb).dialogue ? 'success' : 'info')" size="small">对白：{{ ctx.speechStatus(sb).pending ? '待提取' : (ctx.speechStatus(sb).dialogue ? '有' : '无') }}</el-tag>
-          <el-tag :type="ctx.speechStatus(sb).pending ? 'warning' : (ctx.speechStatus(sb).narration ? 'success' : 'info')" size="small">旁白：{{ ctx.speechStatus(sb).pending ? '待提取' : (ctx.speechStatus(sb).narration ? '有' : '无') }}</el-tag>
+        <div class="sb-speech-toolbar">
+          <div class="sb-tags-group">
+            <el-tag :type="ctx.speechStatus(sb).pending ? 'warning' : (ctx.speechStatus(sb).dialogue ? 'success' : 'info')" size="small">对白：{{ ctx.speechStatus(sb).pending ? '待提取' : (ctx.speechStatus(sb).dialogue ? '有' : '无') }}</el-tag>
+            <el-tag :type="ctx.speechStatus(sb).pending ? 'warning' : (ctx.speechStatus(sb).narration ? 'success' : 'info')" size="small">旁白：{{ ctx.speechStatus(sb).pending ? '待提取' : (ctx.speechStatus(sb).narration ? '有' : '无') }}</el-tag>
+          </div>
           <el-button size="small" @click="ctx.speechEditor?.value?.open(sb, true)">生成对话</el-button>
           <el-button size="small" link type="primary" @click="ctx.speechEditor?.value?.open(sb)">编辑文本</el-button>
           <el-button size="small" :loading="ctx.ttsSbIds.has(sb.id)" :disabled="!ctx.speechStatus(sb).dialogue" @click="ctx.onTtsSbDialogue(sb)">对白配音</el-button>
@@ -618,35 +632,34 @@
           <el-button v-if="ctx.sbNarrationAudioRelPath(sb)" size="small" @click="ctx.playSbNarrationTts(sb)">试听旁白</el-button>
         </div>
 
-        <!-- 视频模型选择 -->
-        <div class="sb-video-actions" style="flex-wrap:wrap">
-          <span>视频模型</span>
-          <el-select
-            :model-value="sb.video_model || ''"
-            :empty-values="[null, undefined]"
-            size="small"
-            style="width:320px;max-width:100%"
-            :disabled="ctx.savingVideoModelIds.has(sb.id) || ctx.isSbVideoGenerating(sb.id)"
-            @visible-change="$event && ctx.loadVideoModelChoices()"
-            @change="ctx.setShotVideoModel(sb, $event)"
-          >
-            <el-option :value="''" :label="'默认模型（' + (ctx.videoModelLabel(ctx.defaultShotModel(sb)) || 'Minimax H3') + '）'" />
-            <el-option v-for="option in (ctx.videoModelChoices?.value || ctx.videoModelChoices || [])" :key="option.model" :value="option.model" :label="option.label" />
-          </el-select>
-          <span style="font-size:12px;color:var(--el-text-color-secondary)">默认使用 Minimax H3 模型，也可在下拉框中自由改选已配置的模型。</span>
+        <!-- 视频模型与镜头高级配置（合并单行，消除冗余解释文案） -->
+        <div class="sb-model-config-row">
+          <div class="sb-model-select-wrap">
+            <span class="sb-config-label">模型</span>
+            <el-select
+              :model-value="sb.video_model || ''"
+              :empty-values="[null, undefined]"
+              size="small"
+              class="sb-model-select"
+              :disabled="ctx.savingVideoModelIds.has(sb.id) || ctx.isSbVideoGenerating(sb.id)"
+              @visible-change="$event && ctx.loadVideoModelChoices()"
+              @change="ctx.setShotVideoModel(sb, $event)"
+            >
+              <el-option :value="''" :label="'默认（' + (ctx.videoModelLabel(ctx.defaultShotModel(sb)) || 'H3') + '）'" />
+              <el-option v-for="option in (ctx.videoModelChoices?.value || ctx.videoModelChoices || [])" :key="option.model" :value="option.model" :label="option.label" />
+            </el-select>
+          </div>
+          <WardrobeSettings :key="'wardrobe-shot-' + sb.id" :drama-id="ctx.dramaId?.value || ctx.dramaId" :storyboard-id="sb.id" :disabled="ctx.isSbVideoGenerating(sb.id)" />
+          <H3ShotSettings v-if="isH3VideoModel(ctx.selectedShotModel(sb))" :key="'h3-' + sb.id" :drama-id="ctx.dramaId?.value || ctx.dramaId" :storyboard-id="sb.id" :aspect-ratio="ctx.projectAspectRatio?.value || ctx.projectAspectRatio" :disabled="ctx.isSbVideoGenerating(sb.id)" />
+          <ShotSpeechDelivery :shot="sb" :narrative-style="ctx.narrativeStyle?.value || ctx.narrativeStyle" />
         </div>
 
-        <ShotSpeechDelivery :shot="sb" :narrative-style="ctx.narrativeStyle?.value || ctx.narrativeStyle" />
-        <WardrobeSettings :key="'wardrobe-shot-' + sb.id" :drama-id="ctx.dramaId?.value || ctx.dramaId" :storyboard-id="sb.id" :disabled="ctx.isSbVideoGenerating(sb.id)" />
-        <H3ShotSettings v-if="isH3VideoModel(ctx.selectedShotModel(sb))" :key="'h3-' + sb.id" :drama-id="ctx.dramaId?.value || ctx.dramaId" :storyboard-id="sb.id" :aspect-ratio="ctx.projectAspectRatio?.value || ctx.projectAspectRatio" :disabled="ctx.isSbVideoGenerating(sb.id)" />
-
-        <div class="sb-video-prompt-label">
+        <!-- 视频提示词（紧凑行合并） -->
+        <div class="sb-video-prompt-compact">
           <span class="sb-dot"></span>
-          <span>视频提示词</span>
-        </div>
-        <div class="sb-video-params-bar">
-          <span class="sb-video-prompt-text sb-video-prompt-text--preview">{{ sb.video_prompt || '暂无视频提示词（在「视频配置」保存后自动生成）' }}</span>
-          <el-button size="small" link type="primary" @click="ctx.onOpenSbPromptDialog(sb, 'video')">手工编辑</el-button>
+          <span class="sb-prompt-name">视频词</span>
+          <span class="sb-video-prompt-text sb-video-prompt-text--preview" :title="sb.video_prompt">{{ sb.video_prompt || '暂无视频提示词（在「分镜配置」保存后自动生成）' }}</span>
+          <el-button size="small" link type="primary" class="sb-prompt-edit-btn" @click="ctx.onOpenSbPromptDialog(sb, 'video')">编辑</el-button>
         </div>
       </div>
     </div>
@@ -767,15 +780,17 @@ const shotRangeEnd = computed(() => {
   flex-shrink: 0;
 }
 .sb-ctrl-title {
-  font-size: 0.9rem;
-  font-weight: 600;
-  color: #e4e4e7;
-  max-width: 12em;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #0f172a !important;
+  max-width: 18em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-:global(html.light) .sb-ctrl-title { color: #000; }
+:global(html.dark .sb-ctrl-title) {
+  color: #f4f4f5 !important;
+}
 .sb-movement-tag.el-tag {
   height: 18px;
   line-height: 18px;
@@ -799,12 +814,12 @@ const shotRangeEnd = computed(() => {
   color: #fff;
   background: rgba(139,92,246,0.6);
 }
-:global(html.light) .sb-ctrl-config-btn.el-button {
+:global(html.light .sb-ctrl-config-btn.el-button) {
   border-color: rgba(124,58,237,0.35);
   color: #7c3aed;
   background: rgba(124,58,237,0.06);
 }
-:global(html.light) .sb-ctrl-config-btn.el-button:hover {
+:global(html.light .sb-ctrl-config-btn.el-button:hover) {
   border-color: #7c3aed;
   color: #fff;
   background: #7c3aed;
@@ -825,7 +840,7 @@ const shotRangeEnd = computed(() => {
 
 .storyboard-row {
   display: flex;
-  align-items: flex-start;
+  align-items: stretch;
   gap: 0;
   background: #1e1f28;
   border-radius: 12px;
@@ -847,28 +862,39 @@ const shotRangeEnd = computed(() => {
   transform: translateY(-2px);
 }
 :global(html.light .storyboard-row) {
-  background: rgba(255, 255, 255, 0.7);
-  border-color: rgba(139, 92, 246, 0.06);
-  box-shadow: 0 1px 0 rgba(255,255,255,0.7) inset, 0 2px 12px rgba(99, 102, 241, 0.04);
+  background: rgba(255, 255, 255, 0.95);
+  border-color: rgba(139, 92, 246, 0.12);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.7) inset, 0 2px 12px rgba(99, 102, 241, 0.05);
 }
 :global(html.light .storyboard-row:hover) {
-  border-color: rgba(139, 92, 246, 0.18);
+  border-color: rgba(139, 92, 246, 0.28);
   box-shadow: 0 1px 0 rgba(255,255,255,0.7) inset, 0 6px 24px rgba(99, 102, 241, 0.08);
   transform: translateY(-1px);
 }
 
 .sb-panel {
-  flex: 1;
   min-width: 0;
-  padding: 14px 16px;
+  padding: 12px 14px;
   border-right: 1px solid rgba(255,255,255,0.05);
   display: flex;
   flex-direction: column;
 }
-:global(html.light) .sb-panel { border-right-color: rgba(139,92,246,0.08); }
+:global(html.light .sb-panel) { border-right-color: rgba(139,92,246,0.08); }
 .sb-panel:last-child { border-right: none; }
 
-.sb-script { padding-top: 10px; }
+.sb-script {
+  flex: 0 0 250px;
+  max-width: 270px;
+  padding-top: 10px;
+}
+.sb-image {
+  flex: 1 1 360px;
+  min-width: 280px;
+}
+.sb-video {
+  flex: 1.1 1 400px;
+  min-width: 320px;
+}
 .sb-script-row {
   display: flex;
   gap: 8px;
@@ -962,26 +988,26 @@ const shotRangeEnd = computed(() => {
 
 .sb-image-area {
   flex: 1;
-  min-height: 200px;
-  max-height: 320px;
-  background: linear-gradient(145deg, #1a1b24 0%, #1e1f28 60%, #1c1d26 100%);
-  border: 1px dashed rgba(255, 255, 255, 0.08);
+  min-height: 180px;
+  max-height: 280px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
   border-radius: 10px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 8px;
+  justify-content: space-between;
+  gap: 0;
   overflow: hidden;
   position: relative;
   transition: border-color 0.2s, background 0.2s;
 }
-.sb-image-area:hover { border-color: rgba(255, 255, 255, 0.15); }
-:global(html.light) .sb-image-area {
-  background: linear-gradient(145deg, #f5f3ff 0%, #ede9fe 100%);
-  border-color: rgba(124,58,237,0.2);
+.sb-image-area:hover { border-color: rgba(124, 58, 237, 0.35); }
+:global(html.dark .sb-image-area) {
+  background: linear-gradient(145deg, #1a1b24 0%, #1e1f28 60%, #1c1d26 100%);
+  border: 1px dashed rgba(255, 255, 255, 0.08);
 }
-:global(html.light) .sb-image-area:hover { border-color: rgba(124,58,237,0.45); }
+:global(html.dark .sb-image-area:hover) { border-color: rgba(255, 255, 255, 0.15); }
 .sb-image-area--dragover {
   outline: 2px dashed var(--el-color-primary);
   outline-offset: -2px;
@@ -1009,7 +1035,7 @@ const shotRangeEnd = computed(() => {
   cursor: pointer;
 }
 .sb-panel.sb-image.sb-image--universal {
-  min-height: 300px;
+  min-height: 280px;
   justify-content: flex-start;
 }
 .sb-universal-label-row {
@@ -1046,20 +1072,20 @@ const shotRangeEnd = computed(() => {
   background: #0f172a;
   border: 1px solid rgba(248, 250, 252, 0.22);
 }
-:global(html.light) .sb-universal-tooltip {
+:global(html.light .sb-universal-tooltip) {
   color: #0f172a;
   background: #ffffff;
   border-color: #cbd5e1;
 }
 .sb-universal-textarea { flex: 1; min-height: 0; }
 .sb-universal-textarea :deep(.el-textarea__inner) {
-  min-height: 220px !important;
+  min-height: 200px !important;
   font-size: 13px;
   line-height: 1.55;
 }
 
 .sb-image-area--first-last {
-  min-height: 220px;
+  min-height: 200px;
   max-height: none;
   padding: 8px;
   align-items: stretch;
@@ -1071,7 +1097,7 @@ const shotRangeEnd = computed(() => {
   gap: 8px;
   width: 100%;
   flex: 1;
-  min-height: 180px;
+  min-height: 160px;
 }
 .sb-fl-slot {
   flex: 1;
@@ -1088,13 +1114,16 @@ const shotRangeEnd = computed(() => {
 }
 .sb-fl-slot-body {
   flex: 1;
-  min-height: 120px;
+  min-height: 110px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.2);
+  background: rgba(0, 0, 0, 0.04);
   border-radius: 8px;
   overflow: hidden;
+}
+:global(html.dark .sb-fl-slot-body) {
+  background: rgba(0, 0, 0, 0.2);
 }
 .sb-fl-slot-body .sb-generated-img { max-height: 160px; }
 .sb-fl-empty { font-size: 0.75rem; color: #71717a; }
@@ -1137,8 +1166,13 @@ const shotRangeEnd = computed(() => {
   width: 100%;
   padding: 6px 8px 4px;
   overflow-x: auto;
-  border-top: 1px solid var(--el-border-color-lighter);
+  background: #f8fafc;
+  border-top: 1px solid #e2e8f0;
   flex-shrink: 0;
+}
+:global(html.dark .sb-imgs-strip) {
+  background: #181920;
+  border-top-color: rgba(255, 255, 255, 0.08);
 }
 .sb-strip-hint-icon {
   font-size: 12px;
@@ -1155,8 +1189,8 @@ const shotRangeEnd = computed(() => {
   border: 2px solid transparent;
   transition: border-color 0.2s;
   flex-shrink: 0;
-  width: 52px;
-  height: 52px;
+  width: 48px;
+  height: 48px;
 }
 .sb-img-thumb:hover { border-color: var(--el-color-primary); }
 .sb-img-thumb--active {
@@ -1182,7 +1216,7 @@ const shotRangeEnd = computed(() => {
   text-align: center;
   font-size: 10px;
   color: #fff;
-  background: rgba(0,0,0,0.45);
+  background: rgba(0,0,0,0.5);
   pointer-events: none;
 }
 .thumb-preview-btn {
@@ -1232,30 +1266,86 @@ const shotRangeEnd = computed(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  width: 100%;
+  flex: 1;
   min-height: 80px;
+  overflow: hidden;
+}
+.sb-main-image-wrap .sb-generated-img {
+  max-height: 185px;
+  width: auto;
+  max-width: 100%;
+  object-fit: contain;
 }
 .sb-main-img-prompt {
   width: 100%;
   font-size: 10px;
   color: var(--el-text-color-secondary);
-  background: var(--el-fill-color-lighter);
+  background: rgba(0, 0, 0, 0.02);
   border-top: 1px solid var(--el-border-color-lighter);
-  padding: 4px 6px;
-  line-height: 1.4;
-  max-height: 48px;
+  padding: 3px 6px;
+  line-height: 1.35;
+  max-height: 32px;
   overflow: hidden;
   display: -webkit-box;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   word-break: break-all;
   cursor: default;
 }
+:global(html.dark .sb-main-img-prompt) {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.sb-shot-meta-footer {
+  margin-top: auto;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.02);
+  border: 1px solid rgba(0, 0, 0, 0.04);
+  border-radius: 8px;
+}
+:global(html.dark .sb-shot-meta-footer) {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.06);
+}
+.sb-meta-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+.sb-meta-tag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(139, 92, 246, 0.08);
+  color: #7c3aed;
+  font-weight: 500;
+}
+:global(html.dark .sb-meta-tag) {
+  background: rgba(139, 92, 246, 0.15);
+  color: #c4b5fd;
+}
+.sb-meta-action {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--el-text-color-regular);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-all;
+}
+.sb-meta-label {
+  font-weight: 600;
+  color: var(--el-text-color-secondary);
+}
 .sb-image-actions {
   display: flex;
   gap: 8px;
-  margin-top: 8px;
+  margin-top: 6px;
   flex-shrink: 0;
-  padding-top: 6px;
+  padding-top: 4px;
 }
 .sb-image-error {
   color: #f56c6c;
@@ -1268,28 +1358,29 @@ const shotRangeEnd = computed(() => {
 /* 视频栏 */
 .sb-video-area {
   flex: 1;
-  min-height: 200px;
-  background: linear-gradient(145deg, #1a1b24 0%, #1e1f28 60%, #1c1d26 100%);
-  border: 1px dashed rgba(255, 255, 255, 0.08);
+  min-height: 180px;
+  max-height: 250px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
   border-radius: 10px;
   display: flex;
   align-items: center;
   justify-content: center;
   transition: border-color 0.2s;
 }
-:global(html.light) .sb-video-area {
-  background: linear-gradient(145deg, #f5f3ff 0%, #ede9fe 100%);
-  border-color: rgba(124,58,237,0.2);
+:global(html.dark .sb-video-area) {
+  background: linear-gradient(145deg, #1a1b24 0%, #1e1f28 60%, #1c1d26 100%);
+  border: 1px dashed rgba(255, 255, 255, 0.08);
 }
 .sb-video-placeholder {
   color: #71717a;
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   text-align: center;
-  padding: 16px;
+  padding: 12px;
 }
-:global(html.light) .sb-video-placeholder { color: #7c3aed; }
+:global(html.light .sb-video-placeholder) { color: #7c3aed; }
 .sb-video-generating-text {
   display: flex;
   align-items: center;
@@ -1323,9 +1414,9 @@ const shotRangeEnd = computed(() => {
 .sb-video-actions {
   display: flex;
   gap: 8px;
-  margin-top: 8px;
+  margin-top: 6px;
   flex-shrink: 0;
-  padding-top: 6px;
+  padding-top: 4px;
 }
 .sb-video-regenerating-overlay {
   display: flex;
@@ -1340,13 +1431,13 @@ const shotRangeEnd = computed(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-top: 8px;
+  margin-top: 6px;
   flex-wrap: wrap;
 }
 .sb-video-thumb {
   position: relative;
-  width: 72px;
-  height: 48px;
+  width: 68px;
+  height: 44px;
   border-radius: 5px;
   overflow: hidden;
   cursor: pointer;
@@ -1382,36 +1473,89 @@ const shotRangeEnd = computed(() => {
   padding: 1px 0;
   pointer-events: none;
 }
-.sb-generate-video-btn { margin-top: 8px; }
+.sb-generate-video-btn { margin-top: 4px; }
 
-.sb-video-prompt-label {
+/* 紧凑对白工具栏 */
+.sb-speech-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  padding-top: 4px;
+}
+.sb-tags-group {
+  display: inline-flex;
+  gap: 4px;
+}
+
+/* 紧凑模型与配置栏 */
+.sb-model-config-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  padding: 4px 0;
+  border-top: 1px solid rgba(0, 0, 0, 0.04);
 }
-.sb-video-prompt-label > span:not(.sb-dot) { font-size: 0.85rem; color: #e4e4e7; }
-.sb-video-params-bar {
+:global(html.dark .sb-model-config-row) {
+  border-top-color: rgba(255, 255, 255, 0.05);
+}
+.sb-model-select-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.sb-config-label {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  font-weight: 500;
+  flex-shrink: 0;
+}
+.sb-model-select {
+  width: 160px !important;
+}
+
+/* 紧凑视频提示词栏 */
+.sb-video-prompt-compact {
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  margin: 4px 0;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 4px 8px;
+  background: rgba(0, 0, 0, 0.02);
+  border-radius: 6px;
+  border: 1px solid rgba(0, 0, 0, 0.04);
 }
-.sb-video-params-bar .sb-video-prompt-text {
-  flex: 1;
-  min-width: 0;
+:global(html.dark .sb-video-prompt-compact) {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.06);
 }
-.sb-video-prompt-text {
-  font-size: 0.85rem;
-  color: #a1a1aa;
-  line-height: 1.5;
-  padding: 8px 0;
+.sb-prompt-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--el-text-color-secondary);
+  flex-shrink: 0;
+}
+.sb-prompt-edit-btn {
+  font-size: 11px;
+  padding: 0 4px;
+  flex-shrink: 0;
 }
 .sb-video-prompt-text--preview {
+  flex: 1;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #64748b;
+  max-height: 2.8em;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
   word-break: break-all;
+}
+:global(html.dark .sb-video-prompt-text--preview) {
+  color: #94a3b8;
 }
 </style>

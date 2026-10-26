@@ -1,7 +1,10 @@
 <template>
   <div class="h3-shot-settings">
-    <span>H3 原生输入 {{ canvasLabel }} · 23 步 · 人物多图 + 参考声音</span>
-    <el-button size="small" link type="primary" @click="open">参考素材与衔接</el-button>
+    <el-tooltip :content="`H3 原生输入 ${canvasLabel} · 23 步 · 人物多图 + 参考声音`" placement="top">
+      <el-button size="small" link type="primary" class="h3-settings-btn" @click="open">
+        H3素材与衔接
+      </el-button>
+    </el-tooltip>
     <el-dialog v-model="visible" title="H3 参考素材与衔接" width="660px" append-to-body destroy-on-close>
       <div v-loading="loading">
         <el-alert v-if="error" :title="error" type="error" :closable="false" />
@@ -19,13 +22,14 @@
           <el-form label-position="top">
             <el-form-item label="上一镜尾帧衔接">
               <el-select v-model="continuity" style="width:100%" :disabled="disabled || saving">
+                <el-option value="off" label="使用当前分镜自己的首帧（默认）" />
                 <el-option value="auto" label="自动：相邻同场景、无换装变化且上一镜已有视频时使用" />
-                <el-option value="off" label="关闭：使用当前分镜自己的首帧" />
                 <el-option value="previous_tail" label="指定：使用上一镜实际尾帧（需先生成上一镜）" />
               </el-select>
             </el-form-item>
           </el-form>
-          <p v-if="data.previous_storyboard">上一镜：#{{ data.previous_storyboard.number }} · {{ data.previous_storyboard.same_scene ? '同场景' : '不同场景' }} · {{ data.previous_storyboard.video_ready ? '视频已就绪' : '尚无已完成视频' }}。{{ continuity === 'auto' && !data.previous_storyboard.same_scene ? '自动模式会使用本镜自己的首帧。' : '' }}</p>
+          <p v-if="continuity === 'off'">当前使用本分镜自己的首帧生成视频（画面独立可控）。</p>
+          <p v-else-if="data.previous_storyboard">上一镜：#{{ data.previous_storyboard.number }} · {{ data.previous_storyboard.same_scene ? '同场景' : '不同场景' }} · {{ data.previous_storyboard.video_ready ? '视频已就绪' : '尚无已完成视频' }}。{{ continuity === 'auto' && !data.previous_storyboard.same_scene ? '自动模式会使用本镜自己的首帧。' : '' }}</p>
           <p v-else>这是本集第一镜，使用本镜自己的首帧。</p>
           <p>使用上一镜尾帧时，当前首帧仍作为画面参考保留。H3 批量视频会按镜号顺序生成；换场景会自动停止衔接。修改仅对下次生成生效。</p>
         </template>
@@ -44,7 +48,7 @@ const loading = ref(false)
 const saving = ref(false)
 const data = ref(null)
 const error = ref('')
-const continuity = ref('auto')
+const continuity = ref('off')
 const canvasLabel = computed(() => ({ '16:9': '1344×768', '9:16': '768×1344', '1:1': '992×992', '4:3': '1152×864', '3:4': '864×1152', '21:9': '1536×672' })[props.aspectRatio] || '1344×768')
 async function open() {
   visible.value = true
@@ -64,7 +68,8 @@ async function save() {
 }
 </script>
 <style scoped>
-.h3-shot-settings { color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.6; margin: 8px 0; }
+.h3-shot-settings { display: inline-flex; align-items: center; color: var(--el-text-color-secondary); font-size: 11px; margin: 0; line-height: 1.2; }
+.h3-settings-btn { font-size: 11px; padding: 0 4px; height: 22px; }
 p { margin: 12px 0; line-height: 1.7; }
 .reference-grid { display: flex; flex-wrap: wrap; gap: 12px; }
 .reference-grid > div { width: 140px; font-size: 12px; }

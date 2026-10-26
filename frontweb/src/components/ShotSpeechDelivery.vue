@@ -1,11 +1,12 @@
 <template>
-  <div class="speech-delivery">
-    <span v-if="loading">正在计算本镜语速…</span>
-    <el-button v-else-if="error" link size="small" @click="refresh">语速信息加载失败，点击重试</el-button>
-    <template v-else-if="plan">
-      <span v-if="!plan.has_speech">本镜无对白及旁白</span>
-      <el-tooltip v-else :content="`${plan.reason}。对白与旁白共用预算，已预留收尾和换人停顿。TTS 按此倍率生成；H3 为目标语速，实际可能不同。已有音视频保留。`">
-        <span>本镜目标语速：{{ plan.mode === 'auto' ? '自动' : '固定' }} · {{ plan.speech_rate }} 倍 · 合计约 {{ plan.han_budget }} 个中文字预算{{ plan.fits ? '' : '（当前台词超出，需延长或拆镜）' }}</span>
+  <div v-if="loading || error || (plan && plan.has_speech)" class="speech-delivery">
+    <span v-if="loading" class="speech-hint">计算语速中…</span>
+    <el-button v-else-if="error" link size="small" @click="refresh">重试语速</el-button>
+    <template v-else-if="plan && plan.has_speech">
+      <el-tooltip :content="`${plan.reason}。对白与旁白共用预算，已预留收尾和换人停顿。TTS 按此倍率生成；H3 为目标语速，实际可能不同。已有音视频保留。`" placement="top">
+        <span class="speech-info">
+          语速 {{ plan.speech_rate }}x · 约{{ plan.han_budget }}字{{ plan.fits ? '' : '(超出)' }}
+        </span>
       </el-tooltip>
     </template>
   </div>
@@ -27,5 +28,8 @@ async function refresh(){
 watch(()=>JSON.stringify([props.shot.id,props.shot.dialogue,props.shot.narration,props.shot.universal_segment_text,props.shot.duration,props.shot.action,props.shot.description,props.narrativeStyle]),refresh,{immediate:true})
 </script>
 <style scoped>
-.speech-delivery{font-size:12px;color:var(--el-text-color-secondary);margin:6px 0;line-height:1.6}
+.speech-delivery{display:inline-flex;align-items:center;font-size:11px;color:var(--el-text-color-secondary);margin:0;line-height:1.2}
+.speech-info{background:rgba(139,92,246,0.08);color:#a78bfa;padding:1px 6px;border-radius:4px;cursor:help;white-space:nowrap}
+:global(html.light) .speech-info{background:rgba(124,58,237,0.08);color:#7c3aed}
+.speech-hint{font-size:11px;color:var(--el-text-color-placeholder)}
 </style>

@@ -1,6 +1,6 @@
 <template>
   <div class="wardrobe-settings">
-    <el-button size="small" link type="primary" :disabled="disabled" @click="open">{{ characterId ? '编辑人物默认服装' : '本镜造型／镜间换装' }}</el-button>
+    <el-button size="small" link type="primary" :disabled="disabled" class="wardrobe-btn" @click="open">{{ characterId ? '编辑人物默认服装' : '镜间换装' }}</el-button>
     <el-dialog v-model="visible" :title="characterId ? '人物默认服装' : '本镜造型与镜间换装'" width="650px" append-to-body destroy-on-close>
       <div v-loading="loading">
         <el-alert v-if="error" :title="error" type="error" :closable="false" />
@@ -72,6 +72,7 @@ async function save(){
 }
 </script>
 <style scoped>
-.wardrobe-settings{font-size:12px;color:var(--el-text-color-secondary)}
+.wardrobe-settings{display:inline-flex;align-items:center;font-size:11px;margin:0;line-height:1.2;color:var(--el-text-color-secondary)}
+.wardrobe-btn{font-size:11px;padding:0 4px;height:22px}
 p{line-height:1.7;margin:10px 0}
 </style>
