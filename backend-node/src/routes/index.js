@@ -337,6 +337,7 @@ function setupRouter(cfg, db, log) {
   r.get('/storyboards/:id/frame-prompts', storyboards.framePromptsGet);
   r.put('/storyboards/:id/frame-prompts/:frame_type', storyboards.framePromptSave);
   r.post('/storyboards/:id/link-tail-frame', tailFrameLink.linkTailFrame);
+  r.post('/storyboards/:id/link-first-frame', tailFrameLink.linkFirstFrame);
   r.post('/storyboards/:id/polish-prompt', storyboards.polishPrompt);
   r.post('/storyboards/:id/universal-segment-polish-stream', storyboards.polishUniversalSegmentStream);
   r.post('/storyboards/:id/classic-video-prompt-polish-stream', storyboards.polishClassicVideoPromptStream);

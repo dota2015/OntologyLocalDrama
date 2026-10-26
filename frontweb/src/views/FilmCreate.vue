@@ -1533,6 +1533,9 @@
               </div>
               <div v-if="getSbVideo(sb.id)" class="sb-video-actions">
                 <el-button size="small" :loading="isSbVideoGenerating(sb.id)" :disabled="!sbCanSubmitVideo(sb) || isSbVideoGenerating(sb.id)" @click="onGenerateSbVideo(sb)">重新生成</el-button>
+                <el-tooltip v-if="getPrevStoryboard(sb.id)" content="提取本视频首帧，设为上一个分镜的尾帧" placement="top">
+                  <el-button size="small" :loading="linkingFirstFrameIds.has(sb.id)" @click="onLinkFirstFrameToPrev(sb)">首帧衔接</el-button>
+                </el-tooltip>
                 <el-tooltip v-if="getNextStoryboard(sb.id)" content="提取本视频尾帧，设为下一个分镜的首帧" placement="top">
                   <el-button size="small" :loading="linkingTailFrameIds.has(sb.id)" @click="onLinkTailFrameToNext(sb)">尾帧衔接</el-button>
                 </el-tooltip>
@@ -3622,6 +3625,8 @@ const ttsSbIds = reactive(new Set())
 const ttsSbNarrationIds = reactive(new Set())
 // 尾帧衔接 loading 状态
 const linkingTailFrameIds = reactive(new Set())
+// 首帧衔接 loading 状态
+const linkingFirstFrameIds = reactive(new Set())
 // “上镜尾帧”（将上一分镜尾帧图片直接设为当前首帧）loading 状态
 const usingPrevTailAsFirstIds = reactive(new Set())
 /** 对白 TTS 路径缓存（与 storyboards.audio_local_path 一致） */
@@ -7592,6 +7597,47 @@ async function onLinkTailFrameToNext(sb) {
     ElMessage.error(e.message || '尾帧衔接失败')
   } finally {
     linkingTailFrameIds.delete(sb.id)
+  }
+}
+
+/** 首帧衔接：提取当前视频第一帧，设为上一个分镜的尾帧 */
+async function onLinkFirstFrameToPrev(sb) {
+  if (!dramaId.value || !sb?.id) return
+  const prevSb = getPrevStoryboard(sb.id)
+  if (!prevSb) {
+    ElMessage.warning('已是第一个分镜，没有上一个分镜可衔接')
+    return
+  }
+  const video = getSbVideo(sb.id)
+  if (!video) {
+    ElMessage.warning('当前分镜没有视频')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确定将 #${sb.storyboard_number ?? sb.id} 视频的首帧设为 #${prevSb.storyboard_number ?? prevSb.id} 的尾帧？\n原尾帧将自动进入历史。`,
+      '首帧衔接',
+      { confirmButtonText: '确认执行', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  linkingFirstFrameIds.add(sb.id)
+  try {
+    const data = await storyboardsAPI.linkFirstFrame(sb.id, { drama_id: dramaId.value })
+    if (data?.error) {
+      throw new Error(data.error)
+    }
+    ElMessage.success(`已将首帧设为 #${prevSb.storyboard_number ?? prevSb.id} 的尾帧`)
+    // 刷新两个分镜的媒体
+    await Promise.all([
+      loadSingleStoryboardMedia(sb.id),
+      loadSingleStoryboardMedia(prevSb.id)
+    ])
+  } catch (e) {
+    ElMessage.error(e.message || '首帧衔接失败')
+  } finally {
+    linkingFirstFrameIds.delete(sb.id)
   }
 }
 

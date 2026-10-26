@@ -202,6 +202,10 @@ export const storyboardsAPI = {
   linkTailFrame(id, data) {
     return request.post(`/storyboards/${id}/link-tail-frame`, data || {})
   },
+  /** 首帧衔接：提取当前分镜视频第一帧，设为上一个分镜的尾帧 */
+  linkFirstFrame(id, data) {
+    return request.post(`/storyboards/${id}/link-first-frame`, data || {})
+  },
   /** 一键 AI 重新生成/优化本分镜的 layout_description（空间布局合同），自动参考上下分镜 */
   regenerateLayoutDescription(id) {
     return request.post(`/storyboards/${id}/regenerate-layout-description`, {})
