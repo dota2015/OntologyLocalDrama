@@ -6,7 +6,7 @@ import { missingStoryboardImageSlots, fillMissingStoryboardImages } from '../src
 
 // Exercise the actual button handler and request adapter with external services
 // replaced. This catches a component still filtering out shots that have firsts.
-const { descriptor } = parse(fs.readFileSync(new URL('../src/views/FilmCreate.vue', import.meta.url), 'utf8'))
+const { descriptor } = parse(fs.readFileSync(new URL('../src/components/filmCreate/StoryboardWorkbench.vue', import.meta.url), 'utf8'))
 const script = compileScript(descriptor, { id: 'batch-image-regression' })
 const names = ['startBatchImageGeneration','submitShotImageJob','onGenerateSbFramePair','openFramePromptEditor']
 const functions = script.scriptSetupAst.filter(node => node.type === 'FunctionDeclaration' && names.includes(node.id.name))

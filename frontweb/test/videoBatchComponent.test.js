@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import { parse, compileScript } from '@vue/compiler-sfc'
 import { orderedVideoShots } from '../src/utils/h3VideoBatch.js'
 
-const {descriptor}=parse(fs.readFileSync(new URL('../src/views/FilmCreate.vue',import.meta.url),'utf8'))
+const {descriptor}=parse(fs.readFileSync(new URL('../src/components/filmCreate/StoryboardWorkbench.vue',import.meta.url),'utf8'))
 const script=compileScript(descriptor,{id:'durable-video-batch-regression'})
 const names=['startBatchVideoGeneration','applyVideoBatchStatus','stopBatchVideoGeneration']
 const functions=script.scriptSetupAst.filter(n=>n.type==='FunctionDeclaration'&&names.includes(n.id.name))
