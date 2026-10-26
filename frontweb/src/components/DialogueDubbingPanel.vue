@@ -100,7 +100,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import H3VoiceReferenceSettings from './H3VoiceReferenceSettings.vue'
-import { EDGE_VOICE_OPTIONS } from '@/utils/dubbingVoices'
+import { EDGE_VOICE_OPTIONS, INDEXTTS_VOICE_OPTIONS, getVoiceOptionsByProvider } from '@/utils/dubbingVoices'
 
 const props = defineProps({ dramaId: [Number, String], episodeId: [Number, String] })
 const emit = defineEmits(['updated', 'merge', 'profile'])
@@ -139,8 +139,7 @@ const mergeReady = computed(() => {
 const speakerRows = computed(() => speakers.value.map(name => ({ name })))
 const voiceOptions = computed(() => {
   const config = configs.value.find(c => c.id === profile.value.config_id)
-  if (!/^(edge-tts|edgetts|edge)$/i.test(config?.provider || '')) return []
-  return EDGE_VOICE_OPTIONS
+  return getVoiceOptionsByProvider(config?.provider)
 })
 async function api(url, body, method = 'POST') {
   const response = await fetch('/api/v1' + url, body === undefined ? {} : { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })

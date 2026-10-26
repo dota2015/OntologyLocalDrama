@@ -115,13 +115,16 @@ async function prepare(db, log, dramaId, targetValue, root) {
   const current = getSettings(db, dramaId, targetValue, root);
   if (current.uploaded || current.automatic) return current;
   const voice = current.voice_id;
-  if (!voice || !/Neural$/i.test(voice)) throw new Error('请先给该人物或旁白分配 Edge-TTS 音色，或上传参考音频');
+  const isEdge = /Neural$/i.test(voice);
+  const isIndex = /wav$/i.test(voice) || /^voice_\d+/i.test(voice);
+  if (!voice || (!isEdge && !isIndex)) throw new Error('请先给该人物或旁白分配 Edge-TTS 音色，或上传参考音频');
   const target = targetFor(db, dramaId, targetValue);
   const sig = signature(voice, current.speed);
   const key = [root, Number(dramaId), target.key, sig].join('|');
   if (!pending.has(key)) pending.set(key, (async () => {
-    const configs = require('./aiConfigService').listConfigs(db, 'tts').filter(c => c.is_active && /^(edge-tts|edgetts|edge)$/i.test(c.provider));
-    const config = configs.find(c => c.is_default) || configs[0];
+    const allConfigs = require('./aiConfigService').listConfigs(db, 'tts').filter(c => c.is_active);
+    const configs = allConfigs.filter(c => isEdge ? /^(edge-tts|edgetts|edge)$/i.test(c.provider) : /^(indextts|indextts2|indextts25)$/i.test(c.provider) || (c.base_url && /7860/i.test(c.base_url)));
+    const config = configs.find(c => c.is_default) || configs[0] || allConfigs.find(c => c.is_default) || allConfigs[0];
     if (!config) throw new Error('请在 AI 配置启用 Edge-TTS，或上传参考音频');
     const relative = layout.getProjectStorageSubdir(db, dramaId) + '/audio/h3-voices/' + hash(target.key).slice(0, 12) + '-' + sig.slice(0, 20) + '.wav';
     const result = await tts.synthesize(db, log, { text: SAMPLE_TEXT, config, voice_id: voice, speed: current.speed, storage_base: root });
@@ -129,7 +132,9 @@ async function prepare(db, log, dramaId, targetValue, root) {
     try {
       const duration = await normalizeAudio(source, path.join(root, relative), false);
       if (voiceFor(profile(db, dramaId), target) !== voice || Number(profile(db, dramaId).speed || 1) !== current.speed) throw new Error('准备期间音色已变化，请重试');
-      write(db, dramaId, target, old => ({ ...old, automatic: { local_path: relative, filename: 'Edge-TTS · ' + voice, duration, voice_id: voice, speed: current.speed, signature: sig, source: 'edge-tts' } }));
+      const sourceLabel = isEdge ? 'Edge-TTS' : 'IndexTTS';
+      const sourceKey = isEdge ? 'edge-tts' : 'indextts';
+      write(db, dramaId, target, old => ({ ...old, automatic: { local_path: relative, filename: sourceLabel + ' · ' + voice, duration, voice_id: voice, speed: current.speed, signature: sig, source: sourceKey } }));
     } finally { try { fs.unlinkSync(source); } catch { /* temporary synthesized sample */ } }
   })());
   const job = pending.get(key);

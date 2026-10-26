@@ -390,3 +390,15 @@ test('automatic model routing reads saved shot text and manual overrides survive
   assert.throws(()=>models.resolveStoryboardModel(db,{drama_id:2,storyboard_id:1}),/不属于/);
   assert.throws(()=>models.resolveStoryboardModel(db,{drama_id:1,storyboard_id:1,model:'deleted-model'}),/未启用/);
 });
+
+test('indextts profile normalizes voices and avoids collisions', t => {
+  const { db } = setup(t);
+  db.prepare("INSERT INTO ai_service_configs VALUES (10,'tts','indextts','IndexTTS', '[]', '', 'http://127.0.0.1:7860', 'local', '{\"voice_id\":\"voice_03.wav\"}',0,0,1,'',NULL)").run();
+  const profile = service.normalizedProfile(db, 1, { config_id: 10 });
+  assert.equal(profile.config_id, 10);
+  assert.equal(profile.default_voice, 'voice_03.wav');
+  assert.equal(profile.narrator_voice, 'voice_08.wav');
+  assert.ok(profile.voices['小明']);
+  assert.ok(profile.voices['教官']);
+  assert.notEqual(profile.voices['小明'], profile.narrator_voice);
+});

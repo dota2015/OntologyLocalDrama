@@ -261,12 +261,13 @@ function rowToConfig(r) {
 async function testConnection(opts) {
   const base = (opts.base_url || '').replace(/\/$/, '');
   if (!base) throw new Error('base_url 必填');
-  if (!opts.api_key) throw new Error('api_key 必填');
+  const provider = (opts.provider || 'openai').toLowerCase();
+  const serviceType = (opts.service_type || '').toLowerCase();
+  const isLocalTts = serviceType === 'tts' && /^(indextts|indextts2|indextts25|edge-tts|edgetts|edge)$/i.test(provider);
+  if (!opts.api_key && !isLocalTts) throw new Error('api_key 必填');
   const models = flattenModelIds(opts.model);
   const model = remapArkModelId(opts.base_url, models[0] || '');
   if (!model && (opts.provider === 'gemini' || opts.provider === 'google')) throw new Error('model 必填');
-  const provider = (opts.provider || 'openai').toLowerCase();
-  const serviceType = (opts.service_type || '').toLowerCase();
   let endpoint = opts.endpoint || '';
 
   // --- NanoBanana ---
@@ -310,6 +311,20 @@ async function testConnection(opts) {
 
   // --- TTS 语音合成 ---
   if (serviceType === 'tts') {
+    if (provider === 'indextts' || provider === 'indextts2' || provider === 'indextts25' || /7860/.test(base)) {
+      try {
+        const probeRes = await fetch(base + '/config', { method: 'GET', signal: AbortSignal.timeout(10000) });
+        if (!probeRes.ok && probeRes.status !== 404) {
+          throw new Error(`IndexTTS 响应异常 HTTP ${probeRes.status}`);
+        }
+        return;
+      } catch (e) {
+        throw new Error(`IndexTTS 服务连接失败: ${e.message}`);
+      }
+    }
+    if (provider === 'edge-tts' || provider === 'edgetts' || provider === 'edge') {
+      return;
+    }
     // MiniMax T2A：用 /v1/models 或直接对 chat 端点做轻量探针
     const ttsBase = base.includes('minimaxi.com') || base.includes('minimax') ? base : base;
     // 尝试调用一个极简的 MiniMax T2A 请求（1 字，验证 key 合法性）

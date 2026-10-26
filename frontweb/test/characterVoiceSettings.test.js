@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { withCharacterVoice } from '../src/utils/dubbingVoices.js'
+import { withCharacterVoice, getVoiceOptionsByProvider, INDEXTTS_VOICE_OPTIONS, EDGE_VOICE_OPTIONS } from '../src/utils/dubbingVoices.js'
 
 test('editing a character voice keeps stable identity and every linked alias in sync', () => {
   const original = {
@@ -30,6 +30,14 @@ test('character voice selection rejects the narrator voice and blank IDs', () =>
   const character = { id: 5, name: '王奕宸' }
   assert.throws(() => withCharacterVoice({ narrator_voice: 'narrator' }, character, ' narrator '), /不能与旁白相同/)
   assert.throws(() => withCharacterVoice({}, character, '  '), /请选择人物音色/)
+})
+
+test('getVoiceOptionsByProvider returns provider-specific voice options', () => {
+  assert.deepEqual(getVoiceOptionsByProvider('indextts'), INDEXTTS_VOICE_OPTIONS)
+  assert.deepEqual(getVoiceOptionsByProvider('INDEXTTS25'), INDEXTTS_VOICE_OPTIONS)
+  assert.deepEqual(getVoiceOptionsByProvider('edge-tts'), EDGE_VOICE_OPTIONS)
+  assert.deepEqual(getVoiceOptionsByProvider('edge'), EDGE_VOICE_OPTIONS)
+  assert.deepEqual(getVoiceOptionsByProvider('unknown'), [])
 })
 
 import { shotSpeechStatus, automaticVideoModel } from '../src/utils/shotSpeech.js'

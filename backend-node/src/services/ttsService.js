@@ -90,16 +90,34 @@ async function synthesizeWithMinimax(text, voiceId, apiKey, groupId, model, spee
  * 支持参考音色复刻克隆与 duration_factor 语速控制
  */
 async function synthesizeWithIndexTts(text, voiceRef, baseUrl, speed, storageBase) {
-  const origin = (baseUrl || 'http://10.10.13.15:7860').replace(/\/+$/, '');
+  const origin = (baseUrl || 'http://127.0.0.1:7860').replace(/\/+$/, '');
 
   // 1. 准备参考音频（prompt audio）
   let promptFileData = null;
   let resolvedRefPath = null;
+  const sampleName = voiceRef ? path.basename(voiceRef) : 'voice_03.wav';
+
   if (voiceRef) {
     if (path.isAbsolute(voiceRef) && fs.existsSync(voiceRef)) {
       resolvedRefPath = voiceRef;
     } else if (storageBase && fs.existsSync(path.join(storageBase, voiceRef))) {
       resolvedRefPath = path.join(storageBase, voiceRef);
+    }
+  }
+
+  // 若尚未找到，寻找内置预设音频
+  if (!resolvedRefPath || !fs.existsSync(resolvedRefPath)) {
+    const candidates = [
+      path.join(__dirname, '../assets/indextts', sampleName),
+      path.join(__dirname, '../assets/indextts', 'voice_03.wav'),
+      path.join('/home/nvidia/IndexTTS2/examples', sampleName),
+      path.join('/home/nvidia/IndexTTS2/examples', 'voice_03.wav'),
+    ];
+    for (const cand of candidates) {
+      if (fs.existsSync(cand)) {
+        resolvedRefPath = cand;
+        break;
+      }
     }
   }
 
@@ -112,13 +130,17 @@ async function synthesizeWithIndexTts(text, voiceRef, baseUrl, speed, storageBas
       if (upRes.ok) {
         const [remotePath] = await upRes.json();
         promptFileData = { path: remotePath, orig_name: path.basename(resolvedRefPath), meta: { _type: 'gradio.FileData' } };
+      } else {
+        const errText = await upRes.text();
+        console.warn('[IndexTTS] 上传参考音频失败:', upRes.status, errText);
       }
-    } catch (_) {}
+    } catch (e) {
+      console.warn('[IndexTTS] 上传参考音频异常:', e.message);
+    }
   }
 
-  // 若无自定义参考音频，使用内置预设参考音色
   if (!promptFileData) {
-    promptFileData = { path: 'voice_03.wav', orig_name: 'voice_03.wav', meta: { _type: 'gradio.FileData' } };
+    throw new Error('IndexTTS 无法准备参考音频文件，请上传样音或选择预设音色');
   }
 
   // 2. 语速映射：系统 speed > 1 变快，IndexTTS duration_factor < 1 变快变短
@@ -247,7 +269,7 @@ async function synthesize(db, log, { text, storyboard_id, config, storage_base, 
     audioBuffer = await synthesizeWithIndexTts(
       text,
       voiceId,
-      ttsConfig.base_url || 'http://10.10.13.15:7860',
+      ttsConfig.base_url || 'http://127.0.0.1:7860',
       finalSpeed,
       storage_base
     );

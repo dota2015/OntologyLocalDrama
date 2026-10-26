@@ -688,7 +688,7 @@ input_reference = (图片文件，可选)</pre>
         </template>
         <!-- TTS 专属字段：声音 ID 和 MiniMax Group ID -->
         <template v-if="form.service_type === 'tts'">
-          <el-form-item>
+          <el-form-item v-if="form.provider === 'minimax'">
             <template #label>
               <span class="form-label-tip">声音 ID
                 <el-tooltip placement="top" popper-class="cfg-tip-popper">
@@ -727,7 +727,63 @@ input_reference = (图片文件，可选)</pre>
             </el-select>
             <p class="field-tip">MiniMax 必填；不填默认 female-shaonv。</p>
           </el-form-item>
-          <el-form-item>
+          <el-form-item v-else-if="/^indextts/i.test(form.provider)">
+            <template #label>
+              <span class="form-label-tip">默认预设音色
+                <el-tooltip placement="top" popper-class="cfg-tip-popper">
+                  <template #content>
+                    <div class="cfg-tip-content">
+                      IndexTTS 内置音色，未指定具体声音时作为全局默认参考音色。
+                    </div>
+                  </template>
+                  <el-icon class="tip-icon"><QuestionFilled /></el-icon>
+                </el-tooltip>
+              </span>
+            </template>
+            <el-select
+              v-model="form.voice_id"
+              filterable
+              allow-create
+              default-first-option
+              placeholder="选择预设参考音色"
+              style="width: 100%"
+            >
+              <el-option label="voice_03.wav · 稳重男声（默认）" value="voice_03.wav" />
+              <el-option label="voice_08.wav · 知性女声（推荐旁白）" value="voice_08.wav" />
+              <el-option label="voice_01.wav · 青年男声" value="voice_01.wav" />
+              <el-option label="voice_02.wav · 阳光少年" value="voice_02.wav" />
+              <el-option label="voice_04.wav · 磁性男声" value="voice_04.wav" />
+              <el-option label="voice_05.wav · 沉稳低音" value="voice_05.wav" />
+              <el-option label="voice_06.wav · 清爽男声" value="voice_06.wav" />
+              <el-option label="voice_07.wav · 清新女声" value="voice_07.wav" />
+              <el-option label="voice_09.wav · 温柔女声" value="voice_09.wav" />
+              <el-option label="voice_11.wav · 干练女声" value="voice_11.wav" />
+              <el-option label="voice_12.wav · 沉稳女声" value="voice_12.wav" />
+            </el-select>
+            <p class="field-tip">IndexTTS 官方内置 11 种音色，也可在人物管理中上传自定义干声音色进行克隆。</p>
+          </el-form-item>
+          <el-form-item v-else-if="/^edge/i.test(form.provider)">
+            <template #label>
+              <span class="form-label-tip">默认音色
+                <el-tooltip placement="top" popper-class="cfg-tip-popper">
+                  <template #content>
+                    <div class="cfg-tip-content">Edge-TTS 默认播音员音色。</div>
+                  </template>
+                  <el-icon class="tip-icon"><QuestionFilled /></el-icon>
+                </el-tooltip>
+              </span>
+            </template>
+            <el-select v-model="form.voice_id" placeholder="选择 Edge-TTS 默认音色" style="width: 100%">
+              <el-option label="云健 · 男声 (zh-CN-YunjianNeural)" value="zh-CN-YunjianNeural" />
+              <el-option label="云希 · 男声 (zh-CN-YunxiNeural)" value="zh-CN-YunxiNeural" />
+              <el-option label="云夏 · 男声偏少年 (zh-CN-YunxiaNeural)" value="zh-CN-YunxiaNeural" />
+              <el-option label="晓伊 · 女声 (zh-CN-XiaoyiNeural)" value="zh-CN-XiaoyiNeural" />
+              <el-option label="晓晓 · 女声 (zh-CN-XiaoxiaoNeural)" value="zh-CN-XiaoxiaoNeural" />
+              <el-option label="云扬 · 播报男声 (zh-CN-YunyangNeural)" value="zh-CN-YunyangNeural" />
+            </el-select>
+            <p class="field-tip">Edge-TTS 内置播音级免费音色。</p>
+          </el-form-item>
+          <el-form-item v-if="form.provider === 'minimax'">
             <template #label>
               <span class="form-label-tip">Group ID
                 <el-tooltip placement="top" popper-class="cfg-tip-popper">
@@ -1391,6 +1447,8 @@ const rules = computed(() => ({
         }
         const proto = form.value.api_protocol
         if (st === 'video' && proto === 'comfyui_wan22') return cb()
+        const p = String(form.value.provider || '').toLowerCase()
+        if (st === 'tts' && (p === 'indextts' || p === 'indextts2' || p === 'indextts25' || p === 'edge-tts' || p === 'edgetts' || p === 'edge')) return cb()
         const ak = (form.value.kling_access_key || '').trim()
         const sk = (form.value.kling_secret_key || '').trim()
         if (st === 'video' && proto === 'kling_omni' && ak && sk) return cb()
@@ -1484,6 +1542,8 @@ const providerConfigs = {
     { id: 'agnes', name: 'Agnes AI', models: ['agnes-video-2.5-flash', 'agnes-video-2.5', 'agnes-video-v2.0'] },
   ],
   tts: [
+    { id: 'indextts', name: 'IndexTTS 2.5 (本地 GPU / 音色克隆)', models: ['IndexTTS-2.5'] },
+    { id: 'edge-tts', name: 'Edge-TTS (免费多音色)', models: ['zh-CN-YunjianNeural', 'zh-CN-XiaoxiaoNeural', 'zh-CN-YunxiNeural', 'zh-CN-XiaoyiNeural', 'zh-CN-YunyangNeural'] },
     { id: 'minimax', name: 'MiniMax T2A', models: ['speech-02-hd', 'speech-02-turbo'] },
   ],
   jimeng2_character_auth: [
@@ -1493,6 +1553,9 @@ const providerConfigs = {
 
 /** 厂商 id → 默认接口规范（api_protocol） */
 const providerProtocolMap = {
+  // tts
+  indextts: 'indextts',
+  'edge-tts': 'edge-tts',
   // image / storyboard_image
   volcengine: 'volcengine',
   volces: 'volcengine',
@@ -1526,6 +1589,8 @@ const providerProtocolMap = {
 function getBaseUrlForProvider(provider) {
   if (!provider) return ''
   const p = String(provider).toLowerCase()
+  if (p === 'indextts' || p === 'indextts2' || p === 'indextts25') return 'http://127.0.0.1:7860'
+  if (p === 'edge-tts' || p === 'edgetts' || p === 'edge') return 'http://127.0.0.1:5679'
   if (p === 'gemini' || p === 'google') return 'https://generativelanguage.googleapis.com'
   if (p === 'comfyui_wan22') return 'http://127.0.0.1:5688'
   if (p === 'minimax_h3') return 'https://api.minimaxi.com'
@@ -2057,13 +2122,14 @@ async function submit() {
       }
       settings = Object.keys(baseS).length ? JSON.stringify(baseS) : null
     }
+    const isLocalTts = form.value.service_type === 'tts' && /^(indextts|indextts2|indextts25|edge-tts|edgetts|edge)$/i.test(form.value.provider)
     const payload = {
       service_type: form.value.service_type,
       name: form.value.name,
       provider: form.value.provider,
       api_protocol: form.value.api_protocol || '',
       base_url: form.value.base_url,
-      api_key: form.value.api_key,
+      api_key: (!form.value.api_key?.trim() && isLocalTts) ? 'local' : form.value.api_key,
       endpoint: form.value.endpoint || '',
       query_endpoint: form.value.query_endpoint || '',
       model: modelList,

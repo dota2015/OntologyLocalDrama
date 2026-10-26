@@ -31,6 +31,10 @@ function create(db, log, cfg) {
       return response.badRequest(res, '当前为厂商锁定模式，不允许添加配置');
     }
     const body = req.body || {};
+    const isLocalTts = String(body.service_type || '').toLowerCase() === 'tts' && /^(indextts|indextts2|indextts25|edge-tts|edgetts|edge)$/i.test(body.provider);
+    if (isLocalTts && (body.api_key === undefined || body.api_key === null || !String(body.api_key).trim())) {
+      body.api_key = 'local';
+    }
     if (!body.service_type || !body.name || !body.provider || !body.base_url) {
       return response.badRequest(res, '缺少必填字段: service_type, name, provider, base_url');
     }
@@ -106,7 +110,8 @@ function bulkUpdateKey(db, log, cfg) {
 function testConnection(log) {
   return async (req, res) => {
     const body = req.body || {};
-    if (!body.base_url || !body.api_key) {
+    const isLocalTts = String(body.service_type || '').toLowerCase() === 'tts' && /^(indextts|indextts2|indextts25|edge-tts|edgetts|edge)$/i.test(body.provider);
+    if (!body.base_url || (!body.api_key && !isLocalTts)) {
       return response.badRequest(res, '缺少 base_url 或 api_key');
     }
     try {

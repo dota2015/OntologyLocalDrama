@@ -309,6 +309,18 @@ function ensureAllColumns(database) {
     { name: 'deleted_at',     type: 'TEXT' },
   ]);
 
+  // 确保 IndexTTS 2.5 配置在数据库中初始化
+  try {
+    const hasIndexTts = database.prepare("SELECT id FROM ai_service_configs WHERE service_type = 'tts' AND provider IN ('indextts', 'indextts2', 'indextts25') AND deleted_at IS NULL").get();
+    if (!hasIndexTts) {
+      const now = new Date().toISOString();
+      database.prepare(`
+        INSERT INTO ai_service_configs (service_type, provider, api_protocol, name, base_url, api_key, model, default_model, endpoint, query_endpoint, priority, is_default, is_active, settings, created_at, updated_at)
+        VALUES ('tts', 'indextts', 'indextts', 'IndexTTS 2.5 本地音色克隆/大模型配音 (RTX 4090)', 'http://127.0.0.1:7860', 'local', '["IndexTTS-2.5"]', 'IndexTTS-2.5', '', '', 10, 0, 1, '{"voice_id":"voice_03.wav"}', ?, ?)
+      `).run(now, now);
+    }
+  } catch (_) {}
+
   // --- async_tasks ---
   ensureColumns(database, 'async_tasks', [
     { name: 'type',         type: 'TEXT NOT NULL DEFAULT \'\'' },

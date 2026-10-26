@@ -19,7 +19,7 @@
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import H3VoiceReferenceSettings from './H3VoiceReferenceSettings.vue'
-import { EDGE_VOICE_OPTIONS, withCharacterVoice } from '@/utils/dubbingVoices'
+import { EDGE_VOICE_OPTIONS, INDEXTTS_VOICE_OPTIONS, getVoiceOptionsByProvider, withCharacterVoice } from '@/utils/dubbingVoices'
 
 const props = defineProps({ dramaId: [Number, String], characterId: [Number, String] })
 const emit = defineEmits(['profile'])
@@ -33,7 +33,7 @@ const error = ref('')
 let audio
 let requestVersion = 0
 const config = computed(() => data.value?.configs.find(c => c.id === data.value.profile.config_id))
-const options = computed(() => /^(edge-tts|edgetts|edge)$/i.test(config.value?.provider || '') ? EDGE_VOICE_OPTIONS : [])
+const options = computed(() => getVoiceOptionsByProvider(config.value?.provider))
 function endpoint() { return '/audio/dubbing/' + props.dramaId }
 async function api(url, body, method = 'POST') {
   const response = await fetch('/api/v1' + url, body === undefined ? {} : {

@@ -7,6 +7,31 @@ export const EDGE_VOICE_OPTIONS = [
   { id: 'zh-CN-YunyangNeural', label: '云扬 · 播报男声' },
 ]
 
+export const INDEXTTS_VOICE_OPTIONS = [
+  { id: 'voice_01.wav', label: 'IndexTTS 01 · 青年男声' },
+  { id: 'voice_02.wav', label: 'IndexTTS 02 · 阳光少年' },
+  { id: 'voice_03.wav', label: 'IndexTTS 03 · 稳重男声' },
+  { id: 'voice_04.wav', label: 'IndexTTS 04 · 磁性男声' },
+  { id: 'voice_05.wav', label: 'IndexTTS 05 · 沉稳低音' },
+  { id: 'voice_06.wav', label: 'IndexTTS 06 · 清爽男声' },
+  { id: 'voice_07.wav', label: 'IndexTTS 07 · 清新女声' },
+  { id: 'voice_08.wav', label: 'IndexTTS 08 · 知性女声（推荐旁白）' },
+  { id: 'voice_09.wav', label: 'IndexTTS 09 · 温柔女声' },
+  { id: 'voice_11.wav', label: 'IndexTTS 11 · 干练女声' },
+  { id: 'voice_12.wav', label: 'IndexTTS 12 · 沉稳女声' },
+]
+
+export function getVoiceOptionsByProvider(provider) {
+  const p = String(provider || '').toLowerCase()
+  if (/^(indextts|indextts2|indextts25)$/i.test(p)) {
+    return INDEXTTS_VOICE_OPTIONS
+  }
+  if (/^(edge-tts|edgetts|edge)$/i.test(p)) {
+    return EDGE_VOICE_OPTIONS
+  }
+  return []
+}
+
 // Keep the stable character ID and every linked speaker label in sync.
 export function withCharacterVoice(profile, character, voice) {
   const selected = String(voice || '').trim()

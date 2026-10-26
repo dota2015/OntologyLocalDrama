@@ -54,6 +54,7 @@ function configFor(db, configId) {
   return config;
 }
 const EDGE_VOICES = ['zh-CN-YunjianNeural', 'zh-CN-YunxiNeural', 'zh-CN-YunxiaNeural', 'zh-CN-XiaoyiNeural', 'zh-CN-XiaoxiaoNeural', 'zh-CN-YunyangNeural'];
+const INDEXTTS_VOICES = ['voice_01.wav', 'voice_02.wav', 'voice_03.wav', 'voice_04.wav', 'voice_05.wav', 'voice_06.wav', 'voice_07.wav', 'voice_08.wav', 'voice_09.wav', 'voice_11.wav', 'voice_12.wav'];
 function normalizedProfile(db, id, raw = {}) {
   dramaRow(db, id);
   const config = configFor(db, raw.config_id);
@@ -65,8 +66,9 @@ function normalizedProfile(db, id, raw = {}) {
     voices[speakerName(name)] = voice.trim();
   }
   const edge = /^(edge-tts|edgetts|edge)$/i.test(config.provider);
-  const defaultVoice = String(raw.default_voice || (edge ? 'zh-CN-YunjianNeural' : '')).trim();
-  const narrator = String(raw.narrator_voice || (edge ? 'zh-CN-YunyangNeural' : '')).trim();
+  const indextts = /^(indextts|indextts2|indextts25)$/i.test(config.provider) || (config.base_url && /7860/i.test(config.base_url));
+  const defaultVoice = String(raw.default_voice || (edge ? 'zh-CN-YunjianNeural' : (indextts ? 'voice_03.wav' : ''))).trim();
+  const narrator = String(raw.narrator_voice || (edge ? 'zh-CN-YunyangNeural' : (indextts ? 'voice_08.wav' : ''))).trim();
   if (defaultVoice.length > 200 || narrator.length > 200) throw new Error('音色 ID 过长');
   const characters = db.prepare('SELECT id, name, description, appearance, voice_style FROM characters WHERE drama_id = ? AND deleted_at IS NULL ORDER BY sort_order, id').all(Number(id));
   const characterVoices = Object.create(null);
@@ -96,6 +98,22 @@ function normalizedProfile(db, id, raw = {}) {
       if (/女性|女孩|少女|女人|女声|母亲|妈妈|女士|姑娘|女主/u.test(description)) preferred = ['zh-CN-XiaoyiNeural', 'zh-CN-XiaoxiaoNeural'];
       else if (/男孩|少年|男童|小学生|十岁|小男/u.test(description)) preferred = ['zh-CN-YunxiaNeural', 'zh-CN-YunxiNeural'];
       const pool = [...preferred, ...EDGE_VOICES].filter(v => v !== narrator);
+      const selected = pool.find(v => !used.has(v)) || pool[0];
+      voices[name] = selected;
+      used.add(selected);
+    }
+  } else if (indextts) {
+    const used = new Set(Object.values(voices).filter(Boolean));
+    for (const [name, c] of names) {
+      if (!Object.hasOwn(bindings, name)) bindings[name] = c.id || 0;
+      const target = characters.find(c => c.id === bindings[name]);
+      if (target && voices[target.name]) { voices[name] = voices[target.name]; continue; }
+      if (voices[name]) continue;
+      const description = [name, c.description, c.appearance, c.voice_style].filter(Boolean).join(' ');
+      let preferred = ['voice_01.wav', 'voice_03.wav', 'voice_04.wav'];
+      if (/女性|女孩|少女|女人|女声|母亲|妈妈|女士|姑娘|女主/u.test(description)) preferred = ['voice_07.wav', 'voice_08.wav', 'voice_09.wav', 'voice_11.wav', 'voice_12.wav'];
+      else if (/男孩|少年|男童|小学生|十岁|小男/u.test(description)) preferred = ['voice_02.wav', 'voice_06.wav'];
+      const pool = [...preferred, ...INDEXTTS_VOICES].filter(v => v !== narrator);
       const selected = pool.find(v => !used.has(v)) || pool[0];
       voices[name] = selected;
       used.add(selected);
