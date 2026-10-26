@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { parse, compileScript } from '@vue/compiler-sfc'
 
-const { descriptor } = parse(fs.readFileSync(new URL('../src/views/FilmCreate.vue', import.meta.url), 'utf8'))
+const fileUrl = new URL('../src/components/filmCreate/AssetWorkbench.vue', import.meta.url)
+const { descriptor } = parse(fs.readFileSync(fileUrl, 'utf8'))
 const compiled = compileScript(descriptor, { id: 'character-upload-behavior' })
 const functions = compiled.scriptSetupAst.filter(n => n.type === 'FunctionDeclaration' &&
   ['parseExtraImages','findResource','doUploadResourceImage'].includes(n.id.name))

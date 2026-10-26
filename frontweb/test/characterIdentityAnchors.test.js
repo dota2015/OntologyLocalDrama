@@ -7,7 +7,8 @@ import { renderToString } from '@vue/server-renderer'
 import { ElInput, ID_INJECTION_KEY } from 'element-plus'
 
 test('the character anchor input binds persisted text and structured anchors to ElInput', async () => {
-  const source = readFileSync(new URL('../src/views/FilmCreate.vue', import.meta.url), 'utf8')
+  const fileUrl = new URL('../src/components/filmCreate/AssetWorkbench.vue', import.meta.url)
+  const source = readFileSync(fileUrl, 'utf8')
   const template = source.match(/<el-input\s+v-if="editCharacterForm.identity_anchors"[\s\S]*?\/>/)?.[0]
   assert.ok(template, 'character editor must expose its anchor input')
   const { code } = compile(template, { mode: 'function', prefixIdentifiers: true })
