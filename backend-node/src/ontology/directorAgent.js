@@ -54,6 +54,15 @@ async function runDirectorAgent(db, log, cfg, episodeId, options = {}, progressC
     if (!cols.includes('video_slots')) {
       db.prepare('ALTER TABLE storyboards ADD COLUMN video_slots TEXT').run();
     }
+    if (!cols.includes('long_take_group_id')) {
+      db.prepare('ALTER TABLE storyboards ADD COLUMN long_take_group_id TEXT').run();
+    }
+    if (!cols.includes('long_take_role')) {
+      db.prepare('ALTER TABLE storyboards ADD COLUMN long_take_role TEXT').run();
+    }
+    if (!cols.includes('long_take_sequence')) {
+      db.prepare('ALTER TABLE storyboards ADD COLUMN long_take_sequence INTEGER').run();
+    }
   } catch (_) {}
 
   const epRow = db.prepare('SELECT id, drama_id, script_content, title, duration FROM episodes WHERE id = ? AND deleted_at IS NULL').get(epId);
@@ -163,6 +172,18 @@ ${directiveSection}
      * posture: 躯干体态与重心（必须写清具体体态与重心：半蹲低伏 / 单膝跪姿 / 身体前倾30度坐姿 / 侧卧撑地 / 大步奔冲 / 凌空飞扑）
      * hands: 双手与四肢具体动作（双手手指搭在键盘按键上方 / 右手紧按耳机左手持枪 / 单臂平举直指前方 / 单手撑地）
    - 槽位中严禁出现“从A到B”、“跑向”、“走到”、“随后”、“看了一眼”等动态时序过程词，文生图模型会将两地各画一人产生克隆分身！必须是首帧决定性瞬间的纯静态摄影描写！
+9. **连贯长镜头结构化拆解与接力规范（Long Take Relaying & Sequential Splitting）**：
+   - **适用情境**：影视短剧中，连续动作追逐、长走廊/房间连续漫游、连贯推移跟拍等大段无切机位的视听情境。因 AI 视频模型单镜仅能生成 4~8 秒，必须将长镜头拆分为多个连续子镜头（如镜头2~5）。
+   - **长镜头结构化输出**：
+     * long_take_group_id: 组标识（同一个长镜头的所有子镜头填写相同字符串，如 "ltg_1"；普通独立切换机位镜头填 null 或 ""）
+     * long_take_role: 组内角色：
+       - "head": 长镜头组首（必须有完整的首帧纯静态摄影 image_prompt，供文生图生成起始帧）；
+       - "continuation": 接力续镜（动作接力延续，系统视频生成时自动提取上一镜视频尾帧作为起始帧，无需独立盲画首帧图）；
+       - "tail": 终镜收束（长镜头组收尾镜头，同样承接上一镜尾帧）。
+     * long_take_sequence: 组内接力次序（1, 2, 3...）。
+   - **长镜头动线与运镜合同**：
+     * 组首、续镜、终镜机位与运镜必须具备空间与动线连续性（如 tracking -> pan/tracking -> handheld 逼近）；
+     * continuation/tail 镜头的 action 与 video_prompt 必须明确写出动作承接（例如：“紧接上一画面奔跑惯性，红狼冲入掩体并顺势滑铲...”）。
 
 【目标参数】：总分镜数约 ${targetCount} 镜，单镜平均约 ${singleShotDuration} 秒。`;
 
@@ -172,6 +193,9 @@ ${scriptContent}
 【任务要求】：
 请以纯 JSON 格式输出 {"storyboards": [...]}。每个分镜包含：
 - shot_number: 镜头序号 (从 1 递增)
+- long_take_group_id: 长镜头组ID (属于同一长镜头的子镜头填相同ID如 "ltg_1"，独立镜头填 null)
+- long_take_role: 长镜头角色 (head / continuation / tail，独立镜头填 null)
+- long_take_sequence: 长镜头组内次序 (1, 2, 3...，独立镜头填 null)
 - title: 3-5字镜头标题
 - scene_id: 所属场景ID (必须选自可用场景目录)
 - characters: 出场角色ID数组 (如 [1, 2]，单镜出场角色最多3人（<=3人），严禁超过3人（>3人）)
@@ -285,6 +309,9 @@ ${audit.violations.map(v => `- [${v.rule}] 镜头 ${v.shot_number || '全局'}: 
       bgm_prompt: bgm,
       lighting_style: angleService.normalizeLighting(s.lighting_style) || 'dramatic',
       depth_of_field: angleService.normalizeDof(s.depth_of_field) || 'medium',
+      long_take_group_id: s.long_take_group_id ? String(s.long_take_group_id).trim() : null,
+      long_take_role: s.long_take_role ? String(s.long_take_role).trim().toLowerCase() : null,
+      long_take_sequence: s.long_take_sequence != null ? Number(s.long_take_sequence) : null,
     };
   });
 
@@ -412,12 +439,16 @@ ${audit.violations.map(v => `- [${v.rule}] 镜头 ${v.shot_number || '全局'}: 
         episode_id, scene_id, storyboard_number, title, description, location, time, duration,
         dialogue, narration, action, result, atmosphere, movement, lighting_style, depth_of_field,
         angle_h, angle_v, angle_s, shot_type, bgm_prompt, sound_effect, layout_description,
-        characters, character_visuals, last_frame_visuals, video_slots, image_prompt, video_prompt, polished_prompt, status, created_at, updated_at
+        characters, character_visuals, last_frame_visuals, video_slots, image_prompt, video_prompt, polished_prompt,
+        long_take_group_id, long_take_role, long_take_sequence,
+        status, created_at, updated_at
       ) VALUES (
         ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?
+        ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?,
+        'pending', ?, ?
       )
     `);
 
@@ -497,6 +528,9 @@ ${audit.violations.map(v => `- [${v.rule}] 镜头 ${v.shot_number || '全局'}: 
         imgPrompt,
         vidPrompt,
         polishedPrompt,
+        s.long_take_group_id || null,
+        s.long_take_role || null,
+        s.long_take_sequence != null ? Number(s.long_take_sequence) : null,
         now,
         now
       );

@@ -184,6 +184,9 @@ function ensureAllColumns(database) {
     { name: 'last_frame_image_url', type: 'TEXT' },
     { name: 'last_frame_local_path', type: 'TEXT' },
     { name: 'selected_video_id',    type: 'INTEGER' },
+    { name: 'long_take_group_id',   type: 'TEXT' },               // 长镜头组唯一标识（如 ltg_1，空表示普通独立镜头）
+    { name: 'long_take_role',       type: 'TEXT' },               // 长镜头角色：head（组首，需文生图首帧）| continuation（续镜，接力上一镜尾帧）| tail（收束镜）
+    { name: 'long_take_sequence',   type: 'INTEGER' },            // 长镜头组内接力次序（1-based：1, 2, 3...）
     { name: 'status',            type: 'TEXT DEFAULT \'draft\'' },
     { name: 'created_at',        type: 'TEXT' },
     { name: 'updated_at',        type: 'TEXT' },

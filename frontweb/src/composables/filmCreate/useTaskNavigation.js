@@ -227,6 +227,10 @@ export function useTaskNavigation({
               const sbs = (storyboards.value || []).slice().sort((a, b) => (Number(a.storyboard_number || a.shot_number || 0) - Number(b.storyboard_number || b.shot_number || 0)))
               const two = storyboardUseFirstLastFrame.value
               for (const sb of sbs) {
+                // 长镜头承接镜/尾镜无需独立生成分镜首帧，直接承接上镜视频尾帧
+                if (sb.long_take_group_id && (sb.long_take_role === 'continuation' || sb.long_take_role === 'tail' || (sb.long_take_sequence != null && Number(sb.long_take_sequence) > 1))) {
+                  continue
+                }
                 const sbNum = sb.storyboard_number || sb.shot_number || ''
                 const numStr = sbNum ? ('#' + sbNum + ' ') : ''
                 if (two && sb.creation_mode !== 'universal') {
@@ -270,6 +274,10 @@ export function useTaskNavigation({
         const sbs = (storyboards.value || []).slice().sort((a, b) => (Number(a.storyboard_number || a.shot_number || 0) - Number(b.storyboard_number || b.shot_number || 0)))
         const two = storyboardUseFirstLastFrame.value
         for (const sb of sbs) {
+          // 长镜头承接镜/尾镜无需独立生成分镜首帧，直接承接上镜视频尾帧
+          if (sb.long_take_group_id && (sb.long_take_role === 'continuation' || sb.long_take_role === 'tail' || (sb.long_take_sequence != null && Number(sb.long_take_sequence) > 1))) {
+            continue
+          }
           const sbNum = sb.storyboard_number || sb.shot_number || ''
           const numStr = sbNum ? ('#' + sbNum + ' ') : ''
           if (two && sb.creation_mode !== 'universal') {
@@ -311,9 +319,12 @@ export function useTaskNavigation({
             const isWaiting = shot.status === 'pending'
             const numStr = shot.storyboard_number != null ? `#${shot.storyboard_number} ` : (shot.storyboard_id ? `#${shot.storyboard_id} ` : '')
             const shotTime = shot.created_at ? new Date(shot.created_at).getTime() : 0
+            const matchedSb = (storyboards.value || []).find((s) => String(s.id) === String(shot.storyboard_id))
+            const isLongTakeContinuation = Boolean(matchedSb?.long_take_group_id && (matchedSb.long_take_role === 'continuation' || matchedSb.long_take_role === 'tail' || (matchedSb.long_take_sequence != null && Number(matchedSb.long_take_sequence) > 1)))
+            const waitLabel = isLongTakeContinuation ? '等待前序尾帧' : '等待中'
             addItem({
               id: `batch-video-shot-${shot.id || shot.storyboard_id}`,
-              label: `分镜 ${numStr}视频 ${isWaiting ? '等待中' : '生成中...'}`,
+              label: `分镜 ${numStr}视频 ${isWaiting ? waitLabel : '生成中...'}`,
               kind: 'batchVideo',
               shot,
               storyboardId: shot.storyboard_id,
@@ -334,9 +345,11 @@ export function useTaskNavigation({
           for (const sb of sbs) {
             const sbNum = sb.storyboard_number || sb.shot_number || ''
             const numStr = sbNum ? (`#${sbNum} `) : ''
+            const isLongTakeContinuation = Boolean(sb.long_take_group_id && (sb.long_take_role === 'continuation' || sb.long_take_role === 'tail' || (sb.long_take_sequence != null && Number(sb.long_take_sequence) > 1)))
+            const waitLabel = isLongTakeContinuation ? '等待前序尾帧' : '等待中'
             addItem({
               id: `batch-video-pending-${sb.id}`,
-              label: `分镜 ${numStr}视频 等待中`,
+              label: `分镜 ${numStr}视频 ${waitLabel}`,
               kind: 'batchVideo',
               storyboardId: sb.id,
               order: Number(sbNum) || 0,

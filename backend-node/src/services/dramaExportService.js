@@ -280,6 +280,9 @@ function exportDrama(db, cfg, log, dramaId) {
             creation_mode: sb.creation_mode === 'universal' ? 'universal' : 'classic',
             universal_segment_text: sb.universal_segment_text || null,
             layout_description: sb.layout_description || null,
+            long_take_group_id: sb.long_take_group_id || null,
+            long_take_role: sb.long_take_role || null,
+            long_take_sequence: sb.long_take_sequence != null ? Number(sb.long_take_sequence) : null,
             // 用 original_id 记录首尾帧绑定的 image_generations 旧ID，导入时映射回新ID
             first_frame_image_original_id: sb.first_frame_image_id ?? null,
             last_frame_image_original_id: sb.last_frame_image_id ?? null,

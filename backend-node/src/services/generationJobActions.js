@@ -63,6 +63,12 @@ function createExecutor(db,cfg,log) {
     return sb;
   }
   function imagePlan(job,options,sb,force=false,slotsOverride) {
+    const isSingleExplicitShot = force && Array.isArray(options.storyboard_ids) && options.storyboard_ids.length === 1;
+    const isLongTakeContinuation = sb.long_take_group_id && (sb.long_take_role === 'continuation' || sb.long_take_role === 'tail' || (sb.long_take_sequence != null && sb.long_take_sequence > 1));
+    // 连贯长镜头接力续镜/尾镜：批量生图时无需生成参考首帧，其首帧由上一镜视频尾帧自动续接
+    if (isLongTakeContinuation && !isSingleExplicitShot) {
+      return [];
+    }
     const two = options.use_first_last ?? metadata(db,job.drama_id).storyboard_use_first_last_frame ?? false;
     const slots = slotsOverride || (two && sb.creation_mode !== 'universal' ? ['first','last'] : ['image']);
     return slots.filter(slot=>force || !frame(db,sb,slot)).flatMap(slot => [
@@ -198,14 +204,22 @@ function createExecutor(db,cfg,log) {
       if(active?.task_id){attach('task',active.task_id);return;}
       const requested=videoPayload(job,options,sb);
       const vc=require('./videoClient');
-      if(options.continuity && !requested.universal && !require('./wardrobeService').hasChange(db,sb.id) && vc.resolveVideoProtocol(vc.getDefaultVideoConfig(db,requested.model),requested.model)!=='minimax_h3') {
-        const previous=db.prepare('SELECT * FROM storyboards WHERE episode_id=? AND storyboard_number<? AND deleted_at IS NULL ORDER BY storyboard_number DESC,id DESC LIMIT 1').get(sb.episode_id,sb.storyboard_number);
+      const isLongTakeContinuation = sb.long_take_group_id && (sb.long_take_role === 'continuation' || sb.long_take_role === 'tail' || (sb.long_take_sequence != null && sb.long_take_sequence > 1));
+      if((options.continuity || isLongTakeContinuation) && !requested.universal && !require('./wardrobeService').hasChange(db,sb.id)) {
+        const previous = isLongTakeContinuation
+          ? db.prepare('SELECT * FROM storyboards WHERE episode_id=? AND long_take_group_id=? AND (long_take_sequence < ? OR storyboard_number < ?) AND deleted_at IS NULL ORDER BY long_take_sequence DESC, storyboard_number DESC LIMIT 1').get(sb.episode_id, sb.long_take_group_id, sb.long_take_sequence || 9999, sb.storyboard_number)
+          : db.prepare('SELECT * FROM storyboards WHERE episode_id=? AND storyboard_number<? AND deleted_at IS NULL ORDER BY storyboard_number DESC,id DESC LIMIT 1').get(sb.episode_id,sb.storyboard_number);
         if(previous && videoDone(previous)) {
           const tail=await require('./h3NativeService').tailFrame(db,job.drama_id,previous,require('path').resolve(cfg.storage?.local_path || './data/storage'));
           const base=String(cfg.storage?.base_url || '').replace(/\/$/,'');
           const url=base+(base.endsWith('/static')?'/':'/static/')+tail;
           requested.image_url=requested.first_frame_url=url;
           requested.reference_image_urls=[url,requested.last_frame_url].filter(Boolean);
+          try {
+            db.prepare('UPDATE storyboards SET image_url=?, local_path=?, updated_at=? WHERE id=?').run(url, tail, new Date().toISOString(), sb.id);
+            db.prepare(`INSERT INTO image_generations (drama_id, storyboard_id, image_url, local_path, prompt, status, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, 'completed', ?, ?)`).run(job.drama_id, sb.id, url, tail, `[长镜头接力首帧] 承接分镜 #${previous.storyboard_number} 尾帧`, new Date().toISOString(), new Date().toISOString());
+          } catch (_) {}
         }
       }
       // Stop may arrive during ffmpeg. No new model submission after it was acknowledged.

@@ -117,6 +117,7 @@ function createWorker(db, log, dependencies = {}) {
         SELECT i.*, b.drama_id, b.continuity
         FROM video_batch_items i
         JOIN video_batches b ON b.id = i.batch_id
+        LEFT JOIN storyboards s ON s.id = i.storyboard_id
         WHERE b.status = 'running' AND i.status = 'pending'
           AND (
             b.continuity = 0
@@ -126,6 +127,24 @@ function createWorker(db, log, dependencies = {}) {
               )
               AND NOT EXISTS (
                 SELECT 1 FROM video_batch_items p WHERE p.batch_id = b.id AND p.status = 'pending' AND p.position < i.position
+              )
+            )
+          )
+          AND (
+            s.long_take_group_id IS NULL
+            OR (
+              NOT EXISTS (
+                SELECT 1 FROM video_batch_items r2
+                JOIN storyboards s2 ON s2.id = r2.storyboard_id
+                WHERE r2.batch_id = b.id AND r2.status = 'running'
+                  AND s2.long_take_group_id = s.long_take_group_id
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM video_batch_items p2
+                JOIN storyboards s3 ON s3.id = p2.storyboard_id
+                WHERE p2.batch_id = b.id AND p2.status = 'pending'
+                  AND s3.long_take_group_id = s.long_take_group_id
+                  AND (COALESCE(s3.long_take_sequence, 0) < COALESCE(s.long_take_sequence, 0) OR p2.position < i.position)
               )
             )
           )
@@ -145,24 +164,46 @@ function createWorker(db, log, dependencies = {}) {
           return;
         }
         const payload = JSON.parse(item.payload);
-        if (item.continuity && !require('./wardrobeService').hasChange(db,item.storyboard_id) && !payload.universal && videoClient.resolveVideoProtocol(videoClient.getDefaultVideoConfig(db, payload.model), payload.model) !== 'minimax_h3') {
-          const prev = db.prepare('SELECT * FROM video_batch_items WHERE batch_id=? AND position<? ORDER BY position DESC LIMIT 1').get(item.batch_id, item.position);
-          if (prev && ['completed','skipped'].includes(prev.status)) {
+        const isLongTakeContinuation = valid.long_take_group_id && (valid.long_take_role === 'continuation' || valid.long_take_role === 'tail' || (valid.long_take_sequence != null && valid.long_take_sequence > 1));
+        const shouldApplyContinuity = (item.continuity || isLongTakeContinuation) && !require('./wardrobeService').hasChange(db, item.storyboard_id) && !payload.universal;
+
+        if (shouldApplyContinuity) {
+          const prev = isLongTakeContinuation
+            ? db.prepare(`SELECT i.* FROM video_batch_items i JOIN storyboards s ON s.id=i.storyboard_id
+                WHERE i.batch_id=? AND s.long_take_group_id=? AND (COALESCE(s.long_take_sequence, 0) < COALESCE(?, 0) OR i.position < ?)
+                ORDER BY s.long_take_sequence DESC, i.position DESC LIMIT 1`).get(item.batch_id, valid.long_take_group_id, valid.long_take_sequence || 9999, item.position)
+            : db.prepare('SELECT * FROM video_batch_items WHERE batch_id=? AND position<? ORDER BY position DESC LIMIT 1').get(item.batch_id, item.position);
+
+          let previousShot = null;
+          if (prev && ['completed', 'skipped'].includes(prev.status)) {
+            previousShot = db.prepare('SELECT * FROM storyboards WHERE id=?').get(prev.storyboard_id);
+          } else if (isLongTakeContinuation) {
+            previousShot = db.prepare(`SELECT * FROM storyboards WHERE episode_id=? AND long_take_group_id=?
+              AND (COALESCE(long_take_sequence, 0) < COALESCE(?, 0) OR storyboard_number < ?) AND deleted_at IS NULL
+              ORDER BY long_take_sequence DESC, storyboard_number DESC LIMIT 1`).get(valid.episode_id, valid.long_take_group_id, valid.long_take_sequence || 9999, valid.storyboard_number);
+          }
+
+          if (previousShot) {
             const cfg = require('../config').loadConfig();
             const root = path.resolve(cfg.storage?.local_path || './data/storage');
-            const previousShot = db.prepare('SELECT * FROM storyboards WHERE id=?').get(prev.storyboard_id);
             const tail = await require('./h3NativeService').tailFrame(db, item.drama_id, previousShot, root);
             const base = String(cfg.storage?.base_url || '').replace(/\/$/, '');
             const url = base + (base.endsWith('/static') ? '/' : '/static/') + tail;
             payload.image_url = payload.first_frame_url = url;
             payload.reference_image_urls = [url, payload.last_frame_url].filter(Boolean);
+
+            try {
+              db.prepare('UPDATE storyboards SET image_url=?, local_path=?, updated_at=? WHERE id=?').run(url, tail, new Date().toISOString(), item.storyboard_id);
+              db.prepare(`INSERT INTO image_generations (drama_id, storyboard_id, image_url, local_path, prompt, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 'completed', ?, ?)`).run(item.drama_id, item.storyboard_id, url, tail, `[长镜头接力首帧] 承接分镜 #${previousShot.storyboard_number} 尾帧`, new Date().toISOString(), new Date().toISOString());
+            } catch (_) {}
           }
         }
         // Stop may arrive while ffmpeg prepares a continuity frame. Recheck inside the transaction.
         const video = db.transaction(() => {
           if (db.prepare('SELECT status FROM video_batch_items WHERE id=?').get(item.id)?.status !== 'pending') return null;
           const row = submit(db, log, payload);
-          db.prepare("UPDATE video_batch_items SET status='running',video_gen_id=? WHERE id=?").run(row.id, item.id);
+          db.prepare("UPDATE video_batch_items SET status='running',video_gen_id=?,payload=? WHERE id=?").run(row.id, JSON.stringify(payload), item.id);
           db.prepare("UPDATE storyboards SET video_url=NULL WHERE id=?").run(item.storyboard_id);
           return row;
         })();

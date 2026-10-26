@@ -1,5 +1,13 @@
 <template>
-  <div class="storyboard-card-wrapper">
+  <div
+    class="storyboard-card-wrapper"
+    :class="{
+      'in-long-take': isLongTake,
+      'lt-first': isFirstInLongTake,
+      'lt-middle': isLongTake && !isFirstInLongTake && !isLastInLongTake,
+      'lt-last': isLastInLongTake,
+    }"
+  >
     <!-- 段落分隔标头：segment_title 存在且是新段落的第一个镜头时显示 -->
     <div
       v-if="sb.segment_title && (index === 0 || sb.segment_index !== storyboards[index - 1]?.segment_index)"
@@ -14,9 +22,30 @@
       </div>
     </div>
 
+    <!-- 连贯长镜头组序列横幅：当前长镜头序列的第一个镜头显示整体边界 -->
+    <div v-if="isFirstInLongTake" class="long-take-group-banner">
+      <div class="lt-banner-left">
+        <span class="lt-banner-badge">🎬 连贯长镜头序列</span>
+        <span class="lt-banner-range">分镜 #{{ index + 1 }} ～ #{{ index + longTakeTotal }} (共 {{ longTakeTotal }} 镜)</span>
+      </div>
+      <div class="lt-banner-right">
+        <span class="lt-banner-desc">⚡ 动态首尾接力：仅组首生成参考首帧，后续分镜在视频生成时自动提取上一镜尾帧续接</span>
+      </div>
+    </div>
+
     <!-- 分镜控制栏（卡片外，缩进表示属于当前幕） -->
     <div class="sb-ctrl-bar">
       <span class="sb-ctrl-num">{{ index + 1 }}</span>
+      <span
+        v-if="isLongTake"
+        class="sb-long-take-badge"
+        :class="'sb-lt-badge--' + (isFirstInLongTake ? 'head' : 'continuation')"
+        :title="isFirstInLongTake ? '长镜头起始建构镜头（生成参考首帧）' : `长镜头接力镜头（生成视频时自动继承分镜 #${prevShotNumber} 尾帧）`"
+      >
+        <span class="sb-lt-badge-icon">🎬</span>
+        <span class="sb-lt-badge-text">长镜头 {{ longTakeSequence }}/{{ longTakeTotal }}</span>
+        <span class="sb-lt-badge-sub">{{ isFirstInLongTake ? '组首建构' : ('承接 #' + prevShotNumber + ' 尾帧') }}</span>
+      </span>
       <span class="sb-ctrl-title">{{ sb.title || '未命名分镜' }}</span>
       <el-tag v-if="sb.movement" size="small" effect="plain" type="info" class="sb-movement-tag">{{ ctx.getMovementLabel(sb.movement) }}</el-tag>
       <el-button size="small" plain class="sb-ctrl-btn sb-ctrl-config-btn" @click="ctx.onOpenVideoParamsDialog(sb)">⚙ 分镜配置</el-button>
@@ -355,6 +384,7 @@
                         alt=""
                         @click="ctx.openImagePreview(ctx.assetImageUrl(ctx.getSbFirstImage(sb.id)))"
                       />
+                      <span v-if="isLongTakeContinuation" class="sb-inherited-tail-badge">承接 #{{ prevShotNumber }} 尾帧</span>
                     </template>
                     <template v-else-if="sb.image_url || sb.composed_image">
                       <img
@@ -363,6 +393,13 @@
                         alt=""
                         @click="ctx.openImagePreview(ctx.imageUrl(sb.composed_image || sb.image_url))"
                       />
+                      <span v-if="isLongTakeContinuation" class="sb-inherited-tail-badge">承接 #{{ prevShotNumber }} 尾帧</span>
+                    </template>
+                    <template v-else-if="isLongTakeContinuation">
+                      <div class="sb-fl-empty sb-fl-empty--long-take" :title="`上一镜（分镜 #${prevShotNumber}）视频生成后，自动截取其真实尾帧作为本镜起始画面`">
+                        <span class="sb-fl-lt-icon">🎬</span>
+                        <span class="sb-fl-lt-text">承接 #{{ prevShotNumber }} 尾帧</span>
+                      </div>
                     </template>
                     <template v-else>
                       <span class="sb-fl-empty">动作前静止</span>
@@ -449,6 +486,7 @@
                     :title="ctx.getSbImage(sb.id).prompt || ''"
                     @click="ctx.openImagePreview(ctx.assetImageUrl(ctx.getSbImage(sb.id)))"
                   />
+                  <span v-if="isLongTakeContinuation" class="sb-inherited-tail-badge" title="由上一镜视频尾帧接力生成">已继承 #{{ prevShotNumber }} 尾帧</span>
                   <div v-if="ctx.getSbImage(sb.id).prompt" class="sb-main-img-prompt">{{ ctx.getSbImage(sb.id).prompt }}</div>
                 </template>
                 <template v-else-if="sb.composed_image || sb.image_url">
@@ -458,6 +496,7 @@
                     alt=""
                     @click="ctx.openImagePreview(ctx.imageUrl(sb.composed_image || sb.image_url))"
                   />
+                  <span v-if="isLongTakeContinuation" class="sb-inherited-tail-badge" title="由上一镜视频尾帧接力生成">已继承 #{{ prevShotNumber }} 尾帧</span>
                 </template>
                 <template v-else-if="sb.error_msg || sb.errorMsg">
                   <div class="sb-image-error" :title="sb.error_msg || sb.errorMsg">{{ sb.error_msg || sb.errorMsg }}</div>
@@ -466,6 +505,20 @@
                     重试
                   </el-button>
                   <el-button size="small" :loading="ctx.uploadingSbImageId === sb.id" @click="ctx.onUploadSbImageClick(sb)">上传</el-button>
+                </template>
+                <template v-else-if="isLongTakeContinuation">
+                  <div class="sb-long-take-placeholder">
+                    <span class="sb-lt-ph-icon">🎬</span>
+                    <div class="sb-lt-ph-title">长镜头接力起始帧</div>
+                    <div class="sb-lt-ph-desc">
+                      上一镜（分镜 #{{ prevShotNumber }}）视频生成后<br/>
+                      自动截取真实尾帧作为本镜起始画面
+                    </div>
+                    <div class="sb-lt-ph-actions">
+                      <el-button size="small" text @click="ctx.onGenerateSbImage(sb)">手动生图</el-button>
+                      <el-button size="small" text :loading="ctx.uploadingSbImageId === sb.id" @click="ctx.onUploadSbImageClick(sb)">上传</el-button>
+                    </div>
+                  </div>
                 </template>
                 <template v-else>
                   <el-button type="primary" size="small" class="sb-gen-btn" :loading="ctx.generatingSbImageIds.has(sb.id)" @click="ctx.onGenerateSbImage(sb)">
@@ -745,6 +798,45 @@ const shotRangeEnd = computed(() => {
   }
   return end + 1
 })
+
+// 连贯长镜头组边界与接力状态计算
+const isLongTake = computed(() => !!props.sb?.long_take_group_id)
+const longTakeGroupShots = computed(() => {
+  if (!isLongTake.value) return []
+  return (props.storyboards || []).filter((s) => s.long_take_group_id === props.sb.long_take_group_id)
+})
+const isFirstInLongTake = computed(() => {
+  if (!isLongTake.value) return false
+  const list = props.storyboards || []
+  return props.index === 0 || list[props.index - 1]?.long_take_group_id !== props.sb.long_take_group_id
+})
+const isLastInLongTake = computed(() => {
+  if (!isLongTake.value) return false
+  const list = props.storyboards || []
+  return props.index === list.length - 1 || list[props.index + 1]?.long_take_group_id !== props.sb.long_take_group_id
+})
+const longTakeTotal = computed(() => longTakeGroupShots.value.length || 1)
+const longTakeSequence = computed(() => {
+  if (!isLongTake.value) return 1
+  if (props.sb.long_take_sequence != null) return Number(props.sb.long_take_sequence)
+  const idx = longTakeGroupShots.value.findIndex((s) => Number(s.id) === Number(props.sb.id))
+  return idx >= 0 ? idx + 1 : 1
+})
+const isLongTakeContinuation = computed(() => {
+  return isLongTake.value && !isFirstInLongTake.value
+})
+const previousLongTakeShot = computed(() => {
+  if (!isLongTakeContinuation.value) return null
+  const list = props.storyboards || []
+  for (let i = props.index - 1; i >= 0; i--) {
+    if (list[i]?.long_take_group_id === props.sb.long_take_group_id) return list[i]
+  }
+  return null
+})
+const prevShotNumber = computed(() => {
+  const p = previousLongTakeShot.value
+  return p ? (p.storyboard_number || p.shot_number || props.index) : String(props.index)
+})
 </script>
 
 <style scoped>
@@ -753,6 +845,162 @@ const shotRangeEnd = computed(() => {
 }
 .storyboard-card-wrapper:first-of-type {
   margin-top: 18px;
+}
+
+/* 连贯长镜头组的整体视觉边界 */
+.storyboard-card-wrapper.in-long-take {
+  position: relative;
+  padding-left: 20px;
+}
+/* 连续紫青色渐变发光垂直边界导轨 */
+.storyboard-card-wrapper.in-long-take::before {
+  content: '';
+  position: absolute;
+  left: 6px;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: linear-gradient(180deg, #8b5cf6 0%, #06b6d4 100%);
+  box-shadow: 0 0 10px rgba(139, 92, 246, 0.4);
+  border-radius: 2px;
+  z-index: 2;
+}
+.storyboard-card-wrapper.lt-first::before {
+  top: 48px;
+  border-top-left-radius: 4px;
+  border-top-right-radius: 4px;
+}
+.storyboard-card-wrapper.lt-last::before {
+  bottom: 12px;
+  border-bottom-left-radius: 4px;
+  border-bottom-right-radius: 4px;
+}
+.storyboard-card-wrapper.in-long-take .storyboard-row {
+  border-color: rgba(139, 92, 246, 0.4);
+  background: rgba(139, 92, 246, 0.02);
+  box-shadow: 0 2px 14px rgba(139, 92, 246, 0.06);
+}
+
+/* 长镜头组横幅标头 */
+.long-take-group-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 18px 0 10px 0;
+  padding: 8px 14px;
+  background: linear-gradient(90deg, rgba(139, 92, 246, 0.16) 0%, rgba(6, 182, 212, 0.08) 60%, transparent 100%);
+  border-left: 4px solid #8b5cf6;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(139, 92, 246, 0.1);
+}
+.lt-banner-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.lt-banner-badge {
+  font-size: 13px;
+  font-weight: 700;
+  color: #a78bfa;
+  letter-spacing: 0.02em;
+}
+.lt-banner-range {
+  font-size: 12px;
+  font-weight: 600;
+  color: #38bdf8;
+  background: rgba(6, 182, 212, 0.12);
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(6, 182, 212, 0.3);
+}
+.lt-banner-desc {
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+/* 分镜控制栏内的长镜头徽章 */
+.sb-long-take-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-right: 6px;
+  white-space: nowrap;
+}
+.sb-lt-badge--head {
+  background: rgba(139, 92, 246, 0.18);
+  color: #c4b5fd;
+  border: 1px solid rgba(139, 92, 246, 0.45);
+}
+.sb-lt-badge--continuation {
+  background: rgba(6, 182, 212, 0.16);
+  color: #67e8f9;
+  border: 1px solid rgba(6, 182, 212, 0.4);
+}
+.sb-lt-badge-sub {
+  font-size: 10px;
+  opacity: 0.85;
+}
+
+/* 续镜空状态占位 */
+.sb-long-take-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 16px 12px;
+  background: rgba(6, 182, 212, 0.04);
+  border: 1px dashed rgba(6, 182, 212, 0.35);
+  border-radius: 6px;
+  min-height: 120px;
+}
+.sb-lt-ph-icon {
+  font-size: 20px;
+  margin-bottom: 4px;
+}
+.sb-lt-ph-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #38bdf8;
+  margin-bottom: 2px;
+}
+.sb-lt-ph-desc {
+  font-size: 11px;
+  color: #94a3b8;
+  line-height: 1.4;
+  margin-bottom: 8px;
+}
+.sb-lt-ph-actions {
+  display: flex;
+  gap: 8px;
+}
+.sb-inherited-tail-badge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  background: rgba(6, 182, 212, 0.9);
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 3px;
+  pointer-events: none;
+  z-index: 2;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+.sb-fl-empty--long-take {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  color: #38bdf8;
+  font-size: 11px;
+  font-weight: 600;
 }
 .segment-header {
   margin: 24px 0 14px;
