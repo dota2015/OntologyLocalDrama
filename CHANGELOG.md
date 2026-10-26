@@ -8,6 +8,28 @@
 
 ---
 
+## [1.3.1] - 2026-10-26
+
+> 本版本重点推进**代码工程治理**，全面引入面向对象设计模式、分层架构与单一职责原则（SRP），彻底消除长过程与超大单体组件。
+
+### 架构与设计模式治理
+
+- **视频服务提供商（Strategy & Factory 模式）**：
+  - 定义 `BaseVideoProvider` 统一策略接口，各家厂商独立实现：
+    - `AgnesVideoProvider`：封装 Video 2.5 / Flash、首尾帧与多图策略；
+    - `MinimaxH3VideoProvider`：封装 V2 路径、时长和 768P/2K 分辨率归一；
+    - `VolcengineVideoProvider`：封装 Seedance 2.x 全能多图参考、时长与 `cheap_seedance2` 适配；
+  - 引入 `VideoProviderFactory` 统一解析派发，`videoClient.js` 瘦身为 Facade 门面，彻底解除跨供应商条件分支的侵入式膨胀。
+- **视听本体质量门禁（Specification / Rule Engine 模式）**：
+  - 视听约束重构为基于规范模式的 `BaseInvariantRule` 独立规则族（覆盖运镜动态感、无对白BGM、台词时长预算、生图构图槽位、人脸防拥挤、H3参考图上限等 11 项硬门禁）；
+  - 引入 `InvariantRuleEngine` 统一调度引擎，支持规则按领域分类（category）、动态启停（`disabledRules`）、严重等级覆盖（`severityOverrides`）与核心视听指标（静态镜头比、静音镜头数）自动统计。
+- **前端单体组件解耦与职责收敛（Component Decomposition）**：
+  - 解构 `FilmCreate.vue` 超大单体，提取独立职责组件至 `frontweb/src/components/filmCreate/`：
+    - `SidebarActiveTasks.vue`：独立封装侧边栏任务进度、折叠状态、动画与取消交互；
+    - `StoryboardBatchToolbar.vue`：独立封装分镜生成配置栏、批量生成操作、进度展示与失败重试逻辑。
+
+---
+
 ## [1.3.0] - 2026-10-26
 
 > 本版本重点升级为**影视视听本体与全生命周期导演智能体体系**，架构基于 [LocalMiniDrama (xuanyustudio)](https://github.com/xuanyustudio/LocalMiniDrama) 进行二次重构与工业级演进，新增开源主仓库：[dota2015/OntologyLocalDrama](https://github.com/dota2015/OntologyLocalDrama)。
