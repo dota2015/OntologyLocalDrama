@@ -34,7 +34,14 @@ function insertItems(db, jobId, items, prefix = '') {
 function get(db, id) {
   const row = db.prepare('SELECT id,drama_id,episode_id,kind,status,options,error,created_at,updated_at FROM generation_jobs WHERE id=?').get(id);
   if (!row) return null;
-  const items = db.prepare('SELECT id,action,label,status,child_type,child_id,error FROM generation_job_items WHERE job_id=? ORDER BY position').all(id);
+  const rawItems = db.prepare('SELECT id,action,label,payload,status,child_type,child_id,error FROM generation_job_items WHERE job_id=? ORDER BY position').all(id);
+  const items = rawItems.map(i => {
+    let payload = {};
+    if (i.payload) {
+      try { payload = JSON.parse(i.payload); } catch (_) {}
+    }
+    return { ...i, payload };
+  });
   const runningItem = items.find(i => i.status === 'running');
   const pendingItem = items.find(i => i.status === 'pending');
   let label = runningItem?.label || pendingItem?.label || '';

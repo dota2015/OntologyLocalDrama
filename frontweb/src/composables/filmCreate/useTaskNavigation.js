@@ -126,11 +126,16 @@ export function useTaskNavigation({
     }
     for (const t of genStore.getAllRunningTasks()) {
       const isWaiting = t.serverStatus === 'pending'
+      const sbId = t.resourceId ? Number(t.resourceId) : null
+      const sb = sbId ? (storyboards.value || []).find((s) => Number(s.id) === sbId) : null
+      const sbNum = sb ? (sb.storyboard_number || sb.shot_number || '') : ''
       addItem({
         id: `gen:${t.key || t.taskId || t.label}`,
         label: t.label || '任务进行中...',
         kind: 'genStore',
         task: t,
+        storyboardId: sbId,
+        order: Number(sbNum) || null,
         isWaiting,
         createdAt: t.startedAt || 0,
       })
@@ -163,10 +168,12 @@ export function useTaskNavigation({
           let opt = imgJob.options
           if (typeof opt === 'string') { try { opt = JSON.parse(opt) } catch (_) {} }
           const isSingleShot = Array.isArray(opt?.storyboard_ids) && opt.storyboard_ids.length === 1
-          const isWaiting = imgJob.status === 'queued'
+          const isJobQueued = imgJob.status === 'queued'
+          const imgJobTime = imgJob.created_at ? new Date(imgJob.created_at).getTime() : 0
+
           if (isSingleShot) {
             const sbId = opt.storyboard_ids[0]
-            const sb = (storyboards.value || []).find(s => Number(s.id) === Number(sbId))
+            const sb = (storyboards.value || []).find((s) => Number(s.id) === Number(sbId))
             const sbNum = sb ? (sb.storyboard_number || sb.shot_number || '') : ''
             const numStr = sbNum ? ('#' + sbNum + ' ') : ''
             const slots = opt.slots || []
@@ -174,30 +181,125 @@ export function useTaskNavigation({
             if (slots.includes('first') && slots.includes('last')) slotText = '首尾帧'
             else if (slots.includes('first')) slotText = '首帧'
             else if (slots.includes('last')) slotText = '尾帧'
-            const imgJobTime = imgJob.created_at ? new Date(imgJob.created_at).getTime() : 0
             addItem({
               id: `job:${imgJob.id}`,
-              label: `分镜 ${numStr}${slotText}${isWaiting ? ' (排队中)' : '生成中...'}`,
+              label: `分镜 ${numStr}${slotText}${isJobQueued ? ' 等待中' : ' 生成中...'}`,
               kind: 'serverImageJob',
               job: imgJob,
               storyboardId: sbId,
-              isWaiting,
+              order: Number(sbNum) || 0,
+              isWaiting: isJobQueued,
               createdAt: imgJobTime,
             })
           } else {
-            const imgJobTime = imgJob.created_at ? new Date(imgJob.created_at).getTime() : 0
-            addItem({
-              id: `job:${imgJob.id}`,
-              label: `${storyboardUseFirstLastFrame.value ? '批量生成首尾帧' : '批量生成分镜图'}${isWaiting ? ' (排队中)' : '...'}`,
-              kind: 'serverImageJob',
-              job: imgJob,
-              isWaiting,
-              createdAt: imgJobTime,
-            })
+            // 批量分镜图/首尾帧生成：逐镜展开到任务列表
+            const items = imgJob.items || []
+            const concreteImageItems = items.filter((i) => i.action === 'image')
+            if (concreteImageItems.length > 0) {
+              for (const it of concreteImageItems) {
+                if (it.status === 'completed' || it.status === 'failed') continue
+                const sbId = it.payload?.storyboard_id
+                const sb = (storyboards.value || []).find((s) => Number(s.id) === Number(sbId))
+                const sbNum = sb ? (sb.storyboard_number || sb.shot_number || '') : (it.label?.match(/#(\d+)/)?.[1] || '')
+                const numStr = sbNum ? ('#' + sbNum + ' ') : ''
+                const slot = it.payload?.slot || (it.label?.includes('首帧') ? 'first' : it.label?.includes('尾帧') ? 'last' : 'image')
+                const slotText = slot === 'first' ? '首帧' : slot === 'last' ? '尾帧' : '分镜图'
+
+                const promptItem = items.find((p) => p.action === 'frame_prompt' && Number(p.payload?.storyboard_id) === Number(sbId) && p.payload?.slot === slot)
+                const isPromptRunning = promptItem?.status === 'running'
+                const isRunning = it.status === 'running' || isPromptRunning
+                const isWaiting = !isRunning && (it.status === 'pending' || isJobQueued)
+                const suffix = isPromptRunning ? '优化提示词中...' : isRunning ? '生成中...' : '等待中'
+
+                addItem({
+                  id: `img-job-item-${it.id || (imgJob.id + '-' + sbId + '-' + slot)}`,
+                  label: `分镜 ${numStr}${slotText} ${suffix}`,
+                  kind: 'serverImageJob',
+                  job: imgJob,
+                  storyboardId: sbId,
+                  order: (Number(sbNum) || 0) + (slot === 'last' ? 0.5 : 0),
+                  isWaiting,
+                  createdAt: imgJobTime,
+                })
+              }
+            } else {
+              // 任务展开前/排队中：先依序预挂载待处理的分镜步骤
+              const sbs = (storyboards.value || []).slice().sort((a, b) => (Number(a.storyboard_number || a.shot_number || 0) - Number(b.storyboard_number || b.shot_number || 0)))
+              const two = storyboardUseFirstLastFrame.value
+              for (const sb of sbs) {
+                const sbNum = sb.storyboard_number || sb.shot_number || ''
+                const numStr = sbNum ? ('#' + sbNum + ' ') : ''
+                if (two && sb.creation_mode !== 'universal') {
+                  addItem({
+                    id: `img-job-pending-${sb.id}-first`,
+                    label: `分镜 ${numStr}首帧 等待中`,
+                    kind: 'serverImageJob',
+                    job: imgJob,
+                    storyboardId: sb.id,
+                    order: Number(sbNum) || 0,
+                    isWaiting: true,
+                    createdAt: imgJobTime,
+                  })
+                  addItem({
+                    id: `img-job-pending-${sb.id}-last`,
+                    label: `分镜 ${numStr}尾帧 等待中`,
+                    kind: 'serverImageJob',
+                    job: imgJob,
+                    storyboardId: sb.id,
+                    order: (Number(sbNum) || 0) + 0.5,
+                    isWaiting: true,
+                    createdAt: imgJobTime,
+                  })
+                } else {
+                  addItem({
+                    id: `img-job-pending-${sb.id}-image`,
+                    label: `分镜 ${numStr}分镜图 等待中`,
+                    kind: 'serverImageJob',
+                    job: imgJob,
+                    storyboardId: sb.id,
+                    order: Number(sbNum) || 0,
+                    isWaiting: true,
+                    createdAt: imgJobTime,
+                  })
+                }
+              }
+            }
           }
         }
       } else {
-        addItem({ id: 'batch-image', label: '批量生成分镜图...', kind: 'batchImage', isWaiting: false })
+        const sbs = (storyboards.value || []).slice().sort((a, b) => (Number(a.storyboard_number || a.shot_number || 0) - Number(b.storyboard_number || b.shot_number || 0)))
+        const two = storyboardUseFirstLastFrame.value
+        for (const sb of sbs) {
+          const sbNum = sb.storyboard_number || sb.shot_number || ''
+          const numStr = sbNum ? ('#' + sbNum + ' ') : ''
+          if (two && sb.creation_mode !== 'universal') {
+            addItem({
+              id: `batch-img-fb-${sb.id}-first`,
+              label: `分镜 ${numStr}首帧 等待中`,
+              kind: 'batchImage',
+              storyboardId: sb.id,
+              order: Number(sbNum) || 0,
+              isWaiting: true,
+            })
+            addItem({
+              id: `batch-img-fb-${sb.id}-last`,
+              label: `分镜 ${numStr}尾帧 等待中`,
+              kind: 'batchImage',
+              storyboardId: sb.id,
+              order: (Number(sbNum) || 0) + 0.5,
+              isWaiting: true,
+            })
+          } else {
+            addItem({
+              id: `batch-img-fb-${sb.id}-image`,
+              label: `分镜 ${numStr}分镜图 等待中`,
+              kind: 'batchImage',
+              storyboardId: sb.id,
+              order: Number(sbNum) || 0,
+              isWaiting: true,
+            })
+          }
+        }
       }
     }
     if (batchVideoRunning.value) {
@@ -207,15 +309,16 @@ export function useTaskNavigation({
         if (activeShots.length > 0) {
           for (const shot of activeShots) {
             const isWaiting = shot.status === 'pending'
-            const numStr = shot.storyboard_number != null ? `#${shot.storyboard_number}` : (shot.storyboard_id ? `#${shot.storyboard_id}` : '')
+            const numStr = shot.storyboard_number != null ? `#${shot.storyboard_number} ` : (shot.storyboard_id ? `#${shot.storyboard_id} ` : '')
             const shotTime = shot.created_at ? new Date(shot.created_at).getTime() : 0
             addItem({
               id: `batch-video-shot-${shot.id || shot.storyboard_id}`,
-              label: `分镜 ${numStr} 视频${isWaiting ? '排队中' : '生成中...'}`,
+              label: `分镜 ${numStr}视频 ${isWaiting ? '等待中' : '生成中...'}`,
               kind: 'batchVideo',
               shot,
               storyboardId: shot.storyboard_id,
               storyboardNumber: shot.storyboard_number,
+              order: Number(shot.storyboard_number) || Number(shot.storyboard_id) || 0,
               isWaiting,
               createdAt: shotTime,
             })
@@ -226,15 +329,39 @@ export function useTaskNavigation({
           addItem({ id: 'batch-video', label: `批量生成分镜视频${suffix}...`, kind: 'batchVideo', isWaiting: false })
         }
       } else {
-        const p = batchVideoProgress.value
-        const suffix = p?.total ? ` ${p.current}/${p.total}` : ''
-        addItem({ id: 'batch-video', label: `批量生成分镜视频${suffix}...`, kind: 'batchVideo', isWaiting: false })
+        const sbs = (storyboards.value || []).slice().sort((a, b) => Number(a.storyboard_number || 0) - Number(b.storyboard_number || 0))
+        if (sbs.length > 0) {
+          for (const sb of sbs) {
+            const sbNum = sb.storyboard_number || sb.shot_number || ''
+            const numStr = sbNum ? (`#${sbNum} `) : ''
+            addItem({
+              id: `batch-video-pending-${sb.id}`,
+              label: `分镜 ${numStr}视频 等待中`,
+              kind: 'batchVideo',
+              storyboardId: sb.id,
+              order: Number(sbNum) || 0,
+              isWaiting: true,
+            })
+          }
+        } else {
+          const p = batchVideoProgress.value
+          const suffix = p?.total ? ` ${p.current}/${p.total}` : ''
+          addItem({ id: 'batch-video', label: `批量生成分镜视频${suffix}...`, kind: 'batchVideo', isWaiting: false })
+        }
       }
     }
     return items.sort((a, b) => {
+      // 1. 运行中排在前面，等待中排在后面
       if (a.isWaiting !== b.isWaiting) {
         return a.isWaiting ? 1 : -1
       }
+      // 2. 如果都有分镜顺序号，按分镜序号升序
+      const orderA = a.order != null ? Number(a.order) : null
+      const orderB = b.order != null ? Number(b.order) : null
+      if (orderA != null && orderB != null && orderA !== orderB) {
+        return orderA - orderB
+      }
+      // 3. 否则按创建时间排序
       const timeA = Number(a.createdAt) || 0
       const timeB = Number(b.createdAt) || 0
       if (timeA && timeB && timeA !== timeB) {

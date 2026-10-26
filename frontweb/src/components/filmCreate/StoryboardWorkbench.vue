@@ -16,7 +16,7 @@
         <span class="step-desc">根据剧本、角色、场景自动生成分镜头脚本</span>
       </h2>
       <!-- 分镜模块后台任务与进度提示 -->
-      <GenerationJobs ref="storyboardJobsPanel" :drama-id="dramaId" :episode-id="currentEpisodeId" kinds="storyboards,omni_polish,storyboard_images" @updated="onGenerationJobsUpdated" />
+      <GenerationJobs ref="storyboardJobsPanel" :drama-id="dramaId" :episode-id="currentEpisodeId" kinds="storyboards,omni_polish" @updated="onGenerationJobsUpdated" />
       <StoryboardBatchToolbar
         v-model:storyboard-count="storyboardCount"
         v-model:video-duration="videoDuration"

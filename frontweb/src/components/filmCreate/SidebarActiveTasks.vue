@@ -18,7 +18,7 @@
       </div>
       <div class="atp-list">
         <div
-          v-for="item in activeTasks.slice(0, 10)"
+          v-for="item in activeTasks.slice(0, 50)"
           :key="item.id"
           class="atp-item"
           :class="[
@@ -46,13 +46,13 @@
           </button>
         </div>
         <el-tooltip
-          v-if="activeTasks.length > 10"
-          :content="activeTasks.slice(10).map((t) => t.label).join('\n')"
+          v-if="activeTasks.length > 50"
+          :content="activeTasks.slice(50).map((t) => t.label).join('\n')"
           placement="right"
           :show-after="200"
         >
           <div class="atp-more">
-            还有 {{ activeTasks.length - 10 }} 个任务...
+            还有 {{ activeTasks.length - 50 }} 个任务...
           </div>
         </el-tooltip>
       </div>
@@ -160,6 +160,19 @@ const activeTaskLabels = computed(() => (props.activeTasks || []).map((t) => t.l
   display: flex;
   flex-direction: column;
   gap: 1px;
+  max-height: 380px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.atp-list::-webkit-scrollbar {
+  width: 4px;
+}
+.atp-list::-webkit-scrollbar-thumb {
+  background: rgba(168, 85, 247, 0.25);
+  border-radius: 4px;
+}
+.atp-list::-webkit-scrollbar-track {
+  background: transparent;
 }
 .atp-list :deep(.el-tooltip__trigger) {
   display: block;
