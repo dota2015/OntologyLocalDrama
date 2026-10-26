@@ -354,6 +354,10 @@ function projectStylePromptMetadata() {
   return stylePromptMetadataForSave(generationStyle.value, customStylePrompt.value)
 }
 
+function getSelectedStyle() {
+  return getSelectedStylePrompt()
+}
+
 const scriptContent = computed({
   get: () => store.scriptContent,
   set: (v) => store.setScriptContent(v)
