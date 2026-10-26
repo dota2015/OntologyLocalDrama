@@ -1,35 +1,36 @@
 <div align="center">
 
-# 🎬 本地短剧助手
+# 🎬 本地短剧助手 · 视听本体与导演智能体增强版 (OntologyLocalDrama)
 
-**本地 AI 短剧 & 漫剧生成工具 —— 下载即用，完全开源，数据不出本机**
+**基于影视视听本体与全生命周期导演智能体的本地 AI 短剧创作工具 —— 下载即用，完全开源，数据不出本机**
 
-*LocalMiniDrama · AI-powered short drama creator*
+*LocalMiniDrama · AI-powered short drama creator with Audiovisual Ontology & Autonomous Director Agent*
 
-[![version](https://img.shields.io/badge/version-1.2.9-blue?style=flat-square)](https://github.com/xuanyustudio/LocalMiniDrama/releases)
+[![version](https://img.shields.io/badge/version-1.3.0-blue?style=flat-square)](https://github.com/dota2015/OntologyLocalDrama)
 [![license](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
-[![platform](https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square)](#-快速开始)
-[![stack](https://img.shields.io/badge/Vue3%20%2B%20Node.js%20%2B%20Electron-informational?style=flat-square)](#-项目架构)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)](https://github.com/xuanyustudio/LocalMiniDrama/pulls)
+[![GitHub](https://img.shields.io/badge/GitHub-dota2015%2FOntologyLocalDrama-181717?logo=github&style=flat-square)](https://github.com/dota2015/OntologyLocalDrama)
+[![Upstream](https://img.shields.io/badge/Upstream-xuanyustudio%2FLocalMiniDrama-informational?style=flat-square)](https://github.com/xuanyustudio/LocalMiniDrama)
 
-**[English](docs/en.md) · 简体中文 · [作者故事](docs/story.md)**
+**[English](docs/en.md) · 简体中文 · [架构文档](docs/ontology-director-architecture.md) · [作者故事](docs/story.md)**
 
-[![GitHub](https://img.shields.io/badge/GitHub-xuanyustudio%2FLocalMiniDrama-181717?logo=github&style=flat-square)](https://github.com/xuanyustudio/LocalMiniDrama)
-[![Gitee](https://img.shields.io/badge/Gitee-bi__shang__a%2Flocalminidrama-C71D23?logo=gitee&style=flat-square)](https://gitee.com/bi_shang_a/localminidrama)
-[![AtomGit](https://img.shields.io/badge/AtomGit-xuanyustudio%2FLocalMiniDrama-0052D9?style=flat-square)](https://atomgit.com/xuanyustudio/LocalMiniDrama)
-
-[**⬇️ 下载 Release**](https://github.com/xuanyustudio/LocalMiniDrama/releases) · [**🚀 快速开始**](#-快速开始) · [**📖 配置 AI**](docs/configuration.md) · [**🗺 画布文档**](docs/plans/2026-06-15-drama-canvas-workflow-plan.md)
+[**🌟 GitHub 主页**](https://github.com/dota2015/OntologyLocalDrama) · [**📖 视听本体架构规范**](docs/ontology-director-architecture.md) · [**📖 配置 AI**](docs/configuration.md) · [**🗺 画布文档**](docs/plans/2026-06-15-drama-canvas-workflow-plan.md)
 
 </div>
 
 ---
 
+> 💡 **致敬与开源致谢**：
+> 本项目参考并深度基于优秀开源项目 **[xuanyustudio/LocalMiniDrama](https://github.com/xuanyustudio/LocalMiniDrama)** 演进。在原有本地优先、开箱即用架构的基础上，创新性升级引入了**影视视听本体（Audiovisual Drama Ontology）**、**全生命周期导演智能体（Autonomous Director Agent）**与**极简双模工作流（全体全流程一键成片 vs 分步精细化编排）**，消灭双架构与多余入口，全面提升镜头连戏一致性、动态运镜流动感与成片质感。向原作者团队致敬与感谢！
+
+---
+
 <table>
 <tr>
-<td width="25%" align="center"><b>🔒 本地优先</b><br/>SQLite + 本地文件，素材不上云</td>
-<td width="25%" align="center"><b>🎬 全流程</b><br/>剧本 → 角色/场景 → 分镜 → 视频合成</td>
-<td width="25%" align="center"><b>🤖 多模型</b><br/>通义 / 火山 / 可灵 / Gemini 等</td>
-<td width="25%" align="center"><b>🗺 双视图</b><br/>列表精细编辑 + 画布批量编排</td>
+<td width="20%" align="center"><b>🔒 本地优先</b><br/>SQLite + 本地文件，素材不上云</td>
+<td width="20%" align="center"><b>🧠 视听本体</b><br/>语义包 + SHACL 视听门禁自省自纠</td>
+<td width="20%" align="center"><b>🎬 导演智能体</b><br/>全闭环运镜调度 + 原生电影级 BGM</td>
+<td width="20%" align="center"><b>🚀 极简双模</b><br/>一键全体成片 ｜ 分步精细制作</td>
+<td width="20%" align="center"><b>🤖 多模型</b><br/>H3 / Wan / 火山 / 可灵 / Gemini 等</td>
 </tr>
 </table>
 
@@ -40,13 +41,16 @@
 
 ---
 
-## 📌 最新动态（v1.2.9）
+## 📌 最新动态（v1.3.0）
 
-- 🆕 **剧内助手**：剧集页、制作页、画布页可对话操作当前短剧（剧本、角色、场景、分镜、出图）；删除需确认
-- 🔧 **文本模型**：配置里存了多个模型时，助手使用默认的那一个，不再把整段名单当作模型名
-- 🔧 **桌面运行时**：Electron 升到 44，以便在安装包内运行助手
+- 🆕 **视听本体与导演智能体**：不可变语义包统领世界观、多机位动态调度（固定镜头<10%）、无对白镜头原生电影级 BGM 提示词、SHACL 门禁自省纠错
+- 🆕 **极简双模流水线**：顶部统一为 `[🚀 全体全流程一键成片]` 与 `[🎬 导演生成分集剧本]`，全局视听参数统一顶置
+- 🔧 **底层架构收敛**：彻底消灭双架构与多余入口，后台批量作业调度底层统一收敛至导演智能体
+- 🔧 **平台防截断黑屏追加**：视频末尾自动追加 1 秒黑屏画面（杜绝抖音/快手/小红书播放末尾吞字吞帧）
+- 🔧 **视频真尾帧衔接**：前镜视频最后一帧精确无缝作为下镜首帧参考图
+- 🐛 **修复僵尸任务弹窗**：彻底解决已完成后台任务无法关闭弹出 Bug
 
-完整记录 → **[CHANGELOG.md](CHANGELOG.md)**
+完整记录 → **[CHANGELOG.md](CHANGELOG.md)** · 深入了解技术细节 → **[视听本体架构规范](docs/ontology-director-architecture.md)**
 
 ---
 
