@@ -1625,10 +1625,12 @@ html.light .nav-sub-item:hover { color: #1e1b4b; background: rgba(99,102,241,0.0
 .sidebar-collapsed .main {
   margin-left: 48px;
 }
-.section {
+.section,
+:deep(.section) {
   margin-bottom: 24px;
 }
-.card {
+.card,
+:deep(.card) {
   background: #1e1f28;
   border-radius: 14px;
   padding: 22px;
@@ -1636,29 +1638,34 @@ html.light .nav-sub-item:hover { color: #1e1b4b; background: rgba(99,102,241,0.0
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
   transition: border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease;
 }
-.card:hover {
+.card:hover,
+:deep(.card:hover) {
   border-color: rgba(255, 255, 255, 0.1);
   box-shadow: 0 6px 28px rgba(0, 0, 0, 0.25);
 }
-html.light .card {
+html.light .card,
+html.light :deep(.card) {
   background: rgba(255, 255, 255, 0.75);
   backdrop-filter: blur(16px) saturate(1.3);
   -webkit-backdrop-filter: blur(16px) saturate(1.3);
   border-color: rgba(139, 92, 246, 0.08);
   box-shadow: 0 1px 0 rgba(255,255,255,0.8) inset, 0 4px 20px rgba(99, 102, 241, 0.05);
 }
-html.light .card:hover {
+html.light .card:hover,
+html.light :deep(.card:hover) {
   border-color: rgba(139, 92, 246, 0.18);
   box-shadow: 0 1px 0 rgba(255,255,255,0.8) inset, 0 8px 36px rgba(99, 102, 241, 0.08);
 }
-.section-title {
+.section-title,
+:deep(.section-title) {
   font-size: 1.05rem;
   margin: 0 0 4px;
   color: #f4f4f5;
   font-weight: 600;
   letter-spacing: -0.01em;
 }
-html.light .section-title { color: #1e1b4b; }
+html.light .section-title,
+html.light :deep(.section-title) { color: #1e1b4b; }
 .pipeline-section {
   padding: 12px 16px !important;
 }

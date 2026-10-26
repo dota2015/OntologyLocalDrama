@@ -59,12 +59,49 @@ html.light .logo { color: var(--text-bright) !important; }
 html.light .page-title { color: var(--text-muted) !important; }
 
 /* card / section */
+.section {
+  margin-bottom: 24px;
+}
+.card,
+.section.card {
+  background: var(--bg-card, #1e1f28);
+  border-radius: 14px;
+  padding: 22px;
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.06));
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
+  transition: border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease;
+}
+.card:hover,
+.section.card:hover {
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow: 0 6px 28px rgba(0, 0, 0, 0.25);
+}
+.section-title {
+  font-size: 1.05rem;
+  margin: 0 0 4px;
+  color: var(--text-bright, #f4f4f5);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.section-desc {
+  color: var(--text-muted, #52525b);
+  font-size: 0.82rem;
+  margin: 0 0 14px;
+  line-height: 1.5;
+}
 html.light .card,
 html.light .section.card {
   background: var(--bg-card) !important;
   border-color: var(--border-color) !important;
+  box-shadow: 0 1px 4px rgba(0,0,0,.05), 0 6px 20px rgba(0,0,0,.03) !important;
+}
+html.light .card:hover,
+html.light .section.card:hover {
+  border-color: rgba(139, 92, 246, 0.18) !important;
+  box-shadow: 0 1px 0 rgba(255,255,255,0.8) inset, 0 8px 36px rgba(99, 102, 241, 0.08) !important;
 }
 html.light .section-title { color: var(--text-bright) !important; }
+html.light .section-desc { color: #6b7280; }
 
 /* project card (FilmList) */
 html.light .project-card {

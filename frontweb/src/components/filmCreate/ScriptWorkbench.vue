@@ -927,7 +927,7 @@ defineExpose({
 }
 
 .script-workbench-unified {
-  margin-bottom: 0;
+  /* 保持与后续卡片的标准间距 */
 }
 .script-workbench-tabs :deep(.el-tabs__header) {
   margin-bottom: 16px;
