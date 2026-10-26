@@ -120,65 +120,15 @@
       </div>
 
       <!-- 当前任务面板 -->
-      <div v-if="allActiveTaskItems.length > 0" class="atp-panel">
-        <!-- 折叠态：只显示旋转点和数量 -->
-        <div v-if="navCollapsed" class="atp-collapsed-badge" :title="allActiveTaskLabels.join('\n')">
-          <span class="atp-spin-dot" />
-          <span class="atp-collapsed-count">{{ allActiveTaskItems.length }}</span>
-        </div>
-        <!-- 展开态：标题 + 任务列表 -->
-        <template v-else>
-          <div class="atp-header">
-            <span class="atp-spin-dot" />
-            <span class="atp-title">任务进度</span>
-            <span class="atp-count-badge">{{ allActiveTaskItems.length }}</span>
-            <div class="atp-header-stats">
-              <span v-if="runningTasksCount > 0" class="atp-header-stat atp-header-running">{{ runningTasksCount }} 正在跑</span>
-              <span v-if="waitingTasksCount > 0" class="atp-header-stat atp-header-waiting">{{ waitingTasksCount }} 等待中</span>
-            </div>
-          </div>
-          <div class="atp-list">
-            <div
-              v-for="item in allActiveTaskItems.slice(0, 10)"
-              :key="item.id"
-              class="atp-item"
-              :class="[
-                item.isWaiting ? 'atp-item--waiting' : 'atp-item--running',
-                { 'atp-item--clickable': !!getTaskTargetAnchor(item) }
-              ]"
-              :title="getTaskTargetAnchor(item) ? '点击跳转到对应分镜' : item.label"
-              @click="handleTaskItemClick(item)"
-            >
-              <span class="atp-item-dot" :class="item.isWaiting ? 'atp-dot--waiting' : 'atp-dot--running'" />
-              <el-tooltip :content="item.label" placement="right" :show-after="300" :enterable="false">
-                <span class="atp-item-label">{{ item.label }}</span>
-              </el-tooltip>
-              <span class="atp-status-tag" :class="item.isWaiting ? 'atp-tag--waiting' : 'atp-tag--running'">
-                {{ item.isWaiting ? '等待中' : '生成中' }}
-              </span>
-              <button
-                type="button"
-                class="atp-item-close"
-                title="取消任务"
-                aria-label="取消任务"
-                @click.stop="cancelActiveTask(item)"
-              >
-                <el-icon :size="12"><Close /></el-icon>
-              </button>
-            </div>
-            <el-tooltip
-              v-if="allActiveTaskItems.length > 10"
-              :content="allActiveTaskItems.slice(10).map((t) => t.label).join('\n')"
-              placement="right"
-              :show-after="200"
-            >
-              <div class="atp-more">
-                还有 {{ allActiveTaskItems.length - 10 }} 个任务...
-              </div>
-            </el-tooltip>
-          </div>
-        </template>
-      </div>
+      <SidebarActiveTasks
+        :nav-collapsed="navCollapsed"
+        :active-tasks="allActiveTaskItems"
+        :running-count="runningTasksCount"
+        :waiting-count="waitingTasksCount"
+        :get-anchor="getTaskTargetAnchor"
+        @navigate="handleTaskItemClick"
+        @cancel="cancelActiveTask"
+      />
     </nav>
 
     <main class="main">
@@ -925,196 +875,61 @@
         </h2>
         <!-- 分镜模块后台任务与进度提示 -->
         <GenerationJobs ref="storyboardJobsPanel" :drama-id="dramaId" :episode-id="currentEpisodeId" kinds="storyboards,omni_polish,storyboard_images" @updated="onGenerationJobsUpdated" />
-        <div class="sb-config-row">
-          <label class="sb-config-item">
-            <span class="sb-config-label">分镜数量</span>
-            <el-input-number v-model="storyboardCount" :min="1" :max="200" :step="5" placeholder="自动" class="sb-config-input" />
-            <span class="sb-config-hint sb-config-hint--estimate" :title="scriptEstimateStoryboardTitle">留空由 AI 决定{{ scriptEstimateStoryboardHint }}</span>
-          </label>
-          <span class="sb-config-divider">｜</span>
-          <label class="sb-config-item">
-            <span class="sb-config-label">视频总时长(秒)</span>
-            <el-input-number v-model="videoDuration" :min="10" :max="600" :step="5" placeholder="自动" class="sb-config-input" />
-            <span class="sb-config-hint sb-config-hint--estimate" :title="scriptEstimateVideoDurationTitle">留空由 AI 决定{{ scriptEstimateVideoDurationHint }}</span>
-          </label>
-          <span class="sb-config-divider">｜</span>
-          <label class="sb-config-item">
-            <span class="sb-config-label">序列图模式</span>
-            <el-select v-model="gridMode" size="small" style="width:110px" :disabled="storyboardUseFirstLastFrame">
-              <el-option label="单张" value="single" />
-              <el-option label="四宫格" value="quad_grid" />
-              <el-option label="九宫格" value="nine_grid" />
-            </el-select>
-            <span class="sb-config-hint">四/九宫格自动按视角拆分</span>
-          </label>
-        </div>
-        <div class="sb-config-row sb-narration-export-row" style="margin-top:10px;flex-wrap:wrap;align-items:center;gap:12px">
-          <el-checkbox v-model="storyboardUniversalOmni" @change="() => saveProjectSettings(false)">
-            全能分镜模式（每镜输出多子分镜段落式 universal_segment_text，与「生成/润色全能提示词」同版式）
-          </el-checkbox>
-          <el-button
-            v-if="storyboards.length > 0"
-            class="sb-export-srt-btn"
-            size="small"
-            plain
-            type="primary"
-            :disabled="!currentEpisodeId"
-            :loading="exportingStoryboardSheet"
-            @click="onExportStoryboardSheet"
-          >
-            导出分镜表excel
-          </el-button>
-          <el-button
-            v-if="storyboards.length > 0"
-            class="sb-export-srt-btn"
-            size="small"
-            plain
-            type="primary"
-            :disabled="!currentEpisodeId"
-            @click="onExportNarrationSrt"
-          >
-            导出解说 SRT
-          </el-button>
-        </div>
-        <div class="asset-actions sb-batch-actions">
-          <div class="flex">
-            <el-button
-              type="primary"
-              size="large"
-              :loading="directorGenerating || storyboardGenerating || universalOmniPolishRunning"
-              :disabled="!currentEpisodeId || directorGenerating || storyboardGenerating || universalOmniPolishRunning"
-              title="由导演智能体根据剧本与视听本体库闭环编排分镜脚本"
-              @click="onDirectorAgentGenerate"
-            >
-              🎬 导演生成分镜脚本{{ storyboards.length > 0 ? '（重编）' : '' }}
-            </el-button>
-            <ElButton type="info" plain size="large" @click="onAddSingleStoryboard">
-              添加一个分镜
-            </ElButton>
-            <el-button
-              v-if="storyboards.length > 0"
-              type="warning"
-              plain
-              size="large"
-              :loading="inferringParams"
-              title="智能分析全集分镜动作、氛围与台词，自动补齐视角、灯光风格、景深与运镜"
-              @click="onBatchInferParams"
-            >
-              ⚡ 智能补全镜头参数
-            </el-button>
-            <el-button
-              v-if="storyboards.length > 0"
-              type="success"
-              plain
-              size="large"
-              :loading="auditingInvariants"
-              title="运行 SHACL 风格视听本体门禁检验：检查运镜动感度、无对白BGM、人脸防拥挤及空间防跳切"
-              @click="onAuditInvariants"
-            >
-              🛡️ 视听本体质检
-            </el-button>
-          </div>
-          <template v-if="storyboards.length > 0">
-            <div class="sb-batch-right">
-              <el-button
-                type="success"
-                plain
-                size="large"
-                :loading="batchImageRunning && !singleShotImageInfo"
-                :title="storyboardUseFirstLastFrame ? '仅补齐缺失的首尾帧；每镜先完成首帧，再生成尾帧，已有图片会跳过。' : '仅补齐缺失的分镜图片，已有图片会跳过。'"
-                :disabled="!currentEpisodeId || batchImageRunning || batchVideoRunning || pipelineRunning || storyboardGenerating || universalOmniPolishRunning"
-                @click="startBatchImageGeneration"
-              >
-                {{ storyboardUseFirstLastFrame ? '批量生成首尾帧' : '批量生成分镜图' }}
-              </el-button>
-              <el-button
-                type="warning"
-                plain
-                size="large"
-                :loading="batchVideoRunning"
-                :disabled="!currentEpisodeId || batchImageRunning || batchVideoRunning || pipelineRunning || storyboardGenerating || universalOmniPolishRunning"
-                @click="startBatchVideoGeneration"
-              >
-                批量生成分镜视频
-              </el-button>
-              <BatchSpeechGeneration
-                :drama-id="dramaId" :episode-id="currentEpisodeId"
-                :disabled="pipelineRunning || storyboardGenerating || universalOmniPolishRunning"
-                @updated="onBatchSpeechUpdated"
-              />
-              <el-button
-                type="primary"
-                size="large"
-                :loading="batchDubbingStarting"
-                :disabled="!currentEpisodeId || pipelineRunning || storyboardGenerating || universalOmniPolishRunning"
-                title="根据各分镜已整理的台词文本与角色音色，批量调用 TTS 生成语音音频"
-                @click="startBatchDubbing"
-              >🎙️ 批量对白与旁白配音(TTS)</el-button>
-              <el-button v-if="batchImageRunning" size="large" type="danger" plain @click="stopBatchImageGeneration">停止图片</el-button>
-              <el-button v-if="batchVideoRunning" size="large" type="danger" plain @click="stopBatchVideoGeneration">停止视频</el-button>
-            </div>
-            <!-- 连贯帧模式 UI 暂时隐藏（保留变量与批量生成逻辑，后续可快速恢复） -->
-            <div v-if="false" class="batch-video-options" style="margin-top:8px;display:flex;align-items:center;gap:8px;font-size:13px;">
-              <el-checkbox v-model="videoFrameContiguity" size="small">
-                连贯帧模式（自动衔接相邻视频帧）
-              </el-checkbox>
-              <el-tooltip placement="top" :show-after="100">
-                <template #content>
-                  <div style="max-width:320px;line-height:1.7">
-                    <div style="font-weight:600;margin-bottom:4px">连贯帧模式说明</div>
-                    <div>启用后批量视频顺序生成，每条视频的<b>末帧</b>自动截取并作为下一条视频的<b>首帧参考图</b>，减少镜头切换的跳跃感。</div>
-                    <div style="margin-top:8px;font-weight:600">⚠️ 需要模型支持图生视频（i2v）</div>
-                    <div style="margin-top:4px">
-                      ✅ 支持：kling-video、kling-omni-video、wan2.2-kf2v-flash、wan2.6-i2v-flash<br/>
-                      ❌ 不支持（末帧将被忽略）：wan2.6-t2v、wan2.6-r2v-flash、wanx2.1-vace-plus 等纯文生视频模型
-                    </div>
-                    <div style="margin-top:8px;color:#faad14">如当前视频模型不支持 i2v，启用此选项不会报错，但末帧衔接不会生效。</div>
-                  </div>
-                </template>
-                <el-icon style="color:#9ca3af;cursor:help"><QuestionFilled /></el-icon>
-              </el-tooltip>
-            </div>
+        <StoryboardBatchToolbar
+          v-model:storyboard-count="storyboardCount"
+          v-model:video-duration="videoDuration"
+          v-model:grid-mode="gridMode"
+          v-model:storyboard-universal-omni="storyboardUniversalOmni"
+          :storyboard-use-first-last-frame="storyboardUseFirstLastFrame"
+          :has-storyboards="storyboards.length > 0"
+          :has-episode="!!currentEpisodeId"
+          :script-estimate-storyboard-title="scriptEstimateStoryboardTitle"
+          :script-estimate-storyboard-hint="scriptEstimateStoryboardHint"
+          :script-estimate-video-duration-title="scriptEstimateVideoDurationTitle"
+          :script-estimate-video-duration-hint="scriptEstimateVideoDurationHint"
+          :director-generating="directorGenerating"
+          :storyboard-generating="storyboardGenerating"
+          :universal-omni-polish-running="universalOmniPolishRunning"
+          :inferring-params="inferringParams"
+          :auditing-invariants="auditingInvariants"
+          :batch-image-running="batchImageRunning"
+          :batch-video-running="batchVideoRunning"
+          :batch-image-stopping="batchImageStopping"
+          :batch-video-stopping="batchVideoStopping"
+          :batch-dubbing-starting="batchDubbingStarting"
+          :pipeline-running="pipelineRunning"
+          :single-shot-image-info="singleShotImageInfo"
+          :batch-image-progress="batchImageProgress"
+          :batch-video-progress="batchVideoProgress"
+          :batch-image-errors="batchImageErrors"
+          :batch-video-errors="batchVideoErrors"
+          :batch-video-submitting="batchVideoSubmitting"
+          :exporting-storyboard-sheet="exportingStoryboardSheet"
+          @save-settings="saveProjectSettings"
+          @director-generate="onDirectorAgentGenerate"
+          @add-storyboard="onAddSingleStoryboard"
+          @batch-infer-params="onBatchInferParams"
+          @audit-invariants="onAuditInvariants"
+          @start-batch-image="startBatchImageGeneration"
+          @start-batch-video="startBatchVideoGeneration"
+          @start-batch-dubbing="startBatchDubbing"
+          @stop-batch-image="stopBatchImageGeneration"
+          @stop-batch-video="stopBatchVideoGeneration"
+          @export-storyboard-sheet="onExportStoryboardSheet"
+          @export-narration-srt="onExportNarrationSrt"
+          @clear-batch-image-errors="batchImageErrors = []"
+          @clear-batch-video-errors="clearBatchVideoErrors"
+          @retry-failed-batch-videos="retryFailedBatchVideos"
+        >
+          <template #batch-speech>
+            <BatchSpeechGeneration
+              :drama-id="dramaId"
+              :episode-id="currentEpisodeId"
+              :disabled="pipelineRunning || storyboardGenerating || universalOmniPolishRunning"
+              @updated="onBatchSpeechUpdated"
+            />
           </template>
-        </div>
-        <!-- 批量生成进度 -->
-        <div v-if="batchImageRunning || batchVideoRunning || batchImageErrors.length || batchVideoErrors.length" class="batch-status">
-          <div v-if="batchImageRunning" class="batch-progress">
-            <el-icon class="is-loading"><Loading /></el-icon>
-            <span v-if="singleShotImageInfo">后台生成分镜 {{ singleShotImageInfo.sbNum ? '#' + singleShotImageInfo.sbNum + ' ' : '' }}{{ singleShotImageInfo.slotText }}（可关闭页面）<template v-if="singleShotImageInfo.queuedCount > 0">，还有 {{ singleShotImageInfo.queuedCount }} 个任务排队中</template></span>
-            <span v-else>后台{{ storyboardUseFirstLastFrame ? '批量生成首尾帧' : '批量生成分镜图' }}（可关闭页面）：{{ batchImageProgress.current }}/{{ batchImageProgress.total }}</span>
-            <span v-if="batchImageProgress.failed > 0" class="batch-failed">{{ batchImageProgress.failed }} 条失败</span>
-            <span v-if="batchImageStopping" class="batch-stopping">（正在停止...）</span>
-          </div>
-          <div v-if="batchVideoRunning" class="batch-progress">
-            <el-icon class="is-loading"><Loading /></el-icon>
-            <span>后台批量生成分镜视频：{{ batchVideoProgress.current }}/{{ batchVideoProgress.total }}（可关闭页面）</span>
-            <span v-if="batchVideoProgress.failed > 0" class="batch-failed">{{ batchVideoProgress.failed }} 条失败</span>
-            <span v-if="batchVideoStopping" class="batch-stopping">（正在停止...）</span>
-          </div>
-          <div v-if="batchImageErrors.length > 0" class="batch-error-log">
-            <div class="batch-error-header">
-              <span class="batch-error-title">分镜图生成失败记录（{{ batchImageErrors.length }} 条）：</span>
-              <div class="batch-error-actions">
-                <el-button size="small" text @click="batchImageErrors = []">清除记录</el-button>
-              </div>
-            </div>
-            <div v-for="(e, i) in batchImageErrors" :key="i" class="batch-error-line">{{ e }}</div>
-          </div>
-          <div v-if="batchVideoErrors.length > 0" class="batch-error-log">
-            <div class="batch-error-header">
-              <span class="batch-error-title">分镜视频生成失败记录（{{ batchVideoErrors.length }} 条）：</span>
-              <div class="batch-error-actions">
-                <el-button size="small" type="primary" plain @click="retryFailedBatchVideos" :loading="batchVideoSubmitting">
-                  一键重试失败分镜
-                </el-button>
-                <el-button size="small" text @click="clearBatchVideoErrors">
-                  清除记录
-                </el-button>
-              </div>
-            </div>
-            <div v-for="(e, i) in batchVideoErrors" :key="i" class="batch-error-line">{{ e }}</div>
-          </div>
-        </div>
+        </StoryboardBatchToolbar>
         <div v-if="storyboardGenerating || universalOmniPolishRunning" class="storyboard-generating-tip">
           <el-icon class="is-loading"><Loading /></el-icon>
           <span v-if="universalOmniPolishRunning">
@@ -3044,6 +2859,8 @@ import { isAssetMentionedInText, isAssetRecentlyCreated } from '@/utils/assetMat
 import { missingStoryboardImageSlots } from '@/utils/storyboardImageBatch'
 import { meaningfulSpeech, shotSpeechStatus, automaticVideoModel } from '@/utils/shotSpeech'
 import UniversalSegmentOmniAtEditor from '@/components/UniversalSegmentOmniAtEditor.vue'
+import SidebarActiveTasks from '@/components/filmCreate/SidebarActiveTasks.vue'
+import StoryboardBatchToolbar from '@/components/filmCreate/StoryboardBatchToolbar.vue'
 import {
   generationStyleOptions,
   getStylePromptEn,
@@ -8692,208 +8509,7 @@ html.light .quick-nav {
   .main { padding: 16px 12px 48px; }
   .asset-list-two { grid-template-columns: 1fr; }
 }
-/* 当前任务面板 */
-.atp-panel {
-  margin-top: 6px;
-  border-top: 1px solid rgba(255, 255, 255, 0.04);
-  padding: 6px 0 4px;
-}
-.atp-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 10px 4px;
-}
-.atp-header-stats {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: auto;
-}
-.atp-header-stat {
-  font-size: 0.62rem;
-  line-height: 1;
-  padding: 2px 4px;
-  border-radius: 4px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-.atp-header-running {
-  background: rgba(34, 197, 94, 0.18);
-  color: #4ade80;
-  border: 1px solid rgba(34, 197, 94, 0.35);
-}
-.atp-header-waiting {
-  background: rgba(234, 179, 8, 0.18);
-  color: #facc15;
-  border: 1px solid rgba(234, 179, 8, 0.35);
-}
-.atp-title {
-  font-size: 0.72rem;
-  font-weight: 600;
-  color: #a78bfa;
-  letter-spacing: 0.03em;
-}
-.atp-count-badge {
-  font-size: 0.68rem;
-  background: rgba(139, 92, 246, 0.25);
-  color: #c4b5fd;
-  border-radius: 8px;
-  padding: 1px 5px;
-  min-width: 16px;
-  text-align: center;
-}
-.atp-spin-dot {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #a78bfa;
-  flex-shrink: 0;
-  animation: atp-pulse 1.2s ease-in-out infinite;
-}
-@keyframes atp-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.4; transform: scale(0.75); }
-}
-.atp-list {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-.atp-list :deep(.el-tooltip__trigger) {
-  display: block;
-  width: 100%;
-  min-width: 0;
-}
-.atp-item {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 10px;
-  border-radius: 6px;
-  transition: background 0.15s;
-  min-width: 0;
-  cursor: default;
-}
-.atp-item:hover { background: rgba(255,255,255,0.05); }
-.atp-item--clickable {
-  cursor: pointer;
-}
-.atp-item--clickable:hover {
-  background: rgba(168, 85, 247, 0.18);
-}
-.atp-item--waiting {
-  opacity: 0.85;
-}
-.atp-item--waiting:hover {
-  opacity: 1;
-}
-.atp-item-dot {
-  display: inline-block;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #7c3aed;
-  flex-shrink: 0;
-  animation: atp-pulse 1.6s ease-in-out infinite;
-}
-.atp-item-dot.atp-dot--running {
-  background: #22c55e;
-  box-shadow: 0 0 5px rgba(34, 197, 94, 0.6);
-  animation: atp-pulse 1.2s ease-in-out infinite;
-}
-.atp-item-dot.atp-dot--waiting {
-  background: #eab308;
-  animation: none;
-}
-.atp-status-tag {
-  font-size: 0.6rem;
-  line-height: 1.1;
-  padding: 1px 4px;
-  border-radius: 3px;
-  font-weight: 500;
-  flex-shrink: 0;
-  white-space: nowrap;
-}
-.atp-tag--running {
-  background: rgba(34, 197, 94, 0.15);
-  color: #4ade80;
-  border: 1px solid rgba(34, 197, 94, 0.28);
-}
-.atp-tag--waiting {
-  background: rgba(234, 179, 8, 0.15);
-  color: #facc15;
-  border: 1px solid rgba(234, 179, 8, 0.28);
-}
-.atp-item-label {
-  font-size: 0.72rem;
-  color: #a1a1aa;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex: 1;
-  min-width: 0;
-}
-.atp-item-close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: #71717a;
-  cursor: pointer;
-  flex-shrink: 0;
-  opacity: 0;
-  transition: opacity 0.15s, background 0.15s, color 0.15s;
-}
-.atp-item:hover .atp-item-close,
-.atp-item-close:focus-visible {
-  opacity: 1;
-}
-.atp-item-close:hover {
-  background: rgba(239, 68, 68, 0.15);
-  color: #f87171;
-}
-.atp-more {
-  font-size: 0.68rem;
-  color: #71717a;
-  padding: 2px 10px 2px 19px;
-}
-/* 折叠态任务徽章 */
-.atp-collapsed-badge {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 3px;
-  padding: 4px 0;
-  cursor: default;
-}
-.atp-collapsed-count {
-  font-size: 0.65rem;
-  color: #a78bfa;
-  font-weight: 700;
-  line-height: 1;
-}
-html.light .atp-title { color: #7c3aed; }
-html.light .atp-count-badge { background: rgba(139,92,246,0.12); color: #7c3aed; }
-html.light .atp-header-running { background: rgba(34, 197, 94, 0.12); color: #16a34a; border-color: rgba(34, 197, 94, 0.25); }
-html.light .atp-header-waiting { background: rgba(202, 138, 4, 0.12); color: #ca8a04; border-color: rgba(202, 138, 4, 0.25); }
-html.light .atp-tag--running { background: rgba(34, 197, 94, 0.1); color: #16a34a; border-color: rgba(34, 197, 94, 0.2); }
-html.light .atp-tag--waiting { background: rgba(202, 138, 4, 0.1); color: #ca8a04; border-color: rgba(202, 138, 4, 0.2); }
-html.light .atp-item-dot.atp-dot--running { background: #16a34a; }
-html.light .atp-item-dot.atp-dot--waiting { background: #ca8a04; }
-html.light .atp-spin-dot { background: #7c3aed; }
-html.light .atp-item-dot { background: #8b5cf6; }
-html.light .atp-item-label { color: #374151; }
-html.light .atp-item:hover { background: rgba(0,0,0,0.04); }
-html.light .atp-item-close { color: #9ca3af; }
-html.light .atp-item-close:hover { background: rgba(239,68,68,0.1); color: #dc2626; }
-html.light .atp-panel { border-top-color: rgba(139,92,246,0.15); }
+
 .nav-sidebar-header {
   display: flex;
   align-items: center;
