@@ -48,11 +48,14 @@ function createCharacterVisualSlot(data = {}) {
     environmental_anchor: finalEnvAnchor || '',
     spatial_anchor: spatialAnchor || (finalEnvAnchor ? `${finalScreenPos}${finalEnvAnchor}` : finalScreenPos),
     facing: String(data.facing || '').trim(),
+    expression: String(data.expression || '').trim(),
     head_pose: String(data.head_pose || (data.head_gaze && !data.gaze ? data.head_gaze : '')).trim(),
     gaze: String(data.gaze || (data.head_gaze && !data.head_pose ? data.head_gaze : '')).trim(),
     head_gaze: String(data.head_gaze || '').trim(),
     posture: String(data.posture || '').trim(),
     hands: String(data.hands || '').trim(),
+    appearance_details: String(data.appearance_details || '').trim(),
+    prop_interaction: String(data.prop_interaction || '').trim(),
   };
 }
 
@@ -177,11 +180,20 @@ function validateCharacterVisualSlots(shot, slots = []) {
 function compileImagePromptFromSlots(shot, slots = [], options = {}) {
   const parts = [];
 
-  // 1. 场景地点与时间光影
-  if (shot.location) parts.push(shot.location);
-  if (shot.time) parts.push(shot.time);
+  // 1. 场景地点与空间三层纵深
+  const loc = shot.location ? shot.location : '';
+  const time = shot.time ? shot.time : '';
+  const envDepth = shot.environment_depth || shot.decisive_moment_detail || '';
+  if (loc && time) {
+    parts.push(`${loc}（${time}）`);
+  } else if (loc) {
+    parts.push(loc);
+  } else if (time) {
+    parts.push(time);
+  }
+  if (envDepth) parts.push(envDepth);
 
-  // 2. 景别机位
+  // 2. 景别机位与电影镜头参数
   const angleParts = [];
   if (shot.shot_type) angleParts.push(shot.shot_type);
   const vMap = { low: '仰拍', high: '俯拍', eye_level: '平视', worm: '极低仰拍', top_down: '顶拍' };
@@ -194,19 +206,23 @@ function compileImagePromptFromSlots(shot, slots = [], options = {}) {
   const h = hMap[shot.angle_h] || (shot.angle_h === 'front_left' ? '前左' : shot.angle_h === 'front_right' ? '前右' : '正面');
   angleParts.push(v);
   angleParts.push(h);
+  if (shot.cinematic_lens) angleParts.push(shot.cinematic_lens);
   parts.push(angleParts.join('·'));
 
-  // 3. 角色视觉槽位
+  // 3. 角色视觉槽位（空间站位 + 朝向 + 微表情 + 身体重心 + 手部/接触态 + 服饰微状态）
   if (Array.isArray(slots) && slots.length > 0) {
     const charPhrases = slots.map((s) => {
       const charName = s.name || '人物';
       const items = [];
       if (s.facing) items.push(s.facing);
+      if (s.expression) items.push(s.expression);
       if (s.posture) items.push(s.posture);
       if (s.hands) items.push(s.hands);
+      if (s.prop_interaction) items.push(s.prop_interaction);
       if (s.head_pose) items.push(s.head_pose);
       if (s.gaze && s.gaze !== s.head_pose) items.push(s.gaze);
       else if (s.head_gaze && !s.head_pose) items.push(s.head_gaze);
+      if (s.appearance_details) items.push(s.appearance_details);
 
       const anchor = s.spatial_anchor ? (s.spatial_anchor.startsWith('位于') ? s.spatial_anchor : `位于${s.spatial_anchor}`) : '';
       const prefix = anchor ? `${charName}${anchor}` : charName;
@@ -218,12 +234,25 @@ function compileImagePromptFromSlots(shot, slots = [], options = {}) {
     parts.push(extractStaticFreezeFramePose(shot.action, shot));
   }
 
-  // 4. 环境决定性瞬间静态定格细节
-  if (shot.decisive_moment_detail) {
-    parts.push(shot.decisive_moment_detail);
+  // 4. 影视级打光与影调氛围 (Lighting & Chiaroscuro)
+  if (shot.lighting_chiaroscuro) {
+    parts.push(shot.lighting_chiaroscuro);
+  } else if (shot.lighting_style) {
+    const lightMap = {
+      natural: '自然真实采光',
+      side: '高反差侧光照明与立体明暗交界',
+      backlit: '电影级强逆光与金色轮廓光',
+      dramatic: '戏剧性强对比伦勃朗光',
+      soft: '柔和漫反射环境光',
+      golden_hour: '暖金色夕阳光切光',
+      blue_hour: '冷色调暮光幽蓝氛围',
+      night: '暗夜微光照明伴随深重阴影',
+      neon: '赛博朋克霓虹冷暖对比光',
+    };
+    parts.push(lightMap[shot.lighting_style] || shot.lighting_style);
   }
 
-  // 5. 画风与首帧静止标签
+  // 5. 电影风格与胶片摄影质感
   const style = options.style || 'photorealistic, ultra-detailed, 8k uhd, sharp focus, natural lighting, real skin texture, hyperrealism, professional photography, RAW photo';
   parts.push(style);
   parts.push('首帧静止画面');

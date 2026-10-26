@@ -255,8 +255,60 @@ function applyVolcChatOptions(config, body) {
   }
   const next = { ...body, model };
   const name = String(next.model || '').toLowerCase();
-  if (!next.thinking && (/^deepseek-v4/.test(name) || /^doubao-seed-2/.test(name))) {
+
+  let thinking = null;
+  let reasoningEffort = null;
+  try {
+    const s = typeof config.settings === 'string' ? JSON.parse(config.settings) : config.settings;
+    if (s) {
+      thinking = s.thinking ?? s.deepseek_thinking;
+      reasoningEffort = s.reasoning_effort ?? s.deepseek_reasoning_effort;
+    }
+  } catch (_) {}
+
+  if (thinking === 'enabled') {
+    next.thinking = { type: 'enabled' };
+    if (reasoningEffort) next.reasoning_effort = reasoningEffort;
+  } else if (thinking === 'disabled') {
     next.thinking = { type: 'disabled' };
+    delete next.reasoning_effort;
+  } else if (!next.thinking && (/^deepseek-v4/.test(name) || /^doubao-seed-2/.test(name))) {
+    next.thinking = { type: 'disabled' };
+  }
+  return next;
+}
+
+/**
+ * 通用文本大模型思考模式（Reasoning / Thinking）适配：
+ * 支持 OpenAI o系列、Qwen、DeepSeek中转、自建网关等。
+ */
+function applyGeneralChatOptions(config, body, options = {}) {
+  if (!body || typeof body !== 'object') return body;
+  let thinking = options.thinking;
+  let reasoningEffort = options.reasoning_effort;
+  try {
+    const s = typeof config.settings === 'string' ? JSON.parse(config.settings) : config.settings;
+    if (s) {
+      if (thinking == null) thinking = s.thinking ?? s.deepseek_thinking;
+      if (reasoningEffort == null) reasoningEffort = s.reasoning_effort ?? s.deepseek_reasoning_effort;
+    }
+  } catch (_) {}
+
+  const next = { ...body };
+  if (thinking === 'enabled') {
+    const effort = reasoningEffort || 'high';
+    if (!next.reasoning_effort) {
+      next.reasoning_effort = effort;
+    }
+    const name = String(next.model || '').toLowerCase();
+    if (!next.thinking && (name.includes('deepseek') || name.includes('reason') || name.includes('r1') || name.includes('seed') || name.includes('qwen'))) {
+      next.thinking = { type: 'enabled' };
+    }
+  } else if (thinking === 'disabled') {
+    delete next.reasoning_effort;
+    if (next.thinking && typeof next.thinking === 'object' && next.thinking.type === 'enabled') {
+      next.thinking = { type: 'disabled' };
+    }
   }
   return next;
 }
@@ -453,9 +505,17 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
     ...(finalMaxTokens != null ? { max_tokens: finalMaxTokens } : {}),
     ...(json_mode ? { response_format: { type: 'json_object' } } : {}),
   };
-  body = applyVolcChatOptions(config, applyDeepSeekChatOptions(config, body));
+  body = applyGeneralChatOptions(config, applyVolcChatOptions(config, applyDeepSeekChatOptions(config, body)), options);
   const startMs = Date.now();
-  log.info('AI generateText request', { url: url.slice(0, 60), model, max_tokens: finalMaxTokens ?? '(model default)', json_mode, stream: true });
+  log.info('AI generateText request', {
+    url: url.slice(0, 60),
+    model,
+    max_tokens: finalMaxTokens ?? '(model default)',
+    json_mode,
+    stream: true,
+    thinking: body.thinking?.type || (body.reasoning_effort ? 'enabled' : 'disabled/none'),
+    reasoning_effort: body.reasoning_effort || null,
+  });
   const onProgress = (receivedLen, event, accumulated) => {
     if (event === 'first_token') {
       log.info('AI stream first token', { model, ttft_ms: Date.now() - startMs });
@@ -559,7 +619,7 @@ async function streamGenerateText(db, log, serviceType, userPrompt, systemPrompt
     ...(finalMaxTokens != null ? { max_tokens: finalMaxTokens } : {}),
     ...(json_mode ? { response_format: { type: 'json_object' } } : {}),
   };
-  body = applyVolcChatOptions(config, applyDeepSeekChatOptions(config, body));
+  body = applyGeneralChatOptions(config, applyVolcChatOptions(config, applyDeepSeekChatOptions(config, body)), options);
   const silenceMs = options.silence_timeout_ms != null ? Number(options.silence_timeout_ms) : 120000;
   const startMs = Date.now();
   log.info('AI streamGenerateText request', {
@@ -568,6 +628,8 @@ async function streamGenerateText(db, log, serviceType, userPrompt, systemPrompt
     max_tokens: finalMaxTokens ?? '(model default)',
     json_mode,
     stream: true,
+    thinking: body.thinking?.type || (body.reasoning_effort ? 'enabled' : 'disabled/none'),
+    reasoning_effort: body.reasoning_effort || null,
   });
   let lastLen = 0;
   const onProgress = (receivedLen, event, accumulated) => {
@@ -846,6 +908,7 @@ module.exports = {
   parseMaxTokensLimitFromError,
   resolveArkTextModel,
   applyVolcChatOptions,
+  applyGeneralChatOptions,
   clampMaxTokensInBody,
   stripMaxTokensFromBody,
 };

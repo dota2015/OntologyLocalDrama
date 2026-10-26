@@ -87,7 +87,7 @@ ${premiseText}
 2. 包含清晰的角色对白与动作描写。
 3. 纯正剧本格式，约 600-1000 字。`;
 
-    const generatedScript = await aiClient.generateText(db, log, 'text', scriptPrompt, '你是一位专业影视导演兼编剧。', { max_tokens: 3000 });
+    const generatedScript = await aiClient.generateText(db, log, 'text', scriptPrompt, '你是一位专业影视导演兼编剧。', { max_tokens: 3000, reasoning_effort: 'high' });
     if (generatedScript && generatedScript.trim()) {
       scriptContent = generatedScript.trim();
       db.prepare('UPDATE episodes SET script_content = ?, updated_at = ? WHERE id = ?').run(scriptContent, new Date().toISOString(), epId);
@@ -160,17 +160,25 @@ ${directiveSection}
    - **绝对禁止在一个镜头内塞入超出时长预算的冗长对白或旁白！**
    - **长台词必须拆镜**：遇长台词或包含多句话的对白，必须在标点符号（逗号/句号/感叹号）处主动切分拆解为 2 个以上连续分镜（如正反打镜头：前一句配说话人动作，后一句切听者反应特写或说话人进一步动作承接）；
    - **禁止删改剧本台词**：拆镜时必须逐字完整保留原剧本对白与说话人，按顺序分配到拆解后的各分镜中，不允许缩写、偷换或通过强行加速说话来逃避拆镜！
-8. **角色生图构图预置槽位契约（Character Visual Slots Contract）**：
-   - 严禁自由发挥无结构文本描述！每个出场角色必须严格在 character_visuals 中填写强类型结构化槽位：
-     * character_id: 角色ID
-     * name: 角色名字
-     * screen_position: 画面构图位置【极其重要】（必须明确：画面左侧前景 / 画面正中央 / 画面右侧中景 / 画面左侧三分线 / 画面右侧后景 等。绝对不可缺省！双人戏必须将两人分别安排在左侧与右侧，严禁两人同时堆在正中央重叠穿模）
-     * environmental_anchor: 物理环境依托（低矮断墙后 / 实木书桌前 / 走廊转角掩体 / 装卸道路中央）
-     * facing: 人物朝向（必须明确：正面面对镜头 / 背向镜头 / 侧身朝向画面左侧 / 侧身朝向画面右侧 / 侧向四分之三面朝左 / 侧向四分之三面朝右）
-     * head_pose: 头部姿态（头部正对前方 / 头部微仰 / 低头咬牙 / 侧头偏向右侧 / 侧头偏向左侧 / 转头回望）
-     * gaze: 目光视线落点（双眼紧盯前方冷光屏幕 / 目光警惕锁定高窗火力点 / 视线锁定右侧岔路）
-     * posture: 躯干体态与重心（必须写清具体体态与重心：半蹲低伏 / 单膝跪姿 / 身体前倾30度坐姿 / 侧卧撑地 / 大步奔冲 / 凌空飞扑）
-     * hands: 双手与四肢具体动作（双手手指搭在键盘按键上方 / 右手紧按耳机左手持枪 / 单臂平举直指前方 / 单手撑地）
+8. **角色与生图构图五层视听矩阵（Cinematic Visual Slots Matrix）**：
+   - **杜绝模板式假槽位套话**：严禁出现“身体保持戒备低姿，重心稳固隐蔽”、“双手紧握装备保持待发状态”、“目光专注注视前方”等万能模板套话！必须根据该分镜的【剧本具体动作、场景空间反差与人物生理微状态】进行具象定格描写！
+   - **单镜五维视听构图槽位**：
+     * environment_depth: 空间三层纵深（必须明确：前景虚化遮挡物、中景主体物理接触地表/构件、背景视线尽头材质与灭点透视；如“前景右下角虚化遮挡着锈蚀钢架，中景地表散落碎石与断裂线缆，背景纵深处是雨水横流的防爆玻璃窗与闪烁微弱绿色荧光的故障控制台”）
+     * lighting_chiaroscuro: 影视打光与影调质感（主光方向、轮廓光/侧逆光、局部冷暖发光、高反差阴影；如“自破损天窗斜射而入的硬质冷白天光，右侧荧光屏在人物面颊勾勒出幽蓝侧轮廓光，伴随深重电影级侧影暗部”）
+     * cinematic_lens: 电影镜头光学参数（如“35mm宽银幕电影镜头抓拍，f/2.8浅景深焦外散景，微弱柯达35mm胶片颗粒质感”）
+     * character_visuals 内部强类型槽位（出场角色必须填写）：
+       - character_id: 角色ID
+       - name: 角色名字
+       - screen_position: 画面构图位置【极其重要】（必须明确：画面左侧前景 / 画面正中央 / 画面右侧中景 / 画面左侧三分线 等，双人戏严禁两人挤在正中央重叠穿模）
+       - environmental_anchor: 物理环境依托（低矮断墙后 / 实木书桌前 / 走廊转角掩体）
+       - facing: 人物朝向（必须明确：正面面对镜头 / 背向镜头 / 侧身朝向画面左侧 / 侧身朝向画面右侧 / 侧向四分之三面朝左 / 侧向四分之三面朝右）
+       - expression: 面部微表情与神态（如：咬肌紧绷、瞳孔微聚盯防、下颌微收、冷峻警惕、嘴角抿直）
+       - head_pose: 头部姿态（头部正对前方 / 头部微仰 / 低头咬牙 / 侧头偏向右侧 / 侧头偏向左侧 / 转头回望）
+       - gaze: 目光视线落点（双眼紧盯前方冷光屏幕 / 目光警惕锁定高窗火力点 / 视线锁定右侧岔路）
+       - posture: 躯干体态与重心（必须结合剧本写实，禁止套话：如“双膝跪地双手撑在碎石地上” / “身体前倾靠在控制台边缘”）
+       - hands: 双手具体四肢定格（必须结合具体动作与接触点）
+       - prop_interaction: 手指与道具具体的物理接触点（如：食指扣在磨砂黑战术终端侧键边缘，拇指悬停在确认键上方）
+       - appearance_details: 服装质感与生理状态（如：额角渗出的细密冷汗与被汗浸湿贴在前额的凌乱碎发、粗糙抗撕裂战术背心上的泥渍刮擦）
    - 槽位中严禁出现“从A到B”、“跑向”、“走到”、“随后”、“看了一眼”等动态时序过程词，文生图模型会将两地各画一人产生克隆分身！必须是首帧决定性瞬间的纯静态摄影描写！
 9. **连贯长镜头结构化拆解与接力规范（Long Take Relaying & Sequential Splitting）**：
    - **适用情境**：影视短剧中，连续动作追逐、长走廊/房间连续漫游、连贯推移跟拍等大段无切机位的视听情境。因 AI 视频模型单镜仅能生成 4~8 秒，必须将长镜头拆分为多个连续子镜头（如镜头2~5）。
@@ -206,6 +214,9 @@ ${scriptContent}
 - angle_s: 景别尺度 (wide/medium/close_up)
 - movement: 运镜 (push/pull/pan/tilt/tracking/handheld/crane_up/crane_dn/orbit；少用 static)
 - lighting_style: 灯光风格 (natural/side/backlit/dramatic/soft/golden_hour/blue_hour/night/neon)
+- lighting_chiaroscuro: 影视打光与影调质感 (主光方向、轮廓光/侧逆光、局部冷暖发光、高反差明暗影调描写)
+- environment_depth: 空间三层纵深 (前景虚化遮挡、中景主体物理接触地表/构件、背景纵深透视与材质细节)
+- cinematic_lens: 电影镜头光学参数 (如 35mm宽银幕变形镜头/85mm定焦大光圈浅景深焦外散景)
 - depth_of_field: 景深 (shallow/medium/deep)
 - duration: 本镜秒数 (整数，4~8之间，必须匹配台词字数预算)
 - action: 核心物理动作
@@ -216,8 +227,8 @@ ${scriptContent}
 - sound_effect: 现场音效与动作声音
 - layout_description: 画面站位与物体尺度空间合同
 - emotion: 核心情绪
-- character_visuals: 出场角色视觉槽位数组 (每个出场角色必须完整填写槽位：
-    {"character_id": 1, "name": "角色名", "screen_position": "画面构图位置（画面左侧前景/画面正中央/画面右侧中景等）", "environmental_anchor": "物理环境依托（掩体后/书桌前等）", "facing": "朝向（正面面对镜头/背向镜头/侧身朝向画面左侧/侧身朝向画面右侧）", "head_pose": "头部姿态（头部正对前方/头部微仰/低头/侧头偏向右侧）", "gaze": "目光视线（双眼紧盯前方/目光警惕锁定右侧岔路）", "posture": "躯干体态与重心（半蹲低伏/单膝跪姿/前倾坐姿）", "hands": "双手与四肢具体动作（双手手指搭在键盘按键上方/单手按住对方肩膀）"}
+- character_visuals: 出场角色视觉槽位数组 (每个出场角色必须完整填写槽位，严禁套话：
+    {"character_id": 1, "name": "角色名", "screen_position": "画面构图位置（画面左侧前景/画面正中央/画面右侧中景等）", "environmental_anchor": "物理环境依托（掩体后/书桌前等）", "facing": "朝向（正面面对镜头/背向镜头/侧身朝向画面左侧/侧身朝向画面右侧）", "expression": "具象面部微表情（咬肌紧绷/瞳孔微聚/嘴角抿直等）", "head_pose": "头部姿态（头部正对前方/头部微仰/低头/侧头偏向右侧）", "gaze": "目光视线（双眼紧盯前方/目光警惕锁定右侧岔路）", "posture": "具体的躯干体态与重心定格", "hands": "双手与四肢具体动作", "prop_interaction": "手指与道具具体的物理接触点", "appearance_details": "服装质地与生理战损微状态"}
   无角色填 [])
 - image_prompt: 画面视觉构图提示词 (供AI生图使用，按上述槽位综合生成的首帧纯静态定格摄影描写)
 
@@ -225,7 +236,7 @@ ${scriptContent}
 
   onProgress(40, '导演智能体正在规划场面调度、机位构图与动感运镜...');
   log.info('[导演Agent] 阶段一：初稿推演生成中...');
-  const firstDraftRaw = await aiClient.generateText(db, log, 'text', userPrompt, systemPrompt, { max_tokens: 8000 });
+  const firstDraftRaw = await aiClient.generateText(db, log, 'text', userPrompt, systemPrompt, { max_tokens: 8000, reasoning_effort: 'high' });
   const parsedFirstDraft = safeParseAIJSON(firstDraftRaw, null, log);
   let shots = extractFirstArray(parsedFirstDraft) || [];
 
@@ -251,12 +262,13 @@ ${audit.violations.map(v => `- [${v.rule}] 镜头 ${v.shot_number || '全局'}: 
 3. 修正任何群戏或人脸拥挤违规；
 4. 针对所有超出台词时长预算的分镜（INVARIANT_SPEECH_OVER_BUDGET），必须在标点符号处按语义拆分为 2 个以上连续分镜，或在 4~8 秒安全范围内适当延长镜头时长，严禁删减台词！
 5. 针对生图槽位不全或包含动态动词的分镜（INVARIANT_SLOT_*）：
-   必须为每个出场角色补齐完整槽位：screen_position(画面构图位置，如画面左侧前景/画面正中央/画面右侧中景，严禁二人挤在同一点重叠穿模)、facing(朝向)、head_pose(头部姿态)、gaze(视线目光)、posture(体态重心)、hands(双手动作)，严禁仅写名字或抽象身体，彻底消除“从A走到B”、“探出又缩回”等导致多角色的时序位移动态词！
+   必须为每个出场角色补齐完整槽位：screen_position(画面构图位置)、facing(朝向)、expression(微表情)、head_pose(头部姿态)、gaze(视线目光)、posture(体态重心)、hands(双手动作)、prop_interaction(道具物理接触点)，彻底消除“从A走到B”等导致多角色的时序位移动态词！
+6. 严禁使用千篇一律的机械套话（如“身体保持戒备低姿，重心稳固隐蔽”、“双手紧握装备保持待发状态”），必须根据每个镜头剧本具体动作重写为具象的肢体定格姿态、手部微接触与生动微表情！
 
 请输出修正后的完整 JSON: {"storyboards": [...]}`;
 
     try {
-      const repairedRaw = await aiClient.generateText(db, log, 'text', `${userPrompt}\n\n当前草稿：\n${JSON.stringify({ storyboards: shots })}\n\n${reflectionPrompt}`, systemPrompt, { max_tokens: 8000 });
+      const repairedRaw = await aiClient.generateText(db, log, 'text', `${userPrompt}\n\n当前草稿：\n${JSON.stringify({ storyboards: shots })}\n\n${reflectionPrompt}`, systemPrompt, { max_tokens: 8000, reasoning_effort: 'high' });
       const parsedRepaired = safeParseAIJSON(repairedRaw, null, log);
       const repairedShots = extractFirstArray(parsedRepaired);
       if (Array.isArray(repairedShots) && repairedShots.length > 0) {
@@ -363,7 +375,7 @@ ${audit.violations.map(v => `- [${v.rule}] 镜头 ${v.shot_number || '全局'}: 
     try {
       const splitFragments = await enforceStoryboardSpeechTiming([s], {
         durationRange: { min: 4, max: 8 },
-        generate: async (user, sys) => aiClient.generateText(db, log, 'text', user, sys, { max_tokens: 4000 }),
+        generate: async (user, sys) => aiClient.generateText(db, log, 'text', user, sys, { max_tokens: 4000, reasoning_effort: 'high' }),
         onRepair: () => {},
       });
       speechValidatedShots.push(...splitFragments);
@@ -463,6 +475,9 @@ ${audit.violations.map(v => `- [${v.rule}] 镜头 ${v.shot_number || '全局'}: 
         ...s,
         location: scene.location || '场景',
         time: scene.time || '日景',
+        environment_depth: s.environment_depth || '',
+        lighting_chiaroscuro: s.lighting_chiaroscuro || '',
+        cinematic_lens: s.cinematic_lens || '',
         shot_type: s.shot_type || '中景',
         movement: s.movement || 'push',
         lighting_style: s.lighting_style || 'natural',
@@ -778,7 +793,7 @@ ${instruction}
 }`;
 
   log.info('[导演Agent] 单分镜定向原子微调推理中...', { storyboard_id: sbId, instruction });
-  const rawResponse = await aiClient.generateText(db, log, 'text', userPrompt, systemPrompt, { max_tokens: 3000 });
+  const rawResponse = await aiClient.generateText(db, log, 'text', userPrompt, systemPrompt, { max_tokens: 3000, reasoning_effort: 'high' });
   const parsed = safeParseAIJSON(rawResponse, null, log);
   if (!parsed || typeof parsed !== 'object') {
     throw new Error('导演智能体未能解析微调结果');

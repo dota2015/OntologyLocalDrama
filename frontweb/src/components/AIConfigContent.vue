@@ -81,7 +81,16 @@
             <el-table-column prop="base_url" label="Base URL" min-width="170" show-overflow-tooltip />
             <el-table-column prop="default_model" label="默认模型" min-width="130" show-overflow-tooltip>
               <template #default="{ row }">
-                {{ row.default_model || (Array.isArray(row.model) && row.model[0]) || '—' }}
+                <span>{{ row.default_model || (Array.isArray(row.model) && row.model[0]) || '—' }}</span>
+                <el-tag
+                  v-if="row.service_type === 'text' && isThinkingEnabled(row)"
+                  size="small"
+                  type="warning"
+                  effect="light"
+                  style="margin-left: 6px; font-size: 10px; height: 20px; line-height: 18px; padding: 0 4px;"
+                >
+                  🧠 思考: {{ getThinkingEffortLabel(row) }}
+                </el-tag>
               </template>
             </el-table-column>
             <el-table-column prop="service_type" label="类型" width="148">
@@ -912,14 +921,15 @@ input_reference = (图片文件，可选)</pre>
           </el-select>
           <p class="field-tip">该配置被选为「默认」时，生成故事/图片/视频将使用此处指定的模型。</p>
         </el-form-item>
-        <el-form-item v-if="isDeepSeekOfficialForm">
+        <el-form-item v-if="form.service_type === 'text'">
           <template #label>
-            <span class="form-label-tip">思考模式
+            <span class="form-label-tip">思考模式与强度
               <el-tooltip placement="top" popper-class="cfg-tip-popper">
                 <template #content>
                   <div class="cfg-tip-content">
-                    DeepSeek V4 官方模型用 thinking 参数控制思考模式。<br>
-                    关闭思考对应旧 deepseek-chat；开启思考对应旧 deepseek-reasoner。
+                    开启后，文本模型将执行深度推理（Reasoning / Thinking Chain）。<br>
+                    在分镜拆解时进行三维空间站位、机位运镜、光影与角色微状态规划，大幅提升生成质量。<br>
+                    支持 DeepSeek、OpenAI o系列、火山方舟、通义千问等文本模型。
                   </div>
                 </template>
                 <el-icon class="tip-icon"><QuestionFilled /></el-icon>
@@ -934,13 +944,16 @@ input_reference = (图片文件，可选)</pre>
             <el-select
               v-if="form.deepseek_thinking === 'enabled'"
               v-model="form.deepseek_reasoning_effort"
-              style="width: 140px"
+              style="width: 170px"
+              placeholder="选择思考强度"
             >
-              <el-option label="high" value="high" />
-              <el-option label="max" value="max" />
+              <el-option label="low (轻量思考)" value="low" />
+              <el-option label="medium (标准推演)" value="medium" />
+              <el-option label="high (深度推演·推荐)" value="high" />
+              <el-option label="max (极限思考)" value="max" />
             </el-select>
           </div>
-          <p class="field-tip">官方旧模型名将在 2026-07-24 废弃；新配置建议使用 deepseek-v4-flash 或 deepseek-v4-pro。</p>
+          <p class="field-tip">开启深度思考后生成耗时会略微增加，但能有效推演复杂空间关系并防止要素缺失。</p>
         </el-form-item>
         </template>
         <el-form-item>
@@ -1633,17 +1646,41 @@ function isDeepSeekOfficial(provider, baseUrl) {
   return p === 'deepseek' || base.includes('api.deepseek.com')
 }
 
+function isThinkingEnabled(row) {
+  const s = parseSettings(row?.settings)
+  const nested = s.deepseek && typeof s.deepseek === 'object' ? s.deepseek : {}
+  const th = s.thinking ?? s.deepseek_thinking ?? nested.thinking ?? nested.type
+  const m = String(row?.default_model || '').toLowerCase()
+  if (th === 'enabled' || th === 'enable' || th === true) return true
+  if (th === 'disabled' || th === false) return false
+  return m.includes('reasoner') || m.includes('r1') || m.startsWith('o1') || m.startsWith('o3')
+}
+
+function getThinkingEffortLabel(row) {
+  const s = parseSettings(row?.settings)
+  const nested = s.deepseek && typeof s.deepseek === 'object' ? s.deepseek : {}
+  const ef = s.reasoning_effort ?? s.deepseek_reasoning_effort ?? nested.reasoning_effort ?? nested.effort
+  if (ef === 'max') return '极限'
+  if (ef === 'high') return '深度'
+  if (ef === 'medium') return '标准'
+  if (ef === 'low') return '轻量'
+  return '开启'
+}
+
 function resolveDeepSeekFormSettings(row) {
   const s = parseSettings(row?.settings)
   const nested = s.deepseek && typeof s.deepseek === 'object' ? s.deepseek : {}
-  let thinking = s.deepseek_thinking || s.thinking || nested.thinking || nested.type || ''
+  let thinking = s.thinking ?? s.deepseek_thinking ?? nested.thinking ?? nested.type ?? ''
   const model = String(row?.default_model || '').toLowerCase()
+  if (!thinking && (model === 'deepseek-reasoner' || model.includes('r1') || model.startsWith('o1') || model.startsWith('o3'))) thinking = 'enabled'
   if (!thinking && model === 'deepseek-chat') thinking = 'disabled'
-  if (!thinking && model === 'deepseek-reasoner') thinking = 'enabled'
-  if (thinking !== 'enabled' && thinking !== 'disabled') thinking = 'disabled'
+  if (thinking !== 'enabled' && thinking !== 'disabled') {
+    thinking = (row?.service_type === 'text' && isThinkingEnabled(row)) ? 'enabled' : 'disabled'
+  }
 
-  let effort = s.deepseek_reasoning_effort || s.reasoning_effort || nested.reasoning_effort || nested.effort || 'high'
-  effort = String(effort).toLowerCase() === 'max' ? 'max' : 'high'
+  let effort = s.reasoning_effort ?? s.deepseek_reasoning_effort ?? nested.reasoning_effort ?? nested.effort ?? 'high'
+  const efLow = String(effort).toLowerCase()
+  effort = (efLow === 'max' || efLow === 'high' || efLow === 'medium' || efLow === 'low') ? efLow : 'high'
   return { thinking, effort }
 }
 
@@ -2111,13 +2148,17 @@ async function submit() {
       if (form.value.supports_universal_omni) baseS.supports_universal_omni = true
       else delete baseS.supports_universal_omni
       settings = Object.keys(baseS).length ? JSON.stringify(baseS) : null
-    } else if (isDeepSeekOfficialForm.value) {
+    } else if (form.value.service_type === 'text') {
       const prev = editingId.value ? list.value.find((r) => r.id === editingId.value) : null
       const baseS = parseSettings(prev?.settings)
-      baseS.deepseek_thinking = form.value.deepseek_thinking === 'enabled' ? 'enabled' : 'disabled'
-      if (baseS.deepseek_thinking === 'enabled') {
-        baseS.deepseek_reasoning_effort = form.value.deepseek_reasoning_effort === 'max' ? 'max' : 'high'
+      const isEnabled = form.value.deepseek_thinking === 'enabled'
+      baseS.thinking = isEnabled ? 'enabled' : 'disabled'
+      baseS.deepseek_thinking = baseS.thinking
+      if (isEnabled) {
+        baseS.reasoning_effort = form.value.deepseek_reasoning_effort || 'high'
+        baseS.deepseek_reasoning_effort = baseS.reasoning_effort
       } else {
+        delete baseS.reasoning_effort
         delete baseS.deepseek_reasoning_effort
       }
       settings = Object.keys(baseS).length ? JSON.stringify(baseS) : null

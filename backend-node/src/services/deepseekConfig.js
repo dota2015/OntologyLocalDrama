@@ -43,7 +43,7 @@ function normalizeReasoningEffort(value) {
   if (value == null || value === '') return null;
   const v = String(value).trim().toLowerCase();
   if (v === 'max' || v === 'xhigh') return 'max';
-  if (v === 'high' || v === 'medium' || v === 'low') return 'high';
+  if (v === 'high' || v === 'medium' || v === 'low') return v;
   return null;
 }
 

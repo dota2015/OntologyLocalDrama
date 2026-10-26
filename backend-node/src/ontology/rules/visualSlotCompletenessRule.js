@@ -46,6 +46,19 @@ class VisualSlotCompletenessRule extends BaseInvariantRule {
       if (Array.isArray(visuals) && visuals.length > 0) {
         const slotViolations = validateCharacterVisualSlots(shot, visuals);
         violations.push(...slotViolations);
+
+        // 检查是否存在千篇一律的模板化死板套话
+        visuals.forEach((v) => {
+          const postureAndHands = `${v.posture || ''} ${v.hands || ''}`;
+          if (/(?:身体保持戒备低姿[，,\s]*重心稳固隐蔽|双手紧握装备保持待发状态)/.test(postureAndHands)) {
+            violations.push({
+              rule: 'INVARIANT_SLOT_BOILERPLATE_DETECTED',
+              shot_number: shotNum,
+              severity: this.defaultSeverity,
+              message: `分镜 ${shotNum} 视觉槽位检测到机械模板套话（“身体保持戒备低姿”或“双手紧握装备”），必须根据本镜剧本实际动作描写具体的肢体定格姿态、手部接触与微表情！`,
+            });
+          }
+        });
       } else {
         const p = String(shot.image_prompt || shot.action || '');
         const hasFacing = FACING_REGEX.test(p);
