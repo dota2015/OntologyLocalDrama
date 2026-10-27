@@ -260,17 +260,9 @@
                     </div>
                   </div>
                   <div class="nah-right">
-                    <el-dropdown trigger="click" @command="handleMoreCommand('prop', prop, $event)">
-                      <button type="button" class="nah-more-btn" title="更多操作">
-                        <el-icon><MoreFilled /></el-icon>
-                      </button>
-                      <template #dropdown>
-                        <el-dropdown-menu>
-                          <el-dropdown-item command="material" :disabled="!hasAssetImage(prop)">加入素材库</el-dropdown-item>
-                          <el-dropdown-item command="delete" divided style="color:#f56c6c">删除道具</el-dropdown-item>
-                        </el-dropdown-menu>
-                      </template>
-                    </el-dropdown>
+                    <el-button type="danger" text size="small" class="btn-delete-icon" title="删除" @click="onDeleteProp(prop)">
+                      <el-icon><Delete /></el-icon>
+                    </el-button>
                   </div>
                 </div>
 
@@ -278,15 +270,8 @@
                 <div class="new-asset-mid">
                   <!-- 左侧文案区 -->
                   <div class="nah-left-col">
-                    <div class="nah-desc" :class="{ 'nah-desc--expanded': expandedPromptIds.has('prop-' + prop.id) }">
+                    <div class="nah-desc">
                       {{ prop.description || prop.prompt || '暂无描述' }}
-                    </div>
-                    <div v-if="prop.prompt && prop.prompt !== prop.description" class="nah-prompt-toggle" @click="togglePromptExpand('prop', prop.id)">
-                      <span v-if="expandedPromptIds.has('prop-' + prop.id)">▲ 收起完整提示词</span>
-                      <span v-else>▼ 展开完整提示词</span>
-                    </div>
-                    <div v-if="expandedPromptIds.has('prop-' + prop.id) && prop.prompt" class="nah-expanded-prompt">
-                      {{ prop.prompt }}
                     </div>
 
                     <!-- 参考图条 -->
@@ -425,17 +410,6 @@
                     >
                       <el-icon><Refresh /></el-icon> 分镜图
                     </el-button>
-                    <el-dropdown trigger="click" @command="handleMoreCommand('prop', prop, $event)">
-                      <el-button size="small" class="nah-action-btn nah-action-more">
-                        <el-icon><MoreFilled /></el-icon>
-                      </el-button>
-                      <template #dropdown>
-                        <el-dropdown-menu>
-                          <el-dropdown-item command="material" :disabled="!hasAssetImage(prop)">加入素材库</el-dropdown-item>
-                          <el-dropdown-item command="delete" divided style="color:#f56c6c">删除道具</el-dropdown-item>
-                        </el-dropdown-menu>
-                      </template>
-                    </el-dropdown>
                   </div>
                 </div>
               </div>
@@ -539,17 +513,9 @@
                     </div>
                   </div>
                   <div class="nah-right">
-                    <el-dropdown trigger="click" @command="handleMoreCommand('scene', scene, $event)">
-                      <button type="button" class="nah-more-btn" title="更多操作">
-                        <el-icon><MoreFilled /></el-icon>
-                      </button>
-                      <template #dropdown>
-                        <el-dropdown-menu>
-                          <el-dropdown-item command="material" :disabled="!hasAssetImage(scene)">加入素材库</el-dropdown-item>
-                          <el-dropdown-item command="delete" divided style="color:#f56c6c">删除场景</el-dropdown-item>
-                        </el-dropdown-menu>
-                      </template>
-                    </el-dropdown>
+                    <el-button type="danger" text size="small" class="btn-delete-icon" title="删除" @click="onDeleteScene(scene)">
+                      <el-icon><Delete /></el-icon>
+                    </el-button>
                   </div>
                 </div>
 
@@ -557,15 +523,8 @@
                 <div class="new-asset-mid">
                   <!-- 左侧文案区 -->
                   <div class="nah-left-col">
-                    <div class="nah-desc" :class="{ 'nah-desc--expanded': expandedPromptIds.has('scene-' + scene.id) }">
+                    <div class="nah-desc">
                       {{ scene.description || scene.prompt || scene.time || '暂无描述' }}
-                    </div>
-                    <div v-if="scene.prompt && scene.prompt !== scene.description" class="nah-prompt-toggle" @click="togglePromptExpand('scene', scene.id)">
-                      <span v-if="expandedPromptIds.has('scene-' + scene.id)">▲ 收起完整提示词</span>
-                      <span v-else>▼ 展开完整提示词</span>
-                    </div>
-                    <div v-if="expandedPromptIds.has('scene-' + scene.id) && scene.prompt" class="nah-expanded-prompt">
-                      {{ scene.prompt }}
                     </div>
 
                     <!-- 参考图条 -->
@@ -704,17 +663,6 @@
                     >
                       <el-icon><Refresh /></el-icon> 分镜图
                     </el-button>
-                    <el-dropdown trigger="click" @command="handleMoreCommand('scene', scene, $event)">
-                      <el-button size="small" class="nah-action-btn nah-action-more">
-                        <el-icon><MoreFilled /></el-icon>
-                      </el-button>
-                      <template #dropdown>
-                        <el-dropdown-menu>
-                          <el-dropdown-item command="material" :disabled="!hasAssetImage(scene)">加入素材库</el-dropdown-item>
-                          <el-dropdown-item command="delete" divided style="color:#f56c6c">删除场景</el-dropdown-item>
-                        </el-dropdown-menu>
-                      </template>
-                    </el-dropdown>
                   </div>
                 </div>
               </div>
