@@ -101,17 +101,6 @@
         </el-button>
         <el-button
           v-if="hasStoryboards"
-          type="warning"
-          plain
-          size="large"
-          :loading="inferringParams"
-          title="智能分析全集分镜动作、氛围与台词，自动补齐视角、灯光风格、景深与运镜"
-          @click="$emit('batch-infer-params')"
-        >
-          ⚡ 智能补全镜头参数
-        </el-button>
-        <el-button
-          v-if="hasStoryboards"
           type="success"
           plain
           size="large"
