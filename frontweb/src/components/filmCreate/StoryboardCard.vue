@@ -594,12 +594,18 @@
                 </el-tooltip>
               </div>
             </template>
-            <!-- 提示词快览与编辑入口 -->
+            <!-- 提示词快览与编辑入口（高度拉到底部对齐） -->
             <div class="sb-prompt-compact-line">
-              <span class="sb-dot"></span>
-              <span class="sb-prompt-name">图词</span>
-              <span class="sb-prompt-text-preview" :title="sb.image_prompt">{{ sb.image_prompt || '暂无图片提示词' }}</span>
-              <el-button size="small" link type="primary" class="sb-prompt-edit-btn" @click="ctx.onOpenSbPromptDialog(sb, 'image')">编辑</el-button>
+              <div class="sb-prompt-compact-header">
+                <div class="sb-prompt-header-left">
+                  <span class="sb-dot"></span>
+                  <span class="sb-prompt-name">图词</span>
+                </div>
+                <el-button size="small" link type="primary" class="sb-prompt-edit-btn" @click="ctx.onOpenSbPromptDialog(sb, 'image')">编辑</el-button>
+              </div>
+              <div class="sb-prompt-text-preview sb-prompt-multiline-text" :title="sb.image_prompt">
+                {{ sb.image_prompt || '暂无图片提示词' }}
+              </div>
             </div>
           </div>
         </template>
@@ -1840,29 +1846,54 @@ const prevShotNumber = computed(() => {
   font-weight: 500;
 }
 
-/* 提示词单行预览 */
+/* 图词高度自适应填满底部 */
 .sb-prompt-compact-line {
+  flex: 1;
+  min-height: 84px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  background: rgba(0, 0, 0, 0.02);
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(0, 0, 0, 0.04);
+  margin-top: 4px;
+  box-sizing: border-box;
+}
+:global(html.dark .sb-prompt-compact-line) {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.06);
+}
+:global(html.light .sb-prompt-compact-line) {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+}
+.sb-prompt-compact-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  flex-shrink: 0;
+}
+.sb-prompt-header-left {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
-  color: var(--el-text-color-secondary);
-  background: rgba(255, 255, 255, 0.03);
-  padding: 4px 8px;
-  border-radius: 4px;
-  margin-top: 2px;
-}
-:global(html.light .sb-prompt-compact-line) {
-  background: rgba(0, 0, 0, 0.02);
 }
 .sb-prompt-text-preview {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-size: 11px;
   color: #64748b;
+}
+.sb-prompt-text-preview.sb-prompt-multiline-text {
+  flex: 1;
+  min-height: 0;
+  line-height: 1.5;
+  overflow-y: auto;
+  word-break: break-all;
+  white-space: normal;
+  text-overflow: clip;
 }
 :global(html.dark .sb-prompt-text-preview) {
   color: #94a3b8;
