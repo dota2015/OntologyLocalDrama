@@ -248,6 +248,9 @@ function getStoryboardsForEpisode(db, episodeId) {
       creation_mode: r.creation_mode === 'universal' ? 'universal' : 'classic',
       universal_segment_text: r.universal_segment_text ?? null,
       layout_description: r.layout_description ?? null,
+      character_visuals: (() => { try { return r.character_visuals ? (typeof r.character_visuals === 'string' ? JSON.parse(r.character_visuals) : r.character_visuals) : null; } catch (_) { return null; } })(),
+      last_frame_visuals: (() => { try { return r.last_frame_visuals ? (typeof r.last_frame_visuals === 'string' ? JSON.parse(r.last_frame_visuals) : r.last_frame_visuals) : null; } catch (_) { return null; } })(),
+      video_slots: (() => { try { return r.video_slots ? (typeof r.video_slots === 'string' ? JSON.parse(r.video_slots) : r.video_slots) : null; } catch (_) { return null; } })(),
       characters: (() => {
         if (!r.characters) return [];
         if (typeof r.characters !== 'string') return Array.isArray(r.characters) ? r.characters : [];
