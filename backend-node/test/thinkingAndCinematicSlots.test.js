@@ -125,7 +125,7 @@ test('validateCharacterVisualSlots checks multi-character depth staging (near vs
   assert.equal(depthViolations.filter((v) => v.rule === 'INVARIANT_SLOT_MISSING_DEPTH_STAGING' || v.rule === 'INVARIANT_SLOT_DUPLICATE_POSITION').length, 0);
 
   // 4. synthesizeCharacterVisualSlots 自动分配错落纵深层级且不含模板套话
-  const autoSlots = synthesizeCharacterVisualSlots({ characters: [1, 2], action: '两人在废弃工厂控制室商议撤离路线。' }, [{ id: 1, name: '红狼' }, { id: 2, name: '露娜' }]);
+  const autoSlots = synthesizeCharacterVisualSlots({ characters: [1, 2], action: '两人双手握持战术步枪在废弃工厂控制室商议撤离路线。' }, [{ id: 1, name: '红狼' }, { id: 2, name: '露娜' }]);
   assert.equal(autoSlots[0].depth_layer, 'foreground');
   assert.equal(autoSlots[1].depth_layer, 'midground');
   assert.ok(!autoSlots[0].posture.includes('身体保持戒备低姿，重心稳固隐蔽'));
@@ -160,5 +160,44 @@ test('compileImagePromptFromSlots synthesizes missing layers from context with z
   assert.ok(compiled.includes('侧光照明'));
   assert.ok(compiled.includes('首帧静止画面'));
 });
+
+test('H3 multimodal slots format timecode cuts and integrated_multimodal_description', () => {
+  const { synthesizeH3MultimodalSlots, formatH3Timestamp, synthesizeVideoSlots } = require('../src/ontology/videoSlots');
+
+  // 1. 时间戳格式化
+  assert.equal(formatH3Timestamp(3.5), '00:03.500');
+  assert.equal(formatH3Timestamp(7), '00:07.000');
+  assert.equal(formatH3Timestamp(0), '00:00.000');
+
+  // 2. 长于6秒的镜头自动生成 [Shot 1] 与 [Shot 2] At 00:03.500 切换
+  const multiCutShot = {
+    duration: 7,
+    shot_type: '中景',
+    movement: 'push',
+    action: '红狼沿货箱低姿冲向蜂医',
+    result: '蜂医抬头看着他接近',
+    dialogue: '蜂医: "我还能撑住。"',
+    sound_effect: '子弹尖啸、碎石撞墙',
+    bgm_prompt: '急促战术重低音脉冲',
+  };
+
+  const h3Slots = synthesizeH3MultimodalSlots(multiCutShot);
+  assert.equal(h3Slots.shots.length, 2);
+  assert.equal(h3Slots.shots[0].shot_number, 1);
+  assert.equal(h3Slots.shots[0].timestamp, null);
+  assert.equal(h3Slots.shots[1].shot_number, 2);
+  assert.equal(h3Slots.shots[1].timestamp, '00:03.500');
+
+  assert.ok(h3Slots.integrated_multimodal_description.includes('[Shot 1] Live-action, cinematic.'));
+  assert.ok(h3Slots.integrated_multimodal_description.includes('[Shot 2] At 00:03.500, the camera cuts to'));
+  assert.ok(h3Slots.overall_soundscape.includes('子弹尖啸、碎石撞墙'));
+  assert.ok(h3Slots.non_diegetic_music.includes('急促战术重低音脉冲'));
+
+  // 3. synthesizeVideoSlots 正确集成 h3_multimodal 槽位
+  const fullVideoSlots = synthesizeVideoSlots(multiCutShot, []);
+  assert.ok(fullVideoSlots.h3_multimodal);
+  assert.equal(fullVideoSlots.h3_multimodal.shots.length, 2);
+});
+
 
 

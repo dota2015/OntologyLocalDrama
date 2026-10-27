@@ -79,6 +79,18 @@ function createVideoSemanticSlots(data = {}) {
       duration: Math.max(1, Math.min(120, Number(timing.duration || 5))),
       pacing: String(timing.pacing || '稳健推进').trim(),
     },
+    h3_multimodal: {
+      shots: Array.isArray(data.h3_multimodal?.shots)
+        ? data.h3_multimodal.shots.map((s, idx) => ({
+            shot_number: s.shot_number || (idx + 1),
+            timestamp: s.timestamp || (idx === 0 ? null : (s.timestamp ?? '00:03.500')),
+            description: String(s.description || '').trim(),
+          }))
+        : [],
+      integrated_multimodal_description: String(data.h3_multimodal?.integrated_multimodal_description || '').trim(),
+      overall_soundscape: String(data.h3_multimodal?.overall_soundscape || '').trim(),
+      non_diegetic_music: String(data.h3_multimodal?.non_diegetic_music || '').trim(),
+    },
   };
 }
 
@@ -265,6 +277,99 @@ function compileVideoPromptFromSlots(shot, slots, options = {}) {
 }
 
 /**
+ * 格式化 H3 时间戳 (如 3.5秒 -> "00:03.500", 7秒 -> "00:07.000")
+ * @param {number} sec
+ * @returns {string} "00:0X.XXX"
+ */
+function formatH3Timestamp(sec) {
+  const s = Math.max(0, Number(sec) || 0);
+  const minutes = Math.floor(s / 60);
+  const remainingSec = s % 60;
+  const wholeSec = Math.floor(remainingSec);
+  const ms = Math.round((remainingSec - wholeSec) * 1000);
+  const mm = String(minutes).padStart(2, '0');
+  const ss = String(wholeSec).padStart(2, '0');
+  const mmm = String(ms).padStart(3, '0');
+  return `${mm}:${ss}.${mmm}`;
+}
+
+/**
+ * 依据 MiniMax H3 官方多模态语法合成 H3 Shot 时间轴槽位
+ * @param {object} shot
+ * @param {object} options
+ * @returns {object} { shots, integrated_multimodal_description, overall_soundscape, non_diegetic_music }
+ */
+function synthesizeH3MultimodalSlots(shot, options = {}) {
+  const dur = normalizeDuration(shot.duration) || 5;
+  const shotType = shot.shot_type || 'medium shot';
+  const movement = shot.movement || 'tracking';
+  const actionText = translatePhysicalPhenomena(String(shot.action || ''));
+  const resultText = translatePhysicalPhenomena(String(shot.result || ''));
+  const diagText = String(shot.dialogue || '');
+
+  const h3Shots = [];
+
+  // 判断是否具备镜头切分条件 (时长 >= 6s 且有转折/对话/结果动作)
+  const needsCut = dur >= 6 && (resultText.trim().length > 0 || diagText.trim().length > 0);
+
+  if (!needsCut) {
+    // 单镜头连续画面: [Shot 1] 从 0 秒开始，不加时间戳
+    let desc1 = `Live-action, cinematic. A ${shotType} frames the scene. The camera moves with ${movement}. ${actionText}`;
+    if (resultText) desc1 += ` ${resultText}`;
+    if (diagText) desc1 += ` Dialogue: ${diagText}`;
+    h3Shots.push({
+      shot_number: 1,
+      timestamp: null,
+      description: desc1.trim(),
+    });
+  } else {
+    // 多镜头时间线切分: [Shot 1] (0秒开始) + [Shot 2] At 00:0X.XXX
+    const cutSec = Math.round((dur / 2) * 2) / 2; // 例如 7s -> 3.5s, 8s -> 4.0s
+    const timecode = formatH3Timestamp(cutSec);
+
+    // [Shot 1] 开头第一段画面 (建构机位与主体起始动作)
+    const desc1 = `Live-action, cinematic. A ${shotType} establishes the scene. The camera begins with ${movement} as ${actionText || 'the action initiates'}.`;
+    h3Shots.push({
+      shot_number: 1,
+      timestamp: null,
+      description: desc1.trim(),
+    });
+
+    // [Shot 2] At 00:XX.XXX 按时间切过去的后续反应/反打/终态镜头
+    const secondaryShotType = shotType === '特写' || shotType === '近景' ? 'medium shot' : 'close-up shot';
+    let desc2 = `At ${timecode}, the camera cuts to a ${secondaryShotType}, where ${resultText || actionText || 'the movement resolves'}.`;
+    if (diagText) desc2 += ` Dialogue follows: ${diagText}`;
+    h3Shots.push({
+      shot_number: 2,
+      timestamp: timecode,
+      description: desc2.trim(),
+    });
+  }
+
+  // 拼接 integrated_multimodal_description
+  const integratedDesc = h3Shots
+    .map((s) => (s.timestamp ? `[Shot ${s.shot_number}] At ${s.timestamp}, ${s.description.replace(/^At\s+[\d:.]+,\s*/, '')}` : `[Shot ${s.shot_number}] ${s.description}`))
+    .join('\n');
+
+  // 音效与环境声 overall_soundscape
+  const soundscape = shot.sound_effect
+    ? `Ambient environmental audio, room tone, and physical impact sounds: ${shot.sound_effect}.`
+    : 'Subtle ambient room tone and realistic environmental sounds matching physical actions.';
+
+  // 配乐 non_diegetic_music
+  const music = shot.bgm_prompt && shot.bgm_prompt.trim()
+    ? `Cinematic score: ${shot.bgm_prompt.trim()}.`
+    : 'N/A';
+
+  return {
+    shots: h3Shots,
+    integrated_multimodal_description: integratedDesc,
+    overall_soundscape: soundscape,
+    non_diegetic_music: music,
+  };
+}
+
+/**
  * 视频语义槽位智能合成器：从 shot 现有数据、实体目录与首尾帧中提取高内聚强结构槽位
  * @param {object} shot
  * @param {Array<object>} catalogCharacters
@@ -277,6 +382,9 @@ function synthesizeVideoSlots(shot, catalogCharacters = []) {
       try { existing = JSON.parse(existing); } catch (_) { existing = null; }
     }
     if (existing && typeof existing === 'object' && existing.camera && existing.audio_lip_sync) {
+      if (!existing.h3_multimodal || !existing.h3_multimodal.integrated_multimodal_description) {
+        existing.h3_multimodal = synthesizeH3MultimodalSlots(shot, { camera: existing.camera });
+      }
       return createVideoSemanticSlots(existing);
     }
   }
@@ -441,6 +549,13 @@ function synthesizeVideoSlots(shot, catalogCharacters = []) {
       duration: durationSec,
       pacing: '急促高潮',
     },
+    h3_multimodal: synthesizeH3MultimodalSlots(shot, {
+      camera,
+      audioMode,
+      diagContent,
+      actionText,
+      resultText,
+    }),
   });
 }
 
@@ -455,5 +570,7 @@ module.exports = {
   validateVideoSlots,
   compileVideoPromptFromSlots,
   synthesizeVideoSlots,
+  synthesizeH3MultimodalSlots,
+  formatH3Timestamp,
   translatePhysicalPhenomena,
 };
