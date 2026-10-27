@@ -474,7 +474,16 @@ function synthesizeCharacterVisualSlots(shot, catalogCharacters = []) {
     else if (/(?:键盘|按键|鼠标)/i.test(prompt)) hands = '双手手指搭在键盘按键上方僵持停滞';
     else if (/(?:通讯|耳机)/i.test(prompt)) hands = '单手手指紧按在战术通讯耳机上，另一手护在身前';
     else if (/(?:枪|武器|持枪)/i.test(prompt)) hands = '双手紧握战术武器呈戒备瞄准姿态';
-    else if (/(?:抬手指向|手指指向|单手指|抬手指|手势指向|单臂平举|指向大屏|指向屏幕)/i.test(prompt)) hands = '单臂平举直指前方大屏展示方向';
+    else if (/(?:抬手指向|手指指向|单手指|抬手指|手势指向|单臂平举|指向)/i.test(prompt)) {
+      if (/(?:大屏|屏幕|投影)/i.test(prompt)) {
+        hands = '单臂平举直指前方大屏展示方向';
+      } else if (/(?:掩体|断墙|战友|通道|岔路|窗口|门)/i.test(prompt)) {
+        const target = prompt.match(/(?:掩体|断墙|战友|通道|岔路|窗口|门)/)?.[0] || '目标';
+        hands = `单臂向前抬起，食指直指${target}方向`;
+      } else {
+        hands = '单臂平举，手指直指前方行动方向';
+      }
+    }
     else if (/(?:按在.+肩|按住.+肩)/i.test(prompt)) hands = '单手按在对方肩膀上，另一手撑在掩体边缘';
     else if (/(?:撑住地面|撑地)/i.test(prompt)) hands = '单手手掌牢牢撑向地面保持平衡';
     else if (/(?:伸展手指|伸手扑向)/i.test(prompt)) hands = '单臂竭力向前伸展手指抓向目标';
@@ -488,7 +497,7 @@ function synthesizeCharacterVisualSlots(shot, catalogCharacters = []) {
     else if (/(?:欣慰|微笑|释然)/i.test(prompt)) expression = '嘴角微抿带出一丝释然与克制的笑意';
 
     let propInteraction = '';
-    if (/(?:枪|武器|匕首|步枪|手枪)/i.test(prompt) || isTactical) {
+    if (/(?:枪|武器|匕首|步枪|手枪|持枪|射击|瞄准)/i.test(prompt) && !/(?:撑地|撑向地面|指向|按在.+肩|抓向)/i.test(hands)) {
       propInteraction = '手指紧扣握柄防滑纹路，虎口紧密贴合机匣';
     } else if (/(?:键盘|按键|打字)/i.test(prompt)) {
       propInteraction = '指腹轻触键盘键帽，腕部悬空保持敲击定格姿态';
