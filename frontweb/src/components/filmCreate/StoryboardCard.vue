@@ -383,6 +383,7 @@
                           :src="ctx.assetImageUrl(ctx.getSbFirstImage(sb.id))"
                           class="sb-generated-img"
                           alt=""
+                          :title="ctx.getSbFirstImage(sb.id)?.prompt || sb.image_prompt || ''"
                           @click="ctx.openImagePreview(ctx.assetImageUrl(ctx.getSbFirstImage(sb.id)))"
                         />
                         <span v-if="isLongTakeContinuation" class="sb-inherited-tail-badge">承接 #{{ prevShotNumber }} 尾帧</span>
@@ -392,6 +393,7 @@
                           :src="ctx.imageUrl(sb.composed_image || sb.image_url)"
                           class="sb-generated-img"
                           alt=""
+                          :title="sb.image_prompt || ''"
                           @click="ctx.openImagePreview(ctx.imageUrl(sb.composed_image || sb.image_url))"
                         />
                         <span v-if="isLongTakeContinuation" class="sb-inherited-tail-badge">承接 #{{ prevShotNumber }} 尾帧</span>
@@ -405,9 +407,6 @@
                       <template v-else>
                         <span class="sb-fl-empty">动作前静止</span>
                       </template>
-                    </div>
-                    <div v-if="ctx.getSbFirstImage(sb.id)?.prompt" class="sb-fl-slot-prompt" :title="ctx.getSbFirstImage(sb.id).prompt">
-                      {{ ctx.getSbFirstImage(sb.id).prompt }}
                     </div>
                     <div class="sb-fl-slot-actions">
                       <el-button type="primary" size="small" :loading="ctx.generatingSbFirstImageIds.has(sb.id)" @click="ctx.onGenerateSbFrameImage(sb, 'first')">生成</el-button>
@@ -434,9 +433,6 @@
                       <template v-else>
                         <span class="sb-fl-empty">动作后结果</span>
                       </template>
-                    </div>
-                    <div v-if="ctx.getSbLastImage(sb.id)?.prompt" class="sb-fl-slot-prompt" :title="ctx.getSbLastImage(sb.id).prompt">
-                      {{ ctx.getSbLastImage(sb.id).prompt }}
                     </div>
                     <div class="sb-fl-slot-actions">
                       <el-button type="primary" size="small" :loading="ctx.generatingSbLastImageIds.has(sb.id)" @click="ctx.onGenerateSbFrameImage(sb, 'last')">生成</el-button>
@@ -467,13 +463,13 @@
                       @click="ctx.openImagePreview(ctx.assetImageUrl(ctx.getSbImage(sb.id)))"
                     />
                     <span v-if="isLongTakeContinuation" class="sb-inherited-tail-badge" title="由上一镜视频尾帧接力生成">已继承 #{{ prevShotNumber }} 尾帧</span>
-                    <div v-if="ctx.getSbImage(sb.id).prompt" class="sb-main-img-prompt">{{ ctx.getSbImage(sb.id).prompt }}</div>
                   </template>
                   <template v-else-if="sb.composed_image || sb.image_url">
                     <img
                       :src="ctx.imageUrl(sb.composed_image || sb.image_url)"
                       class="sb-generated-img"
                       alt=""
+                      :title="sb.image_prompt || ''"
                       @click="ctx.openImagePreview(ctx.imageUrl(sb.composed_image || sb.image_url))"
                     />
                     <span v-if="isLongTakeContinuation" class="sb-inherited-tail-badge" title="由上一镜视频尾帧接力生成">已继承 #{{ prevShotNumber }} 尾帧</span>
