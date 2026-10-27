@@ -2580,12 +2580,13 @@ defineExpose({
   flex-wrap: wrap;
   gap: 12px;
   margin-bottom: 14px;
+  max-width: 1000px;
 }
 .rbh-left {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
 }
 .rbh-left .resource-block-title {
   font-size: 1.15rem;
@@ -2600,11 +2601,11 @@ defineExpose({
 .rbh-right {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   margin-left: auto;
 }
 .asset-view-toggle .el-button {
-  padding: 5px 12px !important;
+  padding: 5px 10px !important;
   font-size: 12px !important;
 }
 .rbh-count-toggle {
@@ -2626,16 +2627,23 @@ defineExpose({
 
 .asset-grid-2col {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 485px));
   gap: 16px;
+  max-width: 1000px;
 }
-@media (max-width: 1080px) {
+@media (max-width: 1024px) {
   .asset-grid-2col {
     grid-template-columns: 1fr;
+    max-width: 500px;
+  }
+  .resource-block-header-new {
+    max-width: 100%;
   }
 }
 
 .new-asset-card {
+  width: 100%;
+  max-width: 485px;
   background: #ffffff;
   border: 1px solid rgba(0, 0, 0, 0.08);
   border-radius: 12px;
@@ -2644,6 +2652,7 @@ defineExpose({
   flex-direction: column;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.03);
   transition: all 0.2s ease;
+  box-sizing: border-box;
 }
 :global(html.dark .new-asset-card) {
   background: #181922;
@@ -2819,8 +2828,8 @@ defineExpose({
 }
 .nah-thumb-item {
   position: relative;
-  width: 44px;
-  height: 32px;
+  width: 40px;
+  height: 30px;
   border-radius: 4px;
   overflow: hidden;
   cursor: pointer;
@@ -2838,12 +2847,12 @@ defineExpose({
   display: block;
 }
 .nah-thumb-more-badge {
-  height: 32px;
-  padding: 0 8px;
+  height: 30px;
+  padding: 0 6px;
   border-radius: 4px;
   background: #475569;
   color: #ffffff;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   display: flex;
   align-items: center;
@@ -2860,7 +2869,7 @@ defineExpose({
 }
 
 .nah-right-col {
-  width: 180px;
+  width: 215px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -3047,13 +3056,13 @@ defineExpose({
   flex-shrink: 0;
 }
 .nah-action-btn {
-  padding: 4px 8px !important;
-  height: 28px !important;
-  font-size: 12px !important;
+  padding: 3px 7px !important;
+  height: 26px !important;
+  font-size: 11px !important;
   margin-left: 0 !important;
 }
 .nah-action-more {
-  padding: 4px 6px !important;
+  padding: 3px 5px !important;
 }
 
 /* 列表视图表格 */
@@ -3062,6 +3071,7 @@ defineExpose({
   overflow: hidden;
   border: 1px solid rgba(0, 0, 0, 0.08);
   background: #ffffff;
+  max-width: 1000px;
 }
 :global(html.dark .asset-list-table-wrap) {
   border-color: rgba(255, 255, 255, 0.08);
