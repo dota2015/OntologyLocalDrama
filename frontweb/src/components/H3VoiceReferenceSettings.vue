@@ -1,13 +1,13 @@
 <template>
   <div class="h3-voice-reference" v-loading="loading">
-    <p class="voice-tip">H3 原生声音：优先使用上传样音；未上传时，自动用已保存的 Edge-TTS 音色生成参考声音。</p>
+    <p class="voice-tip">H3 原生声音：优先使用上传样音；未上传时，自动用已保存的 IndexTTS 音色生成参考样音。</p>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
     <p class="voice-tip">{{ statusText }}</p>
     <audio v-if="selected?.url" :key="selected.url" :src="selected.url" controls preload="none" />
     <div class="voice-actions">
       <el-button size="small" :loading="busy === 'prepare'" :disabled="disabled || !!busy || !voiceId || !!data?.uploaded" @click="prepare">生成 / 更新默认参考声音</el-button>
       <el-button size="small" :loading="busy === 'upload'" :disabled="disabled || !!busy" @click="fileInput?.click()">上传参考声音</el-button>
-      <el-button v-if="data?.uploaded" size="small" :disabled="disabled || !!busy" @click="remove">恢复使用 Edge-TTS 音色</el-button>
+      <el-button v-if="data?.uploaded" size="small" :disabled="disabled || !!busy" @click="remove">恢复使用默认音色</el-button>
     </div>
     <input ref="fileInput" type="file" accept=".mp3,.wav,.m4a,.flac,.ogg,.aac" style="display:none" @change="upload" />
     <p class="voice-tip">支持 2～15 秒清晰单人干声，最大 20MB。上传或恢复立即生效；默认样音也会在生成 H3 视频时自动准备。改音色后需重新生成视频才会改变声音。</p>
@@ -26,7 +26,7 @@ let version = 0
 const automatic = computed(() => data.value?.automatic?.voice_id === props.voiceId ? data.value.automatic : null)
 const selected = computed(() => data.value?.uploaded || automatic.value)
 const statusText = computed(() => data.value?.uploaded ? '当前使用上传样音：' + data.value.uploaded.filename
-  : automatic.value ? '当前使用 Edge-TTS 参考声音：' + props.voiceId
+  : automatic.value ? '当前使用 ' + (automatic.value.source === 'edge-tts' ? 'Edge-TTS' : 'IndexTTS') + ' 参考声音：' + (automatic.value.voice_id || props.voiceId)
     : '当前尚无默认样音，生成 H3 视频时会自动准备。')
 function endpoint() { return '/api/v1/audio/h3-voices/' + props.dramaId + '/' + props.target }
 async function api(url, options) {

@@ -383,6 +383,7 @@
           </template>
           <el-select v-model="form.api_protocol" style="width: 100%" placeholder="选择接口规范（自定义厂商必选）" clearable>
             <el-option label="OpenAI 兼容（大多数中转站默认）" value="openai" />
+            <el-option v-if="['image', 'storyboard_image'].includes(form.service_type)" label="ComfyUI 原生（Qwen-Image 多图/多角色）" value="comfyui" />
             <el-option v-if="['image', 'storyboard_image'].includes(form.service_type)" label="Unsloth Desktop 原生（支持人物照片与多图参考）" value="unsloth" />
             <el-option label="火山引擎（豆包 Seedream / Seedance）" value="volcengine" />
             <el-option label="火山即梦 Seedance 全能（方舟多图参考，Seedance 2.0 等）" value="volcengine_omni" />
@@ -1461,6 +1462,7 @@ const rules = computed(() => ({
         const proto = form.value.api_protocol
         if (st === 'video' && proto === 'comfyui_wan22') return cb()
         const p = String(form.value.provider || '').toLowerCase()
+        if (['image', 'storyboard_image'].includes(st) && (proto === 'comfyui' || p === 'comfyui')) return cb()
         if (st === 'tts' && (p === 'indextts' || p === 'indextts2' || p === 'indextts25' || p === 'edge-tts' || p === 'edgetts' || p === 'edge')) return cb()
         const ak = (form.value.kling_access_key || '').trim()
         const sk = (form.value.kling_secret_key || '').trim()
@@ -1501,6 +1503,7 @@ const providerConfigs = {
     { id: 'agnes', name: 'Agnes AI', models: ['agnes-3.0-flash', 'agnes-2.5-flash', 'agnes-2.5-pro', 'agnes-2.0-flash'] }
   ],
   image: [
+    { id: 'comfyui', name: 'ComfyUI (本地 / 局域网 Qwen-Image)', models: ['qwen-image-2.1'] },
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-5-0-flash-260915', 'doubao-seedream-5-0-pro-260628', 'doubao-seedream-4-5-251128'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-image', 'kling-omni-image'] },
     { id: 'nano_banana', name: 'NanoBanana', models: ['nano-banana-2', 'nano-banana-pro', 'nano-banana'] },
@@ -1512,6 +1515,7 @@ const providerConfigs = {
     { id: 'agnes', name: 'Agnes AI', models: ['agnes-image-2.5-flash', 'agnes-image-2.1-flash', 'agnes-image-2.0-flash'] }
   ],
   storyboard_image: [
+    { id: 'comfyui', name: 'ComfyUI (本地 / 局域网 Qwen-Image)', models: ['qwen-image-2.1'] },
     { id: 'dashscope', name: '通义万象', models: ['wan2.6-image', 'qwen-image-edit-plus-2026-01-09', 'qwen-image-edit-plus', 'qwen-image-edit-max'] },
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-5-0-flash-260915', 'doubao-seedream-5-0-pro-260628', 'doubao-seedream-4-5-251128'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-image', 'kling-omni-image'] },
@@ -1522,42 +1526,10 @@ const providerConfigs = {
     { id: 'agnes', name: 'Agnes AI', models: ['agnes-image-2.5-flash', 'agnes-image-2.1-flash', 'agnes-image-2.0-flash'] }
   ],
   video: [
-    {
-      id: 'cheap_seedance2',
-      name: '低价 Seedance2',
-      models: ['wb-seedance-2-fast', 'wb-seedance-2.5'],
-    },
-    { id: 'klingai', name: '可灵官方 Omni (api-beijing.klingai.com)', models: ['kling-video-o1', 'kling-v3-omni'] },
-    { id: 'ffir', name: '飞儿API / 可灵 Omni-Video (ffir.cn)', models: ['kling-video-o1', 'kling-v3-omni'] },
-    { id: 'kling', name: '可灵 Kling', models: ['kling-omni-video', 'kling-video', 'kling-motion-control'] },
-    { id: 'vidu', name: 'Vidu', models: ['viduq2', 'viduq2-pro', 'viduq2-turbo', 'viduq3-pro'] },
-    { id: 'volces', name: '火山引擎', models: ['doubao-seedance-2-0-fast-260128', 'doubao-seedance-2-0-260128', 'doubao-seedance-2-5-260628', 'doubao-seedance-1-0-pro-250528', 'doubao-seedance-1-0-pro-fast-251015'] },
-    // { id: 'chatfire', name: 'Chatfire', models: ['doubao-seedance-1-5-pro-251215', 'doubao-seedance-1-0-lite-i2v-250428', 'doubao-seedance-1-0-lite-t2v-250428', 'doubao-seedance-1-0-pro-250528', 'doubao-seedance-1-0-pro-fast-251015', 'sora-2', 'sora-2-pro'] },
-    { id: 'comfyui_wan22', name: 'Wan2.2 本地 ComfyUI', models: ['Wan2.2-I2V-A14B-FP8-4steps'] },
-    { id: 'minimax_h3', name: 'MiniMax H3', models: ['MiniMax-H3'] },
-    { id: 'minimax', name: 'MiniMax 海螺', models: ['MiniMax-Hailuo-2.3', 'MiniMax-Hailuo-2.3-Fast', 'MiniMax-Hailuo-02'] },
-    { id: 'gemini', name: 'Google Gemini (Veo)', models: ['veo-3.1-generate-preview', 'veo-3.0-generate-preview', 'veo-3.0-fast-generate-preview'] },
-    { id: 'dashscope', name: '通义万相', models: ['wan2.6-r2v-flash', 'wan2.6-t2v', 'wan2.2-kf2v-flash', 'wan2.6-i2v-flash', 'wanx2.1-vace-plus'] },
-    {
-      id: 'jimeng_ai_api',
-      name: 'Jimeng AI API（自建即梦免费 API）',
-      models: [
-        'jimeng-video-seedance-2.0',
-        'seedance-2.0',
-        'jimeng-video-seedance-2.0-fast',
-        'jimeng-video-3.0',
-        'jimeng-video-3.0-pro',
-        'jimeng-video-3.5-pro',
-      ],
-    },
-    { id: 'openai', name: 'OpenAI', models: ['sora-2', 'sora-2-pro'] },
-    { id: 'xai', name: 'xAI Grok Imagine', models: ['grok-imagine-video'] },
-    { id: 'agnes', name: 'Agnes AI', models: ['agnes-video-2.5-flash', 'agnes-video-2.5', 'agnes-video-v2.0'] },
+    { id: 'minimax_h3', name: 'MiniMax H3（本地双卡/三卡 RTX4090 并发 · 原生音画合一）', models: ['minimax_h3'] },
   ],
   tts: [
     { id: 'indextts', name: 'IndexTTS 2.5 (本地 GPU / 音色克隆)', models: ['IndexTTS-2.5'] },
-    { id: 'edge-tts', name: 'Edge-TTS (免费多音色)', models: ['zh-CN-YunjianNeural', 'zh-CN-XiaoxiaoNeural', 'zh-CN-YunxiNeural', 'zh-CN-XiaoyiNeural', 'zh-CN-YunyangNeural'] },
-    { id: 'minimax', name: 'MiniMax T2A', models: ['speech-02-hd', 'speech-02-turbo'] },
   ],
   jimeng2_character_auth: [
     { id: 'jimeng_material_api', name: '即梦业务素材 API（/api/business/v1）', models: ['-'] },
@@ -1570,6 +1542,7 @@ const providerProtocolMap = {
   indextts: 'indextts',
   'edge-tts': 'edge-tts',
   // image / storyboard_image
+  comfyui: 'comfyui',
   volcengine: 'volcengine',
   volces: 'volcengine',
   volc: 'volcengine',
@@ -1604,6 +1577,7 @@ function getBaseUrlForProvider(provider) {
   const p = String(provider).toLowerCase()
   if (p === 'indextts' || p === 'indextts2' || p === 'indextts25') return 'http://127.0.0.1:7860'
   if (p === 'edge-tts' || p === 'edgetts' || p === 'edge') return 'http://127.0.0.1:5679'
+  if (p === 'comfyui') return 'http://10.10.13.7:8188'
   if (p === 'gemini' || p === 'google') return 'https://generativelanguage.googleapis.com'
   if (p === 'comfyui_wan22') return 'http://127.0.0.1:5688'
   if (p === 'minimax_h3') return 'https://api.minimaxi.com'

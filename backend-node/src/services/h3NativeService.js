@@ -131,10 +131,102 @@ function getSettings(db, dramaId, shotId) {
   const { shot, continuity } = load(db, dramaId, shotId);
   const prev = previous(db, shot);
   const video = selectedVideo(db, dramaId, prev);
-  const references = assetReferences(db, dramaId, shot).map((r, i) => ({ ...r, index: i+1,
-    url: /^https?:/i.test(r.source) ? r.source : '/static/' + r.source.replace(/^\/static\//, '') }));
-  return { wardrobe_change: wardrobe.getShot(db,shotId).change, continuity_reset:wardrobe.hasChange(db,shotId), continuity, references, previous_storyboard: prev ? { id: prev.id, number: prev.storyboard_number, same_scene: sameScene(shot, prev), video_ready: !!video } : null,
-    max_images: 9, max_voices: 3, steps: H3_STEPS };
+  const rawRefs = assetReferences(db, dramaId, shot);
+
+  // Map Subject IDs for character references
+  const subjectsMap = new Map();
+  const references = rawRefs.map((r, i) => {
+    let subject_index = null;
+    let retention_role = 'fully_preserved';
+    if (r.character_id) {
+      if (!subjectsMap.has(r.character_id)) {
+        subjectsMap.set(r.character_id, subjectsMap.size + 1);
+      }
+      subject_index = subjectsMap.get(r.character_id);
+      retention_role = r.kind === 'character_sheet' ? 'partially_preserved' : 'fully_preserved';
+    }
+    return {
+      ...r,
+      index: i + 1,
+      tag: `<Picture ${i + 1}>`,
+      subject_index,
+      subject_tag: subject_index ? `<Subject ${subject_index}>` : null,
+      retention_role,
+      url: /^https?:/i.test(r.source) ? r.source : '/static/' + r.source.replace(/^\/static\//, '')
+    };
+  });
+
+  // Include opening anchor frame if available
+  const openingAnchorSource = shot.first_frame_url || shot.local_path || shot.image_url;
+  let opening_anchor = null;
+  if (openingAnchorSource) {
+    const openingIndex = references.length + 1;
+    opening_anchor = {
+      index: openingIndex,
+      tag: `<Picture ${openingIndex}>`,
+      kind: 'opening_frame',
+      name: '开场首帧构图锚点',
+      url: /^https?:/i.test(openingAnchorSource) ? openingAnchorSource : '/static/' + openingAnchorSource.replace(/^\/static\//, ''),
+      retention_role: 'fully_preserved'
+    };
+  }
+
+  // Voice & Speech Extraction
+  const dubbing = require('./dialogueDubbingService');
+  const extraction = require('./speechExtractionService');
+  let plan = { segments: [] };
+  try {
+    plan = extraction.automaticPlan(db, dramaId, shot, dubbing.dialogueSegments);
+  } catch (_) {}
+  const p = dubbing.getProfile(db, dramaId);
+  const characters = db.prepare('SELECT id, name FROM characters WHERE drama_id = ? AND deleted_at IS NULL').all(Number(dramaId));
+  const voice_references = [];
+  const voiceMap = new Map();
+
+  for (const line of (plan && plan.segments) || []) {
+    const charId = Object.hasOwn(p.speaker_characters || {}, line.speaker)
+      ? p.speaker_characters[line.speaker]
+      : characters.find(c => c.name === line.speaker)?.id;
+    const targetKey = line.kind === 'narration' ? 'narrator' : (charId ? `char_${charId}` : `speaker_${line.speaker || 'unknown'}`);
+    const speakerName = line.kind === 'narration' ? '旁白' : (line.speaker || '未命名人物');
+
+    if (!voiceMap.has(targetKey)) {
+      const idx = voice_references.length + 1;
+      const subIdx = charId ? subjectsMap.get(charId) : null;
+      const voiceId = line.kind === 'narration'
+        ? p.narrator_voice
+        : (p.character_voices?.[charId] || p.voices?.[line.speaker] || p.default_voice);
+
+      const voiceItem = {
+        index: idx,
+        tag: `<Audio ${idx}>`,
+        speaker: speakerName,
+        speaker_id: `S${idx}`,
+        speaker_tag: `(S${idx})`,
+        subject_tag: subIdx ? `<Subject ${subIdx}>` : null,
+        kind: line.kind,
+        voice_id: voiceId || '默认音色',
+        retention_marker: 'reference',
+        text: line.text,
+        formatted_line: `${line.kind === 'narration' ? 'The narrator' : (subIdx ? `<Subject ${subIdx}>` : speakerName)} (S${idx}), using the vocal timbre referenced from <Audio ${idx}>, ${line.kind === 'narration' ? 'says in an off-screen voiceover' : 'says'}, <d>[Chinese] ${line.text}</d>`
+      };
+      voiceMap.set(targetKey, voiceItem);
+      voice_references.push(voiceItem);
+    }
+  }
+
+  return {
+    wardrobe_change: wardrobe.getShot(db, shotId).change,
+    continuity_reset: wardrobe.hasChange(db, shotId),
+    continuity,
+    references,
+    opening_anchor,
+    voice_references,
+    previous_storyboard: prev ? { id: prev.id, number: prev.storyboard_number, same_scene: sameScene(shot, prev), video_ready: !!video } : null,
+    max_images: 9,
+    max_voices: 3,
+    steps: H3_STEPS
+  };
 }
 function saveSettings(db, dramaId, shotId, body) {
   if (!MODES.includes(body.continuity)) throw new Error('请选择自动衔接、关闭衔接或使用上一镜实际尾帧');

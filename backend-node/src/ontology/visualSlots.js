@@ -428,7 +428,7 @@ function synthesizeCharacterVisualSlots(shot, catalogCharacters = []) {
     else if (/(?:侧身|侧向|朝向|偏向).*(?:右)/i.test(prompt) || shot.angle_h === 'front_right' || shot.angle_h === 'right') facing = '侧身朝向画面右侧';
     else if (/(?:正面|正对)/i.test(prompt)) facing = '正面面对镜头';
 
-    const isTactical = /(?:断墙|战术装备|战术武器|战术耳机|掩体|火力|持枪|射击|拔枪|冲锋枪|突击步枪|手枪|子弹|废弃工厂|潜行|撤离|废墟|蜂医|红狼|露娜)/i.test(prompt) || /(?:断墙|掩体|废弃工厂|废墟)/i.test(shot.location || '');
+    const isTactical = /(?:断墙|战术装备|战术武器|战术耳机|掩体|火力|持枪|射击|拔枪|冲锋枪|突击步枪|手枪|子弹|废弃工厂|潜行|撤离|废墟)/i.test(prompt) || /(?:断墙|掩体|废弃工厂|废墟)/i.test(shot.location || '');
 
     let depthLayer = 'midground';
     let anchor = '画面中央中景';
@@ -528,7 +528,7 @@ function synthesizeCharacterVisualSlots(shot, catalogCharacters = []) {
     } else if (/(?:赵总|小林|老张|哥哥|妹妹|对方|众人)/i.test(prompt)) {
       headPose = '侧头转向对方';
       gaze = '目光严肃直视对方方向';
-    } else if (/(?:蜂医|救援)/i.test(prompt)) {
+    } else if (/(?:救援|医疗|包扎|医护)/i.test(prompt)) {
       headPose = '头部扬起';
       gaze = '目光焦急决绝注视着前方倒地的战友';
     } else if (/(?:作业本)/i.test(prompt)) {
@@ -662,11 +662,26 @@ function synthesizeLastFrameVisualSlots(shot, catalogCharacters = [], firstFrame
     let gaze = base.gaze;
     let facing = base.facing;
 
+    // 针对当前角色提取动作与终态关键词（区分动作主体与被冲向/被救助的目标客体）
+    const charName = base.name || '';
+    const fullContext = [shot.action, terminalText].filter(Boolean).join(' ');
+    const isTargetBeingApproached = charName
+      ? new RegExp('(?:冲向|扑向|赶到|走向|跑向|接近)\\s*' + charName).test(fullContext)
+      : false;
+    const isSubjectOfApproach = !isTargetBeingApproached && (
+      (charName && new RegExp(charName + '[^，。；]*(?:冲向|扑向|赶到|走到|来到|接近|伸手)').test(fullContext)) ||
+      (/(?:冲向|扑向|赶到|走到|来到|接近)/i.test(terminalText) && idx === 0)
+    );
+    const isTargetOrFallen = isTargetBeingApproached || (
+      /(?:倒卧|倒在|躺在|倒地|负伤|虚弱|被救)/i.test(fullContext) ||
+      idx > 0
+    );
+
     // 终态物理位置推演
-    if (/(?:冲向|扑向|赶到|走到|来到|接近).*(?:蜂医|战友|掩体|对方)/i.test(terminalText) && idx === 0) {
+    if (isSubjectOfApproach && /(?:半米处|身旁|面前|掩体)/i.test(terminalText)) {
       anchor = '画面右侧近景（目标身旁约半米处）';
       facing = '侧身朝向画面右下方';
-    } else if (base.name.includes('蜂医') || idx > 0 || /(?:倒卧|倒在|躺在|倒地)/i.test(terminalText)) {
+    } else if (isTargetOrFallen && /(?:地面|掩体|碎石)/i.test(fullContext)) {
       anchor = '画面右侧地面掩体旁';
       facing = '侧身倒向掩体地面';
     } else if (/(?:冲到|扑到|到达).*(?:门前|窗前|大屏前|书桌前)/i.test(terminalText)) {
@@ -675,9 +690,9 @@ function synthesizeLastFrameVisualSlots(shot, catalogCharacters = [], firstFrame
     }
 
     // 终态躯干姿势推演
-    if (/(?:扑向|飞扑|扑倒|伸手扑)/i.test(terminalText) && (idx === 0 || !base.name.includes('蜂医'))) {
+    if (isSubjectOfApproach && /(?:扑向|飞扑|扑倒|伸手扑)/i.test(terminalText + ' ' + (shot.action || ''))) {
       posture = '身体大幅前倾凌空飞扑，重心降至极低几乎贴地';
-    } else if (base.name.includes('蜂医') || idx > 0 || /(?:倒卧|倒在|倒地|虚弱|昏迷|起不来)/i.test(terminalText)) {
+    } else if (isTargetBeingApproached || (isTargetOrFallen && /(?:倒卧|倒在|倒地|虚弱|昏迷|起不来|躺在)/i.test(terminalText + ' ' + (shot.action || '')))) {
       posture = '侧身卧倒在碎石地面，身体虚弱无力微颤';
     } else if (/(?:站定|停步|稳住重心|直立)/i.test(terminalText)) {
       posture = '身体站定收步，双腿抓地重心稳固';
@@ -688,9 +703,9 @@ function synthesizeLastFrameVisualSlots(shot, catalogCharacters = [], firstFrame
     }
 
     // 终态手部推演
-    if (/(?:手停在|伸手|抓向|碰触|抓握)/i.test(terminalText) && (idx === 0 || !base.name.includes('蜂医'))) {
+    if (isSubjectOfApproach && /(?:手停在|伸手|抓向|碰触|抓握)/i.test(terminalText + ' ' + (shot.action || ''))) {
       hands = '单臂竭力向前伸直，手指张开悬停在目标前方半米处定格';
-    } else if (/(?:虚弱|护在|按在伤口|无力)/i.test(terminalText) && (idx > 0 || base.name.includes('蜂医'))) {
+    } else if (isTargetBeingApproached || (isTargetOrFallen && /(?:虚弱|护在|按在伤口|无力|倒卧|倒在)/i.test(terminalText + ' ' + (shot.action || '')))) {
       hands = '双手虚弱护在胸腹部，手指微颤无力垂落';
     } else if (/(?:攥拳|握紧拳头)/i.test(terminalText)) {
       hands = '双手在身侧紧紧握拳定格，指节发白';
@@ -701,10 +716,10 @@ function synthesizeLastFrameVisualSlots(shot, catalogCharacters = [], firstFrame
     }
 
     // 终态神态与视线
-    if (/(?:焦灼|咬紧牙关|决绝)/i.test(terminalText) && (idx === 0 || !base.name.includes('蜂医'))) {
+    if (isSubjectOfApproach && /(?:焦灼|咬紧牙关|决绝)/i.test(terminalText + ' ' + (shot.action || ''))) {
       headPose = '咬紧牙关头部微仰';
       gaze = '目光焦灼决绝锁定前方目标';
-    } else if (/(?:虚弱|紧闭双唇|隐忍)/i.test(terminalText) && (idx > 0 || base.name.includes('蜂医'))) {
+    } else if (isTargetBeingApproached || (isTargetOrFallen && /(?:虚弱|紧闭双唇|隐忍|倒卧|昏迷)/i.test(terminalText + ' ' + (shot.action || '')))) {
       headPose = '头部侧偏贴近地面';
       gaze = '双目微阖神色虚弱隐忍，双唇紧闭';
     }

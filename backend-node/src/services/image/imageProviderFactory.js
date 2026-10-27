@@ -7,12 +7,14 @@ const { DashScopeImageProvider } = require('./providers/dashScopeProvider');
 const { KlingImageProvider } = require('./providers/klingProvider');
 const { GeminiImageProvider } = require('./providers/geminiProvider');
 const { NanoBananaImageProvider } = require('./providers/nanoBananaProvider');
+const { ComfyUiImageProvider } = require('./providers/comfyUiImageProvider');
 const { UnslothImageProvider } = require('./providers/unslothProvider');
 const { OpenAiImageProvider } = require('./providers/openAiProvider');
 const { BaseImageProvider } = require('./baseProvider');
 
 class ImageProviderFactory {
   static providers = [
+    new ComfyUiImageProvider(),
     new DashScopeImageProvider(),
     new KlingImageProvider(),
     new GeminiImageProvider(),
@@ -31,6 +33,7 @@ class ImageProviderFactory {
    */
   static inferProtocol(provider, model) {
     const p = String(provider || '').toLowerCase();
+    if (p === 'comfyui' || p === 'comfyui_image') return 'comfyui';
     if (p === 'dashscope' || p === 'qwen_image') return 'dashscope';
     if (p === 'nano_banana') return 'nano_banana';
     if (p === 'gemini' || p === 'google') return 'gemini';

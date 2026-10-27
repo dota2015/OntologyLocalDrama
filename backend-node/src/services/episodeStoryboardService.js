@@ -281,22 +281,22 @@ function extractStaticFreezeFramePose(action, sb = {}) {
   text = text.replace(/镜头(?:从|沿|顺着|向|由|小幅|缓推|推进|拉开|横摇|横移|跟随|轻轻|微微|持续).*?[，。；]/g, '');
   text = text.replace(/，?镜头(?:缓推|推近|靠近|推进|拉远|横摇|跟随|停在).*$/g, '');
 
-  // 2. 特殊多角色/多步骤剧本描述优先转译（在通用替换前生效）
-  text = text.replace(/露娜伏在低矮掩体后[，,]抬头观察高台与仓库二层窗口[，,]右手按住通讯器位置/g, '露娜身体紧贴低矮掩体俯伏，微仰起头目光警惕锁定高台二层窗口，右手紧按在战术通讯耳机上');
-  text = text.replace(/红狼没有停步[，,]从掩体后冲出[，,]沿装卸道路(?:快速)?奔向([^，。；]+)/g, '红狼位于装卸道路中央，屈膝大步奔冲，背向镜头动作迅猛，正对着前方$1');
-  text = text.replace(/红狼缩在金属桌后[，,]低头按住护甲弹痕并抬起通讯器位置/g, '红狼屈膝蜷缩在金属桌内侧，一手按在胸前受创的护甲弹痕上，一手按住战术通讯耳机，低头咬牙隐蔽');
-  text = text.replace(/二层窗口连续闪出枪口火光[，,]红狼急停后横向翻滚到一张倾倒金属桌后/g, '二层窗口枪火迸发，红狼侧身蜷缩扑倒在倾倒的厚重金属桌后方，单臂护头，身体紧贴地面掩体躲避弹雨');
+  // 2. 特殊多动作/复合剧本描述转译为决定性瞬间（通用化人物匹配，绝无写死角色名）
+  text = text.replace(/([^\s，,。；]{2,8})伏在低矮掩体后[，,]抬头观察([^，。；]+)[，,]右手按住通讯器位置/g, '$1身体紧贴低矮掩体俯伏，微仰起头目光警惕锁定$2，右手紧按在战术通讯耳机上');
+  text = text.replace(/([^\s，,。；]{2,8})没有停步[，,]从掩体后冲出[，,]沿([^，。；]+?)(?:快速)?奔向([^，。；]+)/g, '$1位于$2中央，屈膝大步奔冲，背向镜头动作迅猛，正对着前方$3');
+  text = text.replace(/([^\s，,。；]{2,8})缩在([^，。；]+?)后[，,]低头按住护甲弹痕并抬起通讯器位置/g, '$1屈膝蜷缩在$2内侧，一手按在胸前受创的护甲弹痕上，一手按住战术通讯耳机，低头咬牙隐蔽');
+  text = text.replace(/二层窗口连续闪出枪口火光[，,]([^\s，,。；]{2,8})急停后横向翻滚到一张倾倒金属桌后/g, '二层窗口枪火迸发，$1侧身蜷缩扑倒在倾倒的厚重金属桌后方，单臂护头，身体紧贴地面掩体躲避弹雨');
   text = text.replace(/急停后横向翻滚到([^，。；]+?)(?:后|旁)/g, '侧身扑倒蜷缩在$1后方，单手撑地掩蔽');
   text = text.replace(/先指向二层窗口[，,]再沿厂房侧面比出撤离方向/g, '单臂平举直指厂房侧面撤离方向，身体压低重心，侧脸神情严肃果断');
   text = text.replace(/听完后停止翻找装备/g, '单膝跪地，双手停在装备包拉链处定格，侧头凝神倾听耳机中的通讯，神情严峻');
-  text = text.replace(/奕馨在另一张书桌前合上练习册[，,]转身看向哥哥[；;]奕辰先侧头回应.*$/g, '奕馨坐在书桌前侧身转头看向哥哥，双手按在合拢的练习册上；奕辰侧头面向妹妹，眼神游移，身子仍斜向亮起的电脑');
-  text = text.replace(/奕辰的操作速度(?:逐渐)?变慢[，,]但仍看着屏幕/g, '奕辰双手手指悬在键盘按键上方僵持停滞，双眼仍固执地紧盯屏幕冷光');
-  text = text.replace(/奕辰嘴唇闭合[，,]右手停在鼠标上[；;]显示器冷光在眼镜镜片中重新映出工厂火光/g, '奕辰紧抿嘴唇面容紧绷，右手僵持握住鼠标，眼镜镜片强烈反光映出工厂爆炸火光，面孔被幽蓝冷光勾勒');
+  text = text.replace(/([^\s，,。；]{2,8})在另一张书桌前合上练习册[，,]转身看向([^，。；]+)[；;]([^\s，,。；]{2,8})先侧头回应.*$/g, '$1坐在书桌前侧身转头看向$2，双手按在合拢的书册上；$3侧头面向对方，神情专注，身子仍斜向桌前');
+  text = text.replace(/([^\s，,。；]{2,8})的操作速度(?:逐渐)?变慢[，,]但仍看着屏幕/g, '$1双手手指悬在按键上方停滞，双眼仍紧盯屏幕冷光');
+  text = text.replace(/([^\s，,。；]{2,8})嘴唇闭合[，,]右手停在鼠标上[；;]显示器冷光在眼镜镜片中重新映出([^，。；]+)/g, '$1紧抿嘴唇面容紧绷，右手停在鼠标上，镜片强烈反光映出$2');
   text = text.replace(/救援装置上的数字从十秒连续下降/g, '胸前战术救援装置的荧光红字定格在紧急倒计时读数，目光焦急注视前方');
-  text = text.replace(/倒计时跳到五秒[，,]红狼从断墙后冲向蜂医[，,]连续弹着点从他身后追到脚边[；;]数字降至一秒时[，,]他伸手扑向蜂医/g, '红狼身体凌空大幅前跃扑出，单臂竭力朝倒地的蜂医伸展手指，周围地面弹着点碎屑激射，背景废墟火光冲天，决绝悲壮的定格瞬间');
+  text = text.replace(/倒计时跳到五秒[，,]([^\s，,。；]{2,8})从断墙后冲向([^，。；]+?)[，,]连续弹着点从他身后追到脚边[；;]数字降至一秒时[，,]他伸手扑向\2/g, '$1身体凌空大幅前跃扑出，单臂竭力朝倒地的$2伸展手指，周围地面弹着点碎屑激射，决绝悲壮的定格瞬间');
   text = text.replace(/间歇闪烁/g, '亮起微弱指示灯光');
   text = text.replace(/两束标记光[，,]分别扫过高台和二层窗口/g, '两道醒目的战术激光标记光束直射向高台与二层窗口，照亮昏暗环境');
-  text = text.replace(/红狼的游戏画面出现纵向像素断层[，,]工厂影像向两侧错位[，,]中央逐渐露出书房屏幕反光/g, '游戏画面定格出现纵向像素故障与撕裂断层，工厂影像向两侧撕裂错位，画面正中心隐约映出书房与少年眼镜的幽蓝冷光反影');
+  text = text.replace(/([^\s，,。；]{2,8})的游戏画面出现纵向像素断层[，,]工厂影像向两侧错位[，,]中央逐渐露出书房屏幕反光/g, '游戏画面定格出现纵向像素故障与撕裂断层，工厂影像向两侧撕裂错位，画面正中心隐约映出书房与少年眼镜的幽蓝冷光反影');
 
   // 3. 统一替换时间过渡连接词为空间静态连接
   text = text.replace(/(?:然后|紧接着|接着|随后重新|随后|接下来)/g, '，');
@@ -354,16 +354,12 @@ function extractStaticFreezeFramePose(action, sb = {}) {
   const isTruncatedFragment = text.length < 5 || /(?:抬手指|贴着断墙|操作速度|先指)$/.test(text);
 
   if (isBareSubject || isTruncatedFragment) {
-    if (text.includes('奕辰') || (sb.location && sb.location.includes('书房'))) {
-      text = '上身前倾坐在书桌前，双手搭在键盘上，目光专注注视着正前方屏幕';
-    } else if (text.includes('露娜')) {
-      text = '侧身站立在掩体边缘，单臂抬起指向前方，压低身姿神情警惕严肃';
-    } else if (text.includes('蜂医')) {
-      text = '侧身半卧在掩体后方地面，用前臂撑起上身，抬手指向前方，神色急迫';
-    } else if (text.includes('红狼')) {
-      text = '背靠断墙屈膝压低重心隐蔽，双手紧握突击步枪，目光警戒注视通道';
+    if (sb.location && (sb.location.includes('书房') || sb.location.includes('室内') || sb.location.includes('电脑') || sb.location.includes('办公'))) {
+      text = '上身前倾坐在桌前，双手置于桌面，目光专注凝视前方';
+    } else if (sb.location && (sb.location.includes('掩体') || sb.location.includes('战场') || sb.location.includes('废墟') || sb.location.includes('通道'))) {
+      text = '屈膝压低重心隐蔽在掩体后，双手戒备，目光专注警惕注视前方';
     } else {
-      text = text + '，身体保持低姿警惕隐蔽，双手持备，目光专注注视前方';
+      text = text + '，身体保持稳定专注姿态，双手就位，目光注视前方';
     }
   }
 
@@ -1808,9 +1804,8 @@ function rebuildVideoPromptForStoryboard(db, log, storyboardId) {
     try { videoSlots = JSON.parse(videoSlots); } catch (_) { videoSlots = null; }
   }
   const charsForVid = db.prepare('SELECT id, name FROM characters WHERE drama_id = ? AND deleted_at IS NULL').all(row.drama_id || 0);
-  if (!videoSlots || typeof videoSlots !== 'object' || !videoSlots.camera || !videoSlots.audio_lip_sync) {
-    videoSlots = synthesizeVideoSlots(row, charsForVid);
-  }
+  // 按最新分镜参数全新合成视频语义槽位契约（包含 shots_timeline 与 H3 多模态切分）
+  videoSlots = synthesizeVideoSlots(row, charsForVid, { forceRebuild: true });
 
   const videoPrompt = compileVideoPromptFromSlots(sbForPrompt, videoSlots, { style: finalStyle, videoRatio });
   const now = new Date().toISOString();

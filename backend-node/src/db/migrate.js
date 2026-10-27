@@ -312,16 +312,26 @@ function ensureAllColumns(database) {
     { name: 'deleted_at',     type: 'TEXT' },
   ]);
 
-  // 确保 IndexTTS 2.5 配置在数据库中初始化
+  // 确保 IndexTTS 2.5 配置在数据库中初始化并作为默认 TTS 服务，弃用 Edge-TTS
   try {
     const hasIndexTts = database.prepare("SELECT id FROM ai_service_configs WHERE service_type = 'tts' AND provider IN ('indextts', 'indextts2', 'indextts25') AND deleted_at IS NULL").get();
+    const now = new Date().toISOString();
     if (!hasIndexTts) {
-      const now = new Date().toISOString();
       database.prepare(`
         INSERT INTO ai_service_configs (service_type, provider, api_protocol, name, base_url, api_key, model, default_model, endpoint, query_endpoint, priority, is_default, is_active, settings, created_at, updated_at)
-        VALUES ('tts', 'indextts', 'indextts', 'IndexTTS 2.5 本地音色克隆/大模型配音 (RTX 4090)', 'http://127.0.0.1:7860', 'local', '["IndexTTS-2.5"]', 'IndexTTS-2.5', '', '', 10, 0, 1, '{"voice_id":"voice_03.wav"}', ?, ?)
+        VALUES ('tts', 'indextts', 'indextts', 'IndexTTS 2.5 本地音色克隆/大模型配音 (RTX 4090)', 'http://127.0.0.1:7860', 'local', '["IndexTTS-2.5"]', 'IndexTTS-2.5', '', '', 10, 1, 1, '{"voice_id":"voice_03.wav"}', ?, ?)
       `).run(now, now);
+    } else {
+      database.prepare("UPDATE ai_service_configs SET is_default = 1, is_active = 1 WHERE id = ?").run(hasIndexTts.id);
     }
+    // 停用并取消默认 Edge-TTS
+    database.prepare("UPDATE ai_service_configs SET is_default = 0, is_active = 0 WHERE service_type = 'tts' AND provider IN ('edge-tts', 'edgetts', 'edge')").run();
+  } catch (_) {}
+
+  // 确保 MiniMax-H3 配置作为唯一默认且激活的视频模型，停用其他第三方视频模型
+  try {
+    database.prepare("UPDATE ai_service_configs SET is_default = 1, is_active = 1 WHERE service_type = 'video' AND (provider = 'minimax_h3' OR api_protocol = 'minimax_h3' OR name LIKE '%H3%')").run();
+    database.prepare("UPDATE ai_service_configs SET is_default = 0, is_active = 0 WHERE service_type = 'video' AND NOT (provider = 'minimax_h3' OR api_protocol = 'minimax_h3' OR name LIKE '%H3%')").run();
   } catch (_) {}
 
   // --- async_tasks ---

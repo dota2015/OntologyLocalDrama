@@ -197,6 +197,59 @@ test('H3 multimodal slots format timecode cuts and integrated_multimodal_descrip
   const fullVideoSlots = synthesizeVideoSlots(multiCutShot, []);
   assert.ok(fullVideoSlots.h3_multimodal);
   assert.equal(fullVideoSlots.h3_multimodal.shots.length, 2);
+  assert.ok(Array.isArray(fullVideoSlots.shots_timeline));
+  assert.equal(fullVideoSlots.shots_timeline.length, 2);
+});
+
+test('Video semantic slots timeline mapping and non-hallucinatory generic trajectory deduction', () => {
+  const { synthesizeVideoSlots, compileH3MultimodalPrompt } = require('../src/ontology/videoSlots');
+
+  const briefingShot = {
+    duration: 6,
+    shot_type: '中景',
+    movement: 'tracking',
+    characters: [27, 25],
+    action: '第二次任务开启，露娜在峡谷入口展开任务简报界面，红狼站在对面查看。',
+    result: '地图上的信号塔与北侧撤离线被标记。',
+    dialogue: '露娜: "这次要护送设备到信号塔，再从北侧撤离。"',
+    sound_effect: '风声、界面展开提示音、远处金属结构震动声',
+    atmosphere: '谨慎',
+  };
+
+  const catalog = [
+    { id: 27, name: '露娜' },
+    { id: 25, name: '红狼' },
+  ];
+
+  const slots = synthesizeVideoSlots(briefingShot, catalog);
+
+  // 1. 结构化时间线 shots_timeline
+  assert.equal(slots.shots_timeline.length, 2);
+  assert.equal(slots.shots_timeline[0].shot_number, 1);
+  assert.equal(slots.shots_timeline[0].timestamp, null);
+  assert.equal(slots.shots_timeline[1].shot_number, 2);
+  assert.equal(slots.shots_timeline[1].timestamp, '00:03.000');
+
+  // 2. 彻底杜绝飞扑硬编码幻觉
+  slots.trajectories.forEach((t) => {
+    assert.ok(!t.terminal_pose.includes('飞扑'), `角色 ${t.name} 的姿态不应出现飞扑幻觉: ${t.terminal_pose}`);
+    assert.ok(!t.terminal_pose.includes('伸手抓向目标'), `角色 ${t.name} 不应出现伸手抓向目标`);
+  });
+
+  // 3. 露娜在 Shot 1 嘴型闭合，Shot 2 开口口型同步；红狼全程闭合
+  const lunaShot1 = slots.shots_timeline[0].character_trajectories.find((t) => t.name === '露娜');
+  const lunaShot2 = slots.shots_timeline[1].character_trajectories.find((t) => t.name === '露娜');
+  const wolfShot2 = slots.shots_timeline[1].character_trajectories.find((t) => t.name === '红狼');
+  assert.ok(lunaShot1.mouth_state.includes('双唇紧闭'));
+  assert.ok(lunaShot2.mouth_state.includes('开口说话并同步口型'));
+  assert.ok(wolfShot2.mouth_state.includes('双唇紧闭'));
+
+  // 4. H3 专用编译器正确输出
+  const h3Compiled = compileH3MultimodalPrompt(slots);
+  assert.ok(h3Compiled.integrated_multimodal_description.includes('[Shot 1]'));
+  assert.ok(h3Compiled.integrated_multimodal_description.includes('[Shot 2] At 00:03.000'));
+  assert.ok(h3Compiled.integrated_multimodal_description.includes('露娜: “这次要护送设备到信号塔，再从北侧撤离。”'));
+  assert.ok(h3Compiled.overall_soundscape.includes('界面展开提示音'));
 });
 
 

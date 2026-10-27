@@ -79,6 +79,40 @@ function createVideoSemanticSlots(data = {}) {
       duration: Math.max(1, Math.min(120, Number(timing.duration || 5))),
       pacing: String(timing.pacing || '稳健推进').trim(),
     },
+    shots_timeline: Array.isArray(data.shots_timeline)
+      ? data.shots_timeline.map((s, idx) => ({
+          shot_number: s.shot_number || (idx + 1),
+          timestamp: s.timestamp || null,
+          duration: Number(s.duration || 0),
+          camera: {
+            shot_type: String(s.camera?.shot_type || '中景').trim(),
+            movement: String(s.camera?.movement || 'tracking').trim(),
+            movement_description: String(s.camera?.movement_description || '').trim(),
+          },
+          action: String(s.action || '').trim(),
+          result: String(s.result || '').trim(),
+          character_trajectories: Array.isArray(s.character_trajectories)
+            ? s.character_trajectories.map((t) => ({
+                character_id: t.character_id != null ? Number(t.character_id) : null,
+                name: String(t.name || '人物').trim(),
+                start_anchor: String(t.start_anchor || '').trim(),
+                trajectory: String(t.trajectory || '').trim(),
+                end_anchor: String(t.end_anchor || '').trim(),
+                terminal_pose: String(t.terminal_pose || '').trim(),
+                facial_expression: String(t.facial_expression || '').trim(),
+                mouth_state: String(t.mouth_state || '双唇紧闭，严禁张嘴说话，无任何台词口型').trim(),
+                shot_number: s.shot_number || (idx + 1),
+              }))
+            : [],
+          audio_lip_sync: {
+            mode: String(s.audio_lip_sync?.mode || 'silent_ambient').trim(),
+            speaker_name: String(s.audio_lip_sync?.speaker_name || '').trim(),
+            speaker_in_frame: Boolean(s.audio_lip_sync?.speaker_in_frame),
+            dialogue_content: String(s.audio_lip_sync?.dialogue_content || '').trim(),
+            lip_sync_rule: String(s.audio_lip_sync?.lip_sync_rule || '').trim(),
+          },
+        }))
+      : [],
     h3_multimodal: {
       shots: Array.isArray(data.h3_multimodal?.shots)
         ? data.h3_multimodal.shots.map((s, idx) => ({
@@ -309,41 +343,65 @@ function synthesizeH3MultimodalSlots(shot, options = {}) {
 
   const h3Shots = [];
 
-  // 判断是否具备镜头切分条件 (时长 >= 6s 且有转折/对话/结果动作)
-  const needsCut = dur >= 6 && (resultText.trim().length > 0 || diagText.trim().length > 0);
-
-  if (!needsCut) {
-    // 单镜头连续画面: [Shot 1] 从 0 秒开始，不加时间戳
-    let desc1 = `Live-action, cinematic. A ${shotType} frames the scene. The camera moves with ${movement}. ${actionText}`;
-    if (resultText) desc1 += ` ${resultText}`;
-    if (diagText) desc1 += ` Dialogue: ${diagText}`;
-    h3Shots.push({
-      shot_number: 1,
-      timestamp: null,
-      description: desc1.trim(),
+  // 若显式传入了镜头时间线 shots_timeline，直接依据时间线生成 H3 Shots
+  if (Array.isArray(options.shots_timeline) && options.shots_timeline.length > 0) {
+    options.shots_timeline.forEach((st) => {
+      let desc = '';
+      const camType = st.camera?.shot_type || shotType;
+      const move = st.camera?.movement || movement;
+      if (!st.timestamp) {
+        desc = `Live-action, cinematic. A ${camType} establishes the scene. The camera begins with ${move} as ${st.action || actionText || 'the action initiates'}.`;
+      } else {
+        desc = `At ${st.timestamp}, the camera cuts to a ${camType}, where ${st.action || resultText || actionText || 'the movement resolves'}.`;
+        if (st.audio_lip_sync?.dialogue_content) {
+          const spk = st.audio_lip_sync.speaker_name ? `${st.audio_lip_sync.speaker_name}: ` : '';
+          const cleanDiag = String(st.audio_lip_sync.dialogue_content).replace(/^["“](.*)["”]$/, '$1');
+          desc += ` Dialogue follows: ${spk}“${cleanDiag}”`;
+        }
+      }
+      h3Shots.push({
+        shot_number: st.shot_number,
+        timestamp: st.timestamp,
+        description: desc.trim(),
+      });
     });
   } else {
-    // 多镜头时间线切分: [Shot 1] (0秒开始) + [Shot 2] At 00:0X.XXX
-    const cutSec = Math.round((dur / 2) * 2) / 2; // 例如 7s -> 3.5s, 8s -> 4.0s
-    const timecode = formatH3Timestamp(cutSec);
+    // 判断是否具备镜头切分条件 (时长 >= 6s 且有转折/对话/结果动作)
+    const needsCut = dur >= 6 && (resultText.trim().length > 0 || diagText.trim().length > 0);
 
-    // [Shot 1] 开头第一段画面 (建构机位与主体起始动作)
-    const desc1 = `Live-action, cinematic. A ${shotType} establishes the scene. The camera begins with ${movement} as ${actionText || 'the action initiates'}.`;
-    h3Shots.push({
-      shot_number: 1,
-      timestamp: null,
-      description: desc1.trim(),
-    });
+    if (!needsCut) {
+      // 单镜头连续画面: [Shot 1] 从 0 秒开始，不加时间戳
+      let desc1 = `Live-action, cinematic. A ${shotType} frames the scene. The camera moves with ${movement}. ${actionText}`;
+      if (resultText) desc1 += ` ${resultText}`;
+      if (diagText) desc1 += ` Dialogue: ${diagText}`;
+      h3Shots.push({
+        shot_number: 1,
+        timestamp: null,
+        description: desc1.trim(),
+      });
+    } else {
+      // 多镜头时间线切分: [Shot 1] (0秒开始) + [Shot 2] At 00:0X.XXX
+      const cutSec = Math.round((dur / 2) * 2) / 2; // 例如 7s -> 3.5s, 8s -> 4.0s
+      const timecode = formatH3Timestamp(cutSec);
 
-    // [Shot 2] At 00:XX.XXX 按时间切过去的后续反应/反打/终态镜头
-    const secondaryShotType = shotType === '特写' || shotType === '近景' ? 'medium shot' : 'close-up shot';
-    let desc2 = `At ${timecode}, the camera cuts to a ${secondaryShotType}, where ${resultText || actionText || 'the movement resolves'}.`;
-    if (diagText) desc2 += ` Dialogue follows: ${diagText}`;
-    h3Shots.push({
-      shot_number: 2,
-      timestamp: timecode,
-      description: desc2.trim(),
-    });
+      // [Shot 1] 开头第一段画面 (建构机位与主体起始动作)
+      const desc1 = `Live-action, cinematic. A ${shotType} establishes the scene. The camera begins with ${movement} as ${actionText || 'the action initiates'}.`;
+      h3Shots.push({
+        shot_number: 1,
+        timestamp: null,
+        description: desc1.trim(),
+      });
+
+      // [Shot 2] At 00:XX.XXX 按时间切过去的后续反应/反打/终态镜头
+      const secondaryShotType = shotType === '特写' || shotType === '近景' ? 'medium shot' : 'close-up shot';
+      let desc2 = `At ${timecode}, the camera cuts to a ${secondaryShotType}, where ${resultText || actionText || 'the movement resolves'}.`;
+      if (diagText) desc2 += ` Dialogue follows: ${diagText}`;
+      h3Shots.push({
+        shot_number: 2,
+        timestamp: timecode,
+        description: desc2.trim(),
+      });
+    }
   }
 
   // 拼接 integrated_multimodal_description
@@ -375,15 +433,17 @@ function synthesizeH3MultimodalSlots(shot, options = {}) {
  * @param {Array<object>} catalogCharacters
  * @returns {object} video_slots
  */
-function synthesizeVideoSlots(shot, catalogCharacters = []) {
-  if (shot.video_slots) {
+function synthesizeVideoSlots(shot, catalogCharacters = [], options = {}) {
+  if (shot.video_slots && !options.forceRebuild) {
     let existing = shot.video_slots;
     if (typeof existing === 'string') {
       try { existing = JSON.parse(existing); } catch (_) { existing = null; }
     }
-    if (existing && typeof existing === 'object' && existing.camera && existing.audio_lip_sync) {
+    const isLegacyHallucinated = JSON.stringify(existing || '').includes('凌空飞扑') &&
+      !/(?:扑向|飞扑|凌空扑|跃起|扑倒)/.test(String(shot.action || '') + ' ' + String(shot.result || ''));
+    if (!isLegacyHallucinated && existing && typeof existing === 'object' && existing.camera && existing.audio_lip_sync && Array.isArray(existing.shots_timeline) && existing.shots_timeline.length > 0) {
       if (!existing.h3_multimodal || !existing.h3_multimodal.integrated_multimodal_description) {
-        existing.h3_multimodal = synthesizeH3MultimodalSlots(shot, { camera: existing.camera });
+        existing.h3_multimodal = synthesizeH3MultimodalSlots(shot, { camera: existing.camera, shots_timeline: existing.shots_timeline });
       }
       return createVideoSemanticSlots(existing);
     }
@@ -404,8 +464,8 @@ function synthesizeVideoSlots(shot, catalogCharacters = []) {
     } catch (_) {}
   }
 
-  const actionText = String(shot.action || '');
-  const resultText = String(shot.result || '');
+  const actionText = translatePhysicalPhenomena(String(shot.action || ''));
+  const resultText = translatePhysicalPhenomena(String(shot.result || ''));
   const dialogueText = String(shot.dialogue || '').trim();
   const narrationText = String(shot.narration || '').trim();
 
@@ -456,7 +516,7 @@ function synthesizeVideoSlots(shot, catalogCharacters = []) {
     audioMode = 'bgm_only';
   }
 
-  // 2. 推断角色动态轨迹 (Trajectories)
+  // 2. 推断角色动态轨迹 (Trajectories) - 完全通用化推演，绝无写死角色名与固定角色启发
   const trajectories = [];
   const firstSlots = Array.isArray(shot.character_visuals) ? shot.character_visuals : [];
   const lastSlots = Array.isArray(shot.last_frame_visuals) ? shot.last_frame_visuals : [];
@@ -467,37 +527,56 @@ function synthesizeVideoSlots(shot, catalogCharacters = []) {
     const fSlot = firstSlots.find((s) => s.character_id === cid || s.name === name) || firstSlots[idx] || {};
     const lSlot = lastSlots.find((s) => s.character_id === cid || s.name === name) || lastSlots[idx] || {};
 
-    let startAnchor = fSlot.spatial_anchor || (idx === 0 ? '画面左侧掩体后' : '画面右侧地面');
-    let endAnchor = lSlot.spatial_anchor || (idx === 0 ? '距离目标半米处' : '画面右侧地面');
+    const defaultAnchor = idx === 0 ? '画面左侧' : (idx === 1 ? '画面右侧' : '画面中央');
+    let startAnchor = fSlot.spatial_anchor || defaultAnchor;
+    let endAnchor = lSlot.spatial_anchor || startAnchor;
     let trajDesc = '';
     let termPose = lSlot.posture || '';
-    let facial = '咬紧牙关，神情焦灼决绝';
+    let facial = '神情专注严肃';
     let mouth = (speakerInFrame && name === speakerName)
       ? '开口说话并同步口型'
-      : '双唇紧闭，咬紧牙关，严禁张嘴说话，完全无任何开口动作';
+      : '双唇紧闭，严禁张嘴说话，完全无任何开口动作';
 
-    if (name.includes('红狼') || idx === 0) {
-      if (/(?:冲向|拼尽全力冲|狂奔|疾冲)/.test(actionText)) {
-        trajDesc = '从断墙后全力爆发疾速狂奔冲刺扑向前方';
-      } else {
-        trajDesc = '动作敏捷保持战术推进';
-      }
+    // 针对当前角色提取动作与终态关键词
+    const charMentionRegex = new RegExp(`(?:${name})[^，。；]*`, 'g');
+    const matchedMentions = ((actionText + ' ' + resultText).match(charMentionRegex) || []).join('，');
+    const isTargetBeingApproached = name
+      ? new RegExp('(?:冲向|扑向|赶到|走向|跑向|接近)\\s*' + name).test(actionText + ' ' + resultText)
+      : false;
+    const activeText = matchedMentions || (idx === 0 ? actionText : resultText) || actionText;
+
+    if (isTargetBeingApproached || /(?:倒卧|倒在|倒地|负伤|虚弱|昏迷|起不来|重伤)/.test(activeText)) {
+      trajDesc = '侧卧倒在地面掩体旁，因伤势身体虚弱隐忍，无大幅位移';
+      facial = '双目微阖神色虚弱隐忍，双唇紧闭';
+      if (!termPose) termPose = '侧卧倒地，单手虚弱护在身前';
+    } else if (/(?:扑向|飞扑|凌空扑|跃起|扑倒|伸手扑)/.test(activeText)) {
+      trajDesc = '全力爆发疾速前扑冲向目标';
+      facial = '咬紧牙关，神情焦灼决绝';
       if (!termPose) termPose = '身体大幅前倾凌空飞扑，单臂向前竭力伸手抓向目标';
-    } else if (name.includes('蜂医') || idx > 0) {
-      if (/(?:倒卧|倒在|伤势|虚弱)/.test(actionText + resultText)) {
-        trajDesc = '侧卧倒在掩体地面，因伤势身体虚弱隐忍，无大幅位移';
-        facial = '双目微阖神色虚弱隐忍，双唇紧闭';
-      } else {
-        trajDesc = '在掩体后保持警戒防护';
-      }
-      if (!termPose) termPose = '侧卧倒地，单手虚弱护在腹部';
+      if (!lSlot.spatial_anchor && endAnchor === startAnchor) endAnchor = '距离目标半米处';
+    } else if (/(?:冲向|奔跑|狂奔|疾冲|冲出|大步走|大步奔)/.test(activeText)) {
+      trajDesc = '大步疾速奔跑冲刺向前推进';
+      facial = '目光专注坚定，神情严峻';
+      if (!termPose) termPose = '身体前倾大步冲刺，重心前移定格';
+    } else if (/(?:操作|展开|点击|调出|标记|简报|屏幕|键盘|界面)/.test(activeText)) {
+      trajDesc = '在场景中操作交互界面，动作利落专注';
+      facial = '目光专注锐利，神情冷静沉着';
+      if (!termPose) termPose = '身体微前倾，专注操作与审视前方界面';
+    } else if (/(?:掩体|躲避|隐蔽|蹲伏|单膝|防守|戒备)/.test(activeText)) {
+      trajDesc = '在掩体后保持警戒防护';
+      facial = '目光警惕，神情严肃戒备';
+      if (!termPose) termPose = '屈膝蹲伏压低身姿，保持隐蔽警戒';
+    } else {
+      trajDesc = actionText ? actionText.slice(0, 35) : '动作敏捷，保持稳定姿态推进';
+      facial = '神情沉着专注，保持戒备';
+      if (!termPose) termPose = resultText ? resultText.slice(0, 35) : '身体站定收步，目光专注重心稳固';
     }
 
     trajectories.push({
       character_id: cid,
       name,
       start_anchor: startAnchor,
-      trajectory: trajDesc || actionText,
+      trajectory: trajDesc,
       end_anchor: endAnchor,
       terminal_pose: termPose,
       facial_expression: facial,
@@ -528,6 +607,89 @@ function synthesizeVideoSlots(shot, catalogCharacters = []) {
 
   const durationSec = normalizeDuration(shot.duration) || 5;
 
+  // 5. 合成多镜头时间线切分 (shots_timeline)
+  const shotsTimeline = [];
+  const needsCut = durationSec >= 6 && (resultText.trim().length > 0 || diagContent.trim().length > 0);
+
+  if (!needsCut) {
+    shotsTimeline.push({
+      shot_number: 1,
+      timestamp: null,
+      duration: durationSec,
+      camera: {
+        shot_type: camera.shot_type,
+        movement: camera.movement,
+        movement_description: camera.movement_description,
+      },
+      action: actionText || '场景主体动作稳健推进',
+      result: resultText || '',
+      character_trajectories: trajectories.map((t) => ({ ...t, shot_number: 1 })),
+      audio_lip_sync: {
+        mode: audioMode,
+        speaker_name: speakerName,
+        speaker_in_frame: speakerInFrame,
+        dialogue_content: diagContent,
+        lip_sync_rule: lipRule,
+      },
+    });
+  } else {
+    const cutSec = Math.round((durationSec / 2) * 2) / 2;
+    const timecode = formatH3Timestamp(cutSec);
+    const secondaryShotType = camera.shot_type === '特写' || camera.shot_type === '近景' ? '中景' : '特写';
+
+    shotsTimeline.push({
+      shot_number: 1,
+      timestamp: null,
+      duration: cutSec,
+      camera: {
+        shot_type: camera.shot_type,
+        movement: camera.movement,
+        movement_description: camera.movement_description,
+      },
+      action: actionText || '场景主体动作开启推进',
+      result: '',
+      character_trajectories: trajectories.map((t) => ({
+        ...t,
+        end_anchor: t.start_anchor,
+        terminal_pose: '保持推进与初始交互动作',
+        mouth_state: '双唇紧闭，严禁张嘴说话，无任何台词口型动作',
+        shot_number: 1,
+      })),
+      audio_lip_sync: {
+        mode: 'silent_ambient',
+        speaker_name: '',
+        speaker_in_frame: false,
+        dialogue_content: '',
+        lip_sync_rule: '初始建立镜头，画内全员紧闭双唇，无台词口型',
+      },
+    });
+
+    shotsTimeline.push({
+      shot_number: 2,
+      timestamp: timecode,
+      duration: durationSec - cutSec,
+      camera: {
+        shot_type: secondaryShotType,
+        movement: 'static',
+        movement_description: '镜头平稳聚焦主体终态与表情反应',
+      },
+      action: resultText || '动作收束并完成交互反应',
+      result: resultText || '',
+      character_trajectories: trajectories.map((t) => ({
+        ...t,
+        start_anchor: t.end_anchor,
+        shot_number: 2,
+      })),
+      audio_lip_sync: {
+        mode: audioMode,
+        speaker_name: speakerName,
+        speaker_in_frame: speakerInFrame,
+        dialogue_content: diagContent,
+        lip_sync_rule: lipRule,
+      },
+    });
+  }
+
   return createVideoSemanticSlots({
     camera,
     audio_lip_sync: {
@@ -540,6 +702,7 @@ function synthesizeVideoSlots(shot, catalogCharacters = []) {
       lip_sync_rule: lipRule,
     },
     trajectories,
+    shots_timeline: shotsTimeline,
     environment_vfx: {
       lighting_atmosphere: shot.atmosphere || '',
       physical_phenomena: physical,
@@ -551,12 +714,20 @@ function synthesizeVideoSlots(shot, catalogCharacters = []) {
     },
     h3_multimodal: synthesizeH3MultimodalSlots(shot, {
       camera,
-      audioMode,
-      diagContent,
-      actionText,
-      resultText,
+      shots_timeline: shotsTimeline,
     }),
   });
+}
+
+function compileH3MultimodalPrompt(slots = {}) {
+  const norm = createVideoSemanticSlots(slots);
+  return {
+    integrated_multimodal_description: norm.h3_multimodal?.integrated_multimodal_description || '',
+    overall_soundscape: norm.h3_multimodal?.overall_soundscape || '',
+    non_diegetic_music: norm.h3_multimodal?.non_diegetic_music || '',
+    shots: norm.h3_multimodal?.shots || [],
+    shots_timeline: norm.shots_timeline || [],
+  };
 }
 
 function normalizeDuration(dur) {
@@ -569,6 +740,7 @@ module.exports = {
   createVideoSemanticSlots,
   validateVideoSlots,
   compileVideoPromptFromSlots,
+  compileH3MultimodalPrompt,
   synthesizeVideoSlots,
   synthesizeH3MultimodalSlots,
   formatH3Timestamp,

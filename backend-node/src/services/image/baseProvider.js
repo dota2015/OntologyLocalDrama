@@ -83,25 +83,35 @@ function resolveImageRef(value, filesBaseUrl, storageLocalPath) {
     return sv;
   }
 
+  const defaultStorage = path.resolve(__dirname, '../../../data/storage');
+  const effectiveStorageLocalPath = storageLocalPath || (fs.existsSync(path.resolve(process.cwd(), 'data/storage')) ? path.resolve(process.cwd(), 'data/storage') : defaultStorage);
   let relPath = null;
   if (s.startsWith('http://') || s.startsWith('https://')) {
-    if (!isLocalhost || !storageLocalPath) return s;
+    if (!isLocalhost || !effectiveStorageLocalPath) return s;
     const afterStatic = s.split('/static/')[1]
       || (baseUrl ? s.replace(baseUrl + '/', '').replace(baseUrl, '') : null)
       || s.replace(/^https?:\/\/[^/]+\//, '');
     if (afterStatic) relPath = afterStatic.replace(/^\//, '');
     else return s;
-  } else if (storageLocalPath) {
-    relPath = s.replace(/^\//, '');
+  } else {
+    relPath = s.replace(/^\/?static\//, '').replace(/^\//, '');
   }
-  if (!relPath) return toPublicUrl(s);
-  const filePath = path.join(storageLocalPath, relPath);
+
+  const filePath = relPath ? path.join(effectiveStorageLocalPath, relPath) : null;
   try {
-    if (!fs.existsSync(filePath)) return toPublicUrl(s);
-    const buf = fs.readFileSync(filePath);
-    const ext = path.extname(filePath).toLowerCase();
-    const mime = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.bmp': 'image/bmp' }[ext] || 'image/png';
-    return 'data:' + mime + ';base64,' + buf.toString('base64');
+    if (filePath && fs.existsSync(filePath)) {
+      const buf = fs.readFileSync(filePath);
+      const ext = path.extname(filePath).toLowerCase();
+      const mime = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.bmp': 'image/bmp' }[ext] || 'image/png';
+      return 'data:' + mime + ';base64,' + buf.toString('base64');
+    }
+    if (fs.existsSync(s)) {
+      const buf = fs.readFileSync(s);
+      const ext = path.extname(s).toLowerCase();
+      const mime = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.bmp': 'image/bmp' }[ext] || 'image/png';
+      return 'data:' + mime + ';base64,' + buf.toString('base64');
+    }
+    return toPublicUrl(s);
   } catch (e) {
     return toPublicUrl(s);
   }

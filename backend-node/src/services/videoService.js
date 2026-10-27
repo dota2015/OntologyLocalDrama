@@ -537,10 +537,10 @@ async function processVideoGeneration(db, log, videoGenId) {
       if (row.task_id) taskService.updateTaskError(db, row.task_id, '未配置视频模型');
       return;
     }
-    // Persist the selected local model so history/recovery does not depend on a future default.
-    if (!row.model && videoClient.resolveVideoProtocol(config) === 'comfyui_wan22') {
-      row.model = config.default_model || (Array.isArray(config.model) ? config.model[0] : config.model);
-      row.provider = 'comfyui_wan22';
+    // 默认持久化为当前配置的视频模型（MiniMax H3）
+    if (!row.model) {
+      row.model = config.default_model || (Array.isArray(config.model) ? config.model[0] : config.model) || 'minimax_h3';
+      row.provider = config.provider || 'minimax_h3';
       db.prepare('UPDATE video_generations SET model = ?, provider = ? WHERE id = ?')
         .run(row.model, row.provider, videoGenId);
     }

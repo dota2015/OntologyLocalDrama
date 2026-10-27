@@ -51,7 +51,7 @@ function normalizeAllowedCharacterAppearance(text, allowedNames, charImageMap = 
     const esc = escapeRegExp(name);
     const mapInfo = charImageMap[name];
     const replacementInner = mapInfo
-      ? `见 Image ${mapInfo.index} / <image${mapInfo.index}>${mapInfo.gender ? ' ' + mapInfo.gender : ''}形象`
+      ? `见 Image ${mapInfo.index}${mapInfo.gender ? ' ' + mapInfo.gender : ''}形象`
       : '参考图中的人物形象';
 
     out = out.replace(new RegExp(`${esc}（([^）]*)）`, 'g'), (match, inner) => {

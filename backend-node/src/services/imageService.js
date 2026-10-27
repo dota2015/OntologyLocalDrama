@@ -1659,19 +1659,19 @@ async function processImageGeneration(db, log, imageGenId) {
       }
       const charCount = characterNames.length;
       const countDescZh = charCount > 0
-        ? `画面总人数严格为 ${charCount} 人（出场角色：${characterNames.join('、')}），严禁在首帧人物旁边生成重复的克隆人物、分身或多余路人！每位角色在画面中只能且必须出现一次。`
-        : '严禁在首帧人物旁边生成重复的克隆人物、分身或多余路人！每位角色只能出现一次。';
+        ? `画面总人数严格为 ${charCount} 人（出场角色：${characterNames.join('、')}），继承首帧既有角色，按演化结果改变姿态、表情与动作。`
+        : '继承首帧既有角色，按演化结果改变姿态、表情与动作。';
       const countDescEn = charCount > 0
-        ? ` STRICT RULE: Total number of people in the image must be exactly ${charCount} (${characterNames.join(', ')}). Maintain identical character composition from Image 1. DO NOT add extra people, clones, or duplicate figures.`
-        : ' STRICT RULE: Maintain identical character composition from Image 1. DO NOT add extra people, clones, or duplicate figures.';
+        ? ` Maintain identical character composition from Image 1 (${characterNames.join(', ')}). Evolve postures and actions naturally.`
+        : ' Maintain identical character composition from Image 1. Evolve postures and actions naturally.';
 
-      const layoutLockSuffix = `。【人物站位与防重复最高铁律】必须与本分镜首帧图片保持100%一致的构图、人物左右站位（左/中/右相对位置、朝向）、相机取景和空间布局，仅允许按演化结果改变既有角色的姿态、表情和动作。${countDescZh}${countDescEn}`;
-      if (!finalPrompt.includes('人物站位与防重复最高铁律') && !finalPrompt.includes('人物站位最高铁律') && !finalPrompt.includes('CHARACTER POSITION LOCK')) {
+      const layoutLockSuffix = `。【人物站位与动作演化】与本分镜首帧图片保持一致的构图、人物左右站位（相对位置、朝向）、相机取景和空间布局，按演化结果改变既有角色的姿态、表情和动作。${countDescZh}${countDescEn}`;
+      if (!finalPrompt.includes('人物站位与动作演化') && !finalPrompt.includes('人物站位与防重复最高铁律') && !finalPrompt.includes('人物站位最高铁律') && !finalPrompt.includes('CHARACTER POSITION LOCK')) {
         finalPrompt = finalPrompt.trimEnd() + layoutLockSuffix;
       }
     }
 
-    // ── Step 3.95: 分镜图出场人数与防克隆严格约束（适用于所有含角色参考的分镜图生成）──
+    // ── Step 3.95: 分镜图出场人数严格约束（适用于所有含角色参考的分镜图生成，纯自然语言正面表达）──
     if (row.storyboard_id && !isLastFrameForLock && reference_image_urls && reference_image_urls.length > 0) {
       const charRefNames = [];
       const charMappings = [];
@@ -1694,17 +1694,17 @@ async function processImageGeneration(db, log, imageGenId) {
       if (charRefNames.length > 0) {
         const charCount = charRefNames.length;
         const countZh = charCount === 1
-          ? `【出场人数铁律】画面中出场人物严格且仅有 1 人（${charRefNames[0]}），严禁出现第二个人、多余路人、克隆分身、同人双重视角或画中画分屏！整张画面必须只有这 1 个人。`
-          : `【出场人数铁律】画面中出场人物严格为 ${charCount} 人（出场角色：${charRefNames.join('、')}），严禁生成第 ${charCount + 1} 个人或多余路人，严禁生成克隆分身或双重人物！每位角色在画面中只能且必须出现一次。`;
+          ? `【出场人数铁律】画面中出场人物严格且仅有 1 人（${charRefNames[0]}）。`
+          : `【出场人数铁律】画面中出场人物严格为 ${charCount} 人（出场角色：${charRefNames.join('、')}）。`;
         const countEn = charCount === 1
-          ? ` STRICT RULE: Exactly 1 person (${charRefNames[0]}) in the entire frame. DO NOT add any extra people, bystanders, clones, or duplicate views.`
-          : ` STRICT RULE: Exactly ${charCount} people (${charRefNames.join(', ')}) in the frame. DO NOT add extra people, clones, or duplicate figures.`;
+          ? ` STRICT RULE: Exactly 1 person (${charRefNames[0]}) in the frame.`
+          : ` STRICT RULE: Exactly ${charCount} people (${charRefNames.join(', ')}) in the frame.`;
 
         let mappingClause = '';
         if (charMappings.length > 1) {
-          const mapZh = charMappings.map(m => `角色「${m.name}」${m.gender ? `（${m.gender}）` : ''}严格对应 Image ${m.imgNum}，全图仅此 1 人，严禁克隆重复`).join('；');
-          const mapEn = charMappings.map(m => `"${m.name}"${m.gender ? ` (${m.gender})` : ''} MUST strictly correspond to Image ${m.imgNum} (single person, no duplicates)`).join('; ');
-          mappingClause = `【人物与参考图一对一绑定】${mapZh}。每张参考图对应独立的一位出场人物，严禁将同一角色在不同位置重复画成两个人！ MANDATORY 1-TO-1 MAPPING: ${mapEn}. Never duplicate any character in multiple positions.`;
+          const mapZh = charMappings.map(m => `角色「${m.name}」${m.gender ? `（${m.gender}）` : ''}的外观特征对应参考图 ${m.imgNum}`).join('；');
+          const mapEn = charMappings.map(m => `"${m.name}"${m.gender ? ` (${m.gender})` : ''} corresponds to reference image ${m.imgNum}`).join('; ');
+          mappingClause = `【人物特征与参考图对应】${mapZh}。每张参考图提供对应角色的外观特征，人物姿态与动作符合剧情设定。 CHARACTER CORRESPONDENCE: ${mapEn}.`;
         }
 
         const charCountSuffix = `。${countZh}${countEn}${mappingClause ? '。' + mappingClause : ''}`;

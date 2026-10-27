@@ -204,7 +204,6 @@ function createWorker(db, log, dependencies = {}) {
           if (db.prepare('SELECT status FROM video_batch_items WHERE id=?').get(item.id)?.status !== 'pending') return null;
           const row = submit(db, log, payload);
           db.prepare("UPDATE video_batch_items SET status='running',video_gen_id=?,payload=? WHERE id=?").run(row.id, JSON.stringify(payload), item.id);
-          db.prepare("UPDATE storyboards SET video_url=NULL WHERE id=?").run(item.storyboard_id);
           return row;
         })();
         if (video) Promise.resolve().then(() => process(db, log, video.id)).catch(err => {

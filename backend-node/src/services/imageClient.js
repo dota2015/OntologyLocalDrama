@@ -136,7 +136,7 @@ async function callImageApi(db, log, opts) {
   const provider = (config.provider || '').toLowerCase();
   const protocol = (config.api_protocol || '').toLowerCase() || inferProtocol(provider, model);
 
-  // ── 参考图标签注入：为所有非 Gemini 模型将标签注入 prompt 文本 ─────────────────────────────
+  // ── 参考图自然语言说明注入：告知生图模型每张参考图的用途与角色映射 ─────────
   let effectivePrompt = prompt || '';
   if (
     protocol !== 'gemini' &&
@@ -145,7 +145,7 @@ async function callImageApi(db, log, opts) {
   ) {
     const refLines = String(system_prompt).split('\n').filter((l) => /^Image\s+\d+:/i.test(l));
     if (refLines.length > 0) {
-      const refHeader = refLines
+      const refDescriptions = refLines
         .map((l, i) => {
           const m = l.match(/^Image\s+(\d+):\s*(.*)/i);
           const idx = m ? m[1] : (i + 1);
@@ -157,29 +157,29 @@ async function callImageApi(db, log, opts) {
           const isProp = /prop/i.test(l);
 
           if (isLastOrLock) {
-            return `<image${idx}>是本分镜首帧画面（基准站位与构图锁）。保持<image${idx}>中的相机取景、背景透视与既有角色站位，使既有角色演化至最终动作结果，严禁生成重复人物或多余路人。\n[<image${idx}> / Image ${idx} — STRICT BASE FRAME: Maintain identical camera framing, scene background, and character positions from <image${idx}>. EVOLVE existing characters into their final postures; STRICTLY PREVENT duplicate characters or extra figures.]`;
+            return `参考图 ${idx}：本分镜首帧画面，继承其构图与既有角色站位。`;
           }
           if (isChar) {
             const nameM = content.match(/for\s+"([^"]+)"/i);
             const cName = nameM ? nameM[1] : '该角色';
-            return `<image${idx}>是角色「${cName}」的长相与服装参考（仅提供面部五官、发型与服装款式色彩）。\n【重要防照搬与防克隆铁律】<image${idx}>仅供提取角色相貌身份与穿着，绝对严禁照搬<image${idx}>的正面站立姿态、正面朝向或居中构图！画面中绝不可出现任何多余的正面站立人物、肖像贴图或克隆分身！「${cName}」必须全身心融入本镜头的具体剧情动作与相机机位中。\n[<image${idx}> / Image ${idx} — SINGLE PERSON IDENTITY REFERENCE for "${cName}": Use this specific person's facial identity and outfit for this character only. DO NOT copy the standing pose, framing, or orientation from <image${idx}>. DO NOT duplicate this character across the scene, DO NOT create clones or extra standing figures.]`;
+            return `参考图 ${idx}：提供角色「${cName}」的相貌身份与服装参考。`;
           }
           if (isScene) {
             const sceneM = content.match(/for\s+"([^"]+)"/i);
             const sName = sceneM ? sceneM[1] : '场景';
-            return `<image${idx}>是场景背景参考图（"${sName}"），保持场景环境空间结构、陈设与光影基调。\n[<image${idx}> / Image ${idx} — SCENE BACKGROUND REFERENCE for "${sName}": Maintain environment spatial context and lighting; DO NOT copy fixed camera framing.]`;
+            return `参考图 ${idx}：提供场景「${sName}」的环境构图与光影参考。`;
           }
           if (isProp) {
             const propM = content.match(/for\s+"([^"]+)"/i);
             const pName = propM ? propM[1] : '道具';
-            return `<image${idx}>是道具「${pName}」的外观参考。\n[<image${idx}> / Image ${idx} — PROP REFERENCE for "${pName}": Use for item appearance only.]`;
+            return `参考图 ${idx}：提供道具「${pName}」的外观参考。`;
           }
           if (isFourView) {
-            return `<image${idx}>为多视图参考（仅用于身份与服装参考）。\n[<image${idx}> / Image ${idx} — MODEL SHEET for identity reference only: DO NOT generate duplicate figures, multiple views, or panel dividers.]`;
+            return `参考图 ${idx}：提供角色形象与服装参考。`;
           }
-          return `<image${idx}>为视觉参考。\n[<image${idx}> / Image ${idx} — FOR REFERENCE ONLY, DO NOT copy its layout or framing]`;
-        })
-        .join('\n');
+          return `参考图 ${idx}：提供视觉参考。`;
+        });
+      const refHeader = `使用 ${refDescriptions.length} 张参考图进行分镜创作：\n${refDescriptions.join('\n')}`;
       effectivePrompt = `${refHeader}\n\n[GENERATE THIS SCENE — single continuous image, no grid, no split panels / 生成当前单张连续画面，非多格非画中画]:\n${effectivePrompt}`;
     }
   }

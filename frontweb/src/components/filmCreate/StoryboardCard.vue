@@ -640,10 +640,10 @@
                   继续查询
                 </el-button>
               </div>
-              <span v-if="ctx.isSbVideoGenerating(sb.id)" class="sb-video-regenerating-overlay">
+              <div v-if="ctx.isSbVideoGenerating(sb.id)" class="sb-video-generating-badge" title="新视频正在后台生成中，您可以继续观看和切换已生成的历史视频">
                 <el-icon class="is-loading"><Loading /></el-icon>
-                正在重新生成...
-              </span>
+                <span>新视频生成中...</span>
+              </div>
             </div>
             <div v-else class="sb-video-area sb-video-placeholder">
               <span v-if="ctx.isSbVideoGenerating(sb.id)" class="sb-video-generating-text">
@@ -705,10 +705,26 @@
                   @click.stop="ctx.onRemoveSbHistoryVideo(sb.id, item.video.id)"
                 >×</button>
               </div>
+              <div
+                v-if="ctx.isSbVideoGenerating(sb.id)"
+                class="sb-video-thumb sb-video-thumb--generating"
+                title="新视频正在后台生成中..."
+              >
+                <div class="sb-video-thumb-generating-inner">
+                  <el-icon class="is-loading"><Loading /></el-icon>
+                </div>
+                <span class="sb-video-thumb-label">生成中...</span>
+              </div>
             </div>
             <div v-else class="sb-strip-empty">
-              <el-icon class="sb-strip-empty-icon"><InfoFilled /></el-icon>
-              <span>暂无历史视频</span>
+              <template v-if="ctx.isSbVideoGenerating(sb.id)">
+                <el-icon class="is-loading"><Loading /></el-icon>
+                <span>新视频生成中...</span>
+              </template>
+              <template v-else>
+                <el-icon class="sb-strip-empty-icon"><InfoFilled /></el-icon>
+                <span>暂无历史视频</span>
+              </template>
             </div>
           </div>
         </div>
@@ -737,26 +753,8 @@
               </el-tooltip>
             </template>
 
-            <!-- 模型选择 -->
-            <div class="sb-model-select-wrap">
-              <span class="sb-config-label">模型</span>
-              <el-select
-                :model-value="sb.video_model || ''"
-                :empty-values="[null, undefined]"
-                size="small"
-                class="sb-model-select"
-                :disabled="ctx.savingVideoModelIds.has(sb.id) || ctx.isSbVideoGenerating(sb.id)"
-                @visible-change="$event && ctx.loadVideoModelChoices()"
-                @change="ctx.setShotVideoModel(sb, $event)"
-              >
-                <el-option :value="''" :label="'默认（' + (ctx.videoModelLabel(ctx.defaultShotModel(sb)) || 'H3') + '）'" />
-                <el-option v-for="option in (ctx.videoModelChoices?.value || ctx.videoModelChoices || [])" :key="option.model" :value="option.model" :label="option.label" />
-              </el-select>
-            </div>
-
-            <!-- 换装与H3素材 -->
+            <!-- 换装设置 -->
             <WardrobeSettings :key="'wardrobe-shot-' + sb.id" :drama-id="ctx.dramaId?.value || ctx.dramaId" :storyboard-id="sb.id" :disabled="ctx.isSbVideoGenerating(sb.id)" />
-            <H3ShotSettings v-if="isH3VideoModel(ctx.selectedShotModel(sb))" :key="'h3-' + sb.id" :drama-id="ctx.dramaId?.value || ctx.dramaId" :storyboard-id="sb.id" :aspect-ratio="ctx.projectAspectRatio?.value || ctx.projectAspectRatio" :disabled="ctx.isSbVideoGenerating(sb.id)" />
 
             <!-- 删除视频（紧随其后无大空位） -->
             <el-button
@@ -826,12 +824,10 @@ import {
   InfoFilled,
   Loading,
 } from '@element-plus/icons-vue'
-import { isH3VideoModel } from '@/utils/h3VideoBatch'
 import { useAgentContext } from '@/stores/agentContext'
 import UniversalSegmentOmniAtEditor from '@/components/UniversalSegmentOmniAtEditor.vue'
 import ShotSpeechDelivery from '@/components/ShotSpeechDelivery.vue'
 import WardrobeSettings from '@/components/WardrobeSettings.vue'
-import H3ShotSettings from '@/components/H3ShotSettings.vue'
 
 const props = defineProps({
   sb: { type: Object, required: true },
@@ -2055,16 +2051,46 @@ const prevShotNumber = computed(() => {
   flex-wrap: wrap;
   flex-shrink: 0;
 }
-.sb-video-regenerating-overlay {
+.sb-video-generating-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 10;
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(167, 139, 250, 0.5);
+  color: #c4b5fd;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 20px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+  user-select: none;
+}
+.sb-video-thumb--generating {
+  border-style: dashed !important;
+  border-color: rgba(168, 85, 247, 0.6) !important;
+  background: rgba(139, 92, 246, 0.08);
+  cursor: default;
+}
+.sb-video-thumb-generating-inner {
+  width: 100%;
+  height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.65);
-  font-size: 0.82rem;
   color: #a78bfa;
+  font-size: 16px;
+  background: rgba(0, 0, 0, 0.4);
+}
+.sb-video-thumb--generating .sb-video-thumb-label {
+  background: rgba(124, 58, 237, 0.8) !important;
+  color: #f5f3ff;
 }
 .sb-videos-strip {
   display: flex;
@@ -2140,23 +2166,7 @@ const prevShotNumber = computed(() => {
   gap: 4px;
 }
 
-/* 紧凑模型选择 */
-.sb-model-select-wrap {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
-}
-.sb-config-label {
-  font-size: 11px;
-  color: var(--el-text-color-secondary);
-  font-weight: 500;
-  flex-shrink: 0;
-}
-.sb-model-select {
-  width: 115px !important;
-  flex-shrink: 0;
-}
+
 
 @media (max-width: 1250px) {
   .storyboard-row {

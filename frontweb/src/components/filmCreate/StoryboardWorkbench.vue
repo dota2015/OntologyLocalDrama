@@ -114,8 +114,10 @@
     <!-- 分镜提示词编辑弹窗 -->
     <el-dialog
       v-model="showSbPromptDialog"
-      :title="`分镜 ${sbPromptTarget?.storyboard_number ?? ''} · ${sbPromptActiveTab === 'image' ? '编辑图片提示词' : '编辑视频提示词'}`"
-      width="720px"
+      :title="`分镜 ${sbPromptTarget?.storyboard_number ?? ''} · ${sbPromptActiveTab === 'image' ? '编辑图片提示词' : '编辑视频提示词与多模态时间线'}`"
+      width="1160px"
+      class="sb-prompt-dialog"
+      top="3vh"
       @close="sbPromptTarget = null"
     >
       <el-tabs v-model="sbPromptActiveTab" class="sb-prompt-tabs">
@@ -168,10 +170,13 @@
           </el-form>
         </el-tab-pane>
 
-        <el-tab-pane label="🎬 视频提示词" name="video">
+        <el-tab-pane label="🎬 视频提示词与槽位" name="video">
           <el-form v-if="sbPromptTarget" label-width="0" class="sb-prompt-dialog-form">
-            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
-              <span style="font-size:12px; color:#6b7280;">视频生成提示词（用于分镜生视频）</span>
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
+              <el-radio-group v-model="sbPromptVideoSubTab" size="small">
+                <el-radio-button label="slots">📋 多镜头时间线与语义槽位 (H3 / Slots)</el-radio-button>
+                <el-radio-button label="preview">📝 视频提示词文本预览</el-radio-button>
+              </el-radio-group>
               <div style="display:flex; align-items:center; gap:8px;">
                 <el-button
                   size="small"
@@ -189,27 +194,299 @@
                 >{{ sbPromptVideoPolishing ? 'AI 润色中…' : 'AI 润色优化' }}</el-button>
               </div>
             </div>
-            <el-form-item label="">
-              <el-input
-                v-model="sbPromptVideoText"
-                type="textarea"
-                :rows="12"
-                placeholder="视频生成提示词（可点击「AI 润色优化」进行二次润色，或点击「按分镜参数重建」重构）"
-              />
-            </el-form-item>
-            <div class="sb-prompt-section-title" style="margin-top:10px; display:flex; align-items:center; gap:6px;">
-              <span>💡 AI 视频优化指导意见（选填，对「AI 润色优化」生效）</span>
-            </div>
-            <el-form-item label="">
-              <div style="width:100%">
-                <el-input
-                  v-model="sbPromptUserFeedback"
-                  type="textarea"
-                  :rows="2"
-                  placeholder="输入修改指导（如：增强受击紧张感，镜头缓慢推进，避免过快运动等）"
-                />
+
+            <!-- 子视图 1：结构化多镜头时间线与语义槽位 -->
+            <div v-show="sbPromptVideoSubTab === 'slots'" class="sb-slots-view">
+              <div v-if="sbPromptVideoSlots" class="sb-slots-timeline-container">
+                <!-- MiniMax H3 多模态参考素材与声音绑定卡片 (Picture & Audio Slots) -->
+                <div class="sb-slot-h3-media-card" v-loading="sbPromptH3Loading">
+                  <div class="sb-slot-section-header">
+                    <span class="sb-slot-section-title">🎬 MiniMax H3 多模态参考素材与声音绑定 (Picture & Audio Slots)</span>
+                    <div class="sb-slot-h3-header-right">
+                      <div style="display:flex; align-items:center; gap:6px;">
+                        <span style="font-size:11.5px; color:#6b7280;">上一镜尾帧衔接：</span>
+                        <el-select
+                          v-if="sbPromptH3Data"
+                          v-model="sbPromptH3Data.continuity"
+                          size="small"
+                          style="width:230px;"
+                        >
+                          <el-option value="off" label="使用本镜独立首帧 (默认)" />
+                          <el-option value="auto" label="自动：相邻同场景使用上一镜尾帧" />
+                          <el-option value="previous_tail" label="指定：强制使用上一镜尾帧" />
+                        </el-select>
+                      </div>
+                      <div v-if="sbPromptH3Data" style="font-size:11px; color:#94a3b8; text-align:right; margin-top:2px;">
+                        <span v-if="sbPromptH3Data.continuity === 'off'">使用本分镜独立首帧生成视频（画面独立可控）</span>
+                        <span v-else-if="sbPromptH3Data.previous_storyboard">
+                          上一镜：#{{ sbPromptH3Data.previous_storyboard.number }} · {{ sbPromptH3Data.previous_storyboard.same_scene ? '同场景' : '不同场景' }} · {{ sbPromptH3Data.previous_storyboard.video_ready ? '视频已就绪' : '尚无已完成视频' }}
+                        </span>
+                        <span v-else>本集第一镜，使用本镜首帧。</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- 画面参考槽位 (<Picture N>) -->
+                  <div class="sb-h3-media-subgroup">
+                    <div class="sb-h3-subgroup-title">
+                      <span>🖼️ 画面参考槽位（Picture 映射与保留度）：</span>
+                      <span style="font-size:11px; color:#9ca3af; font-weight:normal;">模型通过 &lt;Picture N&gt; 索引画面，由 &lt;Subject N&gt; 锁定人物身份</span>
+                    </div>
+                    <div v-if="sbPromptH3Data && (sbPromptH3Data.references?.length || sbPromptH3Data.opening_anchor)" class="sb-h3-picture-grid">
+                      <!-- 人物/场景/道具参考图 -->
+                      <div
+                        v-for="refItem in sbPromptH3Data.references"
+                        :key="refItem.source"
+                        class="sb-h3-picture-item"
+                      >
+                        <div class="sb-h3-pic-thumb-wrap">
+                          <el-image
+                            :src="refItem.url"
+                            :preview-src-list="[refItem.url]"
+                            fit="cover"
+                            class="sb-h3-pic-thumb"
+                          />
+                          <span class="sb-h3-pic-tag">{{ refItem.tag || ('<Picture ' + refItem.index + '>') }}</span>
+                        </div>
+                        <div class="sb-h3-pic-info">
+                          <div class="sb-h3-pic-name" :title="refItem.name">
+                            {{ refItem.name }}
+                            <el-tag v-if="refItem.subject_tag" size="small" type="success" effect="dark" class="sb-h3-mini-tag">{{ refItem.subject_tag }}</el-tag>
+                          </div>
+                          <div class="sb-h3-pic-meta">
+                            <span class="sb-h3-badge-kind">{{ refItem.kind === 'character_sheet' ? '人物四视图' : refItem.kind === 'character_outfit' ? '人物新造型' : refItem.kind === 'scene' ? '场景环境' : '关键道具' }}</span>
+                            <span class="sb-h3-badge-retention" :title="refItem.retention_role">{{ refItem.retention_role === 'partially_preserved' ? '五官继承' : '完全保留' }}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <!-- 开场首帧构图锚点 (如果有) -->
+                      <div v-if="sbPromptH3Data.opening_anchor" class="sb-h3-picture-item sb-h3-picture-item--opening">
+                        <div class="sb-h3-pic-thumb-wrap">
+                          <el-image
+                            :src="sbPromptH3Data.opening_anchor.url"
+                            :preview-src-list="[sbPromptH3Data.opening_anchor.url]"
+                            fit="cover"
+                            class="sb-h3-pic-thumb"
+                          />
+                          <span class="sb-h3-pic-tag">{{ sbPromptH3Data.opening_anchor.tag }}</span>
+                        </div>
+                        <div class="sb-h3-pic-info">
+                          <div class="sb-h3-pic-name">本镜首帧构图锚点</div>
+                          <div class="sb-h3-pic-meta">
+                            <span class="sb-h3-badge-kind">开场构图与服装</span>
+                            <span class="sb-h3-badge-retention">fully_preserved</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <div v-else-if="!sbPromptH3Loading" class="sb-h3-empty-hint">
+                      暂无关联人物或场景参考图。请先在资产库或分镜中勾选人物/场景并生成图片。
+                    </div>
+                  </div>
+
+                  <!-- 声音参考槽位 (<Audio N>) -->
+                  <div class="sb-h3-media-subgroup" style="margin-top:10px;">
+                    <div class="sb-h3-subgroup-title">
+                      <span>🎙️ 声音参考与对白标签（Audio 映射与说话人契约）：</span>
+                      <span style="font-size:11px; color:#9ca3af; font-weight:normal;">每镜最多 3 个声音，通过 &lt;Audio N&gt; 索引音色，台词采用 &lt;d&gt;...&lt;/d&gt; 标签包裹</span>
+                    </div>
+                    <div v-if="sbPromptH3Data && sbPromptH3Data.voice_references?.length" class="sb-h3-audio-grid">
+                      <div
+                        v-for="voice in sbPromptH3Data.voice_references"
+                        :key="voice.tag"
+                        class="sb-h3-audio-item"
+                      >
+                        <div class="sb-h3-audio-header">
+                          <span class="sb-h3-audio-tag">{{ voice.tag }}</span>
+                          <span class="sb-h3-speaker-tag">{{ voice.speaker_tag }} {{ voice.speaker }}</span>
+                          <el-tag v-if="voice.subject_tag" size="small" type="success" effect="plain" class="sb-h3-mini-tag">{{ voice.subject_tag }}</el-tag>
+                          <span class="sb-h3-audio-kind">{{ voice.kind === 'narration' ? '画外旁白 (闭嘴)' : '角色对白' }}</span>
+                          <span class="sb-h3-audio-voice-name" :title="voice.voice_id">{{ voice.voice_id }}</span>
+                        </div>
+                        <div class="sb-h3-audio-line" :title="voice.text">
+                          <span class="sb-h3-d-tag">&lt;d&gt;[Chinese]</span> {{ voice.text }} <span class="sb-h3-d-tag">&lt;/d&gt;</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div v-else-if="!sbPromptH3Loading" class="sb-h3-empty-hint">
+                      本镜无台词或旁白提取，将作为无台词纯画面/动作音效镜头生成。
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 顶部时间线控制栏 -->
+                <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px; padding:0 2px;">
+                  <div style="display:flex; align-items:center; gap:8px;">
+                    <span style="font-size:13px; font-weight:600; color:#1e293b;">🎬 多镜头时间线切分 (Shot Timeline)</span>
+                    <el-tag size="small" type="primary">{{ sbPromptVideoSlots.shots_timeline?.length || 1 }} 个切分镜头</el-tag>
+                  </div>
+                  <el-button size="small" type="primary" plain @click="addTimelineShot">➕ 添加分镜头切分</el-button>
+                </div>
+
+                <!-- 镜头时间轴切分卡片 -->
+                <div
+                  v-for="(st, sIdx) in (sbPromptVideoSlots.shots_timeline || [])"
+                  :key="st.shot_number || sIdx"
+                  class="sb-slot-shot-card"
+                >
+                  <div class="sb-slot-shot-header">
+                    <div class="sb-slot-shot-title">
+                      <span class="sb-slot-shot-badge">镜头 {{ st.shot_number || (sIdx + 1) }}</span>
+                      <span class="sb-slot-shot-time">
+                        <el-icon style="margin-right:2px; vertical-align:-1px;"><Clock /></el-icon>
+                        {{ st.timestamp ? `切镜时刻: ${st.timestamp}` : '起始建立 (00:00.000)' }}
+                      </span>
+                      <span v-if="st.duration" class="sb-slot-shot-dur">预计 {{ st.duration }} 秒</span>
+                    </div>
+                    <div class="sb-slot-shot-cam">
+                      <span style="font-size:12px; color:#6b7280; margin-right:4px;">机位:</span>
+                      <el-input v-if="st.camera" v-model="st.camera.shot_type" size="small" style="width:80px;" placeholder="景别" @input="syncSlotsToPromptPreview" />
+                      <el-input v-if="st.camera" v-model="st.camera.movement" size="small" style="width:90px;" placeholder="运镜" @input="syncSlotsToPromptPreview" />
+                      <el-button
+                        v-if="sbPromptVideoSlots.shots_timeline && sbPromptVideoSlots.shots_timeline.length > 1"
+                        size="small"
+                        type="danger"
+                        text
+                        style="padding:0 4px; margin-left:6px;"
+                        @click="removeTimelineShot(sIdx)"
+                      >删除</el-button>
+                    </div>
+                  </div>
+
+                  <!-- 镜头动作描述 -->
+                  <div class="sb-slot-action-row">
+                    <span class="sb-slot-field-label">镜头动作：</span>
+                    <el-input
+                      v-model="st.action"
+                      type="textarea"
+                      :rows="2"
+                      size="small"
+                      placeholder="该镜头发生的核心物理动作与场景变化"
+                      @input="syncSlotsToPromptPreview"
+                    />
+                  </div>
+
+                  <!-- 角色动态轨迹与姿态 -->
+                  <div v-if="st.character_trajectories && st.character_trajectories.length" class="sb-slot-chars-container">
+                    <div class="sb-slot-section-subtitle">角色轨迹与口型状态：</div>
+                    <div
+                      v-for="(c, cIdx) in st.character_trajectories"
+                      :key="c.name || cIdx"
+                      class="sb-slot-char-card"
+                    >
+                      <div class="sb-slot-char-name">「{{ c.name }}」</div>
+                      <div class="sb-slot-char-grid">
+                        <div class="sb-slot-char-item">
+                          <span class="sb-slot-mini-label">起点</span>
+                          <el-input v-model="c.start_anchor" size="small" placeholder="起始位置" @input="syncSlotsToPromptPreview" />
+                        </div>
+                        <div class="sb-slot-char-item">
+                          <span class="sb-slot-mini-label">终点</span>
+                          <el-input v-model="c.end_anchor" size="small" placeholder="终点位置" @input="syncSlotsToPromptPreview" />
+                        </div>
+                        <div class="sb-slot-char-item" style="flex:2;">
+                          <span class="sb-slot-mini-label">终态姿态</span>
+                          <el-input v-model="c.terminal_pose" size="small" placeholder="终态姿势" @input="syncSlotsToPromptPreview" />
+                        </div>
+                        <div class="sb-slot-char-item" style="flex:1.5;">
+                          <span class="sb-slot-mini-label">口型状态</span>
+                          <el-input v-model="c.mouth_state" size="small" placeholder="如：开口说话并同步口型 / 双唇紧闭" @input="syncSlotsToPromptPreview" />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- 台词与口型契约 -->
+                  <div v-if="st.audio_lip_sync" class="sb-slot-dialogue-box">
+                    <span class="sb-slot-field-label">对白契约：</span>
+                    <div style="flex:1; display:flex; gap:8px; align-items:center;">
+                      <el-input v-model="st.audio_lip_sync.speaker_name" size="small" style="width:100px;" placeholder="说话人" @input="syncSlotsToPromptPreview" />
+                      <el-input v-model="st.audio_lip_sync.dialogue_content" size="small" style="flex:1;" placeholder="台词内容（若无台词可留空）" @input="syncSlotsToPromptPreview" />
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 全局摄影与物理环境语义槽位 -->
+                <div v-if="sbPromptVideoSlots.camera || sbPromptVideoSlots.environment_vfx" class="sb-slot-global-card">
+                  <div class="sb-slot-section-subtitle">🎥 全局视听语义槽位 (机位契约与物理环境交互)：</div>
+                  <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top:8px;">
+                    <div style="display:flex; align-items:center; gap:6px;">
+                      <span class="sb-slot-mini-label" style="width:70px;">全局景别：</span>
+                      <el-input v-if="sbPromptVideoSlots.camera" v-model="sbPromptVideoSlots.camera.shot_type" size="small" placeholder="如：中景、特写、全景" @input="syncSlotsToPromptPreview" />
+                    </div>
+                    <div style="display:flex; align-items:center; gap:6px;">
+                      <span class="sb-slot-mini-label" style="width:70px;">全局运镜：</span>
+                      <el-input v-if="sbPromptVideoSlots.camera" v-model="sbPromptVideoSlots.camera.movement" size="small" placeholder="如：tracking, push, static" @input="syncSlotsToPromptPreview" />
+                    </div>
+                    <div style="display:flex; align-items:center; gap:6px;">
+                      <span class="sb-slot-mini-label" style="width:70px;">物理交互：</span>
+                      <el-input v-if="sbPromptVideoSlots.environment_vfx" v-model="sbPromptVideoSlots.environment_vfx.physical_phenomena" size="small" placeholder="如：飞溅碎石、烟尘与火花" @input="syncSlotsToPromptPreview" />
+                    </div>
+                    <div style="display:flex; align-items:center; gap:6px;">
+                      <span class="sb-slot-mini-label" style="width:70px;">结果收束：</span>
+                      <el-input v-if="sbPromptVideoSlots.environment_vfx" v-model="sbPromptVideoSlots.environment_vfx.terminal_event" size="small" placeholder="终态事件/定格结果" @input="syncSlotsToPromptPreview" />
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 环境声场与后期配乐 (H3 官方字段) -->
+                <div v-if="sbPromptVideoSlots.h3_multimodal" class="sb-slot-soundscape-card">
+                  <div class="sb-slot-section-subtitle">多模态声音设计 (MiniMax H3 / 声音槽位)：</div>
+                  <div style="display:flex; flex-direction:column; gap:6px; margin-top:6px;">
+                    <div style="display:flex; align-items:center; gap:8px;">
+                      <span class="sb-slot-field-label" style="width:140px;">环境音效 (soundscape)：</span>
+                      <el-input v-model="sbPromptVideoSlots.h3_multimodal.overall_soundscape" size="small" style="flex:1;" placeholder="环境音、物理碰撞声、环境底噪" @input="syncSlotsToPromptPreview" />
+                    </div>
+                    <div style="display:flex; align-items:center; gap:8px;">
+                      <span class="sb-slot-field-label" style="width:140px;">配乐标签 (music)：</span>
+                      <el-input v-model="sbPromptVideoSlots.h3_multimodal.non_diegetic_music" size="small" style="flex:1;" placeholder="情绪配乐描述，或 N/A" @input="syncSlotsToPromptPreview" />
+                    </div>
+                  </div>
+                </div>
               </div>
-            </el-form-item>
+
+              <!-- 槽位未初始化提示 -->
+              <div v-else class="sb-slots-empty-card">
+                <p style="color:#6b7280; font-size:13px; margin-bottom:10px;">当前分镜尚未合成结构化镜头时间线槽位，您可以一键按分镜参数构建。</p>
+                <el-button type="primary" size="small" :loading="sbPromptRebuilding" @click="onRebuildSbVideoPrompt">按分镜参数合成槽位与时间线</el-button>
+              </div>
+            </div>
+
+            <!-- 子视图 2：提示词文本预览与通用编辑 -->
+            <div v-show="sbPromptVideoSubTab === 'preview'" class="sb-preview-view">
+              <!-- H3 编译结果预览 (如果存在) -->
+              <div v-if="sbPromptVideoSlots?.h3_multimodal?.integrated_multimodal_description" style="margin-bottom:12px; background:#f9fafb; border:1px solid #e5e7eb; border-radius:6px; padding:10px 12px;">
+                <div style="font-size:12px; font-weight:600; color:#374151; margin-bottom:4px;">
+                  🎬 MiniMax H3 规范多镜头时间线描述（由槽位编译器实时驱动）
+                </div>
+                <div style="font-size:12px; color:#4b5563; white-space:pre-wrap; line-height:1.5; font-family:monospace; max-height:140px; overflow-y:auto; background:#ffffff; padding:6px 8px; border-radius:4px; border:1px solid #e5e7eb;">{{ sbPromptVideoSlots.h3_multimodal.integrated_multimodal_description }}</div>
+              </div>
+
+              <div style="font-size:12px; color:#6b7280; margin-bottom:4px;">通用视频生成提示词（用于 Kling / Seedance / Wan 等通用模型）</div>
+              <el-form-item label="">
+                <el-input
+                  v-model="sbPromptVideoText"
+                  type="textarea"
+                  :rows="9"
+                  placeholder="视频生成提示词（可点击「AI 润色优化」进行二次润色，或点击「按分镜参数重建」重构）"
+                />
+              </el-form-item>
+
+              <div class="sb-prompt-section-title" style="margin-top:10px; display:flex; align-items:center; gap:6px;">
+                <span>💡 AI 视频优化指导意见（选填，对「AI 润色优化」生效）</span>
+              </div>
+              <el-form-item label="">
+                <div style="width:100%">
+                  <el-input
+                    v-model="sbPromptUserFeedback"
+                    type="textarea"
+                    :rows="2"
+                    placeholder="输入修改指导（如：增强受击紧张感，镜头缓慢推进，避免过快运动等）"
+                  />
+                </div>
+              </el-form-item>
+            </div>
           </el-form>
         </el-tab-pane>
       </el-tabs>
@@ -546,7 +823,7 @@
 <script setup>
 import { ref, reactive, computed, watch, nextTick, inject, provide, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox, ElNotification, ElLoading } from 'element-plus'
-import { Loading, WarningFilled } from '@element-plus/icons-vue'
+import { Loading, WarningFilled, Clock } from '@element-plus/icons-vue'
 import StoryboardBatchToolbar from './StoryboardBatchToolbar.vue'
 import StoryboardCard from './StoryboardCard.vue'
 import BatchSpeechGeneration from '../BatchSpeechGeneration.vue'
@@ -752,6 +1029,10 @@ const sbPromptActiveTab = ref('image')  // 'image' | 'video'
 const sbPromptImageText = ref('')       // 原始 image_prompt
 const sbPromptPolishedText = ref('')    // AI 优化后 polished_prompt
 const sbPromptVideoText = ref('')       // video_prompt
+const sbPromptVideoSubTab = ref('slots') // 'slots' | 'preview'
+const sbPromptVideoSlots = ref(null)     // video_slots 结构化对象
+const sbPromptH3Data = ref(null)         // H3 原生素材与声音绑定对象
+const sbPromptH3Loading = ref(false)     // H3 素材加载中
 const sbPromptSaving = ref(false)
 const sbPromptPolishing = ref(false)
 const sbPromptRebuilding = ref(false)
@@ -2094,12 +2375,26 @@ async function onOpenSbPromptDialog(sb, initialTab = 'image') {
     title: sb.title || `第${sb.storyboard_number}镜`,
   })
   sbPromptActiveTab.value = initialTab === 'video' ? 'video' : 'image'
+  sbPromptVideoSubTab.value = 'slots'
   sbPromptTarget.value = sb
   sbPromptUserFeedback.value = ''
   sbPromptImageText.value = (sb.image_prompt || '').toString()
   sbPromptPolishedText.value = (sb.polished_prompt || '').toString()
   const rawVideo = (sb.video_prompt || '').toString()
   sbPromptVideoText.value = formatVideoPromptForEdit(rawVideo)
+  let rawSlots = sb.video_slots
+  if (typeof rawSlots === 'string') {
+    try { rawSlots = JSON.parse(rawSlots) } catch (_) { rawSlots = null }
+  }
+  sbPromptVideoSlots.value = ensureShotsTimeline(rawSlots ? JSON.parse(JSON.stringify(rawSlots)) : null, sb)
+  sbPromptH3Data.value = null
+  if (dramaId.value && sb.id) {
+    sbPromptH3Loading.value = true
+    videosAPI.h3Inputs(dramaId.value, sb.id)
+      .then((res) => { sbPromptH3Data.value = res })
+      .catch((err) => console.warn('[H3素材槽位] 加载失败', err))
+      .finally(() => { sbPromptH3Loading.value = false })
+  }
   showSbPromptDialog.value = true
   try {
     const fresh = await storyboardsAPI.get(sb.id)
@@ -2108,8 +2403,247 @@ async function onOpenSbPromptDialog(sb, initialTab = 'image') {
       sbPromptImageText.value = (fresh.image_prompt || '').toString()
       sbPromptPolishedText.value = (fresh.polished_prompt || '').toString()
       sbPromptVideoText.value = formatVideoPromptForEdit((fresh.video_prompt || '').toString())
+      let freshSlots = fresh.video_slots
+      if (typeof freshSlots === 'string') {
+        try { freshSlots = JSON.parse(freshSlots) } catch (_) { freshSlots = null }
+      }
+      if (freshSlots) {
+        sbPromptVideoSlots.value = ensureShotsTimeline(JSON.parse(JSON.stringify(freshSlots)), fresh)
+      }
     }
   } catch (_) {}
+}
+
+function ensureShotsTimeline(slots, sb = {}) {
+  if (!slots || typeof slots !== 'object') {
+    slots = {}
+  }
+  if (!slots.camera) {
+    slots.camera = { shot_type: sb.shot_type || '中景', movement: sb.movement || 'tracking', movement_description: '' }
+  }
+  if (!slots.audio_lip_sync) {
+    slots.audio_lip_sync = {
+      mode: sb.dialogue ? 'in_frame_dialogue' : 'silent_ambient',
+      speaker_name: (sb.dialogue || '').match(/^([^:：]+)[:：]/)?.[1] || '',
+      dialogue_content: (sb.dialogue || '').replace(/^[^:：]+[:：]\s*/, '').replace(/^["“](.*)["”]$/, '$1'),
+      lip_sync_rule: sb.dialogue ? '说话人开口说话并同步口型，其余人员双唇紧闭' : '画内全员紧闭双唇，无台词口型',
+    }
+  }
+  if (!Array.isArray(slots.trajectories)) {
+    slots.trajectories = []
+  }
+  if (!slots.timing) {
+    slots.timing = { duration: Number(sb.duration) || 5, pacing: '稳健推进' }
+  }
+  if (!slots.environment_vfx) {
+    slots.environment_vfx = {
+      lighting_atmosphere: sb.atmosphere || '',
+      physical_phenomena: '',
+      terminal_event: sb.result || '',
+    }
+  }
+
+  const dur = Number(slots.timing?.duration || sb.duration || 5)
+  const h3Shots = slots.h3_multimodal?.shots || []
+
+  // 如果 shots_timeline 缺失或为空，从现有数据自动派生重建
+  if (!Array.isArray(slots.shots_timeline) || slots.shots_timeline.length === 0) {
+    if (h3Shots.length > 0) {
+      slots.shots_timeline = h3Shots.map((hs, idx) => {
+        const isCut = !!hs.timestamp
+        return {
+          shot_number: hs.shot_number || (idx + 1),
+          timestamp: hs.timestamp || null,
+          duration: isCut ? (dur - Math.round(dur / 2)) : (h3Shots.length > 1 ? Math.round(dur / 2) : dur),
+          camera: {
+            shot_type: isCut ? (slots.camera?.shot_type === '特写' ? '中景' : '特写') : (slots.camera?.shot_type || '中景'),
+            movement: isCut ? 'static' : (slots.camera?.movement || 'tracking'),
+            movement_description: isCut ? '平稳对焦终态反应' : (slots.camera?.movement_description || ''),
+          },
+          action: isCut ? (sb.result || hs.description || '动作收束并完成交互反应') : (sb.action || hs.description || '场景主体动作开启推进'),
+          result: isCut ? (sb.result || '') : '',
+          character_trajectories: (slots.trajectories || []).map((t) => ({
+            ...t,
+            mouth_state: isCut
+              ? (slots.audio_lip_sync?.speaker_name === t.name ? '开口说话并同步口型' : '双唇紧闭，严禁张嘴说话，无任何台词口型动作')
+              : (slots.audio_lip_sync?.dialogue_content && h3Shots.length > 1 ? '双唇紧闭，严禁张嘴说话，无任何台词口型动作' : t.mouth_state),
+            shot_number: hs.shot_number || (idx + 1),
+          })),
+          audio_lip_sync: isCut
+            ? { ...slots.audio_lip_sync }
+            : (h3Shots.length > 1 ? { mode: 'silent_ambient', speaker_name: '', dialogue_content: '', lip_sync_rule: '初始建立镜头，画内全员紧闭双唇，无台词口型' } : { ...slots.audio_lip_sync }),
+        }
+      })
+    } else {
+      const needsCut = dur >= 6 && (String(sb.result || '').trim().length > 0 || String(sb.dialogue || '').trim().length > 0)
+      if (!needsCut) {
+        slots.shots_timeline = [
+          {
+            shot_number: 1,
+            timestamp: null,
+            duration: dur,
+            camera: {
+              shot_type: slots.camera?.shot_type || '中景',
+              movement: slots.camera?.movement || 'tracking',
+              movement_description: slots.camera?.movement_description || '',
+            },
+            action: sb.action || '场景主体动作稳健推进',
+            result: sb.result || '',
+            character_trajectories: (slots.trajectories || []).map((t) => ({ ...t, shot_number: 1 })),
+            audio_lip_sync: { ...slots.audio_lip_sync },
+          },
+        ]
+      } else {
+        const cutSec = Math.round((dur / 2) * 2) / 2
+        const mm = String(Math.floor(cutSec / 60)).padStart(2, '0')
+        const ss = String(Math.floor(cutSec % 60)).padStart(2, '0')
+        const timecode = `${mm}:${ss}.000`
+        slots.shots_timeline = [
+          {
+            shot_number: 1,
+            timestamp: null,
+            duration: cutSec,
+            camera: {
+              shot_type: slots.camera?.shot_type || '中景',
+              movement: slots.camera?.movement || 'tracking',
+              movement_description: '',
+            },
+            action: sb.action || '场景主体动作开启推进',
+            result: '',
+            character_trajectories: (slots.trajectories || []).map((t) => ({
+              ...t,
+              mouth_state: '双唇紧闭，严禁张嘴说话，无任何台词口型动作',
+              shot_number: 1,
+            })),
+            audio_lip_sync: { mode: 'silent_ambient', speaker_name: '', dialogue_content: '', lip_sync_rule: '初始建立镜头，画内全员紧闭双唇，无台词口型' },
+          },
+          {
+            shot_number: 2,
+            timestamp: timecode,
+            duration: dur - cutSec,
+            camera: {
+              shot_type: slots.camera?.shot_type === '特写' ? '中景' : '特写',
+              movement: 'static',
+              movement_description: '',
+            },
+            action: sb.result || '动作收束并完成交互反应',
+            result: sb.result || '',
+            character_trajectories: (slots.trajectories || []).map((t) => ({
+              ...t,
+              mouth_state: slots.audio_lip_sync?.speaker_name === t.name ? '开口说话并同步口型' : '双唇紧闭，严禁张嘴说话，完全无任何开口动作',
+              shot_number: 2,
+            })),
+            audio_lip_sync: { ...slots.audio_lip_sync },
+          },
+        ]
+      }
+    }
+  }
+
+  // 保证每个镜头下的各属性非空
+  slots.shots_timeline.forEach((st, idx) => {
+    if (!st.camera) st.camera = { shot_type: slots.camera?.shot_type || '中景', movement: slots.camera?.movement || 'tracking', movement_description: '' }
+    if (!st.audio_lip_sync) st.audio_lip_sync = { mode: 'silent_ambient', speaker_name: '', dialogue_content: '', lip_sync_rule: '' }
+    if (!Array.isArray(st.character_trajectories) || st.character_trajectories.length === 0) {
+      st.character_trajectories = (slots.trajectories || []).map((t) => ({ ...t, shot_number: st.shot_number || (idx + 1) }))
+    }
+  })
+
+  // 确保 h3_multimodal
+  if (!slots.h3_multimodal) {
+    slots.h3_multimodal = {
+      shots: [],
+      integrated_multimodal_description: '',
+      overall_soundscape: sb.sound_effect ? `Ambient environmental audio, room tone, and physical impact sounds: ${sb.sound_effect}.` : '',
+      non_diegetic_music: sb.bgm_prompt || 'N/A',
+    }
+  }
+
+  return slots
+}
+
+function addTimelineShot() {
+  if (!sbPromptVideoSlots.value) return
+  if (!Array.isArray(sbPromptVideoSlots.value.shots_timeline)) {
+    sbPromptVideoSlots.value.shots_timeline = []
+  }
+  const len = sbPromptVideoSlots.value.shots_timeline.length
+  const nextNum = len + 1
+  const prevDuration = sbPromptVideoSlots.value.timing?.duration || sbPromptTarget.value?.duration || 6
+  const cutSec = Math.round((prevDuration / nextNum) * (nextNum - 1) * 2) / 2
+  const mm = String(Math.floor(cutSec / 60)).padStart(2, '0')
+  const ss = String(Math.floor(cutSec % 60)).padStart(2, '0')
+  const timecode = `${mm}:${ss}.000`
+
+  sbPromptVideoSlots.value.shots_timeline.push({
+    shot_number: nextNum,
+    timestamp: timecode,
+    duration: 3,
+    camera: {
+      shot_type: '特写',
+      movement: 'static',
+      movement_description: '',
+    },
+    action: '镜头切至特写/反打，主体完成关键反应',
+    result: '',
+    character_trajectories: (sbPromptVideoSlots.value.trajectories || []).map((t) => ({
+      ...t,
+      shot_number: nextNum,
+    })),
+    audio_lip_sync: {
+      mode: 'silent_ambient',
+      speaker_name: '',
+      dialogue_content: '',
+      lip_sync_rule: '画内全员紧闭双唇，无台词口型',
+    },
+  })
+  syncSlotsToPromptPreview()
+}
+
+function removeTimelineShot(index) {
+  if (!sbPromptVideoSlots.value?.shots_timeline) return
+  if (sbPromptVideoSlots.value.shots_timeline.length <= 1) {
+    ElMessage.warning('至少需要保留一个镜头')
+    return
+  }
+  sbPromptVideoSlots.value.shots_timeline.splice(index, 1)
+  sbPromptVideoSlots.value.shots_timeline.forEach((st, idx) => {
+    st.shot_number = idx + 1
+    if (idx === 0) st.timestamp = null
+  })
+  syncSlotsToPromptPreview()
+}
+
+function syncSlotsToPromptPreview() {
+  const slots = sbPromptVideoSlots.value
+  if (!slots) return
+  if (Array.isArray(slots.shots_timeline) && slots.shots_timeline.length > 0) {
+    const h3Shots = slots.shots_timeline.map((st) => {
+      let desc = ''
+      const cam = st.camera?.shot_type || 'medium shot'
+      const move = st.camera?.movement || 'tracking'
+      if (!st.timestamp) {
+        desc = `Live-action, cinematic. A ${cam} establishes the scene. The camera begins with ${move} as ${st.action || 'the action initiates'}.`
+      } else {
+        desc = `At ${st.timestamp}, the camera cuts to a ${cam}, where ${st.action || 'the movement resolves'}.`
+        if (st.audio_lip_sync?.dialogue_content) {
+          const spk = st.audio_lip_sync.speaker_name ? `${st.audio_lip_sync.speaker_name}: ` : ''
+          const cleanDiag = String(st.audio_lip_sync.dialogue_content).replace(/^["“](.*)["”]$/, '$1')
+          desc += ` Dialogue follows: ${spk}“${cleanDiag}”`
+        }
+      }
+      return {
+        shot_number: st.shot_number,
+        timestamp: st.timestamp,
+        description: desc.trim(),
+      }
+    })
+    if (!slots.h3_multimodal) slots.h3_multimodal = {}
+    slots.h3_multimodal.shots = h3Shots
+    slots.h3_multimodal.integrated_multimodal_description = h3Shots
+      .map((s) => (s.timestamp ? `[Shot ${s.shot_number}] At ${s.timestamp}, ${s.description.replace(/^At\s+[\d:.]+,\s*/, '')}` : `[Shot ${s.shot_number}] ${s.description}`))
+      .join('\n')
+  }
 }
 
 function formatVideoPromptForEdit(text) {
@@ -2146,7 +2680,14 @@ async function onRebuildSbVideoPrompt() {
     const res = await storyboardsAPI.rebuildVideoPrompt(sb.id)
     if (res?.video_prompt) {
       sbPromptVideoText.value = formatVideoPromptForEdit(res.video_prompt)
-      ElMessage.success('已按最新分镜参数重建视频提示词')
+      let slots = res.video_slots
+      if (typeof slots === 'string') {
+        try { slots = JSON.parse(slots) } catch (_) { slots = null }
+      }
+      if (slots) {
+        sbPromptVideoSlots.value = ensureShotsTimeline(JSON.parse(JSON.stringify(slots)), sb)
+      }
+      ElMessage.success('已按最新分镜参数重建视频提示词与多模态槽位')
     }
   } catch (e) {
     ElMessage.error(e.message || '重建失败')
@@ -2191,11 +2732,18 @@ async function onSaveSbPromptDialog() {
   if (!sb?.id) return
   sbPromptSaving.value = true
   try {
+    syncSlotsToPromptPreview()
     const normalizedVideo = (sbPromptVideoText.value || '').replace(/\s+/g, ' ').trim()
     const patch = {
       image_prompt: sbPromptImageText.value.trim() || null,
       polished_prompt: sbPromptPolishedText.value.trim() || null,
       video_prompt: normalizedVideo || null,
+    }
+    if (sbPromptVideoSlots.value) {
+      patch.video_slots = sbPromptVideoSlots.value
+    }
+    if (sbPromptH3Data.value?.continuity && dramaId.value) {
+      videosAPI.saveH3Inputs(dramaId.value, sb.id, { continuity: sbPromptH3Data.value.continuity }).catch(() => {})
     }
     await storyboardsAPI.update(sb.id, patch)
     Object.assign(sb, patch)
@@ -2205,7 +2753,7 @@ async function onSaveSbPromptDialog() {
       if (row) Object.assign(row, patch)
     }
     showSbPromptDialog.value = false
-    ElMessage.success('提示词已保存')
+    ElMessage.success('提示词与槽位已保存')
   } catch (e) {
     ElMessage.error(e.message || '保存失败')
   } finally {
@@ -2708,12 +3256,6 @@ async function onGenerateSbVideo(sb) {
   const meta = buildSbGenMeta(sb, GEN_RESOURCE.SB_VIDEO, '分镜视频')
   genStore.markRunning(meta)
   sbVideoErrors.value[sb.id] = ''
-  if (sbSelectedVideoId.value[sb.id] != null) {
-    const next = { ...sbSelectedVideoId.value }
-    delete next[sb.id]
-    sbSelectedVideoId.value = next
-  }
-  storyboardsAPI.update(sb.id, { video_url: null }).catch(() => {})
   let genResTaskId = null
   try {
     let absoluteUrl = ''
@@ -2761,6 +3303,14 @@ async function onGenerateSbVideo(sb) {
         sbVideoErrors.value[sb.id] = pollRes.error || '视频生成失败'
       } else if (pollRes?.status === 'completed') {
         sbVideoErrors.value[sb.id] = ''
+        if (pollRes?.result?.video_generation_id) {
+          sbSelectedVideoId.value = { ...sbSelectedVideoId.value, [sb.id]: pollRes.result.video_generation_id }
+          const row = (store.storyboards || []).find((b) => b.id === sb.id)
+          if (row) {
+            row.selected_video_id = pollRes.result.video_generation_id
+            if (pollRes.result.video_url) row.video_url = pollRes.result.video_url
+          }
+        }
         ElMessage.success('视频生成完成')
       } else if (pollRes?.status === 'cancelled') {
         sbVideoErrors.value[sb.id] = '用户已取消'
@@ -2803,6 +3353,14 @@ async function onResumeSbVideoPoll(sb) {
       sbVideoErrors.value[sb.id] = pollRes.error || '继续查询失败'
     } else if (pollRes?.status === 'completed') {
       sbVideoErrors.value[sb.id] = ''
+      if (pollRes?.result?.video_generation_id) {
+        sbSelectedVideoId.value = { ...sbSelectedVideoId.value, [sb.id]: pollRes.result.video_generation_id }
+        const row = (store.storyboards || []).find((b) => b.id === sb.id)
+        if (row) {
+          row.selected_video_id = pollRes.result.video_generation_id
+          if (pollRes.result.video_url) row.video_url = pollRes.result.video_url
+        }
+      }
       ElMessage.success('视频查询完成')
     } else if (pollRes?.status === 'cancelled') {
       sbVideoErrors.value[sb.id] = '用户已取消'
@@ -3386,6 +3944,15 @@ defineExpose({
 .vp-video-prompt-hint { font-size: 12px; color: #909399; line-height: 1.5; }
 .sb-split-audio-tip { font-size: 12px; color: #64748b; line-height: 1.45; margin: 0 0 8px; }
 .sb-split-audio-row { display: flex; flex-direction: column; align-items: flex-start; }
+:deep(.sb-prompt-dialog) {
+  max-width: 96vw;
+  border-radius: 12px;
+}
+:deep(.sb-prompt-dialog .el-dialog__body) {
+  max-height: calc(88vh - 100px);
+  overflow-y: auto;
+  padding: 14px 22px 14px;
+}
 .sb-prompt-dialog-form .el-form-item { margin-bottom: 10px; }
 .sb-collapse-title { color: #a1a1aa; }
 .sb-video-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; padding: 8px 0; }
@@ -3577,5 +4144,363 @@ html.light .empty-tip {
   border-radius: 8px;
   font-size: 0.85rem;
   color: #a5b4fc;
+}
+
+/* 视频语义槽位与多镜头时间线编辑器样式 */
+.sb-slots-view {
+  max-height: 480px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.sb-slots-timeline-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.sb-slot-shot-card {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+html.light .sb-slot-shot-card {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+}
+.sb-slot-shot-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.sb-slot-shot-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sb-slot-shot-badge {
+  background: #4f46e5;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+}
+.sb-slot-shot-time {
+  font-size: 12px;
+  color: #475569;
+  font-weight: 500;
+}
+.sb-slot-shot-dur {
+  font-size: 11px;
+  color: #64748b;
+  background: #e2e8f0;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.sb-slot-shot-cam {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sb-slot-action-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.sb-slot-field-label {
+  font-size: 12px;
+  color: #475569;
+  font-weight: 500;
+}
+.sb-slot-chars-container {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+.sb-slot-section-subtitle {
+  font-size: 11px;
+  font-weight: 600;
+  color: #64748b;
+  margin-bottom: 6px;
+}
+.sb-slot-char-card {
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed #f1f5f9;
+}
+.sb-slot-char-card:last-child {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+.sb-slot-char-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #1e293b;
+  margin-bottom: 4px;
+}
+.sb-slot-char-grid {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.sb-slot-char-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 120px;
+}
+.sb-slot-mini-label {
+  font-size: 11px;
+  color: #64748b;
+  white-space: nowrap;
+}
+.sb-slot-dialogue-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #f1f5f9;
+  padding: 6px 10px;
+  border-radius: 4px;
+}
+.sb-slot-h3-media-card {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+.sb-slot-h3-header-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sb-h3-media-subgroup {
+  margin-top: 8px;
+}
+.sb-h3-subgroup-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+  margin-bottom: 8px;
+}
+.sb-h3-picture-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 10px;
+}
+.sb-h3-picture-item {
+  display: flex;
+  gap: 8px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 6px 8px;
+  align-items: center;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.sb-h3-picture-item:hover {
+  border-color: #a855f7;
+}
+.sb-h3-picture-item--opening {
+  border-color: #c084fc;
+  background: #faf5ff;
+}
+.sb-h3-pic-thumb-wrap {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  border-radius: 4px;
+  overflow: hidden;
+  flex-shrink: 0;
+  background: #0f172a;
+}
+.sb-h3-pic-thumb {
+  width: 100%;
+  height: 100%;
+}
+.sb-h3-pic-tag {
+  position: absolute;
+  top: 0;
+  left: 0;
+  background: rgba(124, 58, 237, 0.88);
+  color: #fff;
+  font-size: 9.5px;
+  padding: 1px 4px;
+  border-bottom-right-radius: 4px;
+  font-family: monospace;
+  font-weight: bold;
+}
+.sb-h3-pic-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.sb-h3-pic-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #1e293b;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sb-h3-mini-tag {
+  font-size: 10px;
+  padding: 0 4px;
+  height: 18px;
+  line-height: 18px;
+}
+.sb-h3-pic-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.sb-h3-badge-kind {
+  font-size: 10px;
+  color: #64748b;
+  background: #f1f5f9;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.sb-h3-badge-retention {
+  font-size: 9.5px;
+  color: #7c3aed;
+  background: #ede9fe;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: monospace;
+}
+.sb-h3-audio-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sb-h3-audio-item {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 7px 10px;
+}
+.sb-h3-audio-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+.sb-h3-audio-tag {
+  background: #4338ca;
+  color: #ffffff;
+  font-size: 10px;
+  font-family: monospace;
+  font-weight: bold;
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.sb-h3-speaker-tag {
+  font-size: 12px;
+  font-weight: 600;
+  color: #1e293b;
+}
+.sb-h3-audio-kind {
+  font-size: 11px;
+  color: #64748b;
+}
+.sb-h3-audio-voice-name {
+  font-size: 11px;
+  color: #059669;
+  background: #ecfdf5;
+  padding: 1px 5px;
+  border-radius: 3px;
+  margin-left: auto;
+}
+.sb-h3-audio-line {
+  font-size: 12px;
+  color: #334155;
+  line-height: 1.4;
+  background: #f8fafc;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-family: monospace;
+  word-break: break-all;
+}
+.sb-h3-d-tag {
+  color: #d97706;
+  font-weight: bold;
+}
+.sb-h3-empty-hint {
+  font-size: 12px;
+  color: #94a3b8;
+  padding: 8px 12px;
+  background: #ffffff;
+  border-radius: 6px;
+  border: 1px dashed #cbd5e1;
+}
+:global(html.dark .sb-slot-h3-media-card) {
+  background: #0f172a;
+  border-color: #334155;
+}
+:global(html.dark .sb-h3-picture-item) {
+  background: #1e293b;
+  border-color: #334155;
+}
+:global(html.dark .sb-h3-picture-item--opening) {
+  background: #1e1b4b;
+  border-color: #6b21a8;
+}
+:global(html.dark .sb-h3-pic-name),
+:global(html.dark .sb-h3-speaker-tag) {
+  color: #f1f5f9;
+}
+:global(html.dark .sb-h3-badge-kind) {
+  background: #334155;
+  color: #cbd5e1;
+}
+:global(html.dark .sb-h3-audio-item) {
+  background: #1e293b;
+  border-color: #334155;
+}
+:global(html.dark .sb-h3-audio-line) {
+  background: #0f172a;
+  color: #cbd5e1;
+}
+:global(html.dark .sb-h3-empty-hint) {
+  background: #1e293b;
+  border-color: #334155;
+  color: #64748b;
+}
+.sb-slot-soundscape-card {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.sb-slot-global-card {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.sb-slots-empty-card {
+  background: #f8fafc;
+  border: 1px dashed #cbd5e1;
+  border-radius: 8px;
+  padding: 24px;
+  text-align: center;
 }
 </style>

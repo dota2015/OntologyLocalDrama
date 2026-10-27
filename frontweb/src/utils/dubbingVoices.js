@@ -23,7 +23,7 @@ export const INDEXTTS_VOICE_OPTIONS = [
 
 export function getVoiceOptionsByProvider(provider) {
   const p = String(provider || '').toLowerCase()
-  if (/^(indextts|indextts2|indextts25)$/i.test(p)) {
+  if (/^(indextts|indextts2|indextts25|local)$/i.test(p) || p.includes('7860')) {
     return INDEXTTS_VOICE_OPTIONS
   }
   if (/^(edge-tts|edgetts|edge)$/i.test(p)) {

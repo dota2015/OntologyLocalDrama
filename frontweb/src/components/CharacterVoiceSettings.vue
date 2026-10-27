@@ -2,6 +2,12 @@
   <div class="character-voice" v-loading="loading">
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
     <template v-if="data?.profile.config_id">
+      <div v-if="data?.configs && data.configs.length > 1" class="character-voice-service-select" style="margin-bottom:8px; display:flex; align-items:center; gap:8px;">
+        <span style="font-size:12px; color:var(--el-text-color-secondary);">TTS 引擎：</span>
+        <el-select v-model="data.profile.config_id" size="small" style="width:230px;" @change="onConfigChange">
+          <el-option v-for="c in data.configs" :key="c.id" :label="c.name" :value="c.id" />
+        </el-select>
+      </div>
       <div class="character-voice-controls">
         <el-select v-model="voice" filterable allow-create default-first-option placeholder="选择或输入音色 ID" :disabled="saving || previewing">
           <el-option v-for="v in options" :key="v.id" :label="v.label" :value="v.id" :disabled="v.id === data.profile.narrator_voice" />
@@ -32,8 +38,11 @@ const previewing = ref(false)
 const error = ref('')
 let audio
 let requestVersion = 0
-const config = computed(() => data.value?.configs.find(c => c.id === data.value.profile.config_id))
-const options = computed(() => getVoiceOptionsByProvider(config.value?.provider))
+const config = computed(() => data.value?.configs?.find(c => c.id === data.value.profile.config_id))
+const options = computed(() => {
+  const opts = getVoiceOptionsByProvider(config.value?.provider)
+  return opts.length ? opts : INDEXTTS_VOICE_OPTIONS
+})
 function endpoint() { return '/audio/dubbing/' + props.dramaId }
 async function api(url, body, method = 'POST') {
   const response = await fetch('/api/v1' + url, body === undefined ? {} : {
@@ -42,6 +51,13 @@ async function api(url, body, method = 'POST') {
   const result = await response.json()
   if (!response.ok || !(result.success === true || Number(result.code) === 200)) throw new Error(result.error?.message || result.message || '音色操作失败')
   return result.data
+}
+function onConfigChange(id) {
+  const chosen = data.value?.configs?.find(c => c.id === id)
+  const isInd = !chosen || /^(indextts|indextts2|indextts25)$/i.test(chosen.provider) || (chosen.base_url && /7860/i.test(chosen.base_url))
+  if (isInd && (/Neural$/i.test(voice.value) || !voice.value)) {
+    voice.value = chosen?.default_voice || 'voice_03.wav'
+  }
 }
 function profileWithVoice(current) {
   const character = current.characters.find(c => Number(c.id) === Number(props.characterId))
@@ -59,7 +75,13 @@ async function load() {
     if (version !== requestVersion) return
     data.value = result
     const character = result.characters.find(c => Number(c.id) === Number(props.characterId))
-    voice.value = result.profile.character_voices?.[props.characterId] || result.profile.voices?.[character?.name] || result.profile.default_voice || ''
+    let curVoice = result.profile.character_voices?.[props.characterId] || result.profile.voices?.[character?.name] || result.profile.default_voice || ''
+    const curConf = result.configs.find(c => c.id === result.profile.config_id)
+    const isInd = !curConf || /^(indextts|indextts2|indextts25)$/i.test(curConf.provider) || (curConf.base_url && /7860/i.test(curConf.base_url))
+    if (isInd && /Neural$/i.test(curVoice)) {
+      curVoice = result.profile.default_voice || 'voice_03.wav'
+    }
+    voice.value = curVoice
     initialVoice.value = voice.value
     emit('profile', result.profile)
   } catch (e) { if (version === requestVersion) error.value = e.message }

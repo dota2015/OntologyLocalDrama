@@ -49,7 +49,10 @@ function getProfile(db, id) {
 function configFor(db, configId) {
   const service = require('./aiConfigService');
   const configs = service.listConfigs(db, 'tts').filter(c => c.is_active);
-  const config = configId ? configs.find(c => Number(c.id) === Number(configId)) : (configs.find(c => c.is_default) || configs[0]);
+  let config = configId ? configs.find(c => Number(c.id) === Number(configId)) : null;
+  if (!config) {
+    config = configs.find(c => c.is_default) || configs[0];
+  }
   if (!config) throw new Error('请先在 AI 配置中启用 TTS 服务');
   return config;
 }
@@ -67,8 +70,10 @@ function normalizedProfile(db, id, raw = {}) {
   }
   const edge = /^(edge-tts|edgetts|edge)$/i.test(config.provider);
   const indextts = /^(indextts|indextts2|indextts25)$/i.test(config.provider) || (config.base_url && /7860/i.test(config.base_url));
-  const defaultVoice = String(raw.default_voice || (edge ? 'zh-CN-YunjianNeural' : (indextts ? 'voice_03.wav' : ''))).trim();
-  const narrator = String(raw.narrator_voice || (edge ? 'zh-CN-YunyangNeural' : (indextts ? 'voice_08.wav' : ''))).trim();
+  const rawDefault = raw.default_voice && (indextts && /Neural$/i.test(raw.default_voice) ? '' : raw.default_voice);
+  const rawNarrator = raw.narrator_voice && (indextts && /Neural$/i.test(raw.narrator_voice) ? '' : raw.narrator_voice);
+  const defaultVoice = String(rawDefault || (indextts ? 'voice_03.wav' : (edge ? 'zh-CN-YunjianNeural' : ''))).trim();
+  const narrator = String(rawNarrator || (indextts ? 'voice_08.wav' : (edge ? 'zh-CN-YunyangNeural' : ''))).trim();
   if (defaultVoice.length > 200 || narrator.length > 200) throw new Error('音色 ID 过长');
   const characters = db.prepare('SELECT id, name, description, appearance, voice_style FROM characters WHERE drama_id = ? AND deleted_at IS NULL ORDER BY sort_order, id').all(Number(id));
   const characterVoices = Object.create(null);
@@ -76,6 +81,14 @@ function normalizedProfile(db, id, raw = {}) {
   for (const [key, value] of Object.entries(raw.character_voices || {})) {
     if (!characters.some(c => c.id === Number(key)) || typeof value !== 'string' || value.length > 200) throw new Error('人物音色关联无效');
     characterVoices[key] = value.trim();
+  }
+  if (indextts) {
+    for (const name of Object.keys(voices)) {
+      if (/Neural$/i.test(voices[name])) delete voices[name];
+    }
+    for (const cid of Object.keys(characterVoices)) {
+      if (/Neural$/i.test(characterVoices[cid])) delete characterVoices[cid];
+    }
   }
   for (const [key, value] of Object.entries(raw.speaker_characters || {})) {
     if (Number(value) !== 0 && !characters.some(c => c.id === Number(value))) throw new Error('说话人关联的角色不属于当前项目');
