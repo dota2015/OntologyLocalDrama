@@ -716,7 +716,7 @@
         <!-- 下方：视频操作区 -->
         <div class="sb-column-card sb-actions-card sb-video-actions-card">
           <div class="sb-card-title-tag">视频操作区</div>
-          <!-- 视频主动作与模型控制行 -->
+          <!-- 视频主动作行 -->
           <div class="sb-video-action-row">
             <el-button
               type="primary"
@@ -735,6 +735,15 @@
               <el-tooltip v-if="ctx.getNextStoryboard(sb.id)" content="提取本视频尾帧，设为下一个分镜的首帧" placement="top">
                 <el-button size="small" :loading="ctx.linkingTailFrameIds.has(sb.id)" @click="ctx.onLinkTailFrameToNext(sb)">尾帧衔接</el-button>
               </el-tooltip>
+              <el-button
+                size="small"
+                plain
+                type="danger"
+                class="sb-delete-video-btn"
+                @click="ctx.onRemoveSbHistoryVideo(sb.id, ctx.getSbVideo(sb.id).id)"
+              >
+                删除
+              </el-button>
             </template>
             <el-button
               v-if="ctx.getSbResumableFailedVideo(sb.id)"
@@ -747,8 +756,10 @@
             >
               继续查询
             </el-button>
+          </div>
 
-            <!-- 模型选择 -->
+          <!-- 模型与配置行 -->
+          <div class="sb-model-config-row">
             <div class="sb-model-select-wrap">
               <span class="sb-config-label">模型</span>
               <el-select
@@ -768,18 +779,7 @@
             <!-- 换装与H3素材 -->
             <WardrobeSettings :key="'wardrobe-shot-' + sb.id" :drama-id="ctx.dramaId?.value || ctx.dramaId" :storyboard-id="sb.id" :disabled="ctx.isSbVideoGenerating(sb.id)" />
             <H3ShotSettings v-if="isH3VideoModel(ctx.selectedShotModel(sb))" :key="'h3-' + sb.id" :drama-id="ctx.dramaId?.value || ctx.dramaId" :storyboard-id="sb.id" :aspect-ratio="ctx.projectAspectRatio?.value || ctx.projectAspectRatio" :disabled="ctx.isSbVideoGenerating(sb.id)" />
-
-            <!-- 删除视频 -->
-            <el-button
-              v-if="ctx.getSbVideo(sb.id)"
-              size="small"
-              plain
-              type="danger"
-              class="sb-delete-video-btn"
-              @click="ctx.onRemoveSbHistoryVideo(sb.id, ctx.getSbVideo(sb.id).id)"
-            >
-              删除
-            </el-button>
+            <ShotSpeechDelivery :shot="sb" :narrative-style="ctx.narrativeStyle?.value || ctx.narrativeStyle" />
           </div>
 
           <!-- 对白与配音工具行 -->
@@ -1837,14 +1837,12 @@ const prevShotNumber = computed(() => {
   gap: 4px;
 }
 .sb-action-btn-row,
-.sb-video-action-row {
+.sb-video-action-row,
+.sb-model-config-row {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 6px 8px;
-}
-.sb-delete-video-btn {
-  margin-left: auto;
 }
 
 /* 按钮统一样式收敛 */
