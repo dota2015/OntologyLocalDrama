@@ -716,7 +716,7 @@
         <!-- 下方：视频操作区 -->
         <div class="sb-column-card sb-actions-card sb-video-actions-card">
           <div class="sb-card-title-tag">视频操作区</div>
-          <!-- 视频主动作行 -->
+          <!-- 视频主动作与参数配置行（单行完整展示，不换行） -->
           <div class="sb-video-action-row">
             <el-button
               type="primary"
@@ -735,31 +735,9 @@
               <el-tooltip v-if="ctx.getNextStoryboard(sb.id)" content="提取本视频尾帧，设为下一个分镜的首帧" placement="top">
                 <el-button size="small" :loading="ctx.linkingTailFrameIds.has(sb.id)" @click="ctx.onLinkTailFrameToNext(sb)">尾帧衔接</el-button>
               </el-tooltip>
-              <el-button
-                size="small"
-                plain
-                type="danger"
-                class="sb-delete-video-btn"
-                @click="ctx.onRemoveSbHistoryVideo(sb.id, ctx.getSbVideo(sb.id).id)"
-              >
-                删除
-              </el-button>
             </template>
-            <el-button
-              v-if="ctx.getSbResumableFailedVideo(sb.id)"
-              type="warning"
-              plain
-              size="small"
-              class="sb-resume-poll-btn"
-              :loading="ctx.isSbVideoGenerating(sb.id)"
-              @click="ctx.onResumeSbVideoPoll(sb)"
-            >
-              继续查询
-            </el-button>
-          </div>
 
-          <!-- 模型与配置行 -->
-          <div class="sb-model-config-row">
+            <!-- 模型选择 -->
             <div class="sb-model-select-wrap">
               <span class="sb-config-label">模型</span>
               <el-select
@@ -779,7 +757,31 @@
             <!-- 换装与H3素材 -->
             <WardrobeSettings :key="'wardrobe-shot-' + sb.id" :drama-id="ctx.dramaId?.value || ctx.dramaId" :storyboard-id="sb.id" :disabled="ctx.isSbVideoGenerating(sb.id)" />
             <H3ShotSettings v-if="isH3VideoModel(ctx.selectedShotModel(sb))" :key="'h3-' + sb.id" :drama-id="ctx.dramaId?.value || ctx.dramaId" :storyboard-id="sb.id" :aspect-ratio="ctx.projectAspectRatio?.value || ctx.projectAspectRatio" :disabled="ctx.isSbVideoGenerating(sb.id)" />
-            <ShotSpeechDelivery :shot="sb" :narrative-style="ctx.narrativeStyle?.value || ctx.narrativeStyle" />
+
+            <!-- 删除视频（紧随其后无大空位） -->
+            <el-button
+              v-if="ctx.getSbVideo(sb.id)"
+              size="small"
+              plain
+              type="danger"
+              class="sb-delete-video-btn"
+              @click="ctx.onRemoveSbHistoryVideo(sb.id, ctx.getSbVideo(sb.id).id)"
+            >
+              删除
+            </el-button>
+
+            <!-- 继续查询（异常恢复） -->
+            <el-button
+              v-if="ctx.getSbResumableFailedVideo(sb.id)"
+              type="warning"
+              plain
+              size="small"
+              class="sb-resume-poll-btn"
+              :loading="ctx.isSbVideoGenerating(sb.id)"
+              @click="ctx.onResumeSbVideoPoll(sb)"
+            >
+              继续查询
+            </el-button>
           </div>
 
           <!-- 对白与配音工具行 -->
@@ -1836,13 +1838,26 @@ const prevShotNumber = computed(() => {
   align-items: center;
   gap: 4px;
 }
-.sb-action-btn-row,
-.sb-video-action-row,
-.sb-model-config-row {
+.sb-action-btn-row {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 6px 8px;
+}
+.sb-video-action-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 6px;
+  width: 100%;
+}
+.sb-video-action-row .el-button {
+  flex-shrink: 0;
+  padding: 0 8px;
+}
+.sb-delete-video-btn {
+  margin-left: 0 !important;
+  flex-shrink: 0;
 }
 
 /* 按钮统一样式收敛 */
@@ -1851,12 +1866,13 @@ const prevShotNumber = computed(() => {
   border: 1px solid var(--el-border-color, #dcdfe6) !important;
   background: var(--el-fill-color-blank, #fff) !important;
   border-radius: 4px;
-  padding: 0 8px;
+  padding: 0 7px;
   height: 24px;
   line-height: 22px;
   font-size: 12px;
   color: var(--el-text-color-regular, #606266) !important;
   transition: all 0.2s;
+  flex-shrink: 0;
 }
 .sb-video-actions-card :deep(.wardrobe-btn:hover),
 .sb-video-actions-card :deep(.h3-settings-btn:hover) {
@@ -2128,7 +2144,8 @@ const prevShotNumber = computed(() => {
 .sb-model-select-wrap {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
+  flex-shrink: 0;
 }
 .sb-config-label {
   font-size: 11px;
@@ -2137,7 +2154,8 @@ const prevShotNumber = computed(() => {
   flex-shrink: 0;
 }
 .sb-model-select {
-  width: 135px !important;
+  width: 115px !important;
+  flex-shrink: 0;
 }
 
 @media (max-width: 1250px) {
