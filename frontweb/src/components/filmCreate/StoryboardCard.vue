@@ -360,174 +360,162 @@
         </template>
 
         <template v-else>
+          <!-- 上方：生成的图片预览 + 横线 + 历史图片选择 -->
           <div
-            class="sb-image-area"
+            class="sb-column-card sb-media-card"
             :class="{
               'sb-image-area--dragover': ctx.dragOverSbId?.value === sb.id || ctx.dragOverSbId === sb.id,
-              'sb-image-area--has-quad': !(ctx.storyboardUseFirstLastFrame?.value ?? ctx.storyboardUseFirstLastFrame) && ctx.getStripItems(sb.id).length > 0,
-              'sb-image-area--first-last': (ctx.storyboardUseFirstLastFrame?.value ?? ctx.storyboardUseFirstLastFrame),
             }"
             @dragover="ctx.onSbImageDragOver($event, sb.id)"
             @dragleave="ctx.onSbImageDragLeave($event, sb.id)"
             @drop="ctx.onSbImageDrop($event, sb)"
           >
-            <!-- 首尾帧双槽 -->
-            <template v-if="ctx.storyboardUseFirstLastFrame?.value ?? ctx.storyboardUseFirstLastFrame">
-              <div class="sb-fl-dual">
-                <div class="sb-fl-slot">
-                  <div class="sb-fl-slot-label">首帧</div>
-                  <div class="sb-fl-slot-body">
-                    <template v-if="ctx.getSbFirstImage(sb.id)">
-                      <img
-                        :src="ctx.assetImageUrl(ctx.getSbFirstImage(sb.id))"
-                        class="sb-generated-img"
-                        alt=""
-                        @click="ctx.openImagePreview(ctx.assetImageUrl(ctx.getSbFirstImage(sb.id)))"
-                      />
-                      <span v-if="isLongTakeContinuation" class="sb-inherited-tail-badge">承接 #{{ prevShotNumber }} 尾帧</span>
-                    </template>
-                    <template v-else-if="sb.image_url || sb.composed_image">
-                      <img
-                        :src="ctx.imageUrl(sb.composed_image || sb.image_url)"
-                        class="sb-generated-img"
-                        alt=""
-                        @click="ctx.openImagePreview(ctx.imageUrl(sb.composed_image || sb.image_url))"
-                      />
-                      <span v-if="isLongTakeContinuation" class="sb-inherited-tail-badge">承接 #{{ prevShotNumber }} 尾帧</span>
-                    </template>
-                    <template v-else-if="isLongTakeContinuation">
-                      <div class="sb-fl-empty sb-fl-empty--long-take" :title="`上一镜（分镜 #${prevShotNumber}）视频生成后，自动截取其真实尾帧作为本镜起始画面`">
-                        <span class="sb-fl-lt-icon">🎬</span>
-                        <span class="sb-fl-lt-text">承接 #{{ prevShotNumber }} 尾帧</span>
-                      </div>
-                    </template>
-                    <template v-else>
-                      <span class="sb-fl-empty">动作前静止</span>
-                    </template>
+            <!-- 生成的图片预览 -->
+            <div class="sb-media-preview-box">
+              <!-- 首尾帧双槽 -->
+              <template v-if="ctx.storyboardUseFirstLastFrame?.value ?? ctx.storyboardUseFirstLastFrame">
+                <div class="sb-fl-dual">
+                  <div class="sb-fl-slot">
+                    <div class="sb-fl-slot-label">首帧</div>
+                    <div class="sb-fl-slot-body">
+                      <template v-if="ctx.getSbFirstImage(sb.id)">
+                        <img
+                          :src="ctx.assetImageUrl(ctx.getSbFirstImage(sb.id))"
+                          class="sb-generated-img"
+                          alt=""
+                          @click="ctx.openImagePreview(ctx.assetImageUrl(ctx.getSbFirstImage(sb.id)))"
+                        />
+                        <span v-if="isLongTakeContinuation" class="sb-inherited-tail-badge">承接 #{{ prevShotNumber }} 尾帧</span>
+                      </template>
+                      <template v-else-if="sb.image_url || sb.composed_image">
+                        <img
+                          :src="ctx.imageUrl(sb.composed_image || sb.image_url)"
+                          class="sb-generated-img"
+                          alt=""
+                          @click="ctx.openImagePreview(ctx.imageUrl(sb.composed_image || sb.image_url))"
+                        />
+                        <span v-if="isLongTakeContinuation" class="sb-inherited-tail-badge">承接 #{{ prevShotNumber }} 尾帧</span>
+                      </template>
+                      <template v-else-if="isLongTakeContinuation">
+                        <div class="sb-fl-empty sb-fl-empty--long-take" :title="`上一镜（分镜 #${prevShotNumber}）视频生成后，自动截取其真实尾帧作为本镜起始画面`">
+                          <span class="sb-fl-lt-icon">🎬</span>
+                          <span class="sb-fl-lt-text">承接 #{{ prevShotNumber }} 尾帧</span>
+                        </div>
+                      </template>
+                      <template v-else>
+                        <span class="sb-fl-empty">动作前静止</span>
+                      </template>
+                    </div>
+                    <div v-if="ctx.getSbFirstImage(sb.id)?.prompt" class="sb-fl-slot-prompt" :title="ctx.getSbFirstImage(sb.id).prompt">
+                      {{ ctx.getSbFirstImage(sb.id).prompt }}
+                    </div>
+                    <div class="sb-fl-slot-actions">
+                      <el-button type="primary" size="small" :loading="ctx.generatingSbFirstImageIds.has(sb.id)" @click="ctx.onGenerateSbFrameImage(sb, 'first')">生成</el-button>
+                      <el-tooltip v-if="ctx.canUsePrevTailAsFirst(sb)" content="直接使用上一分镜的尾帧图片（高清原图）替换本首帧，画面更清晰" placement="top">
+                        <el-button size="small" :loading="ctx.usingPrevTailAsFirstIds.has(sb.id)" @click="ctx.onUsePrevTailAsFirst(sb)">上镜尾帧</el-button>
+                      </el-tooltip>
+                      <el-button size="small" :loading="ctx.uploadingSbImageSlot(sb.id) === 'first'" @click="ctx.onUploadSbImageClick(sb, 'first')">上传</el-button>
+                      <el-button type="primary" link size="small" @click="ctx.showSbFramePromptPreview(sb, 'first')">查看提示词</el-button>
+                    </div>
                   </div>
-                  <div v-if="ctx.getSbFirstImage(sb.id)?.prompt" class="sb-fl-slot-prompt" :title="ctx.getSbFirstImage(sb.id).prompt">
-                    {{ ctx.getSbFirstImage(sb.id).prompt }}
-                  </div>
-                  <div class="sb-fl-slot-actions">
-                    <el-button type="primary" size="small" :loading="ctx.generatingSbFirstImageIds.has(sb.id)" @click="ctx.onGenerateSbFrameImage(sb, 'first')">生成</el-button>
-                    <el-tooltip v-if="ctx.canUsePrevTailAsFirst(sb)" content="直接使用上一分镜的尾帧图片（高清原图）替换本首帧，画面更清晰" placement="top">
-                      <el-button size="small" :loading="ctx.usingPrevTailAsFirstIds.has(sb.id)" @click="ctx.onUsePrevTailAsFirst(sb)">上镜尾帧</el-button>
-                    </el-tooltip>
-                    <el-button size="small" :loading="ctx.uploadingSbImageSlot(sb.id) === 'first'" @click="ctx.onUploadSbImageClick(sb, 'first')">上传</el-button>
-                    <el-button type="primary" link size="small" @click="ctx.showSbFramePromptPreview(sb, 'first')">查看提示词</el-button>
+                  <div class="sb-fl-arrow" aria-hidden="true">→</div>
+                  <div class="sb-fl-slot">
+                    <div class="sb-fl-slot-label">尾帧</div>
+                    <div class="sb-fl-slot-body">
+                      <template v-if="ctx.getSbLastImage(sb.id)">
+                        <img
+                          :src="ctx.assetImageUrl(ctx.getSbLastImage(sb.id))"
+                          class="sb-generated-img"
+                          alt=""
+                          :title="ctx.getSbLastImage(sb.id).prompt || ''"
+                          @click="ctx.openImagePreview(ctx.assetImageUrl(ctx.getSbLastImage(sb.id)))"
+                        />
+                      </template>
+                      <template v-else>
+                        <span class="sb-fl-empty">动作后结果</span>
+                      </template>
+                    </div>
+                    <div v-if="ctx.getSbLastImage(sb.id)?.prompt" class="sb-fl-slot-prompt" :title="ctx.getSbLastImage(sb.id).prompt">
+                      {{ ctx.getSbLastImage(sb.id).prompt }}
+                    </div>
+                    <div class="sb-fl-slot-actions">
+                      <el-button type="primary" size="small" :loading="ctx.generatingSbLastImageIds.has(sb.id)" @click="ctx.onGenerateSbFrameImage(sb, 'last')">生成</el-button>
+                      <el-checkbox
+                        v-model="ctx.lastFrameUseFirstLayoutLock.value"
+                        class="sb-fl-first-lock-opt"
+                        title="勾选时尾帧生成会附带首帧图作构图与左右站位参考；取消后仅使用场景/角色/道具参考，便于调整出场人物"
+                        @change="ctx.onLastFrameLayoutLockChange"
+                      >
+                        首帧站位
+                      </el-checkbox>
+                      <el-button size="small" :loading="ctx.uploadingSbImageSlot(sb.id) === 'last'" @click="ctx.onUploadSbImageClick(sb, 'last')">上传</el-button>
+                      <el-button type="primary" link size="small" @click="ctx.showSbFramePromptPreview(sb, 'last')">查看提示词</el-button>
+                    </div>
                   </div>
                 </div>
-                <div class="sb-fl-arrow" aria-hidden="true">→</div>
-                <div class="sb-fl-slot">
-                  <div class="sb-fl-slot-label">尾帧</div>
-                  <div class="sb-fl-slot-body">
-                    <template v-if="ctx.getSbLastImage(sb.id)">
-                      <img
-                        :src="ctx.assetImageUrl(ctx.getSbLastImage(sb.id))"
-                        class="sb-generated-img"
-                        alt=""
-                        :title="ctx.getSbLastImage(sb.id).prompt || ''"
-                        @click="ctx.openImagePreview(ctx.assetImageUrl(ctx.getSbLastImage(sb.id)))"
-                      />
-                    </template>
-                    <template v-else>
-                      <span class="sb-fl-empty">动作后结果</span>
-                    </template>
-                  </div>
-                  <div v-if="ctx.getSbLastImage(sb.id)?.prompt" class="sb-fl-slot-prompt" :title="ctx.getSbLastImage(sb.id).prompt">
-                    {{ ctx.getSbLastImage(sb.id).prompt }}
-                  </div>
-                  <div class="sb-fl-slot-actions">
-                    <el-button type="primary" size="small" :loading="ctx.generatingSbLastImageIds.has(sb.id)" @click="ctx.onGenerateSbFrameImage(sb, 'last')">生成</el-button>
-                    <el-checkbox
-                      v-model="ctx.lastFrameUseFirstLayoutLock.value"
-                      class="sb-fl-first-lock-opt"
-                      title="勾选时尾帧生成会附带首帧图作构图与左右站位参考；取消后仅使用场景/角色/道具参考，便于调整出场人物"
-                      @change="ctx.onLastFrameLayoutLockChange"
-                    >
-                      首帧站位
-                    </el-checkbox>
-                    <el-button size="small" :loading="ctx.uploadingSbImageSlot(sb.id) === 'last'" @click="ctx.onUploadSbImageClick(sb, 'last')">上传</el-button>
-                    <el-button type="primary" link size="small" @click="ctx.showSbFramePromptPreview(sb, 'last')">查看提示词</el-button>
-                  </div>
-                </div>
-              </div>
-              <div v-if="ctx.getStripItems(sb.id).length" class="sb-imgs-strip">
-                <el-tooltip content="历史图：按时间顺序从左往右排列，点击设为首帧或尾帧" placement="top" :show-arrow="false">
-                  <el-icon class="sb-strip-hint-icon"><InfoFilled /></el-icon>
-                </el-tooltip>
-                <div
-                  v-for="item in ctx.getStripItems(sb.id)"
-                  :key="item.key"
-                  class="sb-img-thumb"
-                  :class="{ 'sb-img-thumb--active': item.isActive }"
-                  :title="ctx.stripItemTitle(sb.id, item)"
-                  @click="ctx.onStripItemClick(sb, item)"
-                >
-                  <img :src="item.src" alt="" />
-                  <span v-if="item.frameBadge" class="sb-img-thumb-label" :class="{ 'sb-badge--active': item.isActive }">{{ item.frameBadge }}</span>
-                  <span v-else-if="item.label" class="sb-img-thumb-label">{{ item.label }}</span>
-                  <button class="thumb-preview-btn" title="放大预览" @click.stop="ctx.openImagePreview(item.src)">
-                    <el-icon :size="10"><ZoomIn /></el-icon>
-                  </button>
-                  <button v-if="item.img?.id" class="extra-thumb-remove" title="删除历史图" @click.stop="ctx.onRemoveSbHistoryImage(sb.id, item.img.id)">×</button>
-                </div>
-              </div>
-            </template>
+              </template>
 
-            <!-- 单主图（未勾选首尾帧） -->
-            <template v-else>
-              <div class="sb-main-image-wrap">
-                <template v-if="ctx.getSbImage(sb.id)">
-                  <img
-                    :src="ctx.assetImageUrl(ctx.getSbImage(sb.id))"
-                    class="sb-generated-img"
-                    alt=""
-                    :title="ctx.getSbImage(sb.id).prompt || ''"
-                    @click="ctx.openImagePreview(ctx.assetImageUrl(ctx.getSbImage(sb.id)))"
-                  />
-                  <span v-if="isLongTakeContinuation" class="sb-inherited-tail-badge" title="由上一镜视频尾帧接力生成">已继承 #{{ prevShotNumber }} 尾帧</span>
-                  <div v-if="ctx.getSbImage(sb.id).prompt" class="sb-main-img-prompt">{{ ctx.getSbImage(sb.id).prompt }}</div>
-                </template>
-                <template v-else-if="sb.composed_image || sb.image_url">
-                  <img
-                    :src="ctx.imageUrl(sb.composed_image || sb.image_url)"
-                    class="sb-generated-img"
-                    alt=""
-                    @click="ctx.openImagePreview(ctx.imageUrl(sb.composed_image || sb.image_url))"
-                  />
-                  <span v-if="isLongTakeContinuation" class="sb-inherited-tail-badge" title="由上一镜视频尾帧接力生成">已继承 #{{ prevShotNumber }} 尾帧</span>
-                </template>
-                <template v-else-if="sb.error_msg || sb.errorMsg">
-                  <div class="sb-image-error" :title="sb.error_msg || sb.errorMsg">{{ sb.error_msg || sb.errorMsg }}</div>
-                  <el-button type="primary" size="small" class="sb-gen-btn" :loading="ctx.generatingSbImageIds.has(sb.id)" @click="ctx.onGenerateSbImage(sb)">
-                    <el-icon><Refresh /></el-icon>
-                    重试
-                  </el-button>
-                  <el-button size="small" :loading="ctx.uploadingSbImageId === sb.id" @click="ctx.onUploadSbImageClick(sb)">上传</el-button>
-                </template>
-                <template v-else-if="isLongTakeContinuation">
-                  <div class="sb-long-take-placeholder">
-                    <span class="sb-lt-ph-icon">🎬</span>
-                    <div class="sb-lt-ph-title">长镜头接力起始帧</div>
-                    <div class="sb-lt-ph-desc">
-                      上一镜（分镜 #{{ prevShotNumber }}）视频生成后<br/>
-                      自动截取真实尾帧作为本镜起始画面
+              <!-- 单主图（未勾选首尾帧） -->
+              <template v-else>
+                <div class="sb-main-image-wrap">
+                  <template v-if="ctx.getSbImage(sb.id)">
+                    <img
+                      :src="ctx.assetImageUrl(ctx.getSbImage(sb.id))"
+                      class="sb-generated-img"
+                      alt=""
+                      :title="ctx.getSbImage(sb.id).prompt || ''"
+                      @click="ctx.openImagePreview(ctx.assetImageUrl(ctx.getSbImage(sb.id)))"
+                    />
+                    <span v-if="isLongTakeContinuation" class="sb-inherited-tail-badge" title="由上一镜视频尾帧接力生成">已继承 #{{ prevShotNumber }} 尾帧</span>
+                    <div v-if="ctx.getSbImage(sb.id).prompt" class="sb-main-img-prompt">{{ ctx.getSbImage(sb.id).prompt }}</div>
+                  </template>
+                  <template v-else-if="sb.composed_image || sb.image_url">
+                    <img
+                      :src="ctx.imageUrl(sb.composed_image || sb.image_url)"
+                      class="sb-generated-img"
+                      alt=""
+                      @click="ctx.openImagePreview(ctx.imageUrl(sb.composed_image || sb.image_url))"
+                    />
+                    <span v-if="isLongTakeContinuation" class="sb-inherited-tail-badge" title="由上一镜视频尾帧接力生成">已继承 #{{ prevShotNumber }} 尾帧</span>
+                  </template>
+                  <template v-else-if="sb.error_msg || sb.errorMsg">
+                    <div class="sb-image-error" :title="sb.error_msg || sb.errorMsg">{{ sb.error_msg || sb.errorMsg }}</div>
+                    <el-button type="primary" size="small" class="sb-gen-btn" :loading="ctx.generatingSbImageIds.has(sb.id)" @click="ctx.onGenerateSbImage(sb)">
+                      <el-icon><Refresh /></el-icon>
+                      重试
+                    </el-button>
+                    <el-button size="small" :loading="ctx.uploadingSbImageId === sb.id" @click="ctx.onUploadSbImageClick(sb)">上传</el-button>
+                  </template>
+                  <template v-else-if="isLongTakeContinuation">
+                    <div class="sb-long-take-placeholder">
+                      <span class="sb-lt-ph-icon">🎬</span>
+                      <div class="sb-lt-ph-title">长镜头接力起始帧</div>
+                      <div class="sb-lt-ph-desc">
+                        上一镜（分镜 #{{ prevShotNumber }}）视频生成后<br/>
+                        自动截取真实尾帧作为本镜起始画面
+                      </div>
+                      <div class="sb-lt-ph-actions">
+                        <el-button size="small" text @click="ctx.onGenerateSbImage(sb)">手动生图</el-button>
+                        <el-button size="small" text :loading="ctx.uploadingSbImageId === sb.id" @click="ctx.onUploadSbImageClick(sb)">上传</el-button>
+                      </div>
                     </div>
-                    <div class="sb-lt-ph-actions">
-                      <el-button size="small" text @click="ctx.onGenerateSbImage(sb)">手动生图</el-button>
-                      <el-button size="small" text :loading="ctx.uploadingSbImageId === sb.id" @click="ctx.onUploadSbImageClick(sb)">上传</el-button>
+                  </template>
+                  <template v-else>
+                    <div class="sb-media-empty-placeholder" @click="ctx.onGenerateSbImage(sb)">
+                      <el-icon :size="28" class="sb-empty-icon"><MagicStick /></el-icon>
+                      <span class="sb-empty-text">点击生成分镜参考图</span>
                     </div>
-                  </div>
-                </template>
-                <template v-else>
-                  <el-button type="primary" size="small" class="sb-gen-btn" :loading="ctx.generatingSbImageIds.has(sb.id)" @click="ctx.onGenerateSbImage(sb)">
-                    <el-icon><MagicStick /></el-icon>
-                    生成分镜参考图
-                  </el-button>
-                  <el-button size="small" :loading="ctx.uploadingSbImageId === sb.id" @click="ctx.onUploadSbImageClick(sb)">上传</el-button>
-                </template>
-              </div>
+                  </template>
+                </div>
+              </template>
+              <div v-if="ctx.dragOverSbId?.value === sb.id || ctx.dragOverSbId === sb.id" class="sb-image-area-drop-hint">松开上传到首帧</div>
+            </div>
+
+            <!-- 横线分隔线 -->
+            <div class="sb-media-divider"></div>
+
+            <!-- 历史的图片选择 -->
+            <div class="sb-history-strip-box">
               <div v-if="ctx.getStripItems(sb.id).length" class="sb-imgs-strip">
                 <el-tooltip content="历史图：按时间顺序从左往右排列，点击设为主图" placement="top" :show-arrow="false">
                   <el-icon class="sb-strip-hint-icon"><InfoFilled /></el-icon>
@@ -549,42 +537,84 @@
                   <button v-if="item.img?.id" class="extra-thumb-remove" title="删除历史图" @click.stop="ctx.onRemoveSbHistoryImage(sb.id, item.img.id)">×</button>
                 </div>
               </div>
-            </template>
-            <div v-if="ctx.dragOverSbId?.value === sb.id || ctx.dragOverSbId === sb.id" class="sb-image-area-drop-hint">松开上传到首帧</div>
+              <div v-else class="sb-strip-empty">
+                <el-icon class="sb-strip-empty-icon"><InfoFilled /></el-icon>
+                <span>暂无历史图片</span>
+              </div>
+            </div>
           </div>
 
-          <div v-if="ctx.hasSbImage(sb) || (ctx.storyboardUseFirstLastFrame?.value ?? ctx.storyboardUseFirstLastFrame)" class="sb-image-actions">
+          <!-- 下方：按钮操作区 -->
+          <div class="sb-column-card sb-actions-card sb-image-actions-card">
+            <div class="sb-card-title-tag">按钮操作区</div>
             <template v-if="ctx.storyboardUseFirstLastFrame?.value ?? ctx.storyboardUseFirstLastFrame">
-              <el-button size="small" :loading="ctx.generatingSbFirstImageIds.has(sb.id) || ctx.generatingSbLastImageIds.has(sb.id)" @click="ctx.onGenerateSbFramePair(sb)">{{ ctx.hasSbFirstLastPair(sb) ? '重新生成首尾帧' : '一键生成首尾帧' }}</el-button>
-              <el-tooltip content="高清放大仅作用于首帧" placement="top">
-                <el-button size="small" :loading="ctx.upscalingSbIds.has(sb.id)" :disabled="!ctx.getSbLocalImage(sb)" @click="ctx.onUpscaleSbImage(sb)">
-                  <el-icon><ZoomIn /></el-icon>超分(首帧)
-                </el-button>
-              </el-tooltip>
-            </template>
-            <template v-else>
-              <el-button size="small" :loading="ctx.generatingSbImageIds.has(sb.id)" @click="ctx.onGenerateSbImage(sb)">重新生成</el-button>
-              <el-button size="small" :loading="ctx.uploadingSbImageId === sb.id" @click="ctx.onUploadSbImageClick(sb)">上传</el-button>
-              <el-tooltip content="高清放大（2x超分辨率）" placement="top">
+              <div class="sb-action-btn-row">
                 <el-button
                   size="small"
-                  :loading="ctx.upscalingSbIds.has(sb.id)"
-                  :disabled="!ctx.getSbLocalImage(sb)"
-                  @click="ctx.onUpscaleSbImage(sb)"
+                  type="primary"
+                  :loading="ctx.generatingSbFirstImageIds.has(sb.id) || ctx.generatingSbLastImageIds.has(sb.id)"
+                  @click="ctx.onGenerateSbFramePair(sb)"
                 >
-                  <el-icon><ZoomIn /></el-icon>超分
+                  {{ ctx.hasSbFirstLastPair(sb) ? '重新生成首尾帧' : '一键生成首尾帧' }}
                 </el-button>
-              </el-tooltip>
+                <el-tooltip content="高清放大仅作用于首帧" placement="top">
+                  <el-button
+                    size="small"
+                    :loading="ctx.upscalingSbIds.has(sb.id)"
+                    :disabled="!ctx.getSbLocalImage(sb)"
+                    @click="ctx.onUpscaleSbImage(sb)"
+                  >
+                    <el-icon><ZoomIn /></el-icon>超分(首帧)
+                  </el-button>
+                </el-tooltip>
+              </div>
             </template>
+            <template v-else>
+              <div class="sb-action-btn-row">
+                <el-button
+                  size="small"
+                  type="primary"
+                  :loading="ctx.generatingSbImageIds.has(sb.id)"
+                  @click="ctx.onGenerateSbImage(sb)"
+                >
+                  {{ ctx.hasSbImage(sb) ? '重新生成' : '生成图片' }}
+                </el-button>
+                <el-button
+                  size="small"
+                  :loading="ctx.uploadingSbImageId === sb.id"
+                  @click="ctx.onUploadSbImageClick(sb)"
+                >
+                  上传
+                </el-button>
+                <el-tooltip content="高清放大（2x超分辨率）" placement="top">
+                  <el-button
+                    size="small"
+                    :loading="ctx.upscalingSbIds.has(sb.id)"
+                    :disabled="!ctx.getSbLocalImage(sb)"
+                    @click="ctx.onUpscaleSbImage(sb)"
+                  >
+                    <el-icon><ZoomIn /></el-icon>超分
+                  </el-button>
+                </el-tooltip>
+              </div>
+            </template>
+            <!-- 提示词快览与编辑入口 -->
+            <div class="sb-prompt-compact-line">
+              <span class="sb-dot"></span>
+              <span class="sb-prompt-name">图词</span>
+              <span class="sb-prompt-text-preview" :title="sb.image_prompt">{{ sb.image_prompt || '暂无图片提示词' }}</span>
+              <el-button size="small" link type="primary" class="sb-prompt-edit-btn" @click="ctx.onOpenSbPromptDialog(sb, 'image')">编辑</el-button>
+            </div>
           </div>
         </template>
       </div>
 
-      <!-- 右：分镜视频 -->
+      <!-- 右：分镜视频 (视频播放器 + 横线 + 历史视频 + 按钮操作) -->
       <div class="sb-panel sb-video" :class="{ 'sb-video--portrait': isPortrait }">
-        <div class="sb-video-body-grid">
-          <!-- 视频媒体侧 -->
-          <div class="sb-video-media-side">
+        <!-- 上方：视频播放器 + 横线 + 历史视频 -->
+        <div class="sb-column-card sb-media-card">
+          <!-- 视频播放器 -->
+          <div class="sb-media-preview-box">
             <div v-if="ctx.getSbVideo(sb.id)" class="sb-video-area">
               <video
                 v-if="ctx.assetVideoUrl(ctx.getSbVideo(sb.id))"
@@ -637,20 +667,24 @@
                     继续查询
                   </el-button>
                 </div>
-                <el-button
-                  type="primary"
-                  size="small"
-                  class="sb-generate-video-btn"
-                  :loading="ctx.isSbVideoGenerating(sb.id)"
-                  :disabled="!ctx.sbCanSubmitVideo(sb) || ctx.isSbVideoGenerating(sb.id)"
-                  @click="ctx.onGenerateSbVideo(sb)"
+                <div
+                  v-else
+                  class="sb-media-empty-placeholder"
+                  :class="{ 'sb-empty-disabled': !ctx.sbCanSubmitVideo(sb) }"
+                  @click="ctx.sbCanSubmitVideo(sb) && ctx.onGenerateSbVideo(sb)"
                 >
-                  生成分镜视频
-                </el-button>
+                  <el-icon :size="28" class="sb-empty-icon"><VideoPlay /></el-icon>
+                  <span class="sb-empty-text">{{ ctx.sbCanSubmitVideo(sb) ? '点击生成分镜视频' : '请先生成参考图后再生成视频' }}</span>
+                </div>
               </template>
             </div>
+          </div>
 
-            <!-- 视频历史条 -->
+          <!-- 横线分隔线 -->
+          <div class="sb-media-divider"></div>
+
+          <!-- 历史视频 -->
+          <div class="sb-history-strip-box">
             <div v-if="ctx.getVideoStripItems(sb.id).length" class="sb-videos-strip">
               <el-tooltip content="历史视频：按时间顺序从左往右排列，点击设为当前视频" placement="top" :show-arrow="false">
                 <el-icon class="sb-strip-hint-icon"><InfoFilled /></el-icon>
@@ -674,66 +708,92 @@
                 >×</button>
               </div>
             </div>
+            <div v-else class="sb-strip-empty">
+              <el-icon class="sb-strip-empty-icon"><InfoFilled /></el-icon>
+              <span>暂无历史视频</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 下方：按钮操作 -->
+        <div class="sb-column-card sb-actions-card sb-video-actions-card">
+          <div class="sb-card-title-tag">按钮操作</div>
+          <!-- 视频主动作 -->
+          <div class="sb-video-action-row">
+            <el-button
+              type="primary"
+              size="small"
+              class="sb-generate-video-btn"
+              :loading="ctx.isSbVideoGenerating(sb.id)"
+              :disabled="!ctx.sbCanSubmitVideo(sb) || ctx.isSbVideoGenerating(sb.id)"
+              @click="ctx.onGenerateSbVideo(sb)"
+            >
+              {{ ctx.getSbVideo(sb.id) ? '重新生成' : '生成分镜视频' }}
+            </el-button>
+            <template v-if="ctx.getSbVideo(sb.id)">
+              <el-tooltip v-if="ctx.getPrevStoryboard(sb.id)" content="提取本视频首帧，设为上一个分镜的尾帧" placement="top">
+                <el-button size="small" :loading="ctx.linkingFirstFrameIds.has(sb.id)" @click="ctx.onLinkFirstFrameToPrev(sb)">首帧衔接</el-button>
+              </el-tooltip>
+              <el-tooltip v-if="ctx.getNextStoryboard(sb.id)" content="提取本视频尾帧，设为下一个分镜的首帧" placement="top">
+                <el-button size="small" :loading="ctx.linkingTailFrameIds.has(sb.id)" @click="ctx.onLinkTailFrameToNext(sb)">尾帧衔接</el-button>
+              </el-tooltip>
+              <el-button size="small" text type="danger" @click="ctx.onRemoveSbHistoryVideo(sb.id, ctx.getSbVideo(sb.id).id)">删除</el-button>
+            </template>
+            <el-button
+              v-if="ctx.getSbResumableFailedVideo(sb.id)"
+              type="warning"
+              link
+              size="small"
+              class="sb-resume-poll-btn"
+              :loading="ctx.isSbVideoGenerating(sb.id)"
+              @click="ctx.onResumeSbVideoPoll(sb)"
+            >
+              继续查询
+            </el-button>
           </div>
 
-          <!-- 右侧：控制面板与信息栏 -->
-          <div class="sb-video-controls-side">
-            <!-- 视频动作与模型高级配置 -->
-            <div class="sb-video-action-settings-row">
-              <div v-if="ctx.getSbVideo(sb.id)" class="sb-video-actions">
-                <el-button size="small" :loading="ctx.isSbVideoGenerating(sb.id)" :disabled="!ctx.sbCanSubmitVideo(sb) || ctx.isSbVideoGenerating(sb.id)" @click="ctx.onGenerateSbVideo(sb)">重新生成</el-button>
-                <el-tooltip v-if="ctx.getPrevStoryboard(sb.id)" content="提取本视频首帧，设为上一个分镜的尾帧" placement="top">
-                  <el-button size="small" :loading="ctx.linkingFirstFrameIds.has(sb.id)" @click="ctx.onLinkFirstFrameToPrev(sb)">首帧衔接</el-button>
-                </el-tooltip>
-                <el-tooltip v-if="ctx.getNextStoryboard(sb.id)" content="提取本视频尾帧，设为下一个分镜的首帧" placement="top">
-                  <el-button size="small" :loading="ctx.linkingTailFrameIds.has(sb.id)" @click="ctx.onLinkTailFrameToNext(sb)">尾帧衔接</el-button>
-                </el-tooltip>
-                <el-button size="small" text type="danger" @click="ctx.onRemoveSbHistoryVideo(sb.id, ctx.getSbVideo(sb.id).id)">删除</el-button>
-              </div>
-
-              <div class="sb-model-config-row">
-                <div class="sb-model-select-wrap">
-                  <span class="sb-config-label">模型</span>
-                  <el-select
-                    :model-value="sb.video_model || ''"
-                    :empty-values="[null, undefined]"
-                    size="small"
-                    class="sb-model-select"
-                    :disabled="ctx.savingVideoModelIds.has(sb.id) || ctx.isSbVideoGenerating(sb.id)"
-                    @visible-change="$event && ctx.loadVideoModelChoices()"
-                    @change="ctx.setShotVideoModel(sb, $event)"
-                  >
-                    <el-option :value="''" :label="'默认（' + (ctx.videoModelLabel(ctx.defaultShotModel(sb)) || 'H3') + '）'" />
-                    <el-option v-for="option in (ctx.videoModelChoices?.value || ctx.videoModelChoices || [])" :key="option.model" :value="option.model" :label="option.label" />
-                  </el-select>
-                </div>
-                <WardrobeSettings :key="'wardrobe-shot-' + sb.id" :drama-id="ctx.dramaId?.value || ctx.dramaId" :storyboard-id="sb.id" :disabled="ctx.isSbVideoGenerating(sb.id)" />
-                <H3ShotSettings v-if="isH3VideoModel(ctx.selectedShotModel(sb))" :key="'h3-' + sb.id" :drama-id="ctx.dramaId?.value || ctx.dramaId" :storyboard-id="sb.id" :aspect-ratio="ctx.projectAspectRatio?.value || ctx.projectAspectRatio" :disabled="ctx.isSbVideoGenerating(sb.id)" />
-                <ShotSpeechDelivery :shot="sb" :narrative-style="ctx.narrativeStyle?.value || ctx.narrativeStyle" />
-              </div>
+          <!-- 模型与配置 -->
+          <div class="sb-model-config-row">
+            <div class="sb-model-select-wrap">
+              <span class="sb-config-label">模型</span>
+              <el-select
+                :model-value="sb.video_model || ''"
+                :empty-values="[null, undefined]"
+                size="small"
+                class="sb-model-select"
+                :disabled="ctx.savingVideoModelIds.has(sb.id) || ctx.isSbVideoGenerating(sb.id)"
+                @visible-change="$event && ctx.loadVideoModelChoices()"
+                @change="ctx.setShotVideoModel(sb, $event)"
+              >
+                <el-option :value="''" :label="'默认（' + (ctx.videoModelLabel(ctx.defaultShotModel(sb)) || 'H3') + '）'" />
+                <el-option v-for="option in (ctx.videoModelChoices?.value || ctx.videoModelChoices || [])" :key="option.model" :value="option.model" :label="option.label" />
+              </el-select>
             </div>
+            <WardrobeSettings :key="'wardrobe-shot-' + sb.id" :drama-id="ctx.dramaId?.value || ctx.dramaId" :storyboard-id="sb.id" :disabled="ctx.isSbVideoGenerating(sb.id)" />
+            <H3ShotSettings v-if="isH3VideoModel(ctx.selectedShotModel(sb))" :key="'h3-' + sb.id" :drama-id="ctx.dramaId?.value || ctx.dramaId" :storyboard-id="sb.id" :aspect-ratio="ctx.projectAspectRatio?.value || ctx.projectAspectRatio" :disabled="ctx.isSbVideoGenerating(sb.id)" />
+            <ShotSpeechDelivery :shot="sb" :narrative-style="ctx.narrativeStyle?.value || ctx.narrativeStyle" />
+          </div>
 
-            <!-- 对白与旁白 -->
-            <div class="sb-speech-toolbar">
-              <div class="sb-tags-group">
-                <el-tag :type="ctx.speechStatus(sb).pending ? 'warning' : (ctx.speechStatus(sb).dialogue ? 'success' : 'info')" size="small">对白：{{ ctx.speechStatus(sb).pending ? '待提取' : (ctx.speechStatus(sb).dialogue ? '有' : '无') }}</el-tag>
-                <el-tag :type="ctx.speechStatus(sb).pending ? 'warning' : (ctx.speechStatus(sb).narration ? 'success' : 'info')" size="small">旁白：{{ ctx.speechStatus(sb).pending ? '待提取' : (ctx.speechStatus(sb).narration ? '有' : '无') }}</el-tag>
-              </div>
-              <el-button size="small" @click="ctx.speechEditor?.value?.open(sb, true)">生成对话</el-button>
-              <el-button size="small" link type="primary" @click="ctx.speechEditor?.value?.open(sb)">编辑文本</el-button>
-              <el-button size="small" :loading="ctx.ttsSbIds.has(sb.id)" :disabled="!ctx.speechStatus(sb).dialogue" @click="ctx.onTtsSbDialogue(sb)">对白配音</el-button>
-              <el-button v-if="ctx.sbDialogueAudioRelPath(sb)" size="small" @click="ctx.playSbDialogueTts(sb)">试听对白</el-button>
-              <el-button size="small" :loading="ctx.ttsSbNarrationIds.has(sb.id)" :disabled="!ctx.speechStatus(sb).narration" @click="ctx.onTtsSbNarration(sb)">旁白配音</el-button>
-              <el-button v-if="ctx.sbNarrationAudioRelPath(sb)" size="small" @click="ctx.playSbNarrationTts(sb)">试听旁白</el-button>
+          <!-- 对白与配音 -->
+          <div class="sb-speech-toolbar">
+            <div class="sb-tags-group">
+              <el-tag :type="ctx.speechStatus(sb).pending ? 'warning' : (ctx.speechStatus(sb).dialogue ? 'success' : 'info')" size="small">对白：{{ ctx.speechStatus(sb).pending ? '待提取' : (ctx.speechStatus(sb).dialogue ? '有' : '无') }}</el-tag>
+              <el-tag :type="ctx.speechStatus(sb).pending ? 'warning' : (ctx.speechStatus(sb).narration ? 'success' : 'info')" size="small">旁白：{{ ctx.speechStatus(sb).pending ? '待提取' : (ctx.speechStatus(sb).narration ? '有' : '无') }}</el-tag>
             </div>
+            <el-button size="small" @click="ctx.speechEditor?.value?.open(sb, true)">生成对话</el-button>
+            <el-button size="small" link type="primary" @click="ctx.speechEditor?.value?.open(sb)">编辑文本</el-button>
+            <el-button size="small" :loading="ctx.ttsSbIds.has(sb.id)" :disabled="!ctx.speechStatus(sb).dialogue" @click="ctx.onTtsSbDialogue(sb)">对白配音</el-button>
+            <el-button v-if="ctx.sbDialogueAudioRelPath(sb)" size="small" @click="ctx.playSbDialogueTts(sb)">试听对白</el-button>
+            <el-button size="small" :loading="ctx.ttsSbNarrationIds.has(sb.id)" :disabled="!ctx.speechStatus(sb).narration" @click="ctx.onTtsSbNarration(sb)">旁白配音</el-button>
+            <el-button v-if="ctx.sbNarrationAudioRelPath(sb)" size="small" @click="ctx.playSbNarrationTts(sb)">试听旁白</el-button>
+          </div>
 
-            <!-- 视频提示词 -->
-            <div class="sb-video-prompt-compact">
-              <span class="sb-dot"></span>
-              <span class="sb-prompt-name">视频词</span>
-              <span class="sb-video-prompt-text sb-video-prompt-text--preview" :title="sb.video_prompt">{{ sb.video_prompt || '暂无视频提示词（在「分镜配置」保存后自动生成）' }}</span>
-              <el-button size="small" link type="primary" class="sb-prompt-edit-btn" @click="ctx.onOpenSbPromptDialog(sb, 'video')">编辑</el-button>
-            </div>
+          <!-- 视频提示词 -->
+          <div class="sb-video-prompt-compact">
+            <span class="sb-dot"></span>
+            <span class="sb-prompt-name">视频词</span>
+            <span class="sb-video-prompt-text sb-video-prompt-text--preview" :title="sb.video_prompt">{{ sb.video_prompt || '暂无视频提示词（在「分镜配置」保存后自动生成）' }}</span>
+            <el-button size="small" link type="primary" class="sb-prompt-edit-btn" @click="ctx.onOpenSbPromptDialog(sb, 'video')">编辑</el-button>
           </div>
         </div>
       </div>
@@ -1172,32 +1232,40 @@ const prevShotNumber = computed(() => {
 .sb-panel:last-child { border-right: none; }
 
 .sb-script {
-  flex: 0 0 240px;
-  width: 240px;
-  max-width: 240px;
+  flex: 0 0 250px;
+  width: 250px;
+  max-width: 250px;
   padding-top: 10px;
 }
 .sb-image {
-  flex: 0 0 330px;
-  width: 330px;
-  max-width: 350px;
+  flex: 1 1 0;
+  min-width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 .sb-image.sb-image--dual {
-  flex: 0 0 440px;
-  width: 440px;
-  max-width: 460px;
+  flex: 1.15 1 0;
+  min-width: 440px;
 }
 .sb-image.sb-image--portrait {
-  flex: 0 0 190px;
-  width: 190px;
+  flex: 0 0 240px;
+  width: 240px;
 }
 .sb-image.sb-image--universal {
-  flex: 0 0 350px;
-  width: 350px;
+  flex: 1 1 0;
+  min-width: 380px;
 }
 .sb-video {
   flex: 1 1 0;
-  min-width: 460px;
+  min-width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sb-video.sb-video--portrait {
+  flex: 0 0 240px;
+  width: 240px;
 }
 .sb-script-row {
   display: flex;
@@ -1654,32 +1722,154 @@ const prevShotNumber = computed(() => {
   padding: 4px 8px;
 }
 
-/* 视频栏与响应式控制栅格 */
-.sb-video-body-grid {
+/* 新双卡片结构（图/视频对称架构） */
+.sb-column-card {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  overflow: hidden;
+  position: relative;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+:global(html.light .sb-column-card) {
+  background: #ffffff;
+  border-color: rgba(139, 92, 246, 0.15);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.03);
+}
+.sb-column-card:hover {
+  border-color: rgba(168, 85, 247, 0.28);
+}
+.sb-media-card {
   display: flex;
-  align-items: flex-start;
-  gap: 12px;
+  flex-direction: column;
+  margin-bottom: 0;
+}
+.sb-media-preview-box {
+  width: 100%;
+  position: relative;
+}
+.sb-media-divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.08);
+  width: 100%;
+  flex-shrink: 0;
+}
+:global(html.light .sb-media-divider) {
+  background: rgba(139, 92, 246, 0.12);
+}
+.sb-history-strip-box {
+  width: 100%;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  background: rgba(0, 0, 0, 0.16);
+}
+:global(html.light .sb-history-strip-box) {
+  background: #f8fafc;
+}
+.sb-strip-empty {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 11px;
+  color: #71717a;
   width: 100%;
 }
-.sb-video-media-side {
-  flex: 0 0 310px;
-  width: 310px;
-  max-width: 330px;
+:global(html.light .sb-strip-empty) {
+  color: #94a3b8;
+}
+.sb-strip-empty-icon {
+  font-size: 13px;
+  opacity: 0.7;
+}
+
+.sb-actions-card {
+  padding: 8px 10px;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  flex-shrink: 0;
+  flex-grow: 1;
 }
-.sb-video--portrait .sb-video-media-side {
-  flex: 0 0 170px;
-  width: 170px;
+.sb-card-title-tag {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--el-text-color-secondary);
+  letter-spacing: 0.02em;
+  margin-bottom: 1px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
-.sb-video-controls-side {
-  flex: 1;
-  min-width: 280px;
+.sb-action-btn-row,
+.sb-video-action-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+}
+
+.sb-media-empty-placeholder {
+  width: 100%;
+  aspect-ratio: var(--sb-aspect-ratio, 16 / 9);
+  min-height: 150px;
   display: flex;
   flex-direction: column;
+  align-items: center;
+  justify-content: center;
   gap: 8px;
+  cursor: pointer;
+  background: rgba(0, 0, 0, 0.3);
+  color: #a1a1aa;
+  transition: all 0.2s ease;
+}
+.sb-media-empty-placeholder:hover {
+  background: rgba(168, 85, 247, 0.08);
+  color: #c084fc;
+}
+.sb-media-empty-placeholder.sb-empty-disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.sb-media-empty-placeholder.sb-empty-disabled:hover {
+  background: rgba(0, 0, 0, 0.3);
+  color: #a1a1aa;
+}
+.sb-empty-icon {
+  font-size: 26px;
+  opacity: 0.85;
+}
+.sb-empty-text {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* 提示词单行预览 */
+.sb-prompt-compact-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 4px 8px;
+  border-radius: 4px;
+  margin-top: 2px;
+}
+:global(html.light .sb-prompt-compact-line) {
+  background: rgba(0, 0, 0, 0.02);
+}
+.sb-prompt-text-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: #64748b;
+}
+:global(html.dark .sb-prompt-text-preview) {
+  color: #94a3b8;
 }
 
 .sb-video-area {
@@ -1909,15 +2099,20 @@ const prevShotNumber = computed(() => {
 }
 
 @media (max-width: 1250px) {
-  .sb-video-body-grid {
-    flex-direction: column;
+  .storyboard-row {
+    flex-wrap: wrap;
   }
-  .sb-video-media-side {
+  .sb-script {
+    flex: 0 0 100%;
     width: 100%;
-    max-width: 340px;
+    max-width: 100%;
+    border-right: none;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   }
-  .sb-video-controls-side {
-    width: 100%;
+  .sb-image,
+  .sb-video {
+    flex: 1 1 340px;
+    min-width: 300px;
   }
 }
 </style>
