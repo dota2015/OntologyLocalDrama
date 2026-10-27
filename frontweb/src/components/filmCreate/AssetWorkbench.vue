@@ -2572,7 +2572,7 @@ defineExpose({
   border-top: 1px solid var(--border-color, #27272a);
 }
 
-/* ── 场景与道具新卡片布局 (对齐参考设计) ── */
+/* ── 场景与道具新卡片布局 (对齐参考设计，自适应响应式网格) ── */
 .resource-block-header-new {
   display: flex;
   align-items: center;
@@ -2580,7 +2580,7 @@ defineExpose({
   flex-wrap: wrap;
   gap: 12px;
   margin-bottom: 14px;
-  max-width: 1000px;
+  width: 100%;
 }
 .rbh-left {
   display: flex;
@@ -2627,23 +2627,18 @@ defineExpose({
 
 .asset-grid-2col {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 485px));
+  grid-template-columns: repeat(auto-fill, minmax(440px, 1fr));
   gap: 16px;
-  max-width: 1000px;
+  width: 100%;
 }
-@media (max-width: 1024px) {
+@media (max-width: 768px) {
   .asset-grid-2col {
     grid-template-columns: 1fr;
-    max-width: 500px;
-  }
-  .resource-block-header-new {
-    max-width: 100%;
   }
 }
 
 .new-asset-card {
   width: 100%;
-  max-width: 485px;
   background: #ffffff;
   border: 1px solid rgba(0, 0, 0, 0.08);
   border-radius: 12px;
@@ -3071,7 +3066,7 @@ defineExpose({
   overflow: hidden;
   border: 1px solid rgba(0, 0, 0, 0.08);
   background: #ffffff;
-  max-width: 1000px;
+  width: 100%;
 }
 :global(html.dark .asset-list-table-wrap) {
   border-color: rgba(255, 255, 255, 0.08);
