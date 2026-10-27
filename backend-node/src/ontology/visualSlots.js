@@ -210,6 +210,85 @@ function validateCharacterVisualSlots(shot, slots = []) {
 }
 
 /**
+ * 智能推导环境三层纵深（当 shot.environment_depth 未显式提供时兜底推导）
+ * @param {object} shot
+ * @returns {string} 三层空间纵深描述
+ */
+function synthesizeEnvironmentDepth(shot) {
+  const loc = (shot.location || '').toLowerCase();
+  const act = (shot.action || '').toLowerCase();
+  const shotType = shot.shot_type || '';
+
+  if (loc.includes('厂') || loc.includes('战') || loc.includes('废墟') || loc.includes('战区') || loc.includes('塔') || act.includes('掩体') || act.includes('枪')) {
+    if (shotType === '特写' || shotType === '大特写') {
+      return '前景微虚的战术掩体断壁边缘，中景为主体清晰面容与装备接触面，后景深处是残损建筑的暗调轮廓透视';
+    }
+    return '前景右下角虚化遮挡着残破掩体钢架，中景地表散落碎石与断裂线缆，背景纵深处是开阔破损结构的深远灭点透视';
+  }
+
+  if (loc.includes('房') || loc.includes('书桌') || loc.includes('室') || loc.includes('家') || loc.includes('电脑')) {
+    if (shotType === '特写' || shotType === '大特写') {
+      return '前景近处虚化遮挡的桌沿物件，中景精准合焦于主体细部，背景纵深处为柔和虚化的室内空间光晕';
+    }
+    return '前景虚化遮挡的桌面资料与实木家具边缘，中景为主体活动焦点核心区，背景纵深处为窗外透入的环境泛光与墙体陈设透视';
+  }
+
+  if (loc.includes('街') || loc.includes('路') || loc.includes('道') || loc.includes('外') || loc.includes('野')) {
+    return '前景近处地面与街沿建筑虚化遮挡，中景开阔路面与活动主体，背景纵深处是渐远延伸的道路灭点与远方地平线轮廓';
+  }
+
+  return '空间三层纵深层次分明：前景轻微遮挡虚化引线，中景主体聚焦清晰，后景延伸至深邃视觉灭点';
+}
+
+/**
+ * 智能推导影视镜头光学参数（当 shot.cinematic_lens 未显式提供时兜底推导）
+ * @param {object} shot
+ * @returns {string} 镜头参数
+ */
+function synthesizeCinematicLens(shot) {
+  const shotType = shot.shot_type || '';
+  const angleV = shot.angle_v || '';
+
+  if (shotType === '大特写' || shotType === '特写') {
+    return '85mm电影定焦镜头抓拍·f/1.8浅景深焦外散景·主体边缘锐利合焦';
+  }
+  if (shotType === '近景') {
+    return '50mm电影定焦人像镜头·f/2.2适度景深透视逼真·背景自然光学虚化';
+  }
+  if (shotType === '全景' || shotType === '大远景') {
+    return '24mm宽银幕电影广角镜头·大景深通透通焦·宏阔环境透视张力';
+  }
+  if (angleV === 'low' || angleV === 'worm') {
+    return '35mm电影广角仰角镜头·透视畸变受控·突出压迫感张力';
+  }
+  if (angleV === 'high' || angleV === 'top_down') {
+    return '35mm电影广角俯角镜头·层次感纵深全景铺展';
+  }
+  return '50mm经典电影大师镜头·f/2.8标准视场角·通透写实质感';
+}
+
+/**
+ * 智能推导光影与明暗反差（当 shot.lighting_chiaroscuro 未显式提供时兜底推导）
+ * @param {object} shot
+ * @returns {string} 光影描述
+ */
+function synthesizeLightingChiaroscuro(shot) {
+  const style = shot.lighting_style || 'natural';
+  const lightMap = {
+    natural: '电影级自然漫反射采光，面部明暗立体过渡自然，暗部保留丰富纹理',
+    side: '强烈高反差侧光照明，雕刻面孔立体起伏与锐利明暗交界线',
+    backlit: '高强度电影级轮廓逆光切边，发丝与肩膀金边勾勒，暗部微弱补光',
+    dramatic: '经典伦勃朗三角光影调，戏剧性强光比反差与深沉阴影交融',
+    soft: '柔和漫反射柔光箱照明，阴影清淡通透，肤质细腻写实',
+    golden_hour: '暖金色低角度夕阳斜射，温润金色侧光与长投影交织',
+    blue_hour: '幽蓝冷调暮光氛围，环境冷光与面部弱冷光交融',
+    night: '暗夜微光照明，局部点光源照亮焦点，大面积电影级深邃暗场',
+    neon: '冷暖双色霓虹反差光，蓝粉交错的赛博电影感光影反差',
+  };
+  return lightMap[style] || '高反差电影级光影照明，立体明暗质感鲜明';
+}
+
+/**
  * 确定性编译器：将槽位编译为纯静态摄影抓拍级的 image_prompt
  * @param {object} shot
  * @param {Array<object>} slots
@@ -222,7 +301,7 @@ function compileImagePromptFromSlots(shot, slots = [], options = {}) {
   // 1. 场景地点与空间三层纵深
   const loc = shot.location ? shot.location : '';
   const time = shot.time ? shot.time : '';
-  const envDepth = shot.environment_depth || shot.decisive_moment_detail || '';
+  const envDepth = shot.environment_depth || shot.decisive_moment_detail || synthesizeEnvironmentDepth(shot);
   if (loc && time) {
     parts.push(`${loc}（${time}）`);
   } else if (loc) {
@@ -245,7 +324,8 @@ function compileImagePromptFromSlots(shot, slots = [], options = {}) {
   const h = hMap[shot.angle_h] || (shot.angle_h === 'front_left' ? '前左' : shot.angle_h === 'front_right' ? '前右' : '正面');
   angleParts.push(v);
   angleParts.push(h);
-  if (shot.cinematic_lens) angleParts.push(shot.cinematic_lens);
+  const lens = shot.cinematic_lens || synthesizeCinematicLens(shot);
+  if (lens) angleParts.push(lens);
   parts.push(angleParts.join('·'));
 
   // 3. 角色视觉槽位（空间站位 + 朝向 + 微表情 + 身体重心 + 手部/接触态 + 服饰微状态）
@@ -281,22 +361,8 @@ function compileImagePromptFromSlots(shot, slots = [], options = {}) {
   }
 
   // 4. 影视级打光与影调氛围 (Lighting & Chiaroscuro)
-  if (shot.lighting_chiaroscuro) {
-    parts.push(shot.lighting_chiaroscuro);
-  } else if (shot.lighting_style) {
-    const lightMap = {
-      natural: '自然真实采光',
-      side: '高反差侧光照明与立体明暗交界',
-      backlit: '电影级强逆光与金色轮廓光',
-      dramatic: '戏剧性强对比伦勃朗光',
-      soft: '柔和漫反射环境光',
-      golden_hour: '暖金色夕阳光切光',
-      blue_hour: '冷色调暮光幽蓝氛围',
-      night: '暗夜微光照明伴随深重阴影',
-      neon: '赛博朋克霓虹冷暖对比光',
-    };
-    parts.push(lightMap[shot.lighting_style] || shot.lighting_style);
-  }
+  const lighting = shot.lighting_chiaroscuro || synthesizeLightingChiaroscuro(shot);
+  if (lighting) parts.push(lighting);
 
   // 5. 电影风格与胶片摄影质感
   const style = options.style || 'photorealistic, ultra-detailed, 8k uhd, sharp focus, natural lighting, real skin texture, hyperrealism, professional photography, RAW photo';
@@ -386,7 +452,9 @@ function synthesizeCharacterVisualSlots(shot, catalogCharacters = []) {
       }
     }
 
-    let posture = isTactical ? '身体保持戒备低姿，重心稳固隐蔽' : '身体保持端正姿态，重心平稳';
+    let posture = isTactical
+      ? (idx === 0 ? '身体屈膝下潜倚靠掩体边缘，重心压低机动待发' : '侧身贴紧掩体后壁，身体微俯避开射界')
+      : (idx === 0 ? '挺拔立姿微侧，重心稳固自然' : '身姿端正微侧向主体，重心平稳放松');
     if (/(?:半蹲|俯伏|深蹲|蹲伏)/i.test(prompt)) posture = '半蹲低伏紧贴掩体，重心压低';
     else if (/(?:拍桌|拍案|拍在.+?桌|拍向.+?桌|拍桌面|猛拍桌面|掌心.+?拍|拍.+?桌面)/i.test(prompt)) posture = '身体前倾定格，上身偏向会议桌面';
     else if (/(?:前倾|坐姿|坐在书桌前|坐在会议桌)/i.test(prompt)) posture = '身体前倾坐姿，上身紧贴桌台边缘';
@@ -397,7 +465,9 @@ function synthesizeCharacterVisualSlots(shot, catalogCharacters = []) {
     else if (/(?:站立|站直|起身|直起|直身)/i.test(prompt)) posture = '挺拔端正站立，身体重心平稳';
     else if (/(?:侧身靠墙|背靠)/i.test(prompt)) posture = '侧身背靠墙壁，身体重心稳固';
 
-    let hands = isTactical ? '双手紧握装备保持待发状态' : '双手自然垂放于身侧';
+    let hands = isTactical
+      ? (idx === 0 ? '双手握持战术设备严密护于胸前，食指搭在扳机护圈外侧' : '单手按在战术胸挂外缘，另一手微屈随时准备协同')
+      : (idx === 0 ? '双手手指自然放松微弯，随体态自然悬于身侧' : '双手微曲交叠置于身前，神态专注聆听');
     if (/(?:拍桌|拍案|拍在.+?桌|拍向.+?桌|拍桌面|猛拍桌面|掌心.+?拍|拍.+?桌面)/i.test(prompt)) hands = '单手掌心按在桌面边缘定格，另一手收在身侧';
     else if (/(?:攥拳|握拳|指节)/i.test(prompt)) hands = '单手在身侧紧紧攥拳，指节发白定格';
     else if (/(?:收回胸前|掌心下压|压住动作)/i.test(prompt)) hands = '双手收于胸前，掌心微下压定格';
@@ -408,6 +478,29 @@ function synthesizeCharacterVisualSlots(shot, catalogCharacters = []) {
     else if (/(?:按在.+肩|按住.+肩)/i.test(prompt)) hands = '单手按在对方肩膀上，另一手撑在掩体边缘';
     else if (/(?:撑住地面|撑地)/i.test(prompt)) hands = '单手手掌牢牢撑向地面保持平衡';
     else if (/(?:伸展手指|伸手扑向)/i.test(prompt)) hands = '单臂竭力向前伸展手指抓向目标';
+
+    let expression = isTactical
+      ? (idx === 0 ? '咬肌微绷，下颌微收，眼神警惕锐利' : '神态凝重坚毅，呼吸平稳克制')
+      : (idx === 0 ? '目光专注清亮，神情认真凝练' : '神情沉着，目光温和而敏锐');
+    if (/(?:焦急|急促|心急)/i.test(prompt)) expression = '眉头微蹙，眼神焦灼而迫切';
+    else if (/(?:愤怒|发火|震怒)/i.test(prompt)) expression = '下颌紧咬，目光如炬带着怒意';
+    else if (/(?:恐惧|惊恐|惊慌)/i.test(prompt)) expression = '瞳孔微缩，呼吸急促神情惊凛';
+    else if (/(?:欣慰|微笑|释然)/i.test(prompt)) expression = '嘴角微抿带出一丝释然与克制的笑意';
+
+    let propInteraction = '';
+    if (/(?:枪|武器|匕首|步枪|手枪)/i.test(prompt) || isTactical) {
+      propInteraction = '手指紧扣握柄防滑纹路，虎口紧密贴合机匣';
+    } else if (/(?:键盘|按键|打字)/i.test(prompt)) {
+      propInteraction = '指腹轻触键盘键帽，腕部悬空保持敲击定格姿态';
+    } else if (/(?:手机|终端|对讲机|耳机)/i.test(prompt)) {
+      propInteraction = '食指与拇指紧捏设备边缘控制按键';
+    } else if (/(?:笔|写字|文件|资料)/i.test(prompt)) {
+      propInteraction = '右手三指握持笔杆轻搭在纸页边缘';
+    }
+
+    const appearanceDetails = isTactical
+      ? '战术作训服领口紧束，面颊微有尘渍与细汗，装备背心扣件整肃清晰'
+      : '衣装整洁挺括，衣料纤维光泽自然，发丝纹理细腻写实';
 
     let headPose = '头部正对前方';
     let gaze = '目光专注注视正前方';
@@ -449,6 +542,9 @@ function synthesizeCharacterVisualSlots(shot, catalogCharacters = []) {
       head_gaze: `${headPose}，${gaze}`,
       posture,
       hands,
+      expression,
+      prop_interaction: propInteraction,
+      appearance_details: appearanceDetails,
     });
   });
 }

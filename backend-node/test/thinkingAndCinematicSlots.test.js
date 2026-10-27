@@ -124,9 +124,41 @@ test('validateCharacterVisualSlots checks multi-character depth staging (near vs
   const depthViolations = validateCharacterVisualSlots(depthShot, depthSlots);
   assert.equal(depthViolations.filter((v) => v.rule === 'INVARIANT_SLOT_MISSING_DEPTH_STAGING' || v.rule === 'INVARIANT_SLOT_DUPLICATE_POSITION').length, 0);
 
-  // 4. synthesizeCharacterVisualSlots 自动分配错落纵深层级
-  const autoSlots = synthesizeCharacterVisualSlots({ characters: [1, 2], action: '两人在控制室商议撤离路线。' }, [{ id: 1, name: '红狼' }, { id: 2, name: '露娜' }]);
+  // 4. synthesizeCharacterVisualSlots 自动分配错落纵深层级且不含模板套话
+  const autoSlots = synthesizeCharacterVisualSlots({ characters: [1, 2], action: '两人在废弃工厂控制室商议撤离路线。' }, [{ id: 1, name: '红狼' }, { id: 2, name: '露娜' }]);
   assert.equal(autoSlots[0].depth_layer, 'foreground');
   assert.equal(autoSlots[1].depth_layer, 'midground');
+  assert.ok(!autoSlots[0].posture.includes('身体保持戒备低姿，重心稳固隐蔽'));
+  assert.ok(!autoSlots[0].hands.includes('双手紧握装备保持待发状态'));
+  assert.ok(autoSlots[0].expression);
+  assert.ok(autoSlots[0].prop_interaction);
+  assert.ok(autoSlots[0].appearance_details);
 });
+
+test('compileImagePromptFromSlots synthesizes missing layers from context with zero boilerplate', () => {
+  const minimalShot = {
+    location: '废弃工厂内部战斗区',
+    time: '阴天白昼',
+    shot_type: '特写',
+    angle_v: 'low',
+    angle_h: 'front_left',
+    lighting_style: 'side',
+  };
+  const slot = createCharacterVisualSlot({
+    name: '红狼',
+    screen_position: '画面中央',
+    facing: '正面面对镜头',
+    head_pose: '微仰起头',
+    gaze: '目光警惕如炬',
+    posture: '双膝半跪身体压低机动待发',
+    hands: '双手紧握战术武器贴腮瞄准',
+  });
+  const compiled = compileImagePromptFromSlots(minimalShot, [slot]);
+  // 必须包含推导的三层纵深、电影光学镜头参数、侧光照明反差
+  assert.ok(compiled.includes('前景微虚'));
+  assert.ok(compiled.includes('85mm电影定焦镜头抓拍'));
+  assert.ok(compiled.includes('侧光照明'));
+  assert.ok(compiled.includes('首帧静止画面'));
+});
+
 
