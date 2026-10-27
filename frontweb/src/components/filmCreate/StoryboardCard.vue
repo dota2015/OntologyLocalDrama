@@ -540,9 +540,9 @@
             </div>
           </div>
 
-          <!-- 下方：按钮操作区 -->
+          <!-- 下方：图片操作区 -->
           <div class="sb-column-card sb-actions-card sb-image-actions-card">
-            <div class="sb-card-title-tag">按钮操作区</div>
+            <div class="sb-card-title-tag">图片操作区</div>
             <template v-if="ctx.storyboardUseFirstLastFrame?.value ?? ctx.storyboardUseFirstLastFrame">
               <div class="sb-action-btn-row">
                 <el-button
@@ -594,18 +594,14 @@
                 </el-tooltip>
               </div>
             </template>
-            <!-- 提示词快览与编辑入口（高度拉到底部对齐） -->
+            <!-- 提示词快览与编辑入口（紧凑自适应） -->
             <div class="sb-prompt-compact-line">
-              <div class="sb-prompt-compact-header">
-                <div class="sb-prompt-header-left">
-                  <span class="sb-dot"></span>
-                  <span class="sb-prompt-name">图词</span>
-                </div>
-                <el-button size="small" link type="primary" class="sb-prompt-edit-btn" @click="ctx.onOpenSbPromptDialog(sb, 'image')">编辑</el-button>
-              </div>
-              <div class="sb-prompt-text-preview sb-prompt-multiline-text" :title="sb.image_prompt">
+              <span class="sb-dot"></span>
+              <span class="sb-prompt-name">图词</span>
+              <span class="sb-prompt-text-preview sb-prompt-preview-clamp" :title="sb.image_prompt">
                 {{ sb.image_prompt || '暂无图片提示词' }}
-              </div>
+              </span>
+              <el-button size="small" link type="primary" class="sb-prompt-edit-btn" @click="ctx.onOpenSbPromptDialog(sb, 'image')">编辑</el-button>
             </div>
           </div>
         </template>
@@ -717,10 +713,10 @@
           </div>
         </div>
 
-        <!-- 下方：按钮操作 -->
+        <!-- 下方：视频操作区 -->
         <div class="sb-column-card sb-actions-card sb-video-actions-card">
-          <div class="sb-card-title-tag">按钮操作</div>
-          <!-- 视频主动作 -->
+          <div class="sb-card-title-tag">视频操作区</div>
+          <!-- 视频主动作与模型控制行 -->
           <div class="sb-video-action-row">
             <el-button
               type="primary"
@@ -739,12 +735,11 @@
               <el-tooltip v-if="ctx.getNextStoryboard(sb.id)" content="提取本视频尾帧，设为下一个分镜的首帧" placement="top">
                 <el-button size="small" :loading="ctx.linkingTailFrameIds.has(sb.id)" @click="ctx.onLinkTailFrameToNext(sb)">尾帧衔接</el-button>
               </el-tooltip>
-              <el-button size="small" text type="danger" @click="ctx.onRemoveSbHistoryVideo(sb.id, ctx.getSbVideo(sb.id).id)">删除</el-button>
             </template>
             <el-button
               v-if="ctx.getSbResumableFailedVideo(sb.id)"
               type="warning"
-              link
+              plain
               size="small"
               class="sb-resume-poll-btn"
               :loading="ctx.isSbVideoGenerating(sb.id)"
@@ -752,10 +747,8 @@
             >
               继续查询
             </el-button>
-          </div>
 
-          <!-- 模型与配置 -->
-          <div class="sb-model-config-row">
+            <!-- 模型选择 -->
             <div class="sb-model-select-wrap">
               <span class="sb-config-label">模型</span>
               <el-select
@@ -771,23 +764,37 @@
                 <el-option v-for="option in (ctx.videoModelChoices?.value || ctx.videoModelChoices || [])" :key="option.model" :value="option.model" :label="option.label" />
               </el-select>
             </div>
+
+            <!-- 换装与H3素材 -->
             <WardrobeSettings :key="'wardrobe-shot-' + sb.id" :drama-id="ctx.dramaId?.value || ctx.dramaId" :storyboard-id="sb.id" :disabled="ctx.isSbVideoGenerating(sb.id)" />
             <H3ShotSettings v-if="isH3VideoModel(ctx.selectedShotModel(sb))" :key="'h3-' + sb.id" :drama-id="ctx.dramaId?.value || ctx.dramaId" :storyboard-id="sb.id" :aspect-ratio="ctx.projectAspectRatio?.value || ctx.projectAspectRatio" :disabled="ctx.isSbVideoGenerating(sb.id)" />
-            <ShotSpeechDelivery :shot="sb" :narrative-style="ctx.narrativeStyle?.value || ctx.narrativeStyle" />
+
+            <!-- 删除视频 -->
+            <el-button
+              v-if="ctx.getSbVideo(sb.id)"
+              size="small"
+              plain
+              type="danger"
+              class="sb-delete-video-btn"
+              @click="ctx.onRemoveSbHistoryVideo(sb.id, ctx.getSbVideo(sb.id).id)"
+            >
+              删除
+            </el-button>
           </div>
 
-          <!-- 对白与配音 -->
+          <!-- 对白与配音工具行 -->
           <div class="sb-speech-toolbar">
             <div class="sb-tags-group">
               <el-tag :type="ctx.speechStatus(sb).pending ? 'warning' : (ctx.speechStatus(sb).dialogue ? 'success' : 'info')" size="small">对白：{{ ctx.speechStatus(sb).pending ? '待提取' : (ctx.speechStatus(sb).dialogue ? '有' : '无') }}</el-tag>
               <el-tag :type="ctx.speechStatus(sb).pending ? 'warning' : (ctx.speechStatus(sb).narration ? 'success' : 'info')" size="small">旁白：{{ ctx.speechStatus(sb).pending ? '待提取' : (ctx.speechStatus(sb).narration ? '有' : '无') }}</el-tag>
             </div>
             <el-button size="small" @click="ctx.speechEditor?.value?.open(sb, true)">生成对话</el-button>
-            <el-button size="small" link type="primary" @click="ctx.speechEditor?.value?.open(sb)">编辑文本</el-button>
+            <el-button size="small" @click="ctx.speechEditor?.value?.open(sb)">编辑文本</el-button>
             <el-button size="small" :loading="ctx.ttsSbIds.has(sb.id)" :disabled="!ctx.speechStatus(sb).dialogue" @click="ctx.onTtsSbDialogue(sb)">对白配音</el-button>
             <el-button v-if="ctx.sbDialogueAudioRelPath(sb)" size="small" @click="ctx.playSbDialogueTts(sb)">试听对白</el-button>
             <el-button size="small" :loading="ctx.ttsSbNarrationIds.has(sb.id)" :disabled="!ctx.speechStatus(sb).narration" @click="ctx.onTtsSbNarration(sb)">旁白配音</el-button>
             <el-button v-if="ctx.sbNarrationAudioRelPath(sb)" size="small" @click="ctx.playSbNarrationTts(sb)">试听旁白</el-button>
+            <ShotSpeechDelivery :shot="sb" :narrative-style="ctx.narrativeStyle?.value || ctx.narrativeStyle" />
           </div>
 
           <!-- 视频提示词 -->
@@ -1556,7 +1563,7 @@ const prevShotNumber = computed(() => {
   border-radius: 2px;
 }
 .sb-strip-hint-icon {
-  font-size: 12px;
+  font-size: 14px;
   color: var(--el-text-color-placeholder);
   cursor: default;
   transition: color 0.15s;
@@ -1566,13 +1573,13 @@ const prevShotNumber = computed(() => {
 .sb-img-thumb {
   position: relative;
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: 6px;
   overflow: hidden;
   border: 1.5px solid transparent;
-  transition: border-color 0.2s;
+  transition: border-color 0.2s, box-shadow 0.2s;
   flex-shrink: 0;
-  width: 38px;
-  height: 38px;
+  width: 72px;
+  height: 50px;
 }
 .sb-img-thumb:hover { border-color: var(--el-color-primary); }
 .sb-img-thumb--active {
@@ -1592,24 +1599,29 @@ const prevShotNumber = computed(() => {
 }
 .sb-img-thumb-label {
   position: absolute;
-  bottom: 1px;
+  bottom: 0;
   left: 0;
   right: 0;
   text-align: center;
-  font-size: 10px;
+  font-size: 11px;
+  line-height: 16px;
   color: #fff;
-  background: rgba(0,0,0,0.5);
+  background: rgba(0, 0, 0, 0.65);
   pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 2px;
 }
 .thumb-preview-btn {
   position: absolute;
-  top: 2px;
-  right: 2px;
-  width: 16px;
-  height: 16px;
+  top: 3px;
+  right: 3px;
+  width: 18px;
+  height: 18px;
   padding: 0;
   border: none;
-  background: rgba(0,0,0,0.6);
+  background: rgba(0, 0, 0, 0.65);
   color: #fff;
   border-radius: 3px;
   display: flex;
@@ -1622,19 +1634,19 @@ const prevShotNumber = computed(() => {
 .sb-img-thumb:hover .thumb-preview-btn { opacity: 1; }
 .extra-thumb-remove {
   position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 16px;
-  height: 16px;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
   padding: 0;
   border: none;
-  background: rgba(239, 68, 68, 0.85);
+  background: rgba(239, 68, 68, 0.9);
   color: #fff;
   border-radius: 3px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1;
   cursor: pointer;
   opacity: 0;
@@ -1774,15 +1786,16 @@ const prevShotNumber = computed(() => {
 }
 .sb-history-strip-box {
   width: 100%;
-  height: 52px;
-  min-height: 52px;
-  max-height: 52px;
+  height: 64px;
+  min-height: 64px;
+  max-height: 64px;
   box-sizing: border-box;
   display: flex;
   align-items: center;
   background: rgba(0, 0, 0, 0.16);
-  padding: 0 8px;
-  overflow: hidden;
+  padding: 0 10px;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 :global(html.light .sb-history-strip-box) {
   background: #f8fafc;
@@ -1801,7 +1814,7 @@ const prevShotNumber = computed(() => {
   color: #94a3b8;
 }
 .sb-strip-empty-icon {
-  font-size: 13px;
+  font-size: 14px;
   opacity: 0.7;
   flex-shrink: 0;
 }
@@ -1810,7 +1823,7 @@ const prevShotNumber = computed(() => {
   padding: 8px 10px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   flex-grow: 1;
 }
 .sb-card-title-tag {
@@ -1829,6 +1842,39 @@ const prevShotNumber = computed(() => {
   align-items: center;
   flex-wrap: wrap;
   gap: 6px 8px;
+}
+.sb-delete-video-btn {
+  margin-left: auto;
+}
+
+/* 按钮统一样式收敛 */
+.sb-video-actions-card :deep(.wardrobe-btn),
+.sb-video-actions-card :deep(.h3-settings-btn) {
+  border: 1px solid var(--el-border-color, #dcdfe6) !important;
+  background: var(--el-fill-color-blank, #fff) !important;
+  border-radius: 4px;
+  padding: 0 8px;
+  height: 24px;
+  line-height: 22px;
+  font-size: 12px;
+  color: var(--el-text-color-regular, #606266) !important;
+  transition: all 0.2s;
+}
+.sb-video-actions-card :deep(.wardrobe-btn:hover),
+.sb-video-actions-card :deep(.h3-settings-btn:hover) {
+  border-color: var(--el-color-primary) !important;
+  color: var(--el-color-primary) !important;
+}
+:global(html.dark) .sb-video-actions-card :deep(.wardrobe-btn),
+:global(html.dark) .sb-video-actions-card :deep(.h3-settings-btn) {
+  border-color: rgba(255, 255, 255, 0.15) !important;
+  background: rgba(255, 255, 255, 0.05) !important;
+  color: #d4d4d8 !important;
+}
+:global(html.dark) .sb-video-actions-card :deep(.wardrobe-btn:hover),
+:global(html.dark) .sb-video-actions-card :deep(.h3-settings-btn:hover) {
+  border-color: #a855f7 !important;
+  color: #c084fc !important;
 }
 
 .sb-media-empty-placeholder {
@@ -1866,56 +1912,55 @@ const prevShotNumber = computed(() => {
   font-weight: 500;
 }
 
-/* 图词高度自适应填满底部 */
-.sb-prompt-compact-line {
-  flex: 1;
-  min-height: 84px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 11px;
-  color: var(--el-text-color-secondary);
-  background: rgba(0, 0, 0, 0.02);
-  padding: 6px 10px;
-  border-radius: 6px;
-  border: 1px solid rgba(0, 0, 0, 0.04);
-  margin-top: 4px;
-  box-sizing: border-box;
-}
-:global(html.dark .sb-prompt-compact-line) {
-  background: rgba(255, 255, 255, 0.03);
-  border-color: rgba(255, 255, 255, 0.06);
-}
-:global(html.light .sb-prompt-compact-line) {
-  background: #f8fafc;
-  border-color: #e2e8f0;
-}
-.sb-prompt-compact-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  flex-shrink: 0;
-}
-.sb-prompt-header-left {
+/* 紧凑提示词栏（图词与视频词统一规格，靠底对其） */
+.sb-prompt-compact-line,
+.sb-video-prompt-compact {
   display: flex;
   align-items: center;
   gap: 6px;
+  padding: 5px 8px;
+  background: rgba(0, 0, 0, 0.02);
+  border-radius: 6px;
+  border: 1px solid rgba(0, 0, 0, 0.04);
+  box-sizing: border-box;
+  margin-top: auto;
 }
-.sb-prompt-text-preview {
+:global(html.dark .sb-prompt-compact-line),
+:global(html.dark .sb-video-prompt-compact) {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.06);
+}
+:global(html.light .sb-prompt-compact-line),
+:global(html.light .sb-video-prompt-compact) {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+}
+.sb-prompt-name {
   font-size: 11px;
-  color: #64748b;
+  font-weight: 600;
+  color: var(--el-text-color-secondary);
+  flex-shrink: 0;
 }
-.sb-prompt-text-preview.sb-prompt-multiline-text {
+.sb-prompt-edit-btn {
+  font-size: 11px;
+  padding: 0 4px;
+  flex-shrink: 0;
+}
+.sb-prompt-preview-clamp,
+.sb-video-prompt-text--preview {
   flex: 1;
-  min-height: 0;
-  line-height: 1.5;
-  overflow-y: auto;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #64748b;
+  max-height: 2.8em;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
   word-break: break-all;
-  white-space: normal;
-  text-overflow: clip;
 }
-:global(html.dark .sb-prompt-text-preview) {
+:global(html.dark .sb-prompt-preview-clamp),
+:global(html.dark .sb-video-prompt-text--preview) {
   color: #94a3b8;
 }
 
@@ -2010,7 +2055,7 @@ const prevShotNumber = computed(() => {
 .sb-videos-strip {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   width: 100%;
   height: 100%;
   padding: 0;
@@ -2022,14 +2067,14 @@ const prevShotNumber = computed(() => {
 }
 .sb-video-thumb {
   position: relative;
-  width: 60px;
-  height: 38px;
-  border-radius: 4px;
+  width: 86px;
+  height: 50px;
+  border-radius: 6px;
   overflow: hidden;
   cursor: pointer;
   border: 1.5px solid transparent;
   flex-shrink: 0;
-  transition: border-color 0.15s;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 .sb-video-thumb:hover { border-color: #a855f7; }
 .sb-video-thumb--active {
@@ -2052,14 +2097,17 @@ const prevShotNumber = computed(() => {
   bottom: 0;
   left: 0;
   right: 0;
-  background: rgba(0,0,0,0.55);
+  background: rgba(0,0,0,0.65);
   color: #e4e4e7;
-  font-size: 0.65rem;
+  font-size: 11px;
+  line-height: 16px;
   text-align: center;
-  padding: 1px 0;
+  padding: 0 2px;
   pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.sb-generate-video-btn { margin-top: 4px; }
 
 /* 紧凑对白工具栏 */
 .sb-speech-toolbar {
@@ -2078,13 +2126,7 @@ const prevShotNumber = computed(() => {
   gap: 4px;
 }
 
-/* 紧凑模型与配置栏 */
-.sb-model-config-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
+/* 紧凑模型选择 */
 .sb-model-select-wrap {
   display: inline-flex;
   align-items: center;
@@ -2097,48 +2139,7 @@ const prevShotNumber = computed(() => {
   flex-shrink: 0;
 }
 .sb-model-select {
-  width: 140px !important;
-}
-
-/* 紧凑视频提示词栏 */
-.sb-video-prompt-compact {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 8px;
-  background: rgba(0, 0, 0, 0.02);
-  border-radius: 6px;
-  border: 1px solid rgba(0, 0, 0, 0.04);
-}
-:global(html.dark .sb-video-prompt-compact) {
-  background: rgba(255, 255, 255, 0.03);
-  border-color: rgba(255, 255, 255, 0.06);
-}
-.sb-prompt-name {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--el-text-color-secondary);
-  flex-shrink: 0;
-}
-.sb-prompt-edit-btn {
-  font-size: 11px;
-  padding: 0 4px;
-  flex-shrink: 0;
-}
-.sb-video-prompt-text--preview {
-  flex: 1;
-  font-size: 11px;
-  line-height: 1.4;
-  color: #64748b;
-  max-height: 2.8em;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  word-break: break-all;
-}
-:global(html.dark .sb-video-prompt-text--preview) {
-  color: #94a3b8;
+  width: 135px !important;
 }
 
 @media (max-width: 1250px) {
