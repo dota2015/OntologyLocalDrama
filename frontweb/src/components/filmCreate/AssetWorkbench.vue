@@ -215,117 +215,286 @@
 
         <!-- 道具生成 -->
         <div id="anchor-props" class="resource-block card">
-          <div class="collapse-header resource-block-header" @click="propsBlockCollapsed = !propsBlockCollapsed">
-            <h3 class="resource-block-title">道具生成</h3>
-            <el-icon class="collapse-icon"><ArrowUp v-if="!propsBlockCollapsed" /><ArrowDown v-else /></el-icon>
-          </div>
-          <div v-show="!propsBlockCollapsed" class="resource-block-body">
-            <div class="asset-actions">
+          <div class="resource-block-header-new">
+            <div class="rbh-left">
+              <h3 class="resource-block-title" @click="propsBlockCollapsed = !propsBlockCollapsed">道具生成</h3>
               <el-button type="primary" size="small" :loading="propsExtracting" :disabled="!currentEpisodeId || referenceBatchRunning" @click="onExtractProps">从剧本提取道具</el-button>
               <el-button size="small" :disabled="!currentEpisodeId || referenceBatchRunning || pipelineRunning || charactersGenerating || propsExtracting || scenesExtracting || referenceSuggestionsRunning || savingReferenceModeIds.size > 0" @click="referenceImageBatch?.start('prop')">批量生成参考图</el-button>
               <el-button size="small" :disabled="!dramaId" @click="showAddProp = true">添加道具</el-button>
               <el-button size="small" @click="showPropLibrary = true">本剧道具库</el-button>
             </div>
-            <div class="asset-list asset-list-two">
-              <div v-for="prop in props" :key="prop.id" class="asset-item asset-item-left-right">
-                <div class="asset-info">
-                  <div class="asset-name">
-                    <span style="display:inline-flex;align-items:center;gap:4px;flex:1;min-width:0;overflow:hidden">
-                      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ prop.name }}</span>
-                      <el-tooltip v-if="getAssetObsoleteInfo('prop', prop)" :content="getAssetObsoleteInfo('prop', prop).reason" placement="top">
-                        <el-tag size="small" type="danger" effect="light" style="flex-shrink:0;padding:0 4px;font-size:10px;height:18px;line-height:18px;cursor:help;color:#f56c6c;border-color:#fde2e2;background:#fef0f0">
-                          ⚠️ 建议删除
-                        </el-tag>
-                      </el-tooltip>
-                    </span>
-                    <el-button type="danger" text size="small" class="btn-delete-icon" title="删除" @click="onDeleteProp(prop)">
-                      <el-icon><Delete /></el-icon>
-                    </el-button>
-                  </div>
-                  <div class="asset-desc-full">{{ prop.description || prop.prompt || '暂无描述' }}</div>
-                  <ReferenceImageMode :resource="prop" kind="prop" :disabled="referenceBatchRunning || referenceSuggestionsRunning || pipelineRunning || generatingPropIds.has(prop.id)" @saving-change="onReferenceModeSaving('prop', prop.id, $event)" />
-                  <div class="asset-btns">
-                    <el-button size="small" @click="editProp(prop)">编辑</el-button>
-                    <el-button size="small" :loading="addingPropToLibraryId === prop.id" :disabled="!hasAssetImage(prop)" @click="onAddPropToLibrary(prop)">
-                      加入本剧库
-                    </el-button>
-                    <el-button size="small" :loading="addingPropToMaterialId === prop.id" :disabled="!hasAssetImage(prop)" @click="onAddPropToMaterialLibrary(prop)">
-                      加入素材库
-                    </el-button></div>
-                  <div v-if="getPropAffectedStoryboards(prop.id).length" class="asset-storyboard-link">
-                    <span class="asl-label">影响的分镜：</span>
-                    <span
-                      v-for="sb in getPropAffectedStoryboards(prop.id)"
-                      :key="sb.id"
-                      class="asl-chip"
-                      title="点击跳转到该分镜"
-                      @click="scrollToStoryboard(sb.id)"
-                    >#{{ sb.storyboard_number }}</span>
-                    <span v-if="regenSbImagesForAsset.has('prop-' + prop.id) && regenSbImagesProgress['prop-' + prop.id]" class="asl-progress">
-                      {{ regenSbImagesProgress['prop-' + prop.id].current }}/{{ regenSbImagesProgress['prop-' + prop.id].total }}
-                    </span>
-                    <el-button
-                      size="small"
-                      class="asl-regen-btn"
-                      :loading="regenSbImagesForAsset.has('prop-' + prop.id)"
-                      @click="onRegenAffectedSbImages('prop-' + prop.id, getPropAffectedStoryboards(prop.id))"
-                    >
-                      <span v-if="!regenSbImagesForAsset.has('prop-' + prop.id)">↻ 重新生成分镜图</span>
-                    </el-button>
-                  </div>
-                </div>
-                <div class="asset-cover-wrap">
-                  <div
-                    class="asset-cover"
-                    :class="{ 'asset-cover--clickable': hasAssetImage(prop), 'asset-cover--dragover': dragOverResourceKey === 'prop-' + prop.id }"
-                    role="button"
-                    tabindex="0"
-                    @click="hasAssetImage(prop) && openImagePreview(assetImageUrl(prop))"
-                    @dragover="onResourceDragOver($event, 'prop', prop.id)"
-                    @dragleave="onResourceDragLeave($event, 'prop-' + prop.id)"
-                    @drop="onResourceDrop($event, 'prop', prop.id)"
-                  >
-                    <img v-if="hasAssetImage(prop)" :src="assetImageUrl(prop)" class="cover-img" alt="" />
-                    <div v-else-if="prop.error_msg || prop.errorMsg" class="cover-placeholder error" :title="prop.error_msg || prop.errorMsg">{{ prop.error_msg || prop.errorMsg }}</div>
-                    <div v-else class="cover-placeholder">暂无图</div>
-                    <div v-if="dragOverResourceKey === 'prop-' + prop.id" class="asset-cover-drop-hint">松开上传</div>
-                  </div>
-                  <div v-if="parseExtraImages(prop).length" class="extra-images-strip">
-                    <div v-for="ep in parseExtraImages(prop)" :key="ep" class="extra-thumb" title="点击设为主图（悬停左上角可放大预览）">
-                      <img :src="localPathToUrl(ep)" alt="" @click="onSetPrimaryImage('prop', prop, ep)" />
-                      <button class="thumb-preview-btn" title="放大预览" @click.stop="openImagePreview(localPathToUrl(ep))">
-                        <el-icon :size="10"><ZoomIn /></el-icon>
-                      </button>
-                      <button class="extra-thumb-remove" title="移除" @click.stop="onRemoveExtraImage('prop', prop, ep)">×</button>
+            <div class="rbh-right">
+              <el-button-group class="asset-view-toggle">
+                <el-button size="small" :type="propViewMode === 'card' ? 'primary' : 'default'" @click="propViewMode = 'card'">
+                  <el-icon><Grid /></el-icon> 卡片视图
+                </el-button>
+                <el-button size="small" :type="propViewMode === 'list' ? 'primary' : 'default'" @click="propViewMode = 'list'">
+                  <el-icon><Tickets /></el-icon> 列表视图
+                </el-button>
+              </el-button-group>
+              <div class="rbh-count-toggle" @click="propsBlockCollapsed = !propsBlockCollapsed">
+                <span>共 {{ props.length }} 个道具</span>
+                <el-icon><ArrowUp v-if="!propsBlockCollapsed" /><ArrowDown v-else /></el-icon>
+              </div>
+            </div>
+          </div>
+
+          <div v-show="!propsBlockCollapsed" class="resource-block-body">
+            <!-- 卡片视图 (按设计图 2列卡片) -->
+            <div v-if="propViewMode === 'card'" class="asset-grid-2col">
+              <div v-for="(prop, propIdx) in props" :key="prop.id" class="new-asset-card">
+                <!-- 头部：序号徽章 + 标题 + 关联分镜副标题 + 更多菜单 -->
+                <div class="new-asset-header">
+                  <div class="nah-left">
+                    <div class="nah-index-badge">{{ String(propIdx + 1).padStart(2, '0') }}</div>
+                    <div class="nah-title-wrap">
+                      <div class="nah-title-row">
+                        <span class="nah-title" :title="prop.name">{{ prop.name }}</span>
+                        <el-tooltip v-if="getAssetObsoleteInfo('prop', prop)" :content="getAssetObsoleteInfo('prop', prop).reason" placement="top">
+                          <el-tag size="small" type="danger" effect="light" class="nah-obsolete-tag">⚠️ 建议删除</el-tag>
+                        </el-tooltip>
+                      </div>
+                      <div class="nah-subtitle">
+                        道具 · 关联 {{ getPropAffectedStoryboards(prop.id).length }} 个分镜
+                      </div>
                     </div>
                   </div>
-                  <div class="asset-cover-actions">
-                    <el-tooltip :content="usesFourViews(prop) ? '四视图道具（前/侧/后/顶，纯色无缝背景）' : '单图道具（纯色无缝背景）'" placement="top">
-                      <el-button type="primary" size="small" :loading="generatingPropIds.has(prop.id)" :disabled="referenceBatchRunning || referenceSuggestionsRunning || savingReferenceModeIds.has('prop:' + prop.id)" @click="onGeneratePropImage(prop)">
-                        <el-icon v-if="!generatingPropIds.has(prop.id)"><MagicStick /></el-icon>
-                        AI 生成
+                  <div class="nah-right">
+                    <el-dropdown trigger="click" @command="handleMoreCommand('prop', prop, $event)">
+                      <button type="button" class="nah-more-btn" title="更多操作">
+                        <el-icon><MoreFilled /></el-icon>
+                      </button>
+                      <template #dropdown>
+                        <el-dropdown-menu>
+                          <el-dropdown-item command="material" :disabled="!hasAssetImage(prop)">加入素材库</el-dropdown-item>
+                          <el-dropdown-item command="delete" divided style="color:#f56c6c">删除道具</el-dropdown-item>
+                        </el-dropdown-menu>
+                      </template>
+                    </el-dropdown>
+                  </div>
+                </div>
+
+                <!-- 中部双栏：左文案与历史参考图，右16:9预览与双主动作 -->
+                <div class="new-asset-mid">
+                  <!-- 左侧文案区 -->
+                  <div class="nah-left-col">
+                    <div class="nah-desc" :class="{ 'nah-desc--expanded': expandedPromptIds.has('prop-' + prop.id) }">
+                      {{ prop.description || prop.prompt || '暂无描述' }}
+                    </div>
+                    <div v-if="prop.prompt && prop.prompt !== prop.description" class="nah-prompt-toggle" @click="togglePromptExpand('prop', prop.id)">
+                      <span v-if="expandedPromptIds.has('prop-' + prop.id)">▲ 收起完整提示词</span>
+                      <span v-else>▼ 展开完整提示词</span>
+                    </div>
+                    <div v-if="expandedPromptIds.has('prop-' + prop.id) && prop.prompt" class="nah-expanded-prompt">
+                      {{ prop.prompt }}
+                    </div>
+
+                    <!-- 参考图条 -->
+                    <div class="nah-ref-images-row">
+                      <span class="nah-ref-label">参考图</span>
+                      <div v-if="parseExtraImages(prop).length" class="nah-ref-thumbs">
+                        <div
+                          v-for="ep in parseExtraImages(prop).slice(0, 3)"
+                          :key="ep"
+                          class="nah-thumb-item"
+                          title="点击设为主图（悬停左上角可放大预览）"
+                          @click="onSetPrimaryImage('prop', prop, ep)"
+                        >
+                          <img :src="localPathToUrl(ep)" alt="" />
+                          <button class="thumb-preview-btn" title="放大预览" @click.stop="openImagePreview(localPathToUrl(ep))">
+                            <el-icon :size="10"><ZoomIn /></el-icon>
+                          </button>
+                          <button class="extra-thumb-remove" title="移除" @click.stop="onRemoveExtraImage('prop', prop, ep)">×</button>
+                        </div>
+                        <div
+                          v-if="parseExtraImages(prop).length > 3"
+                          class="nah-thumb-more-badge"
+                          :title="'还有 ' + (parseExtraImages(prop).length - 3) + ' 张参考图'"
+                          @click.stop="openImagePreview(localPathToUrl(parseExtraImages(prop)[3]))"
+                        >
+                          +{{ parseExtraImages(prop).length - 3 }}
+                        </div>
+                      </div>
+                      <span v-else class="nah-ref-empty">暂无参考图</span>
+                    </div>
+                  </div>
+
+                  <!-- 右侧预览与按钮 -->
+                  <div class="nah-right-col">
+                    <div
+                      class="nah-cover"
+                      :class="{ 'nah-cover--clickable': hasAssetImage(prop), 'nah-cover--dragover': dragOverResourceKey === 'prop-' + prop.id }"
+                      role="button"
+                      tabindex="0"
+                      @click="hasAssetImage(prop) && openImagePreview(assetImageUrl(prop))"
+                      @dragover="onResourceDragOver($event, 'prop', prop.id)"
+                      @dragleave="onResourceDragLeave($event, 'prop-' + prop.id)"
+                      @drop="onResourceDrop($event, 'prop', prop.id)"
+                    >
+                      <img v-if="hasAssetImage(prop)" :src="assetImageUrl(prop)" class="nah-cover-img" alt="" />
+                      <div v-else-if="prop.error_msg || prop.errorMsg" class="nah-cover-placeholder error" :title="prop.error_msg || prop.errorMsg">
+                        {{ prop.error_msg || prop.errorMsg }}
+                      </div>
+                      <div v-else class="nah-cover-placeholder">暂无图</div>
+                      <div v-if="dragOverResourceKey === 'prop-' + prop.id" class="nah-cover-drop-hint">松开上传</div>
+                      <span class="nah-aspect-badge">16:9</span>
+                    </div>
+                    <div class="nah-cover-btns">
+                      <el-tooltip :content="usesFourViews(prop) ? '四视图道具（前/侧/后/顶，纯色无缝背景）' : '单图道具（纯色无缝背景）'" placement="top">
+                        <el-button
+                          type="primary"
+                          size="small"
+                          class="nah-btn-ai"
+                          :loading="generatingPropIds.has(prop.id)"
+                          :disabled="referenceBatchRunning || referenceSuggestionsRunning || savingReferenceModeIds.has('prop:' + prop.id)"
+                          @click="onGeneratePropImage(prop)"
+                        >
+                          <el-icon v-if="!generatingPropIds.has(prop.id)"><MagicStick /></el-icon>
+                          AI 生成
+                        </el-button>
+                      </el-tooltip>
+                      <el-button
+                        type="success"
+                        size="small"
+                        class="nah-btn-upload"
+                        :loading="uploadingResourceId === 'prop-' + prop.id"
+                        @click="onUploadResourceClick('prop', prop.id)"
+                      >
+                        <el-icon v-if="uploadingResourceId !== 'prop-' + prop.id"><Upload /></el-icon>
+                        上传
                       </el-button>
-                    </el-tooltip>
-                    <el-button type="success" size="small" :loading="uploadingResourceId === 'prop-' + prop.id" @click="onUploadResourceClick('prop', prop.id)">
-                      <el-icon v-if="uploadingResourceId !== 'prop-' + prop.id"><Upload /></el-icon>
-                      上传
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 参考词区：单图/四视图标签 + AI建议 + 关键词预览 -->
+                <div class="nah-keywords-row">
+                  <span class="nkr-label">参考词</span>
+                  <span
+                    class="nkr-mode-pill"
+                    :class="{ 'nkr-mode-pill--quad': usesFourViews(prop) }"
+                    :title="'点击切换模式（当前为' + (usesFourViews(prop) ? '四视图' : '单图') + '）'"
+                    @click="toggleAssetReferenceMode('prop', prop)"
+                  >
+                    {{ usesFourViews(prop) ? '四视图 (2×2)' : '单图' }}
+                  </span>
+                  <span v-if="prop.reference_image_recommendation" class="nkr-rec-pill">
+                    AI 建议: {{ prop.reference_image_recommendation === 'quad_grid' ? '四视图' : '单图' }}
+                  </span>
+                  <span class="nkr-keywords-text" :title="getAssetKeywords(prop)">
+                    {{ getAssetKeywords(prop) }}
+                  </span>
+                </div>
+
+                <!-- 底部关联分镜与操作栏 -->
+                <div class="nah-footer-row">
+                  <div class="nah-footer-storyboards">
+                    <template v-if="getPropAffectedStoryboards(prop.id).length">
+                      <span
+                        v-for="sb in getPropAffectedStoryboards(prop.id)"
+                        :key="sb.id"
+                        class="nah-sb-chip"
+                        :title="'分镜 #' + sb.storyboard_number + '（点击跳转）'"
+                        @click="scrollToStoryboard(sb.id)"
+                      >
+                        #{{ sb.storyboard_number }}
+                      </span>
+                    </template>
+                    <span v-else class="nah-sb-none">暂无关联分镜</span>
+                  </div>
+                  <div class="nah-footer-actions">
+                    <el-button size="small" class="nah-action-btn" @click="editProp(prop)">
+                      <el-icon><Edit /></el-icon> 编辑
                     </el-button>
+                    <el-button
+                      size="small"
+                      class="nah-action-btn"
+                      :loading="addingPropToLibraryId === prop.id"
+                      :disabled="!hasAssetImage(prop)"
+                      @click="onAddPropToLibrary(prop)"
+                    >
+                      <el-icon><Plus /></el-icon> 加入本剧库
+                    </el-button>
+                    <el-button
+                      size="small"
+                      class="nah-action-btn"
+                      :loading="regenSbImagesForAsset.has('prop-' + prop.id)"
+                      :disabled="!getPropAffectedStoryboards(prop.id).length"
+                      title="重新生成该道具关联的分镜图"
+                      @click="onRegenAffectedSbImages('prop-' + prop.id, getPropAffectedStoryboards(prop.id))"
+                    >
+                      <el-icon><Refresh /></el-icon> 分镜图
+                    </el-button>
+                    <el-dropdown trigger="click" @command="handleMoreCommand('prop', prop, $event)">
+                      <el-button size="small" class="nah-action-btn nah-action-more">
+                        <el-icon><MoreFilled /></el-icon>
+                      </el-button>
+                      <template #dropdown>
+                        <el-dropdown-menu>
+                          <el-dropdown-item command="material" :disabled="!hasAssetImage(prop)">加入素材库</el-dropdown-item>
+                          <el-dropdown-item command="delete" divided style="color:#f56c6c">删除道具</el-dropdown-item>
+                        </el-dropdown-menu>
+                      </template>
+                    </el-dropdown>
                   </div>
                 </div>
               </div>
-              <div v-if="props.length === 0" class="empty-tip">暂无道具，可从剧本提取或添加</div>
             </div>
+
+            <!-- 列表视图 (表格) -->
+            <div v-else class="asset-list-table-wrap">
+              <el-table :data="props" stripe size="small" style="width: 100%">
+                <el-table-column label="序号" width="60" align="center">
+                  <template #default="{ $index }">
+                    <span class="nah-table-index">{{ String($index + 1).padStart(2, '0') }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="道具名称" min-width="140" prop="name">
+                  <template #default="{ row }">
+                    <span style="font-weight:600">{{ row.name }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="参考图" width="90" align="center">
+                  <template #default="{ row }">
+                    <img v-if="hasAssetImage(row)" :src="assetImageUrl(row)" class="nah-table-thumb" @click="openImagePreview(assetImageUrl(row))" />
+                    <span v-else style="color:#94a3b8;font-size:12px">暂无</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="道具描述" min-width="220" prop="description">
+                  <template #default="{ row }">
+                    <span class="nah-table-desc">{{ row.description || row.prompt || '暂无描述' }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="关联分镜" min-width="130">
+                  <template #default="{ row }">
+                    <span
+                      v-for="sb in getPropAffectedStoryboards(row.id)"
+                      :key="sb.id"
+                      class="nah-sb-chip"
+                      @click="scrollToStoryboard(sb.id)"
+                    >#{{ sb.storyboard_number }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="220" align="right">
+                  <template #default="{ row }">
+                    <el-button size="small" type="primary" link :loading="generatingPropIds.has(row.id)" @click="onGeneratePropImage(row)">AI生成</el-button>
+                    <el-button size="small" link @click="editProp(row)">编辑</el-button>
+                    <el-button size="small" link :disabled="!hasAssetImage(row)" @click="onAddPropToLibrary(row)">加剧库</el-button>
+                    <el-button size="small" link type="danger" @click="onDeleteProp(row)">删除</el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+
+            <div v-if="props.length === 0" class="empty-tip">暂无道具，可从剧本提取或添加</div>
           </div>
         </div>
 
         <!-- 场景生成 -->
         <div id="anchor-scenes" class="resource-block card">
-          <div class="collapse-header resource-block-header" @click="scenesBlockCollapsed = !scenesBlockCollapsed">
-            <h3 class="resource-block-title">场景生成</h3>
-            <el-icon class="collapse-icon"><ArrowUp v-if="!scenesBlockCollapsed" /><ArrowDown v-else /></el-icon>
-          </div>
-          <div v-show="!scenesBlockCollapsed" class="resource-block-body">
-            <div class="asset-actions">
+          <div class="resource-block-header-new">
+            <div class="rbh-left">
+              <h3 class="resource-block-title" @click="scenesBlockCollapsed = !scenesBlockCollapsed">场景生成</h3>
               <el-button type="primary" size="small" :loading="scenesExtracting" :disabled="!currentEpisodeId || referenceBatchRunning" @click="onExtractScenes">
                 从剧本提取场景
               </el-button>
@@ -333,95 +502,270 @@
               <el-button size="small" :disabled="!dramaId" @click="openAddScene">添加场景</el-button>
               <el-button size="small" @click="showSceneLibrary = true">本剧场景库</el-button>
             </div>
-            <div class="asset-list asset-list-two">
-              <div v-for="scene in scenes" :key="scene.id" class="asset-item asset-item-left-right">
-                <div class="asset-info">
-                  <div class="asset-name">
-                    <span style="display:inline-flex;align-items:center;gap:4px;flex:1;min-width:0;overflow:hidden">
-                      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ scene.location }}</span>
-                      <el-tooltip v-if="getAssetObsoleteInfo('scene', scene)" :content="getAssetObsoleteInfo('scene', scene).reason" placement="top">
-                        <el-tag size="small" type="danger" effect="light" style="flex-shrink:0;padding:0 4px;font-size:10px;height:18px;line-height:18px;cursor:help;color:#f56c6c;border-color:#fde2e2;background:#fef0f0">
-                          ⚠️ 建议删除
-                        </el-tag>
-                      </el-tooltip>
-                    </span>
-                    <el-button type="danger" text size="small" class="btn-delete-icon" title="删除" @click="onDeleteScene(scene)">
-                      <el-icon><Delete /></el-icon>
-                    </el-button>
-                  </div>
-                  <div class="asset-desc-full">{{ scene.description || scene.prompt || scene.time || '暂无描述' }}</div>
-                  <ReferenceImageMode :resource="scene" kind="scene" :disabled="referenceBatchRunning || referenceSuggestionsRunning || pipelineRunning || generatingSceneIds.has(scene.id)" @saving-change="onReferenceModeSaving('scene', scene.id, $event)" />
-                  <div class="asset-btns">
-                    <el-button size="small" @click="editScene(scene)">编辑</el-button>
-                    <el-button size="small" :loading="addingSceneToLibraryId === scene.id" :disabled="!hasAssetImage(scene)" @click="onAddSceneToLibrary(scene)">
-                      加入本剧库
-                    </el-button>
-                    <el-button size="small" :loading="addingSceneToMaterialId === scene.id" :disabled="!hasAssetImage(scene)" @click="onAddSceneToMaterialLibrary(scene)">
-                      加入素材库
-                    </el-button></div>
-                  <div v-if="getSceneAffectedStoryboards(scene.id).length" class="asset-storyboard-link">
-                    <span class="asl-label">影响的分镜：</span>
-                    <span
-                      v-for="sb in getSceneAffectedStoryboards(scene.id)"
-                      :key="sb.id"
-                      class="asl-chip"
-                      title="点击跳转到该分镜"
-                      @click="scrollToStoryboard(sb.id)"
-                    >#{{ sb.storyboard_number }}</span>
-                    <span v-if="regenSbImagesForAsset.has('scene-' + scene.id) && regenSbImagesProgress['scene-' + scene.id]" class="asl-progress">
-                      {{ regenSbImagesProgress['scene-' + scene.id].current }}/{{ regenSbImagesProgress['scene-' + scene.id].total }}
-                    </span>
-                    <el-button
-                      size="small"
-                      class="asl-regen-btn"
-                      :loading="regenSbImagesForAsset.has('scene-' + scene.id)"
-                      @click="onRegenAffectedSbImages('scene-' + scene.id, getSceneAffectedStoryboards(scene.id))"
-                    >
-                      <span v-if="!regenSbImagesForAsset.has('scene-' + scene.id)">↻ 重新生成分镜图</span>
-                    </el-button>
-                  </div>
-                </div>
-                <div class="asset-cover-wrap">
-                  <div
-                    class="asset-cover"
-                    :class="{ 'asset-cover--clickable': hasAssetImage(scene), 'asset-cover--dragover': dragOverResourceKey === 'scene-' + scene.id }"
-                    role="button"
-                    tabindex="0"
-                    @click="hasAssetImage(scene) && openImagePreview(assetImageUrl(scene))"
-                    @dragover="onResourceDragOver($event, 'scene', scene.id)"
-                    @dragleave="onResourceDragLeave($event, 'scene-' + scene.id)"
-                    @drop="onResourceDrop($event, 'scene', scene.id)"
-                  >
-                    <img v-if="hasAssetImage(scene)" :src="assetImageUrl(scene)" class="cover-img" alt="" />
-                    <div v-else-if="scene.error_msg || scene.errorMsg" class="cover-placeholder error" :title="scene.error_msg || scene.errorMsg">{{ scene.error_msg || scene.errorMsg }}</div>
-                    <div v-else class="cover-placeholder">暂无图</div>
-                    <div v-if="dragOverResourceKey === 'scene-' + scene.id" class="asset-cover-drop-hint">松开上传</div>
-                  </div>
-                  <div v-if="parseExtraImages(scene).length" class="extra-images-strip">
-                    <div v-for="ep in parseExtraImages(scene)" :key="ep" class="extra-thumb" title="点击设为主图（悬停左上角可放大预览）">
-                      <img :src="localPathToUrl(ep)" alt="" @click="onSetPrimaryImage('scene', scene, ep)" />
-                      <button class="thumb-preview-btn" title="放大预览" @click.stop="openImagePreview(localPathToUrl(ep))">
-                        <el-icon :size="10"><ZoomIn /></el-icon>
-                      </button>
-                      <button class="extra-thumb-remove" title="移除" @click.stop="onRemoveExtraImage('scene', scene, ep)">×</button>
+            <div class="rbh-right">
+              <el-button-group class="asset-view-toggle">
+                <el-button size="small" :type="sceneViewMode === 'card' ? 'primary' : 'default'" @click="sceneViewMode = 'card'">
+                  <el-icon><Grid /></el-icon> 卡片视图
+                </el-button>
+                <el-button size="small" :type="sceneViewMode === 'list' ? 'primary' : 'default'" @click="sceneViewMode = 'list'">
+                  <el-icon><Tickets /></el-icon> 列表视图
+                </el-button>
+              </el-button-group>
+              <div class="rbh-count-toggle" @click="scenesBlockCollapsed = !scenesBlockCollapsed">
+                <span>共 {{ scenes.length }} 个场景</span>
+                <el-icon><ArrowUp v-if="!scenesBlockCollapsed" /><ArrowDown v-else /></el-icon>
+              </div>
+            </div>
+          </div>
+
+          <div v-show="!scenesBlockCollapsed" class="resource-block-body">
+            <!-- 卡片视图 (按设计图 2列卡片) -->
+            <div v-if="sceneViewMode === 'card'" class="asset-grid-2col">
+              <div v-for="(scene, sceneIdx) in scenes" :key="scene.id" class="new-asset-card">
+                <!-- 头部：序号徽章 + 标题 + 关联分镜副标题 + 更多菜单 -->
+                <div class="new-asset-header">
+                  <div class="nah-left">
+                    <div class="nah-index-badge">{{ String(sceneIdx + 1).padStart(2, '0') }}</div>
+                    <div class="nah-title-wrap">
+                      <div class="nah-title-row">
+                        <span class="nah-title" :title="scene.location">{{ scene.location }}</span>
+                        <el-tooltip v-if="getAssetObsoleteInfo('scene', scene)" :content="getAssetObsoleteInfo('scene', scene).reason" placement="top">
+                          <el-tag size="small" type="danger" effect="light" class="nah-obsolete-tag">⚠️ 建议删除</el-tag>
+                        </el-tooltip>
+                      </div>
+                      <div class="nah-subtitle">
+                        场景 · 关联 {{ getSceneAffectedStoryboards(scene.id).length }} 个分镜
+                      </div>
                     </div>
                   </div>
-                  <div class="asset-cover-actions">
-                    <el-tooltip :content="usesFourViews(scene) ? '四宫格场景（正/侧/俯/仰）' : '单图场景'" placement="top">
-                      <el-button type="primary" size="small" :loading="generatingSceneIds.has(scene.id)" :disabled="referenceBatchRunning || referenceSuggestionsRunning || savingReferenceModeIds.has('scene:' + scene.id)" @click="onGenerateSceneImage(scene)">
-                        <el-icon v-if="!generatingSceneIds.has(scene.id)"><MagicStick /></el-icon>
-                        AI 生成
+                  <div class="nah-right">
+                    <el-dropdown trigger="click" @command="handleMoreCommand('scene', scene, $event)">
+                      <button type="button" class="nah-more-btn" title="更多操作">
+                        <el-icon><MoreFilled /></el-icon>
+                      </button>
+                      <template #dropdown>
+                        <el-dropdown-menu>
+                          <el-dropdown-item command="material" :disabled="!hasAssetImage(scene)">加入素材库</el-dropdown-item>
+                          <el-dropdown-item command="delete" divided style="color:#f56c6c">删除场景</el-dropdown-item>
+                        </el-dropdown-menu>
+                      </template>
+                    </el-dropdown>
+                  </div>
+                </div>
+
+                <!-- 中部双栏：左文案与历史参考图，右16:9预览与双主动作 -->
+                <div class="new-asset-mid">
+                  <!-- 左侧文案区 -->
+                  <div class="nah-left-col">
+                    <div class="nah-desc" :class="{ 'nah-desc--expanded': expandedPromptIds.has('scene-' + scene.id) }">
+                      {{ scene.description || scene.prompt || scene.time || '暂无描述' }}
+                    </div>
+                    <div v-if="scene.prompt && scene.prompt !== scene.description" class="nah-prompt-toggle" @click="togglePromptExpand('scene', scene.id)">
+                      <span v-if="expandedPromptIds.has('scene-' + scene.id)">▲ 收起完整提示词</span>
+                      <span v-else>▼ 展开完整提示词</span>
+                    </div>
+                    <div v-if="expandedPromptIds.has('scene-' + scene.id) && scene.prompt" class="nah-expanded-prompt">
+                      {{ scene.prompt }}
+                    </div>
+
+                    <!-- 参考图条 -->
+                    <div class="nah-ref-images-row">
+                      <span class="nah-ref-label">参考图</span>
+                      <div v-if="parseExtraImages(scene).length" class="nah-ref-thumbs">
+                        <div
+                          v-for="ep in parseExtraImages(scene).slice(0, 3)"
+                          :key="ep"
+                          class="nah-thumb-item"
+                          title="点击设为主图（悬停左上角可放大预览）"
+                          @click="onSetPrimaryImage('scene', scene, ep)"
+                        >
+                          <img :src="localPathToUrl(ep)" alt="" />
+                          <button class="thumb-preview-btn" title="放大预览" @click.stop="openImagePreview(localPathToUrl(ep))">
+                            <el-icon :size="10"><ZoomIn /></el-icon>
+                          </button>
+                          <button class="extra-thumb-remove" title="移除" @click.stop="onRemoveExtraImage('scene', scene, ep)">×</button>
+                        </div>
+                        <div
+                          v-if="parseExtraImages(scene).length > 3"
+                          class="nah-thumb-more-badge"
+                          :title="'还有 ' + (parseExtraImages(scene).length - 3) + ' 张参考图'"
+                          @click.stop="openImagePreview(localPathToUrl(parseExtraImages(scene)[3]))"
+                        >
+                          +{{ parseExtraImages(scene).length - 3 }}
+                        </div>
+                      </div>
+                      <span v-else class="nah-ref-empty">暂无参考图</span>
+                    </div>
+                  </div>
+
+                  <!-- 右侧预览与按钮 -->
+                  <div class="nah-right-col">
+                    <div
+                      class="nah-cover"
+                      :class="{ 'nah-cover--clickable': hasAssetImage(scene), 'nah-cover--dragover': dragOverResourceKey === 'scene-' + scene.id }"
+                      role="button"
+                      tabindex="0"
+                      @click="hasAssetImage(scene) && openImagePreview(assetImageUrl(scene))"
+                      @dragover="onResourceDragOver($event, 'scene', scene.id)"
+                      @dragleave="onResourceDragLeave($event, 'scene-' + scene.id)"
+                      @drop="onResourceDrop($event, 'scene', scene.id)"
+                    >
+                      <img v-if="hasAssetImage(scene)" :src="assetImageUrl(scene)" class="nah-cover-img" alt="" />
+                      <div v-else-if="scene.error_msg || scene.errorMsg" class="nah-cover-placeholder error" :title="scene.error_msg || scene.errorMsg">
+                        {{ scene.error_msg || scene.errorMsg }}
+                      </div>
+                      <div v-else class="nah-cover-placeholder">暂无图</div>
+                      <div v-if="dragOverResourceKey === 'scene-' + scene.id" class="nah-cover-drop-hint">松开上传</div>
+                      <span class="nah-aspect-badge">16:9</span>
+                    </div>
+                    <div class="nah-cover-btns">
+                      <el-tooltip :content="usesFourViews(scene) ? '四宫格场景（正/侧/俯/仰）' : '单图场景'" placement="top">
+                        <el-button
+                          type="primary"
+                          size="small"
+                          class="nah-btn-ai"
+                          :loading="generatingSceneIds.has(scene.id)"
+                          :disabled="referenceBatchRunning || referenceSuggestionsRunning || savingReferenceModeIds.has('scene:' + scene.id)"
+                          @click="onGenerateSceneImage(scene)"
+                        >
+                          <el-icon v-if="!generatingSceneIds.has(scene.id)"><MagicStick /></el-icon>
+                          AI 生成
+                        </el-button>
+                      </el-tooltip>
+                      <el-button
+                        type="success"
+                        size="small"
+                        class="nah-btn-upload"
+                        :loading="uploadingResourceId === 'scene-' + scene.id"
+                        @click="onUploadResourceClick('scene', scene.id)"
+                      >
+                        <el-icon v-if="uploadingResourceId !== 'scene-' + scene.id"><Upload /></el-icon>
+                        上传
                       </el-button>
-                    </el-tooltip>
-                    <el-button type="success" size="small" :loading="uploadingResourceId === 'scene-' + scene.id" @click="onUploadResourceClick('scene', scene.id)">
-                      <el-icon v-if="uploadingResourceId !== 'scene-' + scene.id"><Upload /></el-icon>
-                      上传
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 参考词区：单图/四视图标签 + AI建议 + 关键词预览 -->
+                <div class="nah-keywords-row">
+                  <span class="nkr-label">参考词</span>
+                  <span
+                    class="nkr-mode-pill"
+                    :class="{ 'nkr-mode-pill--quad': usesFourViews(scene) }"
+                    :title="'点击切换模式（当前为' + (usesFourViews(scene) ? '四视图' : '单图') + '）'"
+                    @click="toggleAssetReferenceMode('scene', scene)"
+                  >
+                    {{ usesFourViews(scene) ? '四视图 (2×2)' : '单图' }}
+                  </span>
+                  <span v-if="scene.reference_image_recommendation" class="nkr-rec-pill">
+                    AI 建议: {{ scene.reference_image_recommendation === 'quad_grid' ? '四视图' : '单图' }}
+                  </span>
+                  <span class="nkr-keywords-text" :title="getAssetKeywords(scene)">
+                    {{ getAssetKeywords(scene) }}
+                  </span>
+                </div>
+
+                <!-- 底部关联分镜与操作栏 -->
+                <div class="nah-footer-row">
+                  <div class="nah-footer-storyboards">
+                    <template v-if="getSceneAffectedStoryboards(scene.id).length">
+                      <span
+                        v-for="sb in getSceneAffectedStoryboards(scene.id)"
+                        :key="sb.id"
+                        class="nah-sb-chip"
+                        :title="'分镜 #' + sb.storyboard_number + '（点击跳转）'"
+                        @click="scrollToStoryboard(sb.id)"
+                      >
+                        #{{ sb.storyboard_number }}
+                      </span>
+                    </template>
+                    <span v-else class="nah-sb-none">暂无关联分镜</span>
+                  </div>
+                  <div class="nah-footer-actions">
+                    <el-button size="small" class="nah-action-btn" @click="editScene(scene)">
+                      <el-icon><Edit /></el-icon> 编辑
                     </el-button>
+                    <el-button
+                      size="small"
+                      class="nah-action-btn"
+                      :loading="addingSceneToLibraryId === scene.id"
+                      :disabled="!hasAssetImage(scene)"
+                      @click="onAddSceneToLibrary(scene)"
+                    >
+                      <el-icon><Plus /></el-icon> 加入本剧库
+                    </el-button>
+                    <el-button
+                      size="small"
+                      class="nah-action-btn"
+                      :loading="regenSbImagesForAsset.has('scene-' + scene.id)"
+                      :disabled="!getSceneAffectedStoryboards(scene.id).length"
+                      title="重新生成该场景关联的分镜图"
+                      @click="onRegenAffectedSbImages('scene-' + scene.id, getSceneAffectedStoryboards(scene.id))"
+                    >
+                      <el-icon><Refresh /></el-icon> 分镜图
+                    </el-button>
+                    <el-dropdown trigger="click" @command="handleMoreCommand('scene', scene, $event)">
+                      <el-button size="small" class="nah-action-btn nah-action-more">
+                        <el-icon><MoreFilled /></el-icon>
+                      </el-button>
+                      <template #dropdown>
+                        <el-dropdown-menu>
+                          <el-dropdown-item command="material" :disabled="!hasAssetImage(scene)">加入素材库</el-dropdown-item>
+                          <el-dropdown-item command="delete" divided style="color:#f56c6c">删除场景</el-dropdown-item>
+                        </el-dropdown-menu>
+                      </template>
+                    </el-dropdown>
                   </div>
                 </div>
               </div>
-              <div v-if="scenes.length === 0" class="empty-tip">暂无场景，请从剧本提取</div>
             </div>
+
+            <!-- 列表视图 (表格) -->
+            <div v-else class="asset-list-table-wrap">
+              <el-table :data="scenes" stripe size="small" style="width: 100%">
+                <el-table-column label="序号" width="60" align="center">
+                  <template #default="{ $index }">
+                    <span class="nah-table-index">{{ String($index + 1).padStart(2, '0') }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="地点/名称" min-width="140" prop="location">
+                  <template #default="{ row }">
+                    <span style="font-weight:600">{{ row.location }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="参考图" width="90" align="center">
+                  <template #default="{ row }">
+                    <img v-if="hasAssetImage(row)" :src="assetImageUrl(row)" class="nah-table-thumb" @click="openImagePreview(assetImageUrl(row))" />
+                    <span v-else style="color:#94a3b8;font-size:12px">暂无</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="场景描述" min-width="220" prop="description">
+                  <template #default="{ row }">
+                    <span class="nah-table-desc">{{ row.description || row.prompt || row.time || '暂无描述' }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="关联分镜" min-width="130">
+                  <template #default="{ row }">
+                    <span
+                      v-for="sb in getSceneAffectedStoryboards(row.id)"
+                      :key="sb.id"
+                      class="nah-sb-chip"
+                      @click="scrollToStoryboard(sb.id)"
+                    >#{{ sb.storyboard_number }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="220" align="right">
+                  <template #default="{ row }">
+                    <el-button size="small" type="primary" link :loading="generatingSceneIds.has(row.id)" @click="onGenerateSceneImage(row)">AI生成</el-button>
+                    <el-button size="small" link @click="editScene(row)">编辑</el-button>
+                    <el-button size="small" link :disabled="!hasAssetImage(row)" @click="onAddSceneToLibrary(row)">加剧库</el-button>
+                    <el-button size="small" link type="danger" @click="onDeleteScene(row)">删除</el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+
+            <div v-if="scenes.length === 0" class="empty-tip">暂无场景，请从剧本提取</div>
           </div>
         </div>
       </div>
@@ -1061,6 +1405,12 @@ import {
   ZoomIn,
   MagicStick,
   Upload,
+  Edit,
+  Plus,
+  Refresh,
+  MoreFilled,
+  Grid,
+  Tickets,
 } from '@element-plus/icons-vue'
 import BatchReferenceImages from '@/components/BatchReferenceImages.vue'
 import ReferenceImageMode from '@/components/ReferenceImageMode.vue'
@@ -1220,6 +1570,47 @@ const {
 
 async function onExtractScenes() {
   await onExtractScenesRaw()
+}
+
+// ── 道具与场景新卡片布局状态与方法 ──
+const sceneViewMode = ref('card')
+const propViewMode = ref('card')
+const expandedPromptIds = reactive(new Set())
+
+function togglePromptExpand(type, id) {
+  const key = type + '-' + id
+  if (expandedPromptIds.has(key)) expandedPromptIds.delete(key)
+  else expandedPromptIds.add(key)
+}
+
+function getAssetKeywords(item) {
+  if (item?.prompt) return item.prompt.trim()
+  if (item?.tags) return item.tags
+  if (item?.category) return item.category + (item?.description ? '、' + item.description : '')
+  return item?.description || '暂无关键词'
+}
+
+async function toggleAssetReferenceMode(kind, resource) {
+  const current = usesFourViews(resource) ? 'quad_grid' : 'single'
+  const next = current === 'quad_grid' ? 'single' : 'quad_grid'
+  resource.reference_image_mode = next
+  try {
+    await (kind === 'scene' ? sceneAPI : propAPI).update(resource.id, { reference_image_mode: next })
+    ElMessage.success(`已切换为${next === 'quad_grid' ? '四视图（2×2）' : '单图'}模式`)
+  } catch (e) {
+    resource.reference_image_mode = current
+    ElMessage.error(e.message || '模式切换失败')
+  }
+}
+
+function handleMoreCommand(kind, item, command) {
+  if (command === 'material') {
+    if (kind === 'scene') onAddSceneToMaterialLibrary(item)
+    else if (kind === 'prop') onAddPropToMaterialLibrary(item)
+  } else if (command === 'delete') {
+    if (kind === 'scene') onDeleteScene(item)
+    else if (kind === 'prop') onDeleteProp(item)
+  }
 }
 
 // 面板折叠状态
@@ -2179,5 +2570,527 @@ defineExpose({
   flex-shrink: 0;
   padding: 12px 20px;
   border-top: 1px solid var(--border-color, #27272a);
+}
+
+/* ── 场景与道具新卡片布局 (对齐参考设计) ── */
+.resource-block-header-new {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.rbh-left {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.rbh-left .resource-block-title {
+  font-size: 1.15rem;
+  font-weight: 700;
+  cursor: pointer;
+  margin: 0 4px 0 0;
+  color: #1e293b;
+}
+:global(html.dark .rbh-left .resource-block-title) {
+  color: #f8fafc;
+}
+.rbh-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-left: auto;
+}
+.asset-view-toggle .el-button {
+  padding: 5px 12px !important;
+  font-size: 12px !important;
+}
+.rbh-count-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: #64748b;
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.15s;
+}
+:global(html.dark .rbh-count-toggle) {
+  color: #94a3b8;
+}
+.rbh-count-toggle:hover {
+  color: #6366f1;
+}
+
+.asset-grid-2col {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+@media (max-width: 1080px) {
+  .asset-grid-2col {
+    grid-template-columns: 1fr;
+  }
+}
+
+.new-asset-card {
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.03);
+  transition: all 0.2s ease;
+}
+:global(html.dark .new-asset-card) {
+  background: #181922;
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow: none;
+}
+.new-asset-card:hover {
+  border-color: rgba(99, 102, 241, 0.35);
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.08);
+}
+
+.new-asset-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.nah-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+.nah-index-badge {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: #6366f1;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+:global(html.dark .nah-index-badge) {
+  background: #7c3aed;
+}
+.nah-title-wrap {
+  min-width: 0;
+  flex: 1;
+}
+.nah-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.nah-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #1e293b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+:global(html.dark .nah-title) {
+  color: #f1f5f9;
+}
+.nah-obsolete-tag {
+  flex-shrink: 0;
+  padding: 0 4px;
+  font-size: 10px;
+  height: 18px;
+  line-height: 18px;
+}
+.nah-subtitle {
+  font-size: 12px;
+  color: #94a3b8;
+  margin-top: 1px;
+}
+.nah-right {
+  flex-shrink: 0;
+}
+.nah-more-btn {
+  border: none;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+.nah-more-btn:hover {
+  color: #6366f1;
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.new-asset-mid {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 12px;
+  flex: 1;
+}
+.nah-left-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.nah-desc {
+  font-size: 13px;
+  line-height: 1.6;
+  color: #475569;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+:global(html.dark .nah-desc) {
+  color: #cbd5e1;
+}
+.nah-desc.nah-desc--expanded {
+  -webkit-line-clamp: unset;
+  overflow: visible;
+}
+.nah-prompt-toggle {
+  font-size: 12px;
+  color: #6366f1;
+  cursor: pointer;
+  margin-top: 6px;
+  user-select: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: fit-content;
+}
+:global(html.dark .nah-prompt-toggle) {
+  color: #a78bfa;
+}
+.nah-prompt-toggle:hover {
+  text-decoration: underline;
+}
+.nah-expanded-prompt {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #64748b;
+  background: rgba(99, 102, 241, 0.04);
+  padding: 8px;
+  border-radius: 6px;
+  margin-top: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border: 1px dashed rgba(99, 102, 241, 0.2);
+}
+:global(html.dark .nah-expanded-prompt) {
+  color: #94a3b8;
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+.nah-ref-images-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 10px;
+}
+.nah-ref-label {
+  font-size: 12px;
+  color: #94a3b8;
+  flex-shrink: 0;
+}
+.nah-ref-thumbs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+}
+.nah-thumb-item {
+  position: relative;
+  width: 44px;
+  height: 32px;
+  border-radius: 4px;
+  overflow: hidden;
+  cursor: pointer;
+  border: 1.5px solid transparent;
+  flex-shrink: 0;
+  transition: border-color 0.15s;
+}
+.nah-thumb-item:hover {
+  border-color: #6366f1;
+}
+.nah-thumb-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.nah-thumb-more-badge {
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 4px;
+  background: #475569;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+:global(html.dark .nah-thumb-more-badge) {
+  background: #334155;
+}
+.nah-ref-empty {
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.nah-right-col {
+  width: 180px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.nah-cover {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 6px;
+  overflow: hidden;
+  position: relative;
+  background: #000000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.nah-cover.nah-cover--clickable {
+  cursor: pointer;
+}
+.nah-cover-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.nah-aspect-badge {
+  position: absolute;
+  bottom: 4px;
+  left: 4px;
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.65);
+  color: #ffffff;
+  pointer-events: none;
+  line-height: 1.2;
+}
+.nah-cover-placeholder {
+  font-size: 12px;
+  color: #71717a;
+  padding: 8px;
+  text-align: center;
+}
+.nah-cover-placeholder.error {
+  color: #f56c6c;
+}
+.nah-cover-drop-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(99, 102, 241, 0.85);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  pointer-events: none;
+}
+.nah-cover-btns {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+}
+.nah-btn-ai,
+.nah-btn-upload {
+  flex: 1 1 50%;
+  min-width: 0 !important;
+  padding: 0 4px !important;
+  justify-content: center;
+  margin-left: 0 !important;
+}
+
+.nah-keywords-row {
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  padding-top: 8px;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+}
+:global(html.dark .nah-keywords-row) {
+  border-top-color: rgba(255, 255, 255, 0.06);
+}
+.nkr-label {
+  color: #94a3b8;
+  margin-right: 2px;
+  flex-shrink: 0;
+}
+.nkr-mode-pill {
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: #ede9fe;
+  color: #7c3aed;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  transition: opacity 0.15s;
+  flex-shrink: 0;
+}
+.nkr-mode-pill:hover {
+  opacity: 0.85;
+}
+:global(html.dark .nkr-mode-pill) {
+  background: rgba(124, 58, 237, 0.2);
+  color: #c4b5fd;
+}
+.nkr-rec-pill {
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: #f1f5f9;
+  color: #64748b;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+:global(html.dark .nkr-rec-pill) {
+  background: rgba(255, 255, 255, 0.06);
+  color: #a1a1aa;
+}
+.nkr-keywords-text {
+  flex: 1;
+  min-width: 120px;
+  color: #64748b;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+:global(html.dark .nkr-keywords-text) {
+  color: #94a3b8;
+}
+
+.nah-footer-row {
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  padding-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: auto;
+}
+:global(html.dark .nah-footer-row) {
+  border-top-color: rgba(255, 255, 255, 0.06);
+}
+.nah-footer-storyboards {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+.nah-sb-chip {
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: rgba(99, 102, 241, 0.08);
+  color: #6366f1;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  user-select: none;
+}
+.nah-sb-chip:hover {
+  background: rgba(99, 102, 241, 0.18);
+}
+:global(html.dark .nah-sb-chip) {
+  background: rgba(124, 58, 237, 0.15);
+  color: #c4b5fd;
+}
+:global(html.dark .nah-sb-chip:hover) {
+  background: rgba(124, 58, 237, 0.3);
+}
+.nah-sb-none {
+  font-size: 11px;
+  color: #94a3b8;
+}
+.nah-footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.nah-action-btn {
+  padding: 4px 8px !important;
+  height: 28px !important;
+  font-size: 12px !important;
+  margin-left: 0 !important;
+}
+.nah-action-more {
+  padding: 4px 6px !important;
+}
+
+/* 列表视图表格 */
+.asset-list-table-wrap {
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: #ffffff;
+}
+:global(html.dark .asset-list-table-wrap) {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: #181922;
+}
+.nah-table-index {
+  font-weight: 700;
+  color: #6366f1;
+}
+:global(html.dark .nah-table-index) {
+  color: #a78bfa;
+}
+.nah-table-thumb {
+  width: 50px;
+  height: 32px;
+  object-fit: cover;
+  border-radius: 4px;
+  cursor: pointer;
+  display: inline-block;
+}
+.nah-table-desc {
+  font-size: 12px;
+  color: #64748b;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+:global(html.dark .nah-table-desc) {
+  color: #94a3b8;
 }
 </style>
