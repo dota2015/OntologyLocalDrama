@@ -1,7 +1,7 @@
 <template>
   <div class="storyboard-batch-toolbar">
     <div class="sb-config-row">
-      <label class="sb-config-item">
+      <label class="sb-config-item" :title="scriptEstimateStoryboardTitle || undefined">
         <span class="sb-config-label">分镜数量</span>
         <el-input-number
           :model-value="storyboardCount"
@@ -12,12 +12,9 @@
           class="sb-config-input"
           @update:model-value="$emit('update:storyboardCount', $event)"
         />
-        <el-tooltip v-if="scriptEstimateStoryboardTitle" :content="scriptEstimateStoryboardTitle" placement="top">
-          <span class="sb-field-help" aria-label="分镜数量说明">ⓘ</span>
-        </el-tooltip>
       </label>
       <span class="sb-config-divider">｜</span>
-      <label class="sb-config-item">
+      <label class="sb-config-item" :title="scriptEstimateVideoDurationTitle || undefined">
         <span class="sb-config-label">视频总时长(秒)</span>
         <el-input-number
           :model-value="videoDuration"
@@ -28,13 +25,10 @@
           class="sb-config-input"
           @update:model-value="$emit('update:videoDuration', $event)"
         />
-        <el-tooltip v-if="scriptEstimateVideoDurationTitle" :content="scriptEstimateVideoDurationTitle" placement="top">
-          <span class="sb-field-help" aria-label="视频总时长说明">ⓘ</span>
-        </el-tooltip>
       </label>
       <el-alert v-if="planningWarning" :title="planningWarning" type="warning" :closable="false" show-icon />
       <span class="sb-config-divider">｜</span>
-      <label class="sb-config-item">
+      <label class="sb-config-item" title="四宫格或九宫格会按视角自动拆分图片；首尾帧模式下不可用。">
         <span class="sb-config-label">序列图模式</span>
         <el-select
           :model-value="gridMode"
@@ -47,9 +41,6 @@
           <el-option label="四宫格" value="quad_grid" />
           <el-option label="九宫格" value="nine_grid" />
         </el-select>
-        <el-tooltip content="四宫格或九宫格会按视角自动拆分图片；首尾帧模式下不可用。" placement="top">
-          <span class="sb-field-help" aria-label="序列图模式说明">ⓘ</span>
-        </el-tooltip>
       </label>
     </div>
 
@@ -306,19 +297,5 @@ defineEmits([
   flex-wrap: wrap;
   gap: 10px;
   align-items: center;
-}
-.sb-field-help {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 17px;
-  height: 17px;
-  border: 1px solid #a5b4fc;
-  border-radius: 50%;
-  color: #6366f1;
-  font-size: 11px;
-  line-height: 1;
-  cursor: help;
-  user-select: none;
 }
 </style>
