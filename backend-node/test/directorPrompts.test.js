@@ -207,7 +207,7 @@ describe('Director Agent Prompt Generation & Persistence', () => {
     assert.equal(directorOutputTokenBudget(2), 32768);
     assert.ok(directorOutputTokenBudget(22) >= 34000);
     assert.equal(directorOutputTokenBudget(100), 144000);
-    assert.equal(directorRepairTokenBudget(2, 2), 8192);
+    assert.equal(directorRepairTokenBudget(2, 2), 24576);
     assert.equal(directorRepairTokenBudget(100, 22), 24576);
   });
 
@@ -271,12 +271,12 @@ describe('Director Agent Prompt Generation & Persistence', () => {
     );
   });
 
-  it('selects one violation on one target shot and keeps only continuity neighbours as read-only context', () => {
+  it('selects all violations on one target shot and keeps only continuity neighbours as read-only context', () => {
     const shots = Array.from({ length: 6 }, (_, index) => ({ shot_number: index + 1, title: `镜头${index + 1}` }));
     const violations = [{ rule: 'A', shot_number: 3 }, { rule: 'B', shot_number: 3 }, { rule: 'C', shot_number: 5 }];
     const target = selectDirectorRepairTarget(shots, violations);
     assert.equal(target.shot_number, 3);
-    assert.deepEqual(target.violations.map((item) => item.rule), ['A']);
+    assert.deepEqual(target.violations.map((item) => item.rule), ['A', 'B']);
     const selected = repairContextForViolations(shots, violations);
     assert.deepEqual(selected.map((shot) => shot.shot_number), [2, 3, 4]);
 
@@ -707,8 +707,12 @@ describe('Director Agent Prompt Generation & Persistence', () => {
     t.mock.method(agentsRuntime, 'runAgent', async (_db, _log, opts) => {
       calls.push(opts.name);
       if (resume) {
-        assert.equal(opts.name, 'director-video-slots-planner', 'completed planning and draft must not run again');
-        return { video_slots: planned[1].video_slots };
+        assert.equal(opts.name, 'director-execution-slots-planner', 'completed planning and draft must not run again');
+        return {
+          character_visuals: planned[1].character_visuals,
+          last_frame_visuals: planned[1].last_frame_visuals,
+          video_slots: planned[1].video_slots,
+        };
       }
       if (opts.name === 'director-episode-pacing') return { feasible: true, reason: '测试', shots: planned.map(s => ({ duration: s.duration, purpose: s.action })) };
       if (opts.name === 'director-storyboard-draft') {
@@ -736,7 +740,7 @@ describe('Director Agent Prompt Generation & Persistence', () => {
     const next = tasks.createTask(connection, console, 'director_storyboard_generation', '10');
     const result = await runDirectorAgent(connection, console, {}, 10, { ...cp.requireResume(connection, first.id, 10, {}).options, taskId: next.id, resume_task_id: first.id });
     assert.equal(result.total_shots, 2);
-    assert.deepEqual(calls, ['director-video-slots-planner']);
+    assert.deepEqual(calls, ['director-execution-slots-planner']);
     assert.equal(cp.summary(connection, next.id).available, false);
     tasks.updateTaskError(connection, next.id, '模拟发布后状态写入前崩溃');
     assert.throws(() => cp.requireResume(connection, next.id, 10, {}), /已经发布/);
@@ -838,11 +842,11 @@ describe('Director Agent Prompt Generation & Persistence', () => {
       calls.push(options.name);
       if (options.name === 'director-episode-pacing') return { feasible: true, reason: '一个转场镜头', shots: [{ duration: 4, purpose: '画面暗下' }] };
       if (options.name === 'director-storyboard-draft') return { storyboards: [structuredClone(original)] };
-      assert.equal(options.name, 'director-character-visuals-planner');
-      return { character_visuals: [], last_frame_visuals: [] };
+      assert.equal(options.name, 'director-execution-slots-planner');
+      return { character_visuals: [], last_frame_visuals: [], video_slots: original.video_slots };
     });
     await runDirectorAgent(db, console, {}, 11, { universal_omni_storyboard: true, maxReflectionRounds: 1 });
-    assert.deepEqual(calls, ['director-episode-pacing', 'director-storyboard-draft', 'director-character-visuals-planner']);
+    assert.deepEqual(calls, ['director-episode-pacing', 'director-storyboard-draft', 'director-execution-slots-planner']);
   });
 
   it('manual capacity conflicts and Director advice leave existing storyboards intact', async t => {

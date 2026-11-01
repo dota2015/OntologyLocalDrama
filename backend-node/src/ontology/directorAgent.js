@@ -60,10 +60,12 @@ function directorOutputTokenBudget(shotCount) {
 }
 
 function directorRepairTokenBudget(violationCount, repairShotCount) {
-  const violations = Math.max(1, Number(violationCount) || 1);
-  const shots = Math.max(1, Number(repairShotCount) || 1);
-  const estimated = 8192 + Math.max(0, shots - 2) * 900 + Math.max(0, violations - 4) * 250;
-  return Math.min(24576, Math.max(8192, Math.ceil(estimated)));
+  // A repair response is structured JSON and may need to rewrite a complete
+  // execution object (timeline, reactions, speech windows and synchronized
+  // visual slots).  Thinking models can consume the completion budget before
+  // emitting JSON, so every repair gets the full safe budget.  The upstream
+  // model/configuration may still clamp this value to its supported maximum.
+  return 24576;
 }
 
 const DIRECTOR_DRAFT_BATCH_SIZE = 3;
@@ -450,7 +452,10 @@ function selectDirectorRepairTarget(shots, violations) {
 
   if (byShot.size > 0) {
     const shotNumber = [...byShot.keys()].sort((a, b) => a - b)[0];
-    return { shot_number: shotNumber, violations: [byShot.get(shotNumber)[0]], global: false };
+    // Repair one shot as a coherent unit. Sending only the first violation
+    // caused the same shot to be reopened once per missing field/timeline
+    // segment and multiplied a single defect into dozens of model calls.
+    return { shot_number: shotNumber, violations: byShot.get(shotNumber), global: false };
   }
 
   // The current whole-episode hard gate is the static-shot ratio. Repair one
@@ -512,7 +517,59 @@ function requiresDirectorStructuralRepair(violation) {
   return !Number.isFinite(recommended) || recommended > (violation.max_duration ?? 8);
 }
 
-function directorAtomicPatchSchema(violation, targetShot = null) {
+function mergeAtomicPatchSchemas(left, right) {
+  if (!left) return right;
+  if (!right) return left;
+  if (left.type === 'object' && right.type === 'object') {
+    const properties = {};
+    const keys = new Set([
+      ...Object.keys(left.properties || {}),
+      ...Object.keys(right.properties || {}),
+    ]);
+    for (const key of keys) {
+      properties[key] = left.properties?.[key] && right.properties?.[key]
+        ? mergeAtomicPatchSchemas(left.properties[key], right.properties[key])
+        : (left.properties?.[key] || right.properties?.[key]);
+    }
+    return {
+      type: 'object',
+      additionalProperties: false,
+      required: [...new Set([...(left.required || []), ...(right.required || [])])],
+      properties,
+    };
+  }
+  if (left.type === 'array' && right.type === 'array') {
+    const leftPrefix = Array.isArray(left.prefixItems) ? left.prefixItems : [];
+    const rightPrefix = Array.isArray(right.prefixItems) ? right.prefixItems : [];
+    const prefixItems = Array.from({ length: Math.max(leftPrefix.length, rightPrefix.length) }, (_, index) => (
+      leftPrefix[index] && rightPrefix[index]
+        ? mergeAtomicPatchSchemas(leftPrefix[index], rightPrefix[index])
+        : (leftPrefix[index] || rightPrefix[index])
+    ));
+    return {
+      ...left,
+      ...right,
+      minItems: Math.max(Number(left.minItems || 0), Number(right.minItems || 0)),
+      maxItems: Math.max(Number(left.maxItems || 0), Number(right.maxItems || 0)),
+      ...(prefixItems.length ? { prefixItems } : {}),
+      items: left.items ?? right.items,
+    };
+  }
+  // A merged repair intentionally unlocks fields that were locked by another
+  // single-field schema. Prefer the actionable constraint over a preserved
+  // const value for that same path.
+  if (Object.prototype.hasOwnProperty.call(left, 'const') && !Object.prototype.hasOwnProperty.call(right, 'const')) return right;
+  if (Object.prototype.hasOwnProperty.call(right, 'const') && !Object.prototype.hasOwnProperty.call(left, 'const')) return left;
+  if (left.enum && !right.enum) return left;
+  if (right.enum && !left.enum) return right;
+  // Different constraints on the same path are both valid alternatives only
+  // when they describe the same field. Keep both rather than silently picking
+  // one; the model must satisfy the relevant contract for this shot.
+  if (JSON.stringify(left) === JSON.stringify(right)) return left;
+  return { anyOf: [left, right] };
+}
+
+function directorAtomicPatchSchemaSingle(violation, targetShot = null) {
   if (violation?.rule === 'INVARIANT_REQUIRED_AGENT_SLOT_MISSING'
     && String(violation?.conflict_slots?.[0] || '').includes('continuity_from_previous')) {
     return {
@@ -819,6 +876,19 @@ function directorAtomicPatchSchema(violation, targetShot = null) {
   };
 }
 
+function directorAtomicPatchSchema(violation, targetShot = null) {
+  const violations = Array.isArray(violation)
+    ? violation.filter(Boolean)
+    : [violation].filter(Boolean);
+  if (violations.length <= 1) return directorAtomicPatchSchemaSingle(violations[0], targetShot);
+  // One response must repair the complete target shot contract. Merge the
+  // field requirements for all violations instead of deriving the schema from
+  // the first violation and forcing one-field-at-a-time retries.
+  return violations
+    .map((item) => directorAtomicPatchSchemaSingle(item, targetShot))
+    .reduce((merged, schema) => mergeAtomicPatchSchemas(merged, schema), null);
+}
+
 function repairContextForViolations(shots, violations) {
   const list = Array.isArray(shots) ? shots : [];
   const target = selectDirectorRepairTarget(list, violations);
@@ -1024,6 +1094,28 @@ function auditDirectorDraft(shots, invariantOptions) {
     summary: violations.length ? `发现 ${violations.length} 项导演门禁违规，需要 Agent 修复。` : base.summary };
 }
 
+function auditDirectorDraftScoped(shots, invariantOptions, previousAudit, shotNumber) {
+  const full = auditDirectorDraft(shots, invariantOptions);
+  const target = Number(shotNumber);
+  const scope = new Set([target - 1, target, target + 1].filter(n => n > 0));
+  const previous = Array.isArray(previousAudit?.violations) ? previousAudit.violations : [];
+  const preserved = previous.filter(item => Number.isInteger(Number(item?.shot_number)) && !scope.has(Number(item.shot_number)));
+  const refreshed = full.violations.filter(item => !Number.isInteger(Number(item?.shot_number)) || scope.has(Number(item.shot_number)));
+  const seen = new Set();
+  const violations = [...preserved, ...refreshed].filter(item => {
+    const key = JSON.stringify([item.rule, item.shot_number, item.character_id, item.conflict_slots || [], item.message]);
+    if (seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+  return {
+    ...full,
+    valid: violations.length === 0,
+    error_count: violations.length,
+    violations,
+    audit_scope: [...scope].sort((a, b) => a - b),
+  };
+}
+
 function shortDramaTimelineViolations(shot, timeline) {
   const videoSlots = {
     ...(shot.video_slots && typeof shot.video_slots === 'object' ? shot.video_slots : {}),
@@ -1057,7 +1149,7 @@ async function ensureDirectorShotTimeline(db, log, shot, retryOptions = {}) {
         instructions: `你是短剧导演的镜内剪辑规划节点。只规划当前一个外层分镜的 video_slots.shots_timeline，不得改写剧情、台词、人物、场景、总时长或 H3 模式。每段必须是 1 或 2 个整数秒的连续动作窗口，所有段时长之和必须精确等于总时长；禁止输出一个完整 4～8 秒大段。${durationPlanContract}。由你根据剧情节拍选择其中一个合法数组，并按原顺序逐项写入各段 duration，把段序号对应为 0–1、1–2 这样的连续时间窗口。每段先决定 camera，再填写 visible_characters（本段实际入画的人物；特写、过肩或画外音可以只列当前可见人物），character_trajectories 只能覆盖这个列表。每个时间段是可执行的动作合同：action、result 和每个可见人物的 character_trajectories 都要写该时间窗口内真实发生的动作、互动或因果反应；不能要求没有入画的人物做动作。两人对白必须给当前画面中的说话者与听者分别填写动作窗口；正反打只在信息或反应发生时切换。安静倾听不能单独占满一个时间段，必须与抬眼、转头、接物、退让等可见反应同时发生并有剧情依据。每个文字槽位用不超过 120 个汉字的具体描述，禁止解释、重复和扩写剧情。只使用 shot_number、timestamp、duration、camera、visible_characters、action、result、character_trajectories、audio_lip_sync、speech_action_alignment 字段。\n${DIRECTOR_ACTION_COMPLETION_CONTRACT}`,
         input: `【当前分镜总时长】${duration} 秒\n【合法时长组合】${JSON.stringify(validTimelineDurationPlans(duration))}\n【画内角色】${JSON.stringify(visibleCharacters)}\n【权威台词】${JSON.stringify(semantic.speech_plan || {})}\n【当前完整分镜，只读】${JSON.stringify(shot)}${feedback}`,
         outputType: agentsRuntime.directorTimelineOutputType(duration),
-        maxTokens: 16384,
+        maxTokens: 24576,
         temperature: 0.2,
       });
     } catch (error) {
@@ -1142,7 +1234,7 @@ async function ensureDirectorCharacterVisuals(db, log, shot, retryOptions = {}) 
         instructions: `你是短剧导演的人物定格构图节点。只输出当前镜头的 character_visuals 和 last_frame_visuals，不得改写剧情、人物清单、场景、台词、时长或视频模式。每个角色必须给出明确的纵深层级、屏幕位置、环境依托、身体朝向、面部表情、头部姿态、视线落点、体态重心、双手动作、道具接触和服装细节。描述静止定格状态，禁止“然后、随后、开始、走到、跑向”。每个字段一句话，简洁具体。起幅取事件发生前的状态；需要尾帧时依据本镜 result 与已规划终态定格，不能直接照抄起幅。\n${DIRECTOR_ACTION_COMPLETION_CONTRACT}`,
         input: `【当前完整分镜，只读】${JSON.stringify(shot)}\n【必须覆盖的角色 ID】${JSON.stringify(directorCharacterIds(shot))}\n【上一轮门禁反馈】${errors.join('；')}`,
         outputType: agentsRuntime.directorCharacterVisualsOutputType(),
-        maxTokens: 8192,
+        maxTokens: 24576,
         temperature: 0.2,
       });
     } catch (error) {
@@ -1179,7 +1271,7 @@ async function ensureDirectorVideoSlots(db, log, shot, retryOptions = {}) {
         instructions: `你是短剧导演的视频执行槽位节点。只输出当前镜头的完整 video_slots，不得改写剧情、人物清单、人物定格、场景、台词、总时长或 H3 模式。timing.duration 必须等于权威总时长；shots_timeline 必须拆成连续的 1 或 2 个整数秒动作段，总和精确等于权威总时长，禁止一个完整大段。${durationPlanContract}。由你根据剧情节拍选择其中一个合法数组，并按原顺序逐项写入各段 duration。每段先写 camera 和 visible_characters（本段实际入画的人物；特写、过肩或画外音可只列当前可见人物），character_trajectories 必须且只能覆盖 visible_characters。每段是独立可执行的时间合同：action、result 以及每位画内角色的 trajectory 必须描述该时间段实际发生的动作、互动或事件反应，并由窗口和终态承接；禁止用“说完后互相看着、保持不动、等待”填满任何剩余时间。每位当前画内角色在该段都要有可见的身体动作、表情变化或因果反应；不在画面的角色不写视觉轨迹。安静倾听必须与具体反应同步，不能成为独立静止段。两人对白优先在有信息变化的段落使用正反打或过肩反打，不能把视线本身当作动作。每个文字字段不超过 120 个汉字，可写出连续动作阶段，禁止解释和重复。\n${DIRECTOR_ACTION_COMPLETION_CONTRACT}`,
         input: `【权威总时长】${duration} 秒\n【合法时长组合】${JSON.stringify(durationPlans)}\n【权威人物】${JSON.stringify(semantic.visible_characters || [])}\n【权威台词】${JSON.stringify(semantic.speech_plan || {})}\n【当前完整分镜，只读】${JSON.stringify(shot)}\n【上一轮门禁反馈】${errors.map((item) => item.message).join('；')}`,
         outputType: agentsRuntime.directorVideoSlotsOutputType(duration),
-        maxTokens: 16384,
+        maxTokens: 24576,
         temperature: 0.2,
       });
     } catch (error) {
@@ -1197,6 +1289,52 @@ async function ensureDirectorVideoSlots(db, log, shot, retryOptions = {}) {
     reportDirectorLayerRetry(retry, `分镜 #${shot.shot_number} 视频槽位`, attempt, errors.map((item) => item.message).join('；'));
   }
   throw new Error(`分镜 #${shot.shot_number} 的视频槽位经过 ${retry.maxAttempts} 轮门禁反馈仍未通过：${errors.map((item) => item.message).join('；')}`);
+}
+
+// Generate framing and the execution timeline together. They are two views of
+// the same performance and should not be planned by independent agents.
+async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
+  const retry = directorRetryContext(retryOptions);
+  const semantic = shot?.semantic_slots && typeof shot.semantic_slots === 'object' ? shot.semantic_slots : {};
+  const duration = Number(semantic.shot_duration || shot.duration || 5);
+  const durationPlanContract = timelineDurationPlanContract(duration);
+  let errors = [
+    ...visualSlotErrors(shot, shot.character_visuals, shot.last_frame_visuals).map(message => ({ message })),
+    ...(shot.video_slots && typeof shot.video_slots === 'object'
+      ? shortDramaTimelineViolations(shot, shot.video_slots.shots_timeline)
+      : [{ message: '缺少 video_slots，必须与人物定格和动作时间轴一起规划' }]),
+  ];
+  if (shot.video_slots && Math.abs(Number(shot.video_slots?.timing?.duration || 0) - duration) > 0.1) {
+    errors.push({ message: `video_slots.timing.duration 必须等于权威时长 ${duration} 秒` });
+  }
+  if (errors.length === 0) return shot;
+
+  for (let attempt = 1; attempt <= retry.maxAttempts; attempt++) {
+    try {
+      const planned = await agentsRuntime.runAgent(db, log, {
+        name: 'director-execution-slots-planner',
+        instructions: `你是短剧导演的视听执行合同节点。只输出当前镜头的 character_visuals、last_frame_visuals 和 video_slots，禁止改写剧情、角色清单、场景、台词、总时长或 H3 模式。人物定格槽位和镜内时间轴必须描述同一套物理动作与终态：character_visuals 是起幅定格，last_frame_visuals 是明确要求尾帧时的落幅定格；video_slots.shots_timeline 是唯一的动作、对白和反应时间轴权威。${durationPlanContract}。每个 1 或 2 秒段都要先写 camera 与 visible_characters，再为每位入画人物写 trajectory、terminal_pose、facial_expression、facing、head_pose、gaze、attention_target、gaze_motivation、reaction_trigger、mouth_state。含对白段必须在同一段 speech_action_alignment 中写 speech_window、speaker_action_window、speaker_action 和 listener_reactions，动作窗口必须与发声窗口重叠；不能把动作、听取反应或视线留到说完以后。无语言段按实际声音模式填写闭口状态。不要重复输出顶层剧情字段，不要解释，只返回指定 JSON。\n${DIRECTOR_ACTION_COMPLETION_CONTRACT}`,
+        input: `【权威时长】${duration} 秒\n【权威人物】${JSON.stringify(semantic.visible_characters || [])}\n【权威台词】${JSON.stringify(semantic.speech_plan || {})}\n【当前完整分镜，只读】${JSON.stringify(shot)}\n【上一轮执行合同反馈】${errors.map(item => item.message).join('；')}`,
+        outputType: agentsRuntime.directorExecutionSlotsOutputType(duration),
+        maxTokens: 24576,
+        temperature: 0.2,
+      });
+      const nextShot = { ...shot, character_visuals: planned?.character_visuals, last_frame_visuals: planned?.last_frame_visuals, video_slots: planned?.video_slots };
+      errors = [
+        ...visualSlotErrors(nextShot, nextShot.character_visuals, nextShot.last_frame_visuals).map(message => ({ message })),
+        ...shortDramaTimelineViolations(nextShot, nextShot.video_slots?.shots_timeline),
+      ];
+      if (Math.abs(Number(nextShot.video_slots?.timing?.duration || 0) - duration) > 0.1) {
+        errors.push({ message: `video_slots.timing.duration 必须等于权威时长 ${duration} 秒` });
+      }
+      if (errors.length === 0) return nextShot;
+      reportDirectorLayerRetry(retry, `分镜 #${shot.shot_number} 视听执行合同`, attempt, errors.map(item => item.message).join('；'));
+    } catch (error) {
+      errors = [{ message: `视听执行合同 Agent 输出格式失败：${error.message}` }];
+      reportDirectorLayerRetry(retry, `分镜 #${shot.shot_number} 视听执行合同`, attempt, errors[0].message);
+    }
+  }
+  throw new Error(`分镜 #${shot.shot_number} 的视听执行合同经过 ${retry.maxAttempts} 轮门禁反馈仍未通过：${errors.map(item => item.message).join('；')}`);
 }
 
 /**
@@ -1636,11 +1774,10 @@ ${batch.script_segment}
         progress: shotProgress,
       };
       working.currentShot = batchShots[shotIndex].shot_number;
-      // These functions revalidate a saved slot and call the model only if needed.
-      batchShots[shotIndex] = await ensureDirectorCharacterVisuals(db, log, batchShots[shotIndex], shotRetry);
-      saveStage(`分镜 #${working.currentShot} 人物槽位完成`);
-      batchShots[shotIndex] = await ensureDirectorVideoSlots(db, log, batchShots[shotIndex], shotRetry);
-      saveStage(`分镜 #${working.currentShot} 视频槽位完成`);
+      // One execution pass keeps character framing and the performance timeline
+      // synchronized, avoiding two independent low-level plans for one shot.
+      batchShots[shotIndex] = await ensureDirectorExecutionSlots(db, log, batchShots[shotIndex], shotRetry);
+      saveStage(`分镜 #${working.currentShot} 视听执行合同完成`);
     }
     shots.push(...batchShots);
     const last = batchShots[batchShots.length - 1] || {};
@@ -1722,9 +1859,9 @@ ${batch.script_segment}
 
     const reflectionPrompt = `你在刚才推演的分镜草稿中违反了视听本体硬门禁规则：
 ${repairTarget.violations.map(v => `- [${v.rule}] 镜头 ${v.shot_number || '全局'}: ${v.message}`).join('\n')}
-${directorAtomicRepairHint(repairTarget.violations[0])}
+${[...new Set(repairTarget.violations.map(directorAtomicRepairHint).filter(Boolean))].join('\n')}
 【本轮选中违规的结构化定位】
-${JSON.stringify(repairTarget.violations[0])}
+${JSON.stringify(repairTarget.violations)}
 【本镜其他待处理问题，仅作上下文，不得越过本轮 Schema 修改】
 ${JSON.stringify(shotViolations)}
 【本任务镜头时长范围】${requestedPacing.range.min}～${requestedPacing.range.max} 秒；H3 的 8 秒能力上限不覆盖本任务设置。
@@ -1778,7 +1915,7 @@ ${repairOutputProtocol}`;
           : agentsRuntime.directorPatchRepairOutputType(
             repairTarget.shot_number,
             directorAtomicPatchSchema(
-              repairTarget.violations[0],
+              repairTarget.violations,
               shots.find((shot) => Number(shot.shot_number) === repairTarget.shot_number)
             )
           ),
@@ -1793,16 +1930,27 @@ ${repairOutputProtocol}`;
         throw new Error(`Director repair 越界：本轮只允许修复分镜 #${repairTarget.shot_number}`);
       }
       const appliedRepair = applyDirectorRepairPlan(shots, parsedRepaired);
-      candidateAudit = auditDirectorDraft(appliedRepair.shots, invariantOptions);
+      candidateAudit = auditDirectorDraftScoped(
+        appliedRepair.shots,
+        invariantOptions,
+        audit,
+        repairTarget.shot_number,
+      );
       directorTrace.record('repair_audited', { ...traceRound, before_errors: audit.error_count,
-        after_errors: candidateAudit.error_count, violations: candidateAudit.violations });
-      if (!appliedRepair.structural && candidateAudit.error_count >= audit.error_count) {
+        after_errors: candidateAudit.error_count, audit_scope: candidateAudit.audit_scope,
+        violations: candidateAudit.violations });
+      const repairScope = new Set(candidateAudit.audit_scope || [repairTarget.shot_number]);
+      const countScopedViolations = (auditResult) => (auditResult?.violations || [])
+        .filter((item) => repairScope.has(Number(item?.shot_number))).length;
+      const beforeScopedErrors = countScopedViolations(audit);
+      const afterScopedErrors = countScopedViolations(candidateAudit);
+      if (!appliedRepair.structural && afterScopedErrors >= beforeScopedErrors) {
         const candidateShotErrors = candidateAudit.violations
           .filter((item) => Number(item?.shot_number) === repairTarget.shot_number)
           .map((item) => `[${item.rule}] ${item.message}`)
           .join('；');
         throw new Error(
-          `候选 Patch 未减少整集门禁违规（${audit.error_count} → ${candidateAudit.error_count}），已拒绝且未污染当前最佳状态。`
+          `候选 Patch 未减少目标镜头及相邻连戏镜头门禁违规（${beforeScopedErrors} → ${afterScopedErrors}；整集 ${audit.error_count} → ${candidateAudit.error_count}），已拒绝且未污染当前最佳状态。`
           + (candidateShotErrors ? `候选镜头仍有：${candidateShotErrors}` : '')
         );
       }

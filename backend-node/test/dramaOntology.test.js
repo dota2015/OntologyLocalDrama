@@ -93,16 +93,14 @@ describe('Audiovisual Drama Ontology & Semantic Invariants', () => {
     assert.ok(!result.violations.some(v => /STATIC|MOVEMENT_DYNAMISM/.test(v.rule)));
   });
 
-  it('Invariant checkAudioContract flags silent shots with missing BGM prompt', () => {
+  it('Invariant checkAudioContract does not force BGM on speechless shots', () => {
     const shots = [
       { shot_number: 1, dialogue: '', narration: '', bgm_prompt: '' },
       { shot_number: 2, dialogue: '红狼："快撤！"', narration: '', bgm_prompt: '' },
       { shot_number: 3, dialogue: '', narration: '', bgm_prompt: '紧张低频重音脉冲' },
     ];
     const violations = checkAudioContract(shots);
-    assert.equal(violations.length, 1);
-    assert.equal(violations[0].shot_number, 1);
-    assert.equal(violations[0].rule, 'INVARIANT_SILENT_SHOT_MISSING_BGM');
+    assert.equal(violations.length, 0);
   });
 
   it('Invariant checkCrowdControl flags single shots with >3 characters (crowd overload)', () => {

@@ -68,24 +68,22 @@ describe('SHACL InvariantRuleEngine (Specification Pattern)', () => {
     assert.equal(res.warnings[0].rule, 'RULE_CUSTOM_LIGHTING');
   });
 
-  it('supports options.disabledRules to selectively bypass rules', () => {
+  it('does not emit the removed legacy missing-BGM violation', () => {
     const badShots = [
       { shot_number: 1, movement: 'static' },
       { shot_number: 2, movement: 'static' },
     ];
 
-    // 默认执行应报缺少声音设计
     const res1 = validateAllInvariants(badShots);
-    assert.ok(res1.violations.some((v) => v.rule === 'INVARIANT_SILENT_SHOT_MISSING_BGM'));
+    assert.ok(!res1.violations.some((v) => v.rule === 'INVARIANT_SILENT_SHOT_MISSING_BGM'));
 
-    // 禁用音频规则后不应报错
     const res2 = validateAllInvariants(badShots, {
       disabledRules: ['RULE_AUDIO_CONTRACT'],
     });
     assert.ok(!res2.violations.some((v) => v.rule === 'INVARIANT_SILENT_SHOT_MISSING_BGM'));
   });
 
-  it('supports options.severityOverrides to customize rule severity dynamically', () => {
+  it('keeps the removed missing-BGM rule absent from severity overrides', () => {
     const badShots = [
       { shot_number: 1, movement: 'static' },
       { shot_number: 2, movement: 'static' },
@@ -97,10 +95,8 @@ describe('SHACL InvariantRuleEngine (Specification Pattern)', () => {
       },
     });
 
-    // 音频规则原为 error，现在应降级为 warning
     const movWarn = res.warnings.find((w) => w.rule === 'INVARIANT_SILENT_SHOT_MISSING_BGM');
-    assert.ok(movWarn, 'Should find missing sound design as warning');
-    assert.equal(movWarn.severity, 'warning');
+    assert.equal(movWarn, undefined);
   });
 
   it('supports options.onlyCategories to filter rules by domain category', () => {
@@ -108,9 +104,8 @@ describe('SHACL InvariantRuleEngine (Specification Pattern)', () => {
       { shot_number: 1, movement: 'static', dialogue: '', narration: '', bgm_prompt: '' },
     ];
 
-    // 仅执行 audio 类别
     const res = defaultEngine.validate({ shots }, { onlyCategories: ['audio'] });
-    assert.ok(res.violations.some((v) => v.rule === 'INVARIANT_SILENT_SHOT_MISSING_BGM'));
+    assert.ok(!res.violations.some((v) => v.rule === 'INVARIANT_SILENT_SHOT_MISSING_BGM'));
     assert.ok(!res.violations.some((v) => v.rule.startsWith('INVARIANT_STATIC')));
   });
 

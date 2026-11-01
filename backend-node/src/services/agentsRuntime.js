@@ -535,6 +535,27 @@ function directorCharacterVisualsOutputType() {
   };
 }
 
+function directorExecutionSlotsOutputType(duration = 5) {
+  const seconds = Math.max(4, Math.min(8, Number(duration) || 5));
+  const timeline = videoSlotsSchema();
+  timeline.properties.shots_timeline.minItems = Math.ceil(seconds / 2);
+  timeline.properties.shots_timeline.maxItems = Math.floor(seconds);
+  return {
+    type: 'json_schema',
+    name: 'director_execution_slots',
+    strict: false,
+    schema: {
+      type: 'object', additionalProperties: false,
+      required: ['character_visuals', 'last_frame_visuals', 'video_slots'],
+      properties: {
+        character_visuals: { type: 'array', maxItems: 3, items: characterVisualSchema() },
+        last_frame_visuals: { type: 'array', maxItems: 3, items: characterVisualSchema() },
+        video_slots: timeline,
+      },
+    },
+  };
+}
+
 function buildContiguousSourcePartitions(sourceUnits, shotCount) {
   const ids = (Array.isArray(sourceUnits) ? sourceUnits : [])
     .map((unit) => String(unit?.id || unit || '')).filter(Boolean);
@@ -815,6 +836,7 @@ module.exports = {
   directorTimelineOutputType,
   directorVideoSlotsOutputType,
   directorCharacterVisualsOutputType,
+  directorExecutionSlotsOutputType,
   directorRepairOutputType,
   directorPatchRepairOutputType,
   directorStructuralRepairOutputType,
