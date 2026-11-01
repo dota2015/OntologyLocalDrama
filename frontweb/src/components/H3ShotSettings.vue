@@ -9,7 +9,7 @@
       <div v-loading="loading">
         <el-alert v-if="error" :title="error" type="error" :closable="false" />
         <template v-if="data">
-          <p>导演 Agent 会把 H3 模式、首帧和尾帧作为一套方案规划。FL2VA 必须使用首帧、尾帧按剧情选配；Ref2VA 只使用人物、场景、道具和声音参考，不生成首尾帧。</p>
+          <p>导演 Agent 统一规划 Ref2VA 多参考方案，不生成首尾帧。若生成后需要首帧强绑定，可在这里手动切换为 FL2VA；这个手动覆盖不会改写导演方案。</p>
           <div class="reference-grid">
             <div v-for="item in data.references" :key="item.source">
               <el-image :src="item.url" :preview-src-list="data.references.map(r => r.url)" fit="contain" style="width:120px;height:90px" />
@@ -22,7 +22,7 @@
           <el-form label-position="top">
             <el-form-item label="生成模式策略">
               <el-radio-group v-model="engineMode" style="width:100%" :disabled="disabled || saving">
-                <el-radio-button label="auto">🤖 采用 Agent 方案 (默认)</el-radio-button>
+                <el-radio-button label="auto">🤖 采用导演 Ref2VA 方案 (默认)</el-radio-button>
                 <el-radio-button label="fl2va">🎯 首帧强绑定 (FL2VA 覆盖)</el-radio-button>
                 <el-radio-button label="ref2va">🎭 角色多参考 (Ref2VA 覆盖)</el-radio-button>
               </el-radio-group>
@@ -39,7 +39,7 @@
               </div>
               <div style="font-size:12px; color:#64748b; margin-top:6px; line-height:1.6;">
                 <span v-if="engineMode === 'auto'">
-                  <b>采用 Agent 方案</b>：执行导演 Agent 根据剧情规划的模式与首尾帧方案，执行层只校验，不重新猜测。
+                  <b>采用导演 Ref2VA 方案</b>：使用导演列出的场景、人物、道具和声音参考，不生成首尾帧。
                 </span>
                 <span v-else-if="engineMode === 'fl2va'">
                   <b>首帧强绑定 (FL2VA)</b>：100% 构图贴合分镜图，不传入人物卡、场景卡或参考音频；结构化台词由 H3 原生生成，分镜图画面即是起幅。

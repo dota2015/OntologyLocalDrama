@@ -1344,8 +1344,8 @@ ${premiseText}
   const universalPlanningSection = universalOmni
     ? `
 【用户已勾选全能分镜模式——这是本轮导演规划的最高优先级输入约束】
-1. 独立分镜和拆镜首段按 H3 Ref2VA 多参考方案规划：semantic_slots.h3_mode="ref2va"，first_frame_policy 与 last_frame_policy 均为 "none"，无需生成首尾帧。唯一例外是超长台词拆镜后的连续接力段：必须由 Agent 明确规划同组 long_take_sequence、h3_mode="fl2va"、first_frame_policy="inherit_tail"、continuity_type="long_take_continuation"，等待前段视频完成后继承真实尾帧，不另行生图。
-2. Ref2VA 的 semantic_slots.required_references 必须由你按剧情选择并排序：第 1 项必须是当前 scene_id 对应的 scene；随后依次列出所有画内主体与背景角色的 character；最后仅列核心交互 prop。总数不得超过 9，禁止后端替你补素材。FL2VA 连续接力段的 required_references 与 speech_plan.audio_references 必须为 []，沿用前段真实尾帧承载人物与场景信息。
+1. 每个独立分镜和每个拆分后的分镜都必须按 H3 Ref2VA 多参考方案规划：semantic_slots.h3_mode="ref2va"，first_frame_policy 与 last_frame_policy 均为 "none"，无需生成首尾帧。导演 Agent 不得规划 FL2VA、long_take_continuation、inherit_tail 或任何自动首尾帧接力；FL2VA 只允许用户在分镜生成后手动覆盖执行模式。
+2. Ref2VA 的 semantic_slots.required_references 必须由你按剧情选择并排序：第 1 项必须是当前 scene_id 对应的 scene；随后依次列出所有画内主体与背景角色的 character；最后仅列核心交互 prop。总数不得超过 9，禁止后端替你补素材。
 3. 每个分镜必须输出 creation_mode:"universal" 和非空 universal_segment_text。universal_segment_text 中的 @图片N 必须与 required_references 的数组顺序严格一一对应，@图片1 永远是场景参考。
 4. 全能分镜不是额外生成一套互相矛盾的剧情：universal_segment_text、video_slots、semantic_slots、dialogue、narration 必须表达同一个镜头、相同台词、相同时长与镜内节拍。
 ${promptI18n.getStoryboardUniversalOmniModeSuffix(cfg)}
@@ -1419,17 +1419,8 @@ ${DIRECTOR_ACTION_COMPLETION_CONTRACT}
    - 槽位中严禁出现“从A到B”、“跑向”、“走到”、“随后”、“看了一眼”等动态时序过程词，文生图模型会将两地各画一人产生克隆分身！必须是首帧决定性瞬间的纯静态摄影描写！
 9. **连贯长镜头结构化拆解与接力规范（Long Take Relaying & Sequential Splitting）**：
    - **适用情境**：影视短剧中，连续动作追逐、长走廊/房间连续漫游、连贯推移跟拍等大段无切机位的视听情境。因 AI 视频模型单镜仅能生成 4~8 秒，必须将长镜头拆分为多个连续子镜头（如镜头2~5）。
-   - **长镜头结构化输出**：
-     * long_take_group_id: 组标识（同一个长镜头的所有子镜头填写相同字符串，如 "ltg_1"；普通独立切换机位镜头填 null 或 ""）
-     * long_take_role: 组内角色：
-       - "head": 长镜头组首（必须有完整的首帧纯静态摄影 image_prompt，供文生图生成起始帧）；
-       - "continuation": 接力续镜（动作接力延续，系统视频生成时自动提取上一镜视频尾帧作为起始帧，无需独立盲画首帧图）；
-       - "tail": 终镜收束（长镜头组收尾镜头，同样承接上一镜尾帧）。
-     * long_take_sequence: 组内接力次序（1, 2, 3...）。
-     * continuation/tail 必须同时设置 semantic_slots.h3_mode="fl2va"、first_frame_policy="inherit_tail"、continuity_type="long_take_continuation"、required_references=[]、speech_plan.audio_references=[]。执行器会等待同组上一段 H3 视频完成，再抽取真实尾帧作为本段首帧；严禁提前独立提交或用 Qwen-Image 伪造承接帧。
-   - **长镜头动线与运镜合同**：
-     * 组首、续镜、终镜机位与运镜必须具备空间与动线连续性（如 tracking -> pan/tracking -> handheld 逼近）；
-     * continuation/tail 镜头的 action 与 video_slots 必须明确写出动作承接（例如：“紧接上一画面奔跑惯性，红狼冲入掩体并顺势滑铲...”）。
+   - **长镜头拆分**：长动作或长台词需要拆分时，每个新分镜都是独立 Ref2VA 镜头，必须重新列出 required_references，first_frame_policy 与 last_frame_policy 均为 "none"。long_take_group_id、long_take_role、long_take_sequence 全部填 null；不得由 Agent 规划 FL2VA、inherit_tail 或自动尾帧接力。
+   - **拆分镜头的动线合同**：每个独立 Ref2VA 镜头必须在 continuity_from_previous、start_framing 和 action 中明确写出上一镜落幅如何触发本镜开幅；这只描述剧情与空间承接，不代表自动继承上一镜视频尾帧。
 
 10. **视听语言视线轴线铁律（字典仅供参考启发，严禁面向镜头直视空气说话）**：
     对话场景中角色绝对禁止双双正面直视摄影机对着空气说话！建议参考 dialogue_framing 建立视线交汇闭环（【重要：字典选项仅供启发参考，不是必须填这些固定值！你完全可以根据剧本情节自由给出更精准、生动的构图描述】）：
@@ -1476,9 +1467,9 @@ ${scriptContent}
 请以纯 JSON 格式输出 {"storyboards": [...]}。每个分镜包含：
 - shot_number: 镜头序号 (从 1 递增)
 - dialogue_framing: 视听构图参考（字典仅供启发参考，不是必须填这些固定词，可填参考模式如 two_shot_face_to_face / over_the_shoulder / single_reaction_offscreen / joint_observation / solo_action，亦可结合剧情自由给出更贴切的构图描述）
-- long_take_group_id: 长镜头组ID (属于同一长镜头的子镜头填相同ID如 "ltg_1"，独立镜头填 null)
-- long_take_role: 长镜头角色 (head / continuation / tail，独立镜头填 null)
-- long_take_sequence: 长镜头组内次序 (1, 2, 3...，独立镜头填 null)
+- long_take_group_id: 固定填 null。长台词或长动作拆分后的镜头也独立执行，不自动接力尾帧
+- long_take_role: 固定填 null
+- long_take_sequence: 固定填 null
 - title: 3-5字镜头标题
 - scene_id: 所属场景ID (必须选自可用场景目录)
 - characters: 出场角色ID数组 (如 [1, 2]，单镜出场角色最多3人（<=3人），严禁超过3人（>3人）)
@@ -1487,15 +1478,14 @@ ${scriptContent}
 - wardrobe_id: 当前镜头角色服装造型标识 (如 1 或 null，同一角色在同一镜头严禁出现多套服装)
 - speech_plan: 台词方案对象 ({"speaker_id": 1, "is_offscreen": false, "is_narration": false, "text": "台词正文", "speed": 1.0, "emotion": "坚定"}；若为画外音必须标 is_offscreen: true；若为旁白必须标 is_narration: true。铁律：画外音或旁白时，画内所有人物必须全员双唇紧闭，audio_lip_sync 填 offscreen_voiceover 或 narration，visible_characters_lip_state 填 strictly_sealed！)
 - sound_plan: 声音方案对象 ({"sound_effects": ["脚步声"], "bgm_prompt": "", "is_silent": false}；silent_ambient 只填环境/动作音，bgm_only 只填纯器乐配乐，完全静音才设 is_silent:true)
-- continuity_type: 镜头接续类型 (match_cut/eyeline_match/ots_reverse/hard_cut/continuation/long_take_continuation)
-- h3_mode: H3 视频模式，必须由你按剧情显式选择 fl2va 或 ref2va。FL2VA 用于“精确起幅构图/动作姿态是镜头核心、首帧本身足以承载视觉身份”的镜头；Ref2VA 用于“人物五官/服装/场景/道具/参考声音等多参考一致性是核心”的镜头。不得交给后端按有无对白猜测
-- h3_mode_reason: 选择该模式的具体剧情依据，必须说明本镜最重要的是起幅构图还是多参考一致性
-- first_frame_policy: 首帧策略 (none/generate_new/inherit_tail/layout_lock)。本项目采用节省资源的严格映射：FL2VA 必须选择 generate_new、inherit_tail 或 layout_lock；Ref2VA 必须选择 none，禁止 Ref2VA + AddGuide 混合首帧。跨场景时间跳跃严禁 inherit_tail
-- first_frame_reason: 首帧策略的具体剧情依据；Ref2VA 说明由哪些多参考素材承担约束，FL2VA 说明必须锁定的开场状态
-- last_frame_policy: 尾帧策略 (generate_tail/none)。仅 FL2VA 可按剧情选择 generate_tail；需要锁定明确结尾姿态、物体终态或转场落点时生成尾帧，其余选择 none。Ref2VA 必须为 none
-- last_frame_reason: 是否需要尾帧的具体剧情依据；必须说明需要锁定的结尾状态，或说明自然演化即可、无需额外尾帧
-  执行含义必须分清：generate_new/layout_lock 会调用 Qwen-Image 生成本镜首帧；generate_tail 会调用 Qwen-Image 生成目标尾帧；inherit_tail 不调用 Qwen-Image，而是在上一镜视频完成后用 ffmpeg 抽取其真实尾帧作为本镜首帧。上一镜的 generate_tail 与本镜的 inherit_tail 是两种不同用途，不得互相混淆
-- required_references: 本镜头生成所必需依赖的核心参考图清单。注意铁律：如果 h3_mode 为 fl2va，本字段必须为空数组 []（FL2VA 纯首帧模式严禁混入角色卡/场景卡多参考）；只有当 h3_mode 为 ref2va 时，才填入必须参考的人物/场景/道具清单（格式如 [{"id": 1, "type": "character", "name": "苏晚"}]，严格最多9张）！
+- continuity_type: 镜头接续类型 (match_cut/eyeline_match/ots_reverse/hard_cut/continuation；不得使用 long_take_continuation)
+- h3_mode: 固定为 "ref2va"。导演 Agent 不负责选择 FL2VA；用户生成后如果需要首帧强绑定，可在单镜设置中手动覆盖执行模式
+- h3_mode_reason: 说明本镜为什么需要场景、人物、道具和声音等多参考来保持身份、空间与动作连续性
+- first_frame_policy: 固定为 "none"。Ref2VA 使用 required_references，不生成首帧，也不使用 AddGuide 或上一镜尾帧
+- first_frame_reason: 说明本镜由哪些多参考素材承担开场构图与人物身份约束
+- last_frame_policy: 固定为 "none"。Ref2VA 不生成尾帧
+- last_frame_reason: 说明动作在本镜内自然收束，无需额外尾帧
+- required_references: 本镜头生成所必需依赖的核心参考图清单。第 1 项必须是场景，随后是画内主体、背景角色和核心道具，严格最多9张
 - audio_lip_sync: 口型控制模式 (in_frame_dialogue/offscreen_voiceover/narration/silent_ambient/bgm_only；silent_ambient 表示无语言但保留环境/动作音，bgm_only 表示无语言且只有纯器乐；画外音、旁白及全部无语言模式都要求画内全员双唇紧闭)
 - shot_duration: 镜头秒数 (4~8之间，必须匹配台词字数预算)
 - start_framing: 镜头起幅机位构图与角色初始姿态 (开端机位与画内人物初始定格状态)
@@ -1719,7 +1709,7 @@ ${batch.script_segment}
 - replace_shot_number 必须为 ${repairTarget.shot_number}。
 - storyboards 至少包含2个完整新镜头；逐字保留原台词和 source_script_excerpt，并按原顺序无损分配。
 - 每个新镜头必须包含完整 semantic_slots 对象，原文分配写入 semantic_slots.source_script_excerpt；speech_plan、h3_mode、required_references 等语义决策只写在 semantic_slots 内，禁止用顶层同名字段代替。creation_mode、universal_segment_text、long_take_group_id、long_take_role、long_take_sequence 必须显式保留或规划，禁止省略、占位、写“同上”。
-- 所有替换镜头必须使用同一个新的 long_take_group_id，依次填写 long_take_sequence=1..N；首段 role=head，后续为 continuation，末段为 tail。第2段起必须设置 semantic_slots.h3_mode="fl2va"、first_frame_policy="inherit_tail"、continuity_type="long_take_continuation"、required_references=[]、speech_plan.audio_references=[]，以便执行器等待上一段完成并继承其真实视频尾帧。
+- 所有替换镜头都必须是独立的 Ref2VA 镜头：semantic_slots.h3_mode="ref2va"、first_frame_policy="none"、last_frame_policy="none"，并重新列出本镜所需的 required_references。long_take_group_id、long_take_role、long_take_sequence 必须为 null；不得自动继承上一镜尾帧。用户如需 FL2VA，须在生成后手动修改单镜执行设置。
 - 禁止返回 repairs、完整整集 storyboards、markdown或解释。`
       : `【本轮只允许字段 Patch】
 只返回 {"repairs":[{"shot_number":${repairTarget.shot_number},"patch":{仅包含需要修改的字段}}]}。
@@ -1754,9 +1744,9 @@ ${lastRejectedRepair?.shot_number === repairTarget.shot_number ? `【上轮修�
 11. 单镜造型：单镜头内严禁出现中途换衣、脱去外袍、换上战甲、变身等动作，必须拆为两个镜头！
 12. H3 参考容量上限：出场主角严格 <= 3 人，核心道具严格 <= 2 件，必要参考图 required_references 严格 <= 9 张，音频参考 <= 3 个！超标必须拆镜或精简，禁止塞入多余素材！
 13. Picture 标签对齐：若提示词引用 <Picture N>，N 必须与 required_references 序号完全对应，绝不悬空！
-14. FL2VA 纯净度：纯血首帧模式严禁包含角色卡、场景卡或音频参考！
-15. 台词时长预算：超出时长预算的分镜必须在标点符号处按语义拆分为 2 个以上连续分镜，严禁随意删减台词！
-16. H3 完整执行方案：每镜必须由导演 Agent 把 h3_mode、首帧策略、尾帧策略及三项理由作为一套完整决策；FL2VA 必须有首帧、尾帧按剧情选配且不得携带多参考（required_references 必须为 []），Ref2VA 的首尾帧策略都必须为 none！
+14. Ref2VA 执行方案：每镜必须由导演 Agent 输出 h3_mode="ref2va"、first_frame_policy="none"、last_frame_policy="none" 及对应理由；导演 Agent 不得输出 FL2VA 或任何首尾帧接力方案。用户可在生成后手动覆盖单镜执行模式。
+15. 台词时长预算：超出时长预算的分镜必须在标点符号处按语义拆分为 2 个以上独立 Ref2VA 分镜，严禁随意删减台词！
+16. 参考图合同：每个 Ref2VA 镜头必须由 Agent 明确列出场景、画内人物和必要道具参考；后端不得静默补图、截断或猜测。
 17. 角色视觉槽位必须具象完整：每个在场角色的 character_visuals 必须同时包含：
     - posture（躯干重心定格，必须有站/蹲/坐/卧/趴/扑/俯/仰/倾/跪/靠/立/挺等词，如：身体前倾30度坐姿/双腿挺直站立）；
     - facing（身体朝向，必须明确朝向搭档、道具或具体画面方向，禁止无理由正面对摄影机）；
@@ -2254,7 +2244,7 @@ async function refineSingleStoryboardAttempt(db, log, cfg, storyboardId, userIns
   const universalRefineContract = universalOmni
     ? `
 【当前镜头属于全能分镜模式，局部微调不得破坏既有执行合同】
-- semantic_slots.h3_mode 必须保持 ref2va；first_frame_policy 与 last_frame_policy 必须保持 none。
+- semantic_slots.h3_mode 必须保持 ref2va；first_frame_policy 与 last_frame_policy 必须保持 none。单镜微调不得把 Agent 方案改成 FL2VA；FL2VA 仅由用户在生成后手动覆盖。
 - required_references 第 1 项必须是当前 scene_id 对应的场景，随后覆盖所有画内主体与背景角色，总数不得超过 9。
 - 必须重新输出与本轮修改后动作、台词、时长一致的 universal_segment_text；其中 @图片N 与 required_references 顺序严格对应。
 ${promptI18n.getStoryboardUniversalOmniModeSuffix(cfg)}

@@ -580,14 +580,14 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
           rule: 'INVARIANT_H3_MODE_PLAN_MISSING',
           shot_number: shotNum,
           severity: this.defaultSeverity,
-          message: `分镜 #${shotNum} 缺少 Agent 明确规划的 semantic_slots.h3_mode（fl2va/ref2va），后端禁止代替 Agent 猜测模式！`,
+          message: `分镜 #${shotNum} 缺少 Agent 明确规划的 semantic_slots.h3_mode=ref2va，后端禁止代替 Agent 猜测模式！`,
           conflict_slots: ['semantic_slots.h3_mode'],
         });
       }
 
       // 用户把“全能分镜”作为导演规划模式时，后端只负责门禁：要求 Agent
-      // 给出完整 Ref2VA 多参考合同；显式长镜续段按上方接力合同继承尾帧。
-      // 否则续段会被同时要求 FL2VA 与 Ref2VA，形成无法通过的门禁。
+      // 给出完整 Ref2VA 多参考合同。长镜续段/FL2VA 不再是 Agent 合法例外；
+      // 只有生成后用户在单镜执行设置中的人工覆盖才可以使用 FL2VA。
       const planningMode = context.options?.directorPlanningMode;
       const enforceUniversal = planningMode === 'universal'
         || (planningMode === 'persisted' && shot.creation_mode === 'universal');
@@ -610,7 +610,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
             conflict_slots: ['universal_segment_text'],
           });
         }
-        if (!longTakeContinuation) {
+        {
           if (h3Mode !== 'ref2va') {
             violations.push({
               rule: 'INVARIANT_UNIVERSAL_REF2VA_REQUIRED',

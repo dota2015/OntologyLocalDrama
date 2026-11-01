@@ -21,41 +21,31 @@ function parseObject(value) {
 }
 
 /**
- * Speech overflow is a technical continuation, not a new creative scene.  Make
- * that dependency explicit so the video worker must finish the previous clip,
- * extract its real tail frame, and only then submit the continuation to FL2VA.
+ * Speech overflow is split into independent Ref2VA shots. The Director owns
+ * the creative split; this service only preserves the exact speech and clears
+ * legacy long-take relay metadata. FL2VA remains a manual post-generation
+ * execution override and is never selected here.
  */
 function wireContinuousSpeechSplit(source, fragments, groupOrdinal = 1) {
   if (!Array.isArray(fragments) || fragments.length < 2) return fragments;
-  const sourceNumber = source?.storyboard_number ?? source?.shot_number ?? groupOrdinal;
-  const groupId = `speech_split_${sourceNumber}_${groupOrdinal}`;
   return fragments.map((fragment, index) => {
     const semantic = parseObject(fragment.semantic_slots ?? source?.semantic_slots);
-    const speechPlan = semantic.speech_plan && typeof semantic.speech_plan === 'object'
-      ? { ...semantic.speech_plan }
-      : semantic.speech_plan;
-    const isContinuation = index > 0;
-    if (isContinuation) {
-      semantic.h3_mode = 'fl2va';
-      semantic.h3_mode_reason = '长台词超过 H3 八秒上限，本镜承接上一段真实视频尾帧继续表演';
-      semantic.first_frame_policy = 'inherit_tail';
-      semantic.first_frame_reason = '使用上一拆分镜头生成视频的真实尾帧作为本镜首帧';
-      semantic.last_frame_policy = 'none';
-      semantic.last_frame_reason = '连续台词自然收束，不额外生成目标尾帧';
-      semantic.continuity_type = 'long_take_continuation';
-      semantic.required_references = [];
-      if (speechPlan && typeof speechPlan === 'object') {
-        speechPlan.audio_references = [];
-        semantic.speech_plan = speechPlan;
-      }
+    if (semantic.h3_mode === 'fl2va') {
+      throw new Error('对白拆镜遇到 FL2VA Agent 方案；当前导演链路只允许 Ref2VA，请手动修复该分镜后再拆镜');
     }
+    semantic.h3_mode = 'ref2va';
+    semantic.first_frame_policy = 'none';
+    semantic.last_frame_policy = 'none';
+    semantic.continuity_type = semantic.continuity_type === 'long_take_continuation'
+      ? 'continuation'
+      : (semantic.continuity_type || 'continuation');
     return {
       ...fragment,
       semantic_slots: semantic,
-      long_take_group_id: groupId,
-      long_take_role: index === 0 ? 'head' : (index === fragments.length - 1 ? 'tail' : 'continuation'),
-      long_take_sequence: index + 1,
-      ...(isContinuation ? { last_frame_visuals: [] } : {}),
+      long_take_group_id: null,
+      long_take_role: null,
+      long_take_sequence: null,
+      last_frame_visuals: [],
     };
   });
 }

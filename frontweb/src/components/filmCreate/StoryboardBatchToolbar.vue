@@ -106,7 +106,7 @@
             plain
             size="large"
             :loading="batchImageRunning && !singleShotImageInfo"
-            title="按每镜 Agent 方案补齐所需参考帧：FL2VA 必须有首帧、尾帧按剧情选配；Ref2VA 不生成首尾帧。人工模式覆盖会同步改变本次计划。"
+            title="导演方案默认使用 Ref2VA，不生成首尾帧；只有手动切换为 FL2VA 的分镜才需要补齐首帧或尾帧。"
             :disabled="!hasEpisode || batchImageRunning || batchVideoRunning || pipelineRunning || storyboardGenerating || universalOmniPolishRunning"
             @click="$emit('start-batch-image')"
           >

@@ -51,12 +51,12 @@ test('speech exceeding the maximum splits without losing words and each fragment
   assert.equal(calls,1);
   assert.equal(preservesSpeech(source,output),true);
   assert.deepEqual(output.map(s=>s.duration),[4,7,4]);
-  assert.deepEqual(output.map(s=>s.long_take_role),['head','continuation','tail']);
-  assert.deepEqual(output.map(s=>s.long_take_sequence),[1,2,3]);
-  assert.equal(new Set(output.map(s=>s.long_take_group_id)).size,1);
-  for (const continuation of output.slice(1)) {
-    assert.equal(continuation.semantic_slots.h3_mode,'fl2va');
-    assert.equal(continuation.semantic_slots.first_frame_policy,'inherit_tail');
-    assert.deepEqual(continuation.semantic_slots.required_references,[]);
+  assert.deepEqual(output.map(s=>s.long_take_role),[null,null,null]);
+  assert.deepEqual(output.map(s=>s.long_take_sequence),[null,null,null]);
+  assert.deepEqual(output.map(s=>s.long_take_group_id),[null,null,null]);
+  for (const fragment of output) {
+    assert.equal(fragment.semantic_slots.h3_mode,'ref2va');
+    assert.equal(fragment.semantic_slots.first_frame_policy,'none');
+    assert.equal(fragment.semantic_slots.last_frame_policy,'none');
   }
 });

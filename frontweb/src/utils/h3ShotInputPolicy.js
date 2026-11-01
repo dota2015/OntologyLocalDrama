@@ -46,6 +46,6 @@ export function h3ShotInputPolicy(h3Data, { hasFirstFrame = false } = {}) {
     firstFramePolicy,
     allowed: false,
     useStoryboardFrames: false,
-    reason: '本镜缺少有效的 H3 执行方案，请重新运行导演生成分镜脚本，或在镜头配置中明确选择 FL2VA / Ref2VA。',
+    reason: '本镜缺少导演生成的 Ref2VA 执行方案，请重新生成该镜头的导演分镜脚本；生成后如需首帧强绑定，再手动切换为 FL2VA。',
   }
 }

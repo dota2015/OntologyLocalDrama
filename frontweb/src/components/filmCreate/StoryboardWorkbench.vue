@@ -507,7 +507,7 @@
                           size="small"
                           style="width:160px;"
                         >
-                          <el-option value="auto" label="⚡ 采用 Agent 方案 (推荐)" />
+                          <el-option value="auto" label="⚡ 采用导演 Ref2VA 方案 (推荐)" />
                           <el-option value="fl2va" label="🎯 首帧强绑定 (FL2VA)" />
                           <el-option value="ref2va" label="🎭 角色多参考 (Ref2VA)" />
                         </el-select>
@@ -538,7 +538,7 @@
                         </el-select>
                       </div>
                       <div v-if="sbPromptH3Data" style="font-size:11px; color:#94a3b8; text-align:right; margin-top:2px;">
-                        <span v-if="sbPromptH3Data.engine_mode === 'auto'">⚡ Agent 建议：{{ sbPromptH3Data.agent_mode?.toUpperCase() || '未规划' }} · </span>
+                        <span v-if="sbPromptH3Data.engine_mode === 'auto'">⚡ 导演方案：{{ sbPromptH3Data.agent_mode?.toUpperCase() || '未规划' }} · </span>
                         <span v-else-if="sbPromptH3Data.engine_mode === 'fl2va'">🎯 首帧强绑定：100% 贴合分镜，无跳脸漂移 · </span>
                         <span v-else>🎭 角色多参考：不生成首尾帧，以人物卡、场景卡和声音参考保持一致 · </span>
                         <span>最终：{{ sbPromptH3Data.h3_generation_plan?.first_frame_policy || '未规划' }} / {{ sbPromptH3Data.h3_generation_plan?.last_frame_policy || '未规划' }}</span>

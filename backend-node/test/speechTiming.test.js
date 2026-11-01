@@ -288,9 +288,10 @@ test('valid repaired generation publishes complete shots and rebuilds universal 
     assert.equal(timing.assessVideoSpeech(row, row.universal_segment_text, row.duration).ok, true);
     assert.ok(!row.universal_segment_text.includes('原完整提示词'));
   }
-  assert.deepEqual(rows.map((row) => row.long_take_role), ['head', 'continuation', 'tail']);
-  assert.equal(new Set(rows.map((row) => row.long_take_group_id)).size, 1);
-  assert.equal(JSON.parse(rows[1].semantic_slots).first_frame_policy, 'inherit_tail');
+  assert.deepEqual(rows.map((row) => row.long_take_role), [null, null, null]);
+  assert.deepEqual(rows.map((row) => row.long_take_group_id), [null, null, null]);
+  assert.equal(JSON.parse(rows[1].semantic_slots).h3_mode, 'ref2va');
+  assert.equal(JSON.parse(rows[1].semantic_slots).first_frame_policy, 'none');
 });
 
 test('failed insert rolls back deletion of old storyboards and all replacement inserts', async t => {

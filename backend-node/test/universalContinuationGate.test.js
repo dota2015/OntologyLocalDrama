@@ -16,10 +16,11 @@ function pair() {
 function gate(shots) {
   return new CrossSlotInvariantsRule().evaluate({ shots, options: { directorPlanningMode: 'universal' } });
 }
-test('universal split continuation can satisfy both mode and predecessor gates', () => {
+test('universal split continuation rejects the legacy Agent FL2VA contract', () => {
   const shots = pair(), before = structuredClone(shots);
   const errors = gate(shots).filter(v => /UNIVERSAL_|LONG_TAKE_|FL2VA_|REF2VA_/.test(v.rule));
-  assert.deepEqual(errors, []);
+  assert.ok(errors.some(v => v.rule === 'INVARIANT_UNIVERSAL_REF2VA_REQUIRED'));
+  assert.ok(errors.some(v => v.rule === 'INVARIANT_UNIVERSAL_SCENE_REFERENCE_REQUIRED'));
   assert.deepEqual(shots, before);
 });
 test('independent universal shots still require Ref2VA and its references', () => {
