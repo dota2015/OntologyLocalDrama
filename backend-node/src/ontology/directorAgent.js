@@ -2,27 +2,1202 @@
  * 影视导演视听编排智能体（Audiovisual Director ReAct Agent）
  * 践行 /home/nvidia/ontology-semantic-system 的核心哲学：
  * 1. 语义图绑定：以不可变 DramaSemanticPackage 为世界事实底座
- * 2. 动能调度：严格少用固定镜头，根据情绪与动作调度推拉摇跟
+ * 2. 场面调度：按剧情规划动作过程、互动与结果，机位和切镜服务叙事
  * 3. 音画多模态：无对白分镜绑定原生 BGM 描述供 H3 视频生成
  * 4. 自我反思纠偏环（Critic & Reflection Loop）：通过 SHACL 风格的 validateAllInvariants 检验草稿，发现违规自动修正
  */
 
 const { compileDramaSemanticPackage } = require('./semanticPackage');
-const { validateAllInvariants } = require('./invariants');
+const { validateAllInvariants, checkSpeechTiming } = require('./invariants');
+const { validateVideoSlots } = require('./videoSlots');
 const { extractAllEntitiesFromScript } = require('./extractionAgent');
 const { isAssetObsolete } = require('./assetMatcher');
-const {
-  composeStoryboardImagePrompt,
-  composeStoryboardVideoPrompt,
-  rebuildPromptsForStoryboard,
-  isFlawedImagePrompt,
-  sanitizeStaticImagePrompt,
-} = require('../services/episodeStoryboardService');
-const aiClient = require('../services/aiClient');
-const { safeParseAIJSON, extractFirstArray } = require('../utils/safeJson');
+const agentsRuntime = require('../services/agentsRuntime');
 const angleService = require('../services/angleService');
 const dramaService = require('../services/dramaService');
 const { generateStory } = require('../services/storyGenerationService');
+const promptI18n = require('../services/promptI18n');
+const pacing = require('./directorPacing');
+const directorTrace = require('../services/directorTrace');
+const directorCheckpoint = require('../services/directorCheckpoint');
+const { linkEpisodeCharacters } = require('../services/episodeCharacterLinks');
+
+const REQUIRED_VIDEO_SLOT_KEYS = ['camera', 'audio_lip_sync', 'trajectories', 'environment_vfx', 'timing', 'shots_timeline'];
+// Shared by draft, execution planning and repairs. Semantic decisions stay with
+// the Director; this is not a backend verb detector or an automatic motion patch.
+const DIRECTOR_ACTION_COMPLETION_CONTRACT = `
+${require('../services/narrativeStyleService').directorPrinciples()}
+【对白与动作完成合同：提交前由导演自检】
+- 本合同适用于全部题材、视觉风格和叙事偏好，不以任何风格选项为开关。不强制对白占比、快剪、说完必须动或所有人持续运动。
+- 结合原剧本与上下镜，区分当场执行的意图、未来承诺、回忆、假设、拒绝和被打断的动作。不得仅凭台词动词强行安排动作，也不得改写台词来回避冲突。
+- 对当前镜头应执行的事件，在现有 action/result、trajectory/terminal_pose 槽位中给出起始状态、动作过程、互动对象的配合或反应、实际结束状态；轨迹与终态必须能接续。保持安静可以是剧情选择，不能成为所有人的默认动作。
+- 例如当场说“爹，我扶您起来”，应规划女儿托肩背、父亲撑床配合、从半躺到坐稳；若剧情要求扶起失败，则明确尝试、受阻及实际终态。说“明天我扶您出去”不代表本镜就要起身。
+- 说话与动作可以同时进行；台词说完后继续完成本镜事件。语音收尾预留只限制发声，不要求身体静止。为剩余时间规划有剧情作用的动作或反应；不要用无关手势、运镜、重复动作填时长，也不必强行用满8秒。
+- character_visuals 只描述起幅瞬间，last_frame_visuals（需要尾帧时）、end_framing、result 与最终 terminal_pose 描述同一结束状态；全局 trajectories、shots_timeline 和全能分镜文本必须一致。连续动作可以在一个镜头内叙述先后阶段，不要为了分阶段而强制切镜。
+- 若上下文提供实际 TTS 时长，以实测复核台词与动作时间线；超出配置时长上限时反馈给可调整剧情分镜的导演节点处理，不能删字、加速或在只读槽位节点擅自改总时长。
+- 输出前逐人核对：台词意图是否与剧情事件一致、动作是否足以到达终态、互动对象是否有必要的反应、说完后的时间是否有用途。发现矛盾先在本节点允许修改的范围内修正，保留用户锁定的内容；后端不替你推测或补写语义。只输出本节点约定字段，不增加自检报告或另一套动作槽位。
+`;
+const REQUIRED_SEMANTIC_SLOT_KEYS = [
+  'visible_characters', 'background_characters', 'identity_visibility', 'speech_plan', 'sound_plan',
+  'continuity_type', 'h3_mode', 'h3_mode_reason', 'first_frame_policy', 'first_frame_reason', 'last_frame_policy', 'last_frame_reason', 'required_references',
+  'audio_lip_sync', 'shot_duration',
+];
+
+const SINGLE_STORYBOARD_PATCH_FIELDS = new Set([
+  'title', 'scene_id', 'characters', 'props', 'shot_type', 'angle_h', 'angle_v', 'angle_s',
+  'movement', 'lighting_style', 'depth_of_field', 'duration', 'action', 'result', 'dialogue',
+  'narration', 'dialogue_framing', 'bgm_prompt', 'sound_effect', 'layout_description', 'emotion',
+  'start_framing', 'end_framing', 'transition_to_next', 'background_characters',
+  'character_visuals', 'last_frame_visuals', 'video_slots', 'semantic_slots',
+  'continuity_snapshot', 'universal_segment_text',
+]);
+
+function directorOutputTokenBudget(shotCount) {
+  const count = Number.isFinite(Number(shotCount)) ? Math.max(1, Number(shotCount)) : 8;
+  // 完整初稿必须容纳每镜的全部视听槽位。这里仅估算任务需求，不再设置与模型无关的业务硬上限；
+  // 模型自身的输出/上下文上限由 OpenAI Agents SDK 和上游模型共同处理。
+  return Math.max(32768, Math.ceil(count * 1400 + 4000));
+}
+
+function directorRepairTokenBudget(violationCount, repairShotCount) {
+  const violations = Math.max(1, Number(violationCount) || 1);
+  const shots = Math.max(1, Number(repairShotCount) || 1);
+  const estimated = 8192 + Math.max(0, shots - 2) * 900 + Math.max(0, violations - 4) * 250;
+  return Math.min(24576, Math.max(8192, Math.ceil(estimated)));
+}
+
+const DIRECTOR_DRAFT_BATCH_SIZE = 3;
+const DIRECTOR_BATCH_THRESHOLD = 10;
+
+function normalizeCoverageText(value) {
+  return String(value || '').replace(/\s+/gu, '');
+}
+
+function splitCoverageEvenly(source, count) {
+  const chars = Array.from(String(source || '').trim());
+  if (chars.length < count) throw new Error(`原文仅 ${chars.length} 字，无法分配给 ${count} 个非空原文单元；请调整镜数或剧本`);
+  return Array.from({ length: count }, (_, i) => chars.slice(
+    Math.floor(i * chars.length / count), Math.floor((i + 1) * chars.length / count)
+  ).join(''));
+}
+
+function splitScriptUnits(scriptContent, minimumUnits = 1) {
+  const lines = String(scriptContent || '').split(/\n+/u).map((line) => line.trim()).filter(Boolean);
+  if (lines.length >= minimumUnits) return lines;
+  const sentences = String(scriptContent || '')
+    .match(/[^。！？!?\n]+[。！？!?]?/gu)
+    ?.map((sentence) => sentence.trim())
+    .filter(Boolean) || [];
+  return sentences.length ? sentences : [String(scriptContent || '').trim()].filter(Boolean);
+}
+
+function buildDirectorSourceUnits(scriptSegment, minimumUnits = 1, batchNumber = 1) {
+  const source = String(scriptSegment || '').trim();
+  if (!source) return [];
+  const minimum = Math.max(1, Math.floor(Number(minimumUnits) || 1));
+  let units = source.split(/\n+/u).map((item) => item.trim()).filter(Boolean);
+  if (units.length < minimum) {
+    units = source.match(/[^。！？!?；;\n]+[。！？!?；;]?/gu)?.map((item) => item.trim()).filter(Boolean) || [];
+  }
+  if (units.length < minimum) {
+    units = source.match(/[^，,。！？!?；;\n]+[，,。！？!?；;]?/gu)?.map((item) => item.trim()).filter(Boolean) || [];
+  }
+  if (units.length < minimum) {
+    units = splitCoverageEvenly(source, minimum);
+  }
+  if (normalizeCoverageText(units.join('')) !== normalizeCoverageText(source)) {
+    throw new Error(`导演初稿第 ${batchNumber} 批原文单元切分未完整覆盖源文本`);
+  }
+  return units.map((text, index) => ({ id: `B${batchNumber}U${index + 1}`, text }));
+}
+
+/**
+ * Split only the transport workload.  The Agent still sees the complete script
+ * and makes every creative decision; the backend merely assigns contiguous
+ * source ranges so a large JSON document cannot be silently cut by the model.
+ */
+function buildDirectorDraftBatches(scriptContent, targetCount, batchSize = DIRECTOR_DRAFT_BATCH_SIZE) {
+  const count = Math.max(1, Math.floor(Number(targetCount) || 1));
+  if (count <= DIRECTOR_BATCH_THRESHOLD) {
+    return [{ index: 0, shot_count: count, script_segment: String(scriptContent || '').trim() }];
+  }
+
+  const shotCounts = [];
+  for (let remaining = count; remaining > 0; remaining -= batchSize) {
+    shotCounts.push(Math.min(batchSize, remaining));
+  }
+  let units = splitScriptUnits(scriptContent, shotCounts.length);
+  if (units.length < shotCounts.length) {
+    units = splitCoverageEvenly(scriptContent, shotCounts.length);
+  }
+  const unitLengths = units.map((unit) => normalizeCoverageText(unit).length);
+  const totalLength = unitLengths.reduce((sum, len) => sum + len, 0) || units.length;
+  const batches = [];
+  let unitIndex = 0;
+  let consumedLength = 0;
+  let consumedShots = 0;
+
+  shotCounts.forEach((shotCount, batchIndex) => {
+    const isLast = batchIndex === shotCounts.length - 1;
+    const desiredEnd = totalLength * ((consumedShots + shotCount) / count);
+    const selected = [];
+    while (unitIndex < units.length) {
+      const remainingUnits = units.length - unitIndex;
+      const remainingBatches = shotCounts.length - batchIndex;
+      // A long final paragraph must not cause this batch to consume the source
+      // reserved for later batches, even when the proportional target is unmet.
+      if (selected.length > 0 && remainingUnits <= remainingBatches - 1) break;
+      if (!isLast && selected.length > 0 && consumedLength >= desiredEnd && remainingUnits >= remainingBatches) break;
+      selected.push(units[unitIndex]);
+      consumedLength += unitLengths[unitIndex] || 1;
+      unitIndex += 1;
+      if (!isLast && unitIndex < units.length && consumedLength >= desiredEnd && (units.length - unitIndex) >= (remainingBatches - 1)) break;
+    }
+    if (isLast && unitIndex < units.length) {
+      selected.push(...units.slice(unitIndex));
+      unitIndex = units.length;
+    }
+    const scriptSegment = selected.join('\n');
+    batches.push({
+      index: batchIndex,
+      shot_count: shotCount,
+      script_segment: scriptSegment,
+      source_units: buildDirectorSourceUnits(scriptSegment, shotCount, batchIndex + 1),
+    });
+    consumedShots += shotCount;
+  });
+  // Validate all transport partitions before spending tokens on any draft.
+  for (const batch of batches) {
+    if (!normalizeCoverageText(batch.script_segment) || batch.source_units.length < batch.shot_count) {
+      throw new Error(`导演初稿第 ${batch.index + 1} 批原文不足以覆盖 ${batch.shot_count} 镜，请调整规划；尚未生成初稿`);
+    }
+  }
+  if (normalizeCoverageText(batches.map((batch) => batch.script_segment).join('')) !== normalizeCoverageText(scriptContent)) {
+    throw new Error('导演初稿分批未完整覆盖源文本；尚未生成初稿');
+  }
+  return batches;
+}
+
+function batchCoverageText(shots) {
+  return (Array.isArray(shots) ? shots : []).map((shot) => (
+    shot?.semantic_slots?.source_script_excerpt || shot?.source_script_excerpt || ''
+  )).join('');
+}
+
+function assertDirectorDraftBatch(batch, shots, parseMeta = {}) {
+  if (parseMeta.truncated) {
+    throw new Error(`导演初稿第 ${batch.index + 1} 批输出被模型截断，禁止保存已完成的局部镜头`);
+  }
+  if (!Array.isArray(shots) || shots.length !== batch.shot_count) {
+    throw new Error(`导演初稿第 ${batch.index + 1} 批应返回 ${batch.shot_count} 镜，实际返回 ${Array.isArray(shots) ? shots.length : 0} 镜`);
+  }
+  if (Array.isArray(batch.source_units) && batch.source_units.length) {
+    const expectedIds = batch.source_units.map((unit) => unit.id);
+    const actualIds = [];
+    for (let index = 0; index < shots.length; index++) {
+      const ids = shots[index]?.semantic_slots?.source_script_unit_ids;
+      if (!Array.isArray(ids) || ids.length === 0) {
+        throw new Error(`导演初稿第 ${batch.index + 1} 批第 ${index + 1} 镜缺少 source_script_unit_ids`);
+      }
+      actualIds.push(...ids.map((id) => String(id)));
+    }
+    const expectedSet = new Set(expectedIds);
+    const unknown = [...new Set(actualIds.filter((id) => !expectedSet.has(id)))];
+    const missing = expectedIds.filter((id) => !actualIds.includes(id));
+    const duplicates = [...new Set(actualIds.filter((id, index) => actualIds.indexOf(id) !== index))];
+    const sameOrder = expectedIds.length === actualIds.length
+      && expectedIds.every((id, index) => actualIds[index] === id);
+    if (unknown.length || missing.length || duplicates.length || !sameOrder) {
+      throw new Error(
+        `导演初稿第 ${batch.index + 1} 批原文单元分配不完整`
+        + `（缺失: ${missing.join(',') || '无'}；重复: ${duplicates.join(',') || '无'}；未知: ${unknown.join(',') || '无'}；必须按 ${expectedIds.join('→')} 连续分配）`
+      );
+    }
+    return;
+  }
+  const expected = normalizeCoverageText(batch.script_segment);
+  const actual = normalizeCoverageText(batchCoverageText(shots));
+  if (expected && expected !== actual) {
+    throw new Error(`导演初稿第 ${batch.index + 1} 批未完整映射连续剧本文本（期望 ${expected.length} 字，实际 ${actual.length} 字）`);
+  }
+}
+
+function materializeDirectorDraftBatchExcerpts(batch, shots) {
+  if (!Array.isArray(batch?.source_units) || !batch.source_units.length) return shots;
+  const textById = new Map(batch.source_units.map((unit) => [unit.id, unit.text]));
+  return shots.map((shot) => {
+    const semanticSlots = isPlainObject(shot?.semantic_slots) ? shot.semantic_slots : {};
+    const ids = semanticSlots.source_script_unit_ids.map((id) => String(id));
+    return {
+      ...shot,
+      semantic_slots: {
+        ...semanticSlots,
+        source_script_unit_ids: ids,
+        source_script_excerpt: ids.map((id) => textById.get(id)).join('\n'),
+      },
+    };
+  });
+}
+
+function validateDirectorSourceAssignments(batch, rawAssignments) {
+  if (!Array.isArray(rawAssignments) || rawAssignments.length !== batch.shot_count) {
+    throw new Error(`导演原文覆盖规划应返回 ${batch.shot_count} 个镜头槽位`);
+  }
+  const normalized = rawAssignments.map((item, index) => {
+    if (Number(item?.shot_slot) !== index + 1 || !Array.isArray(item?.source_script_unit_ids) || !item.source_script_unit_ids.length) {
+      throw new Error(`导演原文覆盖规划第 ${index + 1} 个镜头槽位无效`);
+    }
+    return item.source_script_unit_ids.map((id) => String(id));
+  });
+  const expected = batch.source_units.map((unit) => unit.id);
+  const actual = normalized.flat();
+  const exact = actual.length === expected.length && actual.every((id, index) => id === expected[index]);
+  if (!exact) {
+    throw new Error(`导演原文覆盖规划必须按 ${expected.join('→')} 连续、无遗漏且无重复地分配`);
+  }
+  return normalized;
+}
+
+function directorRetryContext(options = {}) {
+  return {
+    maxAttempts: Math.max(1, Math.min(500, Number(options.maxAttempts || options.max_attempts || 500))),
+    onProgress: typeof options.onProgress === 'function' ? options.onProgress : () => {},
+    progress: Number.isFinite(Number(options.progress)) ? Number(options.progress) : 40,
+  };
+}
+
+function reportDirectorLayerRetry(context, layer, attempt, detail = '') {
+  context.onProgress(
+    context.progress,
+    `${layer}门禁反馈第 ${attempt}/${context.maxAttempts} 轮${detail ? ` · ${detail}` : ''}`
+  );
+}
+
+function validTimelineDurationPlans(duration) {
+  const seconds = Number(duration);
+  if (!Number.isInteger(seconds) || seconds < 1 || seconds > 8) return [];
+  const plans = [];
+  function visit(remaining, current) {
+    if (!remaining) { plans.push(current); return; }
+    // 镜内时间线只能使用 1～2 秒段。每段都必须成为一个可执行动作窗口，
+    // 禁止把 4～8 秒整段交给模型自由填充。
+    for (let n = Math.min(2, remaining); n >= 1; n--) visit(remaining - n, [...current, n]);
+  }
+  visit(seconds, []);
+  return plans;
+}
+
+function timelineDurationPlanContract(duration) {
+  const plans = validTimelineDurationPlans(duration);
+  if (!plans.length) throw new Error(`无法为 ${duration} 秒镜头建立合法的镜内剪辑时长组合`);
+  return `shots_timeline.duration 必须全部使用 1 或 2 个整数秒，并严格逐项采用下列任一完整数组：${JSON.stringify(plans)}。每一项对应连续时间窗口（例如 0–1、1–2 秒），不得用单个 4～8 秒大段填充。`;
+}
+
+async function planDirectorSourceAssignments(db, log, batch, retryOptions = {}) {
+  const retry = directorRetryContext(retryOptions);
+  const partitions = agentsRuntime.buildContiguousSourcePartitions(batch.source_units, batch.shot_count);
+  if (!partitions.length) throw new Error(`导演初稿第 ${batch.index + 1} 批无法建立原文覆盖规划`);
+  if (partitions.length === 1) return partitions[0];
+
+  let lastError = null;
+  for (let attempt = 1; attempt <= retry.maxAttempts; attempt++) {
+    try {
+      const planned = await agentsRuntime.runAgent(db, log, {
+        name: 'director-source-coverage-planner',
+        instructions: '你是短剧导演的原文覆盖规划节点。只选择最符合语义节拍的连续分组；不得遗漏、重复、倒序或改写原文单元。',
+        input: `把下列连续原文单元分配给 ${batch.shot_count} 个镜头槽位。每个槽位至少一个单元，保持原顺序，并让动作或对白尽量在语义完整处切镜：\n${JSON.stringify(batch.source_units, null, 2)}`,
+        outputType: agentsRuntime.sourceAssignmentOutputType(batch.shot_count, batch.source_units),
+        maxTokens: 2048,
+        temperature: 0.2,
+      });
+      return validateDirectorSourceAssignments(batch, planned?.assignments);
+    } catch (error) {
+      lastError = error;
+      log.warn('[导演Agent] 原文覆盖规划未通过门禁，退回 SDK Agent 重试', {
+        batch: batch.index + 1,
+        attempt,
+        error: error.message,
+      });
+      reportDirectorLayerRetry(retry, `导演初稿第 ${batch.index + 1} 批原文覆盖规划`, attempt, error.message);
+    }
+  }
+  throw new Error(`导演初稿第 ${batch.index + 1} 批原文覆盖规划经过 ${retry.maxAttempts} 轮门禁反馈仍未通过：${lastError?.message || '未知错误'}`);
+}
+
+/**
+ * A draft batch is a transport boundary.  Do not leave the complete episode
+ * script in the same request: some reasoning models follow the global story
+ * instead of the later batch instruction and regenerate many earlier shots.
+ * The semantic package remains available in the system prompt for continuity;
+ * the user message contains only the source text this batch is allowed to map.
+ */
+function isolateDirectorDraftBatchPrompt(userPrompt, fullScript, batchScript) {
+  const fullScriptBlock = `【剧本内容】：\n${String(fullScript || '')}`;
+  if (!String(userPrompt || '').includes(fullScriptBlock)) {
+    throw new Error('导演初稿分批提示词缺少完整剧本边界，无法安全隔离当前批次');
+  }
+  return String(userPrompt).replace(
+    fullScriptBlock,
+    `【当前批次唯一允许处理的剧本内容】：\n${String(batchScript || '')}`
+  );
+}
+
+function isPlainObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * 确定性应用 Agent 返回的 JSON Merge Patch：对象递归合并，数组/标量整体替换，null 作为显式值保留。
+ * 后端只执行 Agent 明示的变更，不补字段、不推断创意内容。
+ */
+function mergeDirectorAgentPatch(current, patch) {
+  if (!isPlainObject(patch)) throw new Error('Director repair patch 必须是 JSON 对象');
+  const output = isPlainObject(current) ? { ...current } : {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (key === '__proto__' || key === 'prototype' || key === 'constructor') {
+      throw new Error(`Director repair patch 包含非法字段 ${key}`);
+    }
+    if (isPlainObject(value) && isPlainObject(output[key])) {
+      output[key] = mergeDirectorAgentPatch(output[key], value);
+    } else if (Array.isArray(value)) {
+      output[key] = value.map((item) => (isPlainObject(item) ? mergeDirectorAgentPatch({}, item) : item));
+    } else {
+      output[key] = value;
+    }
+  }
+  return output;
+}
+
+/**
+ * 单镜微调只接受 Agent 明示的字段级 Patch。未列出的字段保持原值；未知字段直接退回 Agent，
+ * 避免把 id、镜号或数据库状态等执行层字段混入导演语义。
+ */
+function applySingleStoryboardPatch(current, response, shotNumber) {
+  if (isPlainObject(response) && response.noop === true) {
+    if (!String(response.reason || '').trim() || Object.prototype.hasOwnProperty.call(response, 'patch')) {
+      throw Object.assign(new Error('单镜微调 noop 必须提供 reason，且不能同时包含 patch'), {
+        status: 422,
+        valid: false,
+        violations: [{
+          rule: 'INVARIANT_AGENT_NOOP_INVALID',
+          severity: 'error',
+          shot_number: shotNumber,
+          conflict_slots: ['noop', 'reason', 'patch'],
+          message: '已满足用户指令时返回 {"noop":true,"reason":"..."}；不得与 patch 混用',
+        }],
+      });
+    }
+    return mergeDirectorAgentPatch({}, current);
+  }
+  if (!isPlainObject(response) || !isPlainObject(response.patch)) {
+    throw Object.assign(new Error('单镜微调响应必须是 patch 或 noop 协议'), {
+      status: 422,
+      valid: false,
+      violations: [{
+        rule: 'INVARIANT_AGENT_PATCH_INVALID',
+        severity: 'error',
+        shot_number: shotNumber,
+        conflict_slots: ['patch'],
+        message: '需要修改时返回 {"patch":{...}}；当前数据已满足指令时返回 {"noop":true,"reason":"..."}',
+      }],
+    });
+  }
+  const keys = Object.keys(response.patch);
+  if (!keys.length) {
+    throw Object.assign(new Error('单镜微调 Patch 不能为空'), {
+      status: 422,
+      valid: false,
+      violations: [{
+        rule: 'INVARIANT_AGENT_PATCH_EMPTY',
+        severity: 'error',
+        shot_number: shotNumber,
+        conflict_slots: ['patch'],
+        message: 'patch 必须包含本轮需要修改的字段',
+      }],
+    });
+  }
+  const unknown = keys.filter((field) => !SINGLE_STORYBOARD_PATCH_FIELDS.has(field));
+  if (unknown.length) {
+    throw Object.assign(new Error(`单镜微调 Patch 包含不可修改字段：${unknown.join('、')}`), {
+      status: 422,
+      valid: false,
+      violations: unknown.map((field) => ({
+        rule: 'INVARIANT_AGENT_PATCH_FIELD_FORBIDDEN',
+        severity: 'error',
+        shot_number: shotNumber,
+        conflict_slots: [field],
+        message: `单镜微调不得修改执行层字段 ${field}`,
+      })),
+    });
+  }
+  return mergeDirectorAgentPatch(current, response.patch);
+}
+
+function selectDirectorRepairTarget(shots, violations) {
+  const list = Array.isArray(shots) ? shots : [];
+  const errors = Array.isArray(violations) ? violations : [];
+  if (!list.length || !errors.length) return null;
+
+  const byShot = new Map();
+  for (const violation of errors) {
+    const shotNumber = Number(violation?.shot_number);
+    if (!Number.isInteger(shotNumber) || shotNumber <= 0) continue;
+    if (!byShot.has(shotNumber)) byShot.set(shotNumber, []);
+    byShot.get(shotNumber).push(violation);
+  }
+
+  if (byShot.size > 0) {
+    const shotNumber = [...byShot.keys()].sort((a, b) => a - b)[0];
+    return { shot_number: shotNumber, violations: [byShot.get(shotNumber)[0]], global: false };
+  }
+
+  // The current whole-episode hard gate is the static-shot ratio. Repair one
+  // concrete static shot, then let the next full audit decide whether another
+  // shot still needs changing.
+  const globalViolation = errors[0];
+  let target = null;
+  if (globalViolation?.rule === 'INVARIANT_STATIC_RATIO_EXCEEDED') {
+    target = list.find((shot) => ['static', '固定'].includes(String(shot?.movement || '').trim().toLowerCase()));
+  }
+  target ||= list[0];
+  const shotNumber = Number(target?.shot_number);
+  if (!Number.isInteger(shotNumber) || shotNumber <= 0) return null;
+  return { shot_number: shotNumber, violations: [globalViolation], global: true };
+}
+
+function directorAtomicRepairHint(violation) {
+  const item = violation && typeof violation === 'object' ? violation : {};
+  const path = Array.isArray(item.conflict_slots) ? item.conflict_slots.filter(Boolean).join('、') : '';
+  const character = item.character_name
+    ? `角色「${item.character_name}」${item.character_id != null ? `（ID ${item.character_id}）` : ''}`
+    : '';
+  const fieldRules = {
+    INVARIANT_REQUIRED_AGENT_SLOT_MISSING: '由 Agent 显式补齐目标字段，不得改动其他已确认语义。无人镜头也必须显式输出 character_visuals: []；空数组合法，缺字段或 null 不合法。',
+    INVARIANT_DIRECTOR_DURATION_RANGE: '遵守违规详情中的本任务时长范围，同步调整 duration、semantic_slots.shot_duration、video_slots.timing.duration 与镜内时间线。不得删改台词；超出范围上限仍说不完时按语义拆镜。',
+    INVARIANT_SLOT_MISSING_SCREEN_POSITION: 'screen_position 必须包含“画面左侧/画面右侧/画面中央”之一，并同时写明前景/中景/后景。',
+    INVARIANT_SLOT_MISSING_FACING: 'facing 必须明确写成“侧身朝向画面左侧/侧身朝向画面右侧/正面面对镜头/背向镜头”等可校验短语。',
+    INVARIANT_SLOT_MISSING_HEAD_POSE: 'head_pose 必须显式包含“头部/侧头/低头/抬头/仰头/俯头/转头/正对”之一，例如“头部微俯并侧头朝向红狼”。',
+    INVARIANT_SLOT_MISSING_GAZE: 'gaze 必须显式包含“目光/视线/看/盯/凝视”之一，并写出具体落点。',
+    INVARIANT_SLOT_MISSING_POSTURE: 'posture 必须写出站、蹲、坐、卧、趴、俯、仰、倾、跪、靠、立或挺等明确体态与重心。',
+    INVARIANT_SLOT_MISSING_HANDS: 'hands 必须写出手、臂、指、握、按、托、持、掌或抓等明确肢体动作。',
+    INVARIANT_UNIVERSAL_CREATION_MODE_REQUIRED: '本轮只能修改顶层 creation_mode，且值必须为 universal；不得返回 semantic_slots、video_slots 或其他字段。',
+    INVARIANT_MISSING_INCOMING_CONTINUITY: '在 semantic_slots 中补齐 continuity_from_previous，必须包含 relationship、previous_end_state、entry_state、causal_link；只修复当前镜头，不能改写上一镜。',
+    INVARIANT_INCOMING_CONTINUITY_INCOMPLETE: '在 semantic_slots.continuity_from_previous 中补齐门禁指出的字段，并保持上一镜结束状态、本镜进入状态和因果关系一致。',
+    INVARIANT_EYELINE_MATCH_WITHOUT_EYE_TARGET: '修正 continuity_from_previous 与对应 character_visuals/video_slots 的视线目标，明确上一镜视线来源、本镜目标和注意力落点。',
+  };
+  const exact = fieldRules[item.rule] || '';
+  const speechExtension = item.rule === 'INVARIANT_SPEECH_OVER_BUDGET'
+    && Number(item.assessment?.recommendedDuration) <= (item.max_duration ?? 8)
+    ? `- 本镜无需拆外层分镜：把顶层 duration、semantic_slots.shot_duration、video_slots.timing.duration 统一延长为 ${Number(item.assessment.recommendedDuration)} 秒，并重新规划 video_slots.shots_timeline；镜内每段只能是 1 或 2 个整数秒的连续动作窗口，段时长总和必须严格等于新总时长。逐字保留台词。`
+    : '';
+  if (!path && !exact && !speechExtension) return '';
+  return [
+    '【本轮原子 Patch 路径约束】',
+    path ? `- 唯一目标路径：${path}${character ? `，目标${character}` : ''}。` : '',
+    exact ? `- ${exact}` : '',
+    speechExtension,
+    /^(character_visuals|last_frame_visuals)\[/.test(path)
+      ? `- ${path.split('[')[0]} 是数组：Patch 必须返回该镜头完整的 ${path.split('[')[0]} 数组，保留所有人物和所有既有字段，只改上述目标人物的目标字段；不得只返回单个人物或局部对象。首帧与尾帧是不同时间的状态，不得用另一帧代替本轮目标。`
+      : '',
+  ].filter(Boolean).join('\n');
+}
+
+function requiresDirectorStructuralRepair(violation) {
+  if (violation?.rule === 'INVARIANT_DIRECTOR_DURATION_RANGE') return violation.requires_split === true;
+  if (violation?.rule === 'INVARIANT_MULTI_SPEAKER_SHOT') return true;
+  if (violation?.rule !== 'INVARIANT_SPEECH_OVER_BUDGET') return false;
+  const recommended = Number(violation?.assessment?.recommendedDuration);
+  return !Number.isFinite(recommended) || recommended > (violation.max_duration ?? 8);
+}
+
+function directorAtomicPatchSchema(violation, targetShot = null) {
+  if (violation?.rule === 'INVARIANT_REQUIRED_AGENT_SLOT_MISSING'
+    && String(violation?.conflict_slots?.[0] || '').includes('continuity_from_previous')) {
+    return {
+      type: 'object', additionalProperties: false, required: ['semantic_slots'], properties: {
+        semantic_slots: {
+          type: 'object', additionalProperties: false, required: ['continuity_from_previous'], properties: {
+            continuity_from_previous: {
+              type: 'object', additionalProperties: false,
+              required: ['relationship', 'previous_end_state', 'entry_state', 'causal_link'],
+              properties: {
+                relationship: { type: 'string' }, previous_end_state: { type: 'string' },
+                entry_state: { type: 'string' }, causal_link: { type: 'string' },
+                sound_bridge: { type: 'string' }, requires_previous_tail: { type: 'boolean' },
+              },
+            },
+          },
+        },
+      },
+    };
+  }
+  if (violation?.rule === 'INVARIANT_REQUIRED_AGENT_SLOT_MISSING'
+    && ['character_visuals', 'last_frame_visuals'].includes(violation?.conflict_slots?.[0])) {
+    const field = violation.conflict_slots[0];
+    return { type: 'object', additionalProperties: false, required: [field], properties: {
+      [field]: agentsRuntime.directorCharacterVisualsOutputType().schema.properties[field],
+    } };
+  }
+  if (violation?.rule === 'INVARIANT_UNIVERSAL_CREATION_MODE_REQUIRED') {
+    return {
+      type: 'object',
+      additionalProperties: false,
+      required: ['creation_mode'],
+      properties: { creation_mode: { const: 'universal' } },
+    };
+  }
+  if (violation?.rule === 'INVARIANT_UNIVERSAL_REF2VA_REQUIRED') {
+    return {
+      type: 'object',
+      additionalProperties: false,
+      required: ['semantic_slots'],
+      properties: {
+        semantic_slots: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['h3_mode'],
+          properties: { h3_mode: { const: 'ref2va' } },
+        },
+      },
+    };
+  }
+  if (['INVARIANT_MISSING_INCOMING_CONTINUITY', 'INVARIANT_INCOMING_CONTINUITY_INCOMPLETE', 'INVARIANT_EYELINE_MATCH_WITHOUT_EYE_TARGET'].includes(violation?.rule)) {
+    let current = targetShot?.semantic_slots;
+    if (typeof current === 'string') { try { current = JSON.parse(current); } catch (_) { current = null; } }
+    const required = ['relationship', 'previous_end_state', 'entry_state', 'causal_link'];
+    const properties = {};
+    for (const key of required) {
+      properties[key] = { type: 'string' };
+    }
+    properties.sound_bridge = { type: 'string' };
+    properties.requires_previous_tail = { type: 'boolean' };
+    return {
+      type: 'object', additionalProperties: false, required: ['semantic_slots'], properties: {
+        semantic_slots: {
+          type: 'object', additionalProperties: false, required: ['continuity_from_previous'], properties: {
+            continuity_from_previous: { type: 'object', additionalProperties: false, required, properties },
+          },
+        },
+      },
+    };
+  }
+  const semanticSlots = targetShot?.semantic_slots && typeof targetShot.semantic_slots === 'object'
+    ? targetShot.semantic_slots
+    : null;
+  if ([
+    'INVARIANT_CHARACTER_MOUTH_NOT_SEALED',
+    'INVARIANT_OFFSCREEN_LIP_SYNC_VIOLATION',
+    'INVARIANT_OFFSCREEN_SPEECH_LIP_SYNC_CONFLICT',
+  ].includes(violation?.rule)) {
+    const trajectories = Array.isArray(targetShot?.video_slots?.trajectories)
+      ? targetShot.video_slots.trajectories
+      : [];
+    const prefixItems = trajectories.map((trajectory) => {
+      const properties = Object.fromEntries(Object.entries(trajectory || {}).map(([key, value]) => [
+        key,
+        key === 'mouth_state' ? { const: '双唇紧闭无口型' } : { const: value },
+      ]));
+      if (!Object.prototype.hasOwnProperty.call(properties, 'mouth_state')) {
+        properties.mouth_state = { const: '双唇紧闭无口型' };
+      }
+      return {
+        type: 'object',
+        additionalProperties: false,
+        required: Object.keys(properties),
+        properties,
+      };
+    });
+    return {
+      type: 'object',
+      additionalProperties: false,
+      required: ['video_slots'],
+      properties: {
+        video_slots: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['audio_lip_sync', 'trajectories'],
+          properties: {
+            audio_lip_sync: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['visible_characters_lip_state'],
+              properties: { visible_characters_lip_state: { const: 'strictly_sealed' } },
+            },
+            trajectories: {
+              type: 'array',
+              minItems: trajectories.length,
+              maxItems: trajectories.length,
+              prefixItems,
+              items: false,
+            },
+          },
+        },
+      },
+    };
+  }
+  if (violation?.rule === 'INVARIANT_SPEECH_OVER_BUDGET') {
+    const recommendedDuration = Number(violation?.assessment?.recommendedDuration);
+    if (Number.isInteger(recommendedDuration) && recommendedDuration >= 4 && recommendedDuration <= (violation.max_duration ?? 8)) {
+      const timelinePlans = validTimelineDurationPlans(recommendedDuration);
+      const exactTimelineSchema = (plan) => ({
+        type: 'array',
+        minItems: plan.length,
+        maxItems: plan.length,
+        prefixItems: plan.map((segmentDuration) => ({
+          type: 'object',
+          additionalProperties: true,
+          required: ['duration'],
+          properties: { duration: { const: segmentDuration } },
+        })),
+        items: false,
+      });
+      return {
+        type: 'object',
+        additionalProperties: false,
+        required: ['duration', 'semantic_slots', 'video_slots'],
+        properties: {
+          duration: { const: recommendedDuration },
+          semantic_slots: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['shot_duration'],
+            properties: { shot_duration: { const: recommendedDuration } },
+          },
+          video_slots: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['timing', 'shots_timeline'],
+            properties: {
+              timing: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['duration'],
+                properties: { duration: { const: recommendedDuration } },
+              },
+              shots_timeline: timelinePlans.length === 1
+                ? exactTimelineSchema(timelinePlans[0])
+                : { oneOf: timelinePlans.map(exactTimelineSchema) },
+            },
+          },
+        },
+      };
+    }
+  }
+  if (violation?.rule === 'INVARIANT_FRAMING_CHARACTER_COUNT_MISMATCH') {
+    const visibleCount = Array.isArray(semanticSlots?.visible_characters)
+      ? semanticSlots.visible_characters.length
+      : 0;
+    const allowed = visibleCount > 2
+      ? ['group_blocking', 'multi_character_reaction', 'wide_group']
+      : (visibleCount === 2 ? ['two_shot_face_to_face', 'over_the_shoulder', 'joint_observation'] : ['solo_action']);
+    return {
+      type: 'object',
+      additionalProperties: false,
+      required: ['dialogue_framing'],
+      properties: { dialogue_framing: { type: 'string', enum: allowed } },
+    };
+  }
+  if (semanticSlots && [
+    'INVARIANT_UNIVERSAL_SCENE_REFERENCE_REQUIRED',
+    'INVARIANT_UNIVERSAL_CHARACTER_REFERENCE_MISSING',
+  ].includes(violation?.rule)) {
+    const refs = Array.isArray(semanticSlots.required_references)
+      ? semanticSlots.required_references.map((item) => mergeDirectorAgentPatch({}, item))
+      : [];
+    let nextRefs = refs;
+    if (violation.rule === 'INVARIANT_UNIVERSAL_SCENE_REFERENCE_REQUIRED') {
+      const sceneId = Number(targetShot?.scene_id);
+      const sceneIndex = refs.findIndex((ref) => (
+        String(ref?.type || ref?.asset_type || '').toLowerCase() === 'scene'
+        && Number(ref?.id ?? ref?.scene_id) === sceneId
+      ));
+      const sceneRef = sceneIndex >= 0
+        ? refs[sceneIndex]
+        : { type: 'scene', id: sceneId, scene_id: sceneId };
+      nextRefs = [sceneRef, ...refs.filter((_, index) => index !== sceneIndex)];
+    } else {
+      const present = new Set(refs
+        .filter((ref) => String(ref?.type || ref?.asset_type || '').toLowerCase() === 'character')
+        .map((ref) => Number(ref?.id ?? ref?.character_id))
+        .filter(Number.isFinite));
+      const characters = [
+        ...(Array.isArray(semanticSlots.visible_characters) ? semanticSlots.visible_characters : []),
+        ...(Array.isArray(semanticSlots.background_characters) ? semanticSlots.background_characters : []),
+      ];
+      const additions = [];
+      for (const character of characters) {
+        const id = Number(character?.id ?? character?.character_id ?? character);
+        if (!Number.isFinite(id) || present.has(id)) continue;
+        present.add(id);
+        additions.push({
+          type: 'character',
+          id,
+          character_id: id,
+          name: String(character?.name || ''),
+        });
+      }
+      nextRefs = [...refs, ...additions];
+    }
+    return {
+      type: 'object',
+      additionalProperties: false,
+      required: ['semantic_slots'],
+      properties: {
+        semantic_slots: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['required_references'],
+          properties: {
+            required_references: {
+              type: 'array',
+              minItems: nextRefs.length,
+              maxItems: nextRefs.length,
+              prefixItems: nextRefs.map((ref) => ({ const: ref })),
+              items: false,
+            },
+          },
+        },
+      },
+    };
+  }
+  const visualFieldByRule = {
+    INVARIANT_SLOT_MISSING_SCREEN_POSITION: ['screen_position', ['画面左侧前景', '画面右侧前景', '画面左侧中景', '画面右侧中景', '画面中央后景']],
+    INVARIANT_SLOT_MISSING_FACING: ['facing', ['正面面对镜头', '背向镜头', '侧身朝向画面左侧', '侧身朝向画面右侧', '四分之三侧身面对受话人']],
+    INVARIANT_SLOT_MISSING_HEAD_POSE: ['head_pose', ['头部正对前方', '头部微俯', '侧头偏向画面左侧', '侧头偏向画面右侧', '低头看向手中道具', '转头朝向受话人']],
+    INVARIANT_SLOT_MISSING_GAZE: ['gaze', ['目光紧盯受话人双眼', '视线锁定前方动作源', '目光看向手中道具', '双眼凝视画面左侧事件源', '双眼凝视画面右侧事件源']],
+    INVARIANT_SLOT_MISSING_POSTURE: ['posture', ['身体前倾站立，重心压向前脚', '半蹲低伏，重心稳定下沉', '单膝跪地，躯干微微前倾', '端坐并身体前倾，重心落在座面前侧', '侧卧撑地，躯干重心压低']],
+    INVARIANT_SLOT_MISSING_HANDS: ['hands', ['双手自然垂在身体两侧', '双手紧握手中道具', '右手按住身前支撑物，左手护在胸前', '双臂抬起并把手掌朝向动作对象', '右手手指指向事件源，左手收在身侧']],
+  };
+  const target = visualFieldByRule[violation?.rule];
+  const visualField = String(violation?.conflict_slots?.[0] || '').startsWith('last_frame_visuals[')
+    ? 'last_frame_visuals' : 'character_visuals';
+  const visuals = Array.isArray(targetShot?.[visualField]) ? targetShot[visualField] : [];
+  if (!target || visuals.length === 0) return null;
+  const [field, allowedValues] = target;
+  const explicitIndex = String(violation?.conflict_slots?.[0] || '').match(/^(?:character_visuals|last_frame_visuals)\[(\d+)\]\./u);
+  let targetIndex = explicitIndex ? Number(explicitIndex[1]) : -1;
+  if (!Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= visuals.length) {
+    targetIndex = visuals.findIndex((item) => (
+      (violation.character_id != null && Number(item?.character_id) === Number(violation.character_id))
+      || (violation.character_name && String(item?.name || '') === String(violation.character_name))
+    ));
+  }
+  if (targetIndex < 0) return null;
+  const prefixItems = visuals.map((visual, index) => {
+    const entries = Object.entries(visual || {});
+    const properties = Object.fromEntries(entries.map(([key, value]) => [
+      key,
+      index === targetIndex && key === field
+        ? { type: 'string', enum: allowedValues }
+        : { const: value },
+    ]));
+    if (!Object.prototype.hasOwnProperty.call(properties, field) && index === targetIndex) {
+      properties[field] = { type: 'string', enum: allowedValues };
+    }
+    return {
+      type: 'object',
+      additionalProperties: false,
+      required: Object.keys(properties),
+      properties,
+    };
+  });
+  return {
+    type: 'object',
+    additionalProperties: false,
+    required: [visualField],
+    properties: {
+      [visualField]: {
+        type: 'array',
+        minItems: visuals.length,
+        maxItems: visuals.length,
+        prefixItems,
+        items: false,
+      },
+    },
+  };
+}
+
+function repairContextForViolations(shots, violations) {
+  const list = Array.isArray(shots) ? shots : [];
+  const target = selectDirectorRepairTarget(list, violations);
+  if (!target) return [];
+  const index = list.findIndex((shot) => Number(shot.shot_number) === target.shot_number);
+  if (index < 0) return [];
+
+  const indexes = new Set();
+  indexes.add(index);
+  if (index > 0) indexes.add(index - 1);
+  if (index + 1 < list.length) indexes.add(index + 1);
+  return [...indexes].sort((a, b) => a - b).map((index) => list[index]);
+}
+
+/**
+ * 支持两种互斥的 Agent 修复协议：
+ * 1. repairs: 对现有镜头做字段级 Patch；
+ * 2. structural_repairs: 用一到多个完整镜头替换指定镜头，用于超长对白拆镜。
+ */
+function applyDirectorRepairPlan(currentShots, plan) {
+  if (!isPlainObject(plan)) throw new Error('Director repair 响应必须是 JSON 对象');
+  const repairs = Array.isArray(plan.repairs) ? plan.repairs : [];
+  const structural = Array.isArray(plan.structural_repairs) ? plan.structural_repairs : [];
+  if (!repairs.length && !structural.length) throw new Error('Director repair 响应未包含 repairs 或 structural_repairs');
+  if (repairs.length && structural.length) throw new Error('字段修复与拆镜修复必须分轮执行，不能在同一响应中混用');
+  if (repairs.length > 1) throw new Error('每轮只允许修复一个目标镜头');
+  if (structural.length > 1) throw new Error('每轮只允许一项结构修复，完成并重新编号后再处理下一项');
+
+  let next = (Array.isArray(currentShots) ? currentShots : []).map((shot) => mergeDirectorAgentPatch({}, shot));
+  let changedCount = 0;
+
+  if (repairs.length) {
+    const seen = new Set();
+    for (const repair of repairs) {
+      const shotNumber = Number(repair && repair.shot_number);
+      if (!Number.isInteger(shotNumber) || shotNumber <= 0 || !isPlainObject(repair.patch)) {
+        throw new Error('每个 repairs 项必须包含有效 shot_number 与 patch 对象');
+      }
+      if (seen.has(shotNumber)) throw new Error(`镜头 #${shotNumber} 在同一轮出现重复 Patch`);
+      seen.add(shotNumber);
+      const index = next.findIndex((shot) => Number(shot.shot_number) === shotNumber);
+      if (index < 0) throw new Error(`Patch 指向不存在的镜头 #${shotNumber}`);
+      if (Object.prototype.hasOwnProperty.call(repair.patch, 'shot_number') && Number(repair.patch.shot_number) !== shotNumber) {
+        throw new Error(`镜头 #${shotNumber} 的 Patch 不得改写为其他 shot_number`);
+      }
+      const originalExcerpt = next[index]?.semantic_slots?.source_script_excerpt;
+      const patchedExcerpt = repair.patch?.semantic_slots?.source_script_excerpt;
+      if (originalExcerpt != null && patchedExcerpt != null && normalizeCoverageText(originalExcerpt) !== normalizeCoverageText(patchedExcerpt)) {
+        throw new Error(`镜头 #${shotNumber} 的普通字段修复不得改写 source_script_excerpt`);
+      }
+      const before = JSON.stringify(next[index]);
+      next[index] = mergeDirectorAgentPatch(next[index], { ...repair.patch, shot_number: shotNumber });
+      if (JSON.stringify(next[index]) !== before) changedCount++;
+    }
+  } else {
+    const seen = new Set();
+    for (const operation of structural) {
+      const target = Number(operation && operation.replace_shot_number);
+      const replacements = operation && operation.storyboards;
+      if (!Number.isInteger(target) || target <= 0 || !Array.isArray(replacements) || !replacements.length || replacements.some((shot) => !isPlainObject(shot))) {
+        throw new Error('每个 structural_repairs 项必须包含 replace_shot_number 与非空完整 storyboards 数组');
+      }
+      if (seen.has(target)) throw new Error(`镜头 #${target} 在同一轮出现重复结构修复`);
+      seen.add(target);
+      const index = next.findIndex((shot) => Number(shot.shot_number) === target);
+      if (index < 0) throw new Error(`结构修复指向不存在的镜头 #${target}`);
+      const originalExcerpt = next[index]?.semantic_slots?.source_script_excerpt;
+      if (originalExcerpt != null) {
+        const missingSource = replacements.findIndex(shot => !isPlainObject(shot.semantic_slots)
+          || typeof shot.semantic_slots.source_script_excerpt !== 'string');
+        if (missingSource >= 0) {
+          throw new Error(`镜头 #${target} 拆镜第 ${missingSource + 1} 段缺少 semantic_slots.source_script_excerpt。每段必须包含完整 semantic_slots 对象；顶层 speech_plan、h3_mode、required_references 不能代替该对象。请由 Agent 将原文按顺序分配到各段 source_script_excerpt：${JSON.stringify(originalExcerpt)}`);
+        }
+        const replacementExcerpt = replacements.map((shot) => shot?.semantic_slots?.source_script_excerpt || '').join('');
+        if (normalizeCoverageText(originalExcerpt) !== normalizeCoverageText(replacementExcerpt)) {
+          throw new Error(`镜头 #${target} 拆镜后的 source_script_excerpt 拼接结果必须与原镜完全一致`);
+        }
+      }
+      next.splice(index, 1, ...replacements.map((shot) => mergeDirectorAgentPatch({}, shot)));
+      changedCount += replacements.length;
+    }
+    next = next.map((shot, index) => ({ ...shot, shot_number: index + 1 }));
+  }
+
+  if (!changedCount) throw new Error('Director repair 未产生任何实际变更');
+  return { shots: next, changed_count: changedCount, structural: structural.length > 0 };
+}
+
+function agentSlotShapeViolations(shot, shotNumber) {
+  const violations = [];
+  const add = (field, message) => violations.push({
+    rule: 'INVARIANT_REQUIRED_AGENT_SLOT_MISSING',
+    shot_number: shotNumber,
+    severity: 'error',
+    conflict_slots: [field],
+    message,
+  });
+  if (!Array.isArray(shot.character_visuals)) add('character_visuals', `分镜 #${shotNumber} 的 character_visuals 必须由 Agent 显式输出为数组`);
+  if (!shot.video_slots || typeof shot.video_slots !== 'object' || Array.isArray(shot.video_slots)) {
+    add('video_slots', `分镜 #${shotNumber} 缺少 Agent 规划的 video_slots 对象`);
+  } else {
+    for (const key of REQUIRED_VIDEO_SLOT_KEYS) {
+      if (!Object.prototype.hasOwnProperty.call(shot.video_slots, key)) add(`video_slots.${key}`, `分镜 #${shotNumber} 缺少 video_slots.${key}`);
+    }
+  }
+  if (!shot.semantic_slots || typeof shot.semantic_slots !== 'object' || Array.isArray(shot.semantic_slots)) {
+    add('semantic_slots', `分镜 #${shotNumber} 缺少 Agent 规划的 semantic_slots 对象`);
+  } else {
+    for (const key of REQUIRED_SEMANTIC_SLOT_KEYS) {
+      if (!Object.prototype.hasOwnProperty.call(shot.semantic_slots, key)) add(`semantic_slots.${key}`, `分镜 #${shotNumber} 缺少 semantic_slots.${key}`);
+    }
+  }
+  return violations;
+}
+
+function normalizeDirectorShots(shots, universalOmni) {
+  return shots.map((s, idx) => {
+    const shotNum = idx + 1;
+    const chars = Array.isArray(s.characters) ? s.characters : (Array.isArray(s.character_ids) ? s.character_ids : []);
+    const pids = Array.isArray(s.props) ? s.props : (Array.isArray(s.prop_ids) ? s.prop_ids : []);
+    const bgChars = Array.isArray(s.background_characters) ? s.background_characters : [];
+    const startFraming = s.start_framing ? String(s.start_framing).trim() : (s.layout_description ? String(s.layout_description).trim() : '');
+    const endFraming = s.end_framing ? String(s.end_framing).trim() : (s.result ? String(s.result).trim() : '');
+    const transitionToNext = s.transition_to_next ? String(s.transition_to_next).trim() : '';
+
+    return {
+      ...s,
+      shot_number: shotNum,
+      characters: chars,
+      props: pids,
+      movement: String(s.movement).trim(),
+      bgm_prompt: s.bgm_prompt ? String(s.bgm_prompt).trim() : '',
+      start_framing: startFraming,
+      end_framing: endFraming,
+      transition_to_next: transitionToNext,
+      background_characters: bgChars,
+      lighting_style: angleService.normalizeLighting(s.lighting_style),
+      depth_of_field: angleService.normalizeDof(s.depth_of_field),
+      long_take_group_id: s.long_take_group_id ? String(s.long_take_group_id).trim() : null,
+      long_take_role: s.long_take_role ? String(s.long_take_role).trim().toLowerCase() : null,
+      long_take_sequence: s.long_take_sequence != null ? Number(s.long_take_sequence) : null,
+      character_visuals: Array.isArray(s.character_visuals) ? s.character_visuals : [],
+      last_frame_visuals: Array.isArray(s.last_frame_visuals) ? s.last_frame_visuals : [],
+      video_slots: s.video_slots || null,
+      semantic_slots: s.semantic_slots,
+      creation_mode: universalOmni ? String(s.creation_mode || '').trim().toLowerCase() : 'classic',
+      universal_segment_text: universalOmni ? String(s.universal_segment_text || '').trim() : null,
+    };
+  });
+
+}
+
+// One contract for the first audit, each repair, and the publication gate.
+// In particular, missing arrays are not equivalent to an Agent-authored [].
+function directorRequiredSlotViolations(shots, universalOmni = false) {
+  const fields = ['duration', 'movement', 'lighting_style', 'depth_of_field', 'angle_h', 'angle_v', 'angle_s', 'shot_type', 'dialogue_framing'];
+  if (universalOmni) fields.push('creation_mode', 'universal_segment_text');
+  return shots.flatMap((shot, index) => {
+    const shotNumber = shot.shot_number || index + 1;
+    const errors = agentSlotShapeViolations(shot, shotNumber);
+    for (const field of fields) {
+      if (shot[field] == null || (typeof shot[field] === 'string' && !shot[field].trim())) {
+        errors.push({ rule: 'INVARIANT_REQUIRED_AGENT_SLOT_MISSING', shot_number: shotNumber,
+          severity: 'error', conflict_slots: [field], message: `分镜 #${shotNumber} 缺少 Agent 必须决策的语义字段 ${field}` });
+      }
+    }
+    return errors;
+  });
+}
+
+function auditDirectorDraft(shots, invariantOptions) {
+  const base = validateAllInvariants(shots, invariantOptions);
+  const shapeErrors = directorRequiredSlotViolations(shots, invariantOptions.directorPlanningMode === 'universal');
+  const candidates = [...base.violations, ...shapeErrors];
+  // Use the same format normalization before and after repairs, so normalization
+  // cannot introduce a new semantic error only after the ReAct loop has exited.
+  candidates.push(...validateAllInvariants(
+    normalizeDirectorShots(shots, invariantOptions.directorPlanningMode === 'universal'), invariantOptions
+  ).violations);
+  const range = invariantOptions.requestedPacing?.range;
+  if (range) {
+    for (const violation of candidates) {
+      if (violation.rule === 'INVARIANT_SPEECH_OVER_BUDGET') violation.max_duration = range.max;
+    }
+    for (const [index, shot] of shots.entries()) {
+      const duration = Number(shot.duration);
+      if (!Number.isInteger(duration) || duration < range.min || duration > range.max) {
+        const requiresSplit = duration > range.max && checkSpeechTiming([{ ...shot, duration: range.max }], invariantOptions).length > 0;
+        candidates.push({ rule: 'INVARIANT_DIRECTOR_DURATION_RANGE', shot_number: shot.shot_number || index + 1,
+          severity: 'error', conflict_slots: ['duration', 'semantic_slots.shot_duration', 'video_slots.timing.duration', 'video_slots.shots_timeline'],
+          requires_split: requiresSplit, max_duration: range.max,
+          message: `分镜 #${shot.shot_number || index + 1} 时长 ${shot.duration} 秒不符合本任务 ${range.min}～${range.max} 秒整数范围。${requiresSplit ? '完整台词在上限内仍说不完，必须按语义拆镜，禁止删字。' : '由 Agent 在范围内重新规划时长及时间线。'}` });
+      }
+    }
+  }
+  const seen = new Set();
+  const violations = candidates.filter(v => {
+    const key = JSON.stringify([v.rule, v.shot_number, v.character_id, v.conflict_slots || [], v.message]);
+    if (seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+  return { ...base, valid: violations.length === 0, error_count: violations.length, violations,
+    summary: violations.length ? `发现 ${violations.length} 项导演门禁违规，需要 Agent 修复。` : base.summary };
+}
+
+function shortDramaTimelineViolations(shot, timeline) {
+  const videoSlots = {
+    ...(shot.video_slots && typeof shot.video_slots === 'object' ? shot.video_slots : {}),
+    shots_timeline: Array.isArray(timeline) ? timeline : [],
+  };
+  return validateVideoSlots(shot, videoSlots)
+    .filter((item) => String(item.rule || '').startsWith('INVARIANT_SHORT_DRAMA_') && item.severity === 'error');
+}
+
+async function ensureDirectorShotTimeline(db, log, shot, retryOptions = {}) {
+  const retry = directorRetryContext(retryOptions);
+  const currentTimeline = Array.isArray(shot?.video_slots?.shots_timeline)
+    ? shot.video_slots.shots_timeline
+    : [];
+  if (shortDramaTimelineViolations(shot, currentTimeline).length === 0) return shot;
+
+  const semantic = shot?.semantic_slots && typeof shot.semantic_slots === 'object' ? shot.semantic_slots : {};
+  const duration = Number(shot?.video_slots?.timing?.duration || semantic.shot_duration || shot.duration || 5);
+  const durationPlanContract = timelineDurationPlanContract(duration);
+  const visibleCharacters = Array.isArray(semantic.visible_characters) ? semantic.visible_characters : [];
+  let lastErrors = shortDramaTimelineViolations(shot, currentTimeline);
+
+  for (let attempt = 1; attempt <= retry.maxAttempts; attempt++) {
+    const feedback = attempt > 1
+      ? `\n上一轮时间线被门禁拒绝：\n${lastErrors.map((item) => `- ${item.message}`).join('\n')}\n请重新规划完整时间线。`
+      : '';
+    let planned;
+    try {
+      planned = await agentsRuntime.runAgent(db, log, {
+        name: 'director-shot-timeline-planner',
+        instructions: `你是短剧导演的镜内剪辑规划节点。只规划当前一个外层分镜的 video_slots.shots_timeline，不得改写剧情、台词、人物、场景、总时长或 H3 模式。每段必须是 1 或 2 个整数秒的连续动作窗口，所有段时长之和必须精确等于总时长；禁止输出一个完整 4～8 秒大段。${durationPlanContract}。由你根据剧情节拍选择其中一个合法数组，并按原顺序逐项写入各段 duration，把段序号对应为 0–1、1–2 这样的连续时间窗口。每段先决定 camera，再填写 visible_characters（本段实际入画的人物；特写、过肩或画外音可以只列当前可见人物），character_trajectories 只能覆盖这个列表。每个时间段是可执行的动作合同：action、result 和每个可见人物的 character_trajectories 都要写该时间窗口内真实发生的动作、互动或因果反应；不能要求没有入画的人物做动作。两人对白必须给当前画面中的说话者与听者分别填写动作窗口；正反打只在信息或反应发生时切换。安静倾听不能单独占满一个时间段，必须与抬眼、转头、接物、退让等可见反应同时发生并有剧情依据。每个文字槽位用不超过 120 个汉字的具体描述，禁止解释、重复和扩写剧情。只使用 shot_number、timestamp、duration、camera、visible_characters、action、result、character_trajectories、audio_lip_sync、speech_action_alignment 字段。\n${DIRECTOR_ACTION_COMPLETION_CONTRACT}`,
+        input: `【当前分镜总时长】${duration} 秒\n【合法时长组合】${JSON.stringify(validTimelineDurationPlans(duration))}\n【画内角色】${JSON.stringify(visibleCharacters)}\n【权威台词】${JSON.stringify(semantic.speech_plan || {})}\n【当前完整分镜，只读】${JSON.stringify(shot)}${feedback}`,
+        outputType: agentsRuntime.directorTimelineOutputType(duration),
+        maxTokens: 16384,
+        temperature: 0.2,
+      });
+    } catch (error) {
+      lastErrors = [{
+        rule: 'INVARIANT_SHORT_DRAMA_TIMELINE_AGENT_OUTPUT',
+        severity: 'error',
+        message: `时间线 Agent 输出格式失败：${error.message}`,
+      }];
+      log.warn('[导演Agent] 镜内时间线 Agent 输出失败，原任务内重试', {
+        shot_number: shot.shot_number,
+        attempt,
+        error: error.message,
+      });
+      reportDirectorLayerRetry(retry, `分镜 #${shot.shot_number} 镜内时间线`, attempt, error.message);
+      continue;
+    }
+    const timeline = Array.isArray(planned?.shots_timeline) ? planned.shots_timeline : [];
+    lastErrors = shortDramaTimelineViolations(shot, timeline);
+    if (lastErrors.length === 0) {
+      log.info('[导演Agent] 镜内时间线 Agent 规划通过', {
+        shot_number: shot.shot_number,
+        segment_count: timeline.length,
+        duration,
+        attempt,
+      });
+      return {
+        ...shot,
+        video_slots: { ...(shot.video_slots || {}), shots_timeline: timeline },
+      };
+    }
+    log.warn('[导演Agent] 镜内时间线未通过门禁，退回时间线 Agent', {
+      shot_number: shot.shot_number,
+      attempt,
+      violations: lastErrors,
+    });
+    reportDirectorLayerRetry(retry, `分镜 #${shot.shot_number} 镜内时间线`, attempt, lastErrors.map((item) => item.message).join('；'));
+  }
+  const error = new Error(`分镜 #${shot.shot_number} 的镜内时间线经过 ${retry.maxAttempts} 轮门禁反馈仍未通过：${lastErrors.map((item) => item.message).join('；')}`);
+  error.violations = lastErrors;
+  throw error;
+}
+
+function directorCharacterIds(shot) {
+  const semantic = shot?.semantic_slots && typeof shot.semantic_slots === 'object' ? shot.semantic_slots : {};
+  const ids = [];
+  for (const entry of [...(semantic.visible_characters || []), ...(semantic.background_characters || [])]) {
+    const id = Number(entry && typeof entry === 'object' ? (entry.id ?? entry.character_id) : entry);
+    if (id > 0 && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
+function visualSlotErrors(shot, characterVisuals, lastFrameVisuals) {
+  const expected = directorCharacterIds(shot).sort((a, b) => a - b);
+  const actual = (Array.isArray(characterVisuals) ? characterVisuals : [])
+    .map((item) => Number(item?.character_id)).filter((id) => id > 0).sort((a, b) => a - b);
+  const errors = [];
+  if (!Array.isArray(characterVisuals)) errors.push('character_visuals 必须由 Agent 显式输出为数组，无人镜头输出 []，不能省略或填 null');
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    errors.push(`character_visuals 角色 ID 必须精确为 ${JSON.stringify(expected)}，实际为 ${JSON.stringify(actual)}`);
+  }
+  const policy = String(shot?.semantic_slots?.last_frame_policy || 'none');
+  if (policy === 'generate_tail' && !Array.isArray(lastFrameVisuals)) errors.push('需要尾帧时 last_frame_visuals 必须由 Agent 显式输出为数组');
+  const lastIds = (Array.isArray(lastFrameVisuals) ? lastFrameVisuals : [])
+    .map((item) => Number(item?.character_id)).filter((id) => id > 0).sort((a, b) => a - b);
+  if (policy === 'generate_tail' && JSON.stringify(lastIds) !== JSON.stringify(expected)) {
+    errors.push(`last_frame_policy=generate_tail 时 last_frame_visuals 必须覆盖 ${JSON.stringify(expected)}`);
+  }
+  if (policy !== 'generate_tail' && lastIds.length) errors.push(`last_frame_policy=${policy} 时 last_frame_visuals 必须为空数组`);
+  return errors;
+}
+
+async function ensureDirectorCharacterVisuals(db, log, shot, retryOptions = {}) {
+  const retry = directorRetryContext(retryOptions);
+  let errors = visualSlotErrors(shot, shot.character_visuals, shot.last_frame_visuals);
+  if (errors.length === 0) return shot;
+  for (let attempt = 1; attempt <= retry.maxAttempts; attempt++) {
+    let planned;
+    try {
+      planned = await agentsRuntime.runAgent(db, log, {
+        name: 'director-character-visuals-planner',
+        instructions: `你是短剧导演的人物定格构图节点。只输出当前镜头的 character_visuals 和 last_frame_visuals，不得改写剧情、人物清单、场景、台词、时长或视频模式。每个角色必须给出明确的纵深层级、屏幕位置、环境依托、身体朝向、面部表情、头部姿态、视线落点、体态重心、双手动作、道具接触和服装细节。描述静止定格状态，禁止“然后、随后、开始、走到、跑向”。每个字段一句话，简洁具体。起幅取事件发生前的状态；需要尾帧时依据本镜 result 与已规划终态定格，不能直接照抄起幅。\n${DIRECTOR_ACTION_COMPLETION_CONTRACT}`,
+        input: `【当前完整分镜，只读】${JSON.stringify(shot)}\n【必须覆盖的角色 ID】${JSON.stringify(directorCharacterIds(shot))}\n【上一轮门禁反馈】${errors.join('；')}`,
+        outputType: agentsRuntime.directorCharacterVisualsOutputType(),
+        maxTokens: 8192,
+        temperature: 0.2,
+      });
+    } catch (error) {
+      errors = [`人物定格 Agent 输出格式失败：${error.message}`];
+      reportDirectorLayerRetry(retry, `分镜 #${shot.shot_number} 人物定格`, attempt, errors[0]);
+      continue;
+    }
+    errors = visualSlotErrors(shot, planned?.character_visuals, planned?.last_frame_visuals);
+    if (errors.length === 0) return { ...shot, character_visuals: planned.character_visuals, last_frame_visuals: planned.last_frame_visuals };
+    reportDirectorLayerRetry(retry, `分镜 #${shot.shot_number} 人物定格`, attempt, errors.join('；'));
+  }
+  throw new Error(`分镜 #${shot.shot_number} 的人物定格经过 ${retry.maxAttempts} 轮门禁反馈仍未通过：${errors.join('；')}`);
+}
+
+async function ensureDirectorVideoSlots(db, log, shot, retryOptions = {}) {
+  const retry = directorRetryContext(retryOptions);
+  const semantic = shot?.semantic_slots && typeof shot.semantic_slots === 'object' ? shot.semantic_slots : {};
+  const duration = Number(semantic.shot_duration || shot.duration || 5);
+  const durationPlans = validTimelineDurationPlans(duration);
+  const durationPlanContract = timelineDurationPlanContract(duration);
+  let errors = shot.video_slots && typeof shot.video_slots === 'object'
+    ? shortDramaTimelineViolations(shot, shot.video_slots.shots_timeline)
+    : [{ message: '缺少 video_slots，必须由视频槽位 Agent 完整规划' }];
+  if (shot.video_slots && Math.abs(Number(shot.video_slots?.timing?.duration || 0) - duration) > 0.1) {
+    errors.push({ message: `video_slots.timing.duration 必须等于权威时长 ${duration} 秒` });
+  }
+  if (errors.length === 0) return shot;
+
+  for (let attempt = 1; attempt <= retry.maxAttempts; attempt++) {
+    let planned;
+    try {
+      planned = await agentsRuntime.runAgent(db, log, {
+        name: 'director-video-slots-planner',
+        instructions: `你是短剧导演的视频执行槽位节点。只输出当前镜头的完整 video_slots，不得改写剧情、人物清单、人物定格、场景、台词、总时长或 H3 模式。timing.duration 必须等于权威总时长；shots_timeline 必须拆成连续的 1 或 2 个整数秒动作段，总和精确等于权威总时长，禁止一个完整大段。${durationPlanContract}。由你根据剧情节拍选择其中一个合法数组，并按原顺序逐项写入各段 duration。每段先写 camera 和 visible_characters（本段实际入画的人物；特写、过肩或画外音可只列当前可见人物），character_trajectories 必须且只能覆盖 visible_characters。每段是独立可执行的时间合同：action、result 以及每位画内角色的 trajectory 必须描述该时间段实际发生的动作、互动或事件反应，并由窗口和终态承接；禁止用“说完后互相看着、保持不动、等待”填满任何剩余时间。每位当前画内角色在该段都要有可见的身体动作、表情变化或因果反应；不在画面的角色不写视觉轨迹。安静倾听必须与具体反应同步，不能成为独立静止段。两人对白优先在有信息变化的段落使用正反打或过肩反打，不能把视线本身当作动作。每个文字字段不超过 120 个汉字，可写出连续动作阶段，禁止解释和重复。\n${DIRECTOR_ACTION_COMPLETION_CONTRACT}`,
+        input: `【权威总时长】${duration} 秒\n【合法时长组合】${JSON.stringify(durationPlans)}\n【权威人物】${JSON.stringify(semantic.visible_characters || [])}\n【权威台词】${JSON.stringify(semantic.speech_plan || {})}\n【当前完整分镜，只读】${JSON.stringify(shot)}\n【上一轮门禁反馈】${errors.map((item) => item.message).join('；')}`,
+        outputType: agentsRuntime.directorVideoSlotsOutputType(duration),
+        maxTokens: 16384,
+        temperature: 0.2,
+      });
+    } catch (error) {
+      errors = [{ message: `视频槽位 Agent 输出格式失败：${error.message}` }];
+      reportDirectorLayerRetry(retry, `分镜 #${shot.shot_number} 视频槽位`, attempt, errors[0].message);
+      continue;
+    }
+    const videoSlots = planned?.video_slots;
+    errors = shortDramaTimelineViolations({ ...shot, video_slots: videoSlots }, videoSlots?.shots_timeline);
+    if (Math.abs(Number(videoSlots?.timing?.duration || 0) - duration) > 0.1) {
+      errors.push({ message: `video_slots.timing.duration 必须等于权威时长 ${duration} 秒` });
+    }
+    if (errors.length === 0) return { ...shot, video_slots: videoSlots };
+    log.warn('[导演Agent] 视频槽位未通过门禁，退回视频槽位 Agent', { shot_number: shot.shot_number, attempt, violations: errors });
+    reportDirectorLayerRetry(retry, `分镜 #${shot.shot_number} 视频槽位`, attempt, errors.map((item) => item.message).join('；'));
+  }
+  throw new Error(`分镜 #${shot.shot_number} 的视频槽位经过 ${retry.maxAttempts} 轮门禁反馈仍未通过：${errors.map((item) => item.message).join('；')}`);
+}
 
 /**
  * 运行影视导演智能体，完成从剧本/资产到高精分镜的闭环推演
@@ -38,13 +1213,19 @@ async function runDirectorAgent(db, log, cfg, episodeId, options = {}, progressC
   const onProgress = typeof options.onProgress === 'function'
     ? options.onProgress
     : (typeof progressCallback === 'function' ? progressCallback : () => {});
+  const maxReflectionRounds = Math.max(1, Math.min(500, Number(
+    options.maxReflectionRounds || options.max_reflection_rounds || 500
+  )));
 
   log.info('[导演Agent] 启动剧集视听本体调度', { episode_id: epId });
   onProgress(5, '启动剧集视听本体调度，准备解析剧本...');
 
-  // 确保 storyboards 具有 character_visuals, last_frame_visuals, video_slots 槽位列
+  // 确保 storyboards 具有 dialogue_framing, character_visuals, last_frame_visuals, video_slots 槽位列
   try {
     const cols = db.prepare('PRAGMA table_info(storyboards)').all().map(c => c.name);
+    if (!cols.includes('dialogue_framing')) {
+      db.prepare('ALTER TABLE storyboards ADD COLUMN dialogue_framing TEXT').run();
+    }
     if (!cols.includes('character_visuals')) {
       db.prepare('ALTER TABLE storyboards ADD COLUMN character_visuals TEXT').run();
     }
@@ -63,11 +1244,25 @@ async function runDirectorAgent(db, log, cfg, episodeId, options = {}, progressC
     if (!cols.includes('long_take_sequence')) {
       db.prepare('ALTER TABLE storyboards ADD COLUMN long_take_sequence INTEGER').run();
     }
+    if (!cols.includes('start_framing')) {
+      db.prepare('ALTER TABLE storyboards ADD COLUMN start_framing TEXT').run();
+    }
+    if (!cols.includes('end_framing')) {
+      db.prepare('ALTER TABLE storyboards ADD COLUMN end_framing TEXT').run();
+    }
+    if (!cols.includes('transition_to_next')) {
+      db.prepare('ALTER TABLE storyboards ADD COLUMN transition_to_next TEXT').run();
+    }
+    if (!cols.includes('background_characters')) {
+      db.prepare('ALTER TABLE storyboards ADD COLUMN background_characters TEXT').run();
+    }
   } catch (_) {}
 
   const epRow = db.prepare('SELECT id, drama_id, script_content, title, duration FROM episodes WHERE id = ? AND deleted_at IS NULL').get(epId);
   if (!epRow) throw new Error('剧集不存在');
   const dramaId = epRow.drama_id;
+  const metadataRow = db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(dramaId);
+  const requestedPacing = pacing.constraints(options, require('../services/narrativeStyleService').parse(metadataRow?.metadata));
 
   // 阶段零：故事与分集剧本创编（若提供了梗概 premise 或原剧本为空）
   let scriptContent = (epRow.script_content || '').trim();
@@ -84,10 +1279,19 @@ ${premiseText}
 
 【编剧要求】：
 1. 包含核心戏剧冲突与转折，剧情节奏紧凑，扣人心弦。
-2. 包含清晰的角色对白与动作描写。
-3. 纯正剧本格式，约 600-1000 字。`;
+2. 关键动机、选择、规则、阻碍、后果和转折必须让观众通过角色对白或必要旁白直接听懂；不能只用人物表情、道具、镜头运动或环境变化暗示关键剧情。
+3. 对白和动作必须服务同一因果事件，人物说话时同步执行相关动作或反应；不要写“说完后无事可做”的空镜，也不要为了填字数重复同一信息。
+4. 同一空间内允许连续完成多个紧密动作，只有说话人/场景/时间/轴线变化或真实时长超限才拆开，避免一个动作一个镜头造成拖沓。
+5. 包含清晰的角色对白与动作描写。
+6. 纯正剧本格式，约 600-1000 字。`;
 
-    const generatedScript = await aiClient.generateText(db, log, 'text', scriptPrompt, '你是一位专业影视导演兼编剧。', { max_tokens: 3000, reasoning_effort: 'high' });
+    const generatedScript = await agentsRuntime.runAgent(db, log, {
+      name: 'director-screenwriter',
+      instructions: '你是一位专业影视导演兼编剧。',
+      input: scriptPrompt,
+      maxTokens: 3000,
+      temperature: 0.7,
+    });
     if (generatedScript && generatedScript.trim()) {
       scriptContent = generatedScript.trim();
       db.prepare('UPDATE episodes SET script_content = ?, updated_at = ? WHERE id = ?').run(scriptContent, new Date().toISOString(), epId);
@@ -113,15 +1317,39 @@ ${premiseText}
   // 阶段二：编译不可变剧目语义包（Semantic Package）
   onProgress(30, '编译不可变剧目语义包与镜头时长预算...');
   const semPkg = compileDramaSemanticPackage(db, epId);
+  const checkpoint = directorCheckpoint.open(db, options.taskId, epId, cfg, options, options.resume_task_id);
+  const working = checkpoint.state;
+  const saveStage = (stage) => { working.stage = stage; checkpoint.save(); };
 
-  const targetCount = options.storyboardCount || options.storyboard_count || Math.max(6, Math.min(35, Math.ceil(scriptContent.length / 45)));
-  const targetDuration = semPkg.episode.duration_target || 60;
+  onProgress(35, '导演正在根据完整剧情、台词与动作规划镜数和总时长...');
+  const pacingPlan = working.pacingPlan || await pacing.planEpisodePacing(db, log, scriptContent, requestedPacing, { maxAttempts: maxReflectionRounds, onProgress });
+  working.pacingPlan = pacingPlan;
+  saveStage('节奏规划完成');
+  const targetCount = pacingPlan.total_shots;
+  const targetDuration = pacingPlan.total_duration;
+  // The old episode duration is an output from previous runs, not a new constraint.
+  semPkg.episode.duration_target = targetDuration;
   const singleShotDuration = Math.round(targetDuration / targetCount);
+  const outputTokenBudget = directorOutputTokenBudget(targetCount);
+  const universalOmni = options.universal_omni_storyboard === true
+    || options.universalOmniStoryboard === true
+    || options.universal_omni_storyboard === 1
+    || String(options.universal_omni_storyboard || '').toLowerCase() === 'true';
 
   // 2. 组织具有本体约束的导演推演提示词
   const userDirectives = (options.userDirectives || options.directives || options.feedback || '').trim();
   const directiveSection = userDirectives
     ? `\n【用户导演最新指导与调整记忆（最高优先级执行，必须严格遵从）】：\n${userDirectives}\n`
+    : '';
+  const universalPlanningSection = universalOmni
+    ? `
+【用户已勾选全能分镜模式——这是本轮导演规划的最高优先级输入约束】
+1. 独立分镜和拆镜首段按 H3 Ref2VA 多参考方案规划：semantic_slots.h3_mode="ref2va"，first_frame_policy 与 last_frame_policy 均为 "none"，无需生成首尾帧。唯一例外是超长台词拆镜后的连续接力段：必须由 Agent 明确规划同组 long_take_sequence、h3_mode="fl2va"、first_frame_policy="inherit_tail"、continuity_type="long_take_continuation"，等待前段视频完成后继承真实尾帧，不另行生图。
+2. Ref2VA 的 semantic_slots.required_references 必须由你按剧情选择并排序：第 1 项必须是当前 scene_id 对应的 scene；随后依次列出所有画内主体与背景角色的 character；最后仅列核心交互 prop。总数不得超过 9，禁止后端替你补素材。FL2VA 连续接力段的 required_references 与 speech_plan.audio_references 必须为 []，沿用前段真实尾帧承载人物与场景信息。
+3. 每个分镜必须输出 creation_mode:"universal" 和非空 universal_segment_text。universal_segment_text 中的 @图片N 必须与 required_references 的数组顺序严格一一对应，@图片1 永远是场景参考。
+4. 全能分镜不是额外生成一套互相矛盾的剧情：universal_segment_text、video_slots、semantic_slots、dialogue、narration 必须表达同一个镜头、相同台词、相同时长与镜内节拍。
+${promptI18n.getStoryboardUniversalOmniModeSuffix(cfg)}
+`
     : '';
 
   const systemPrompt = `你是一位严谨的院线级短剧导演与场面调度摄影指导（Cinematographer & Director Agent）。
@@ -129,20 +1357,23 @@ ${premiseText}
 
 ${semPkg.getSystemDigest()}
 ${directiveSection}
+${DIRECTOR_ACTION_COMPLETION_CONTRACT}
 【导演核心视听铁律（必须遵守，违反将被质检打回）】：
-1. **严格少用固定镜头 (static)**：短剧切忌死板定格如幻灯片！全片固定镜头占比严格控制在 10% 以下。
-   - 对白/反应镜头：使用微推(push)或微拉(pull)锁定情绪与呼吸感；
-   - 动作/位移镜头：使用平稳跟拍(tracking)或横摇(pan)；
-   - 紧张冲突/负伤/混乱：使用手持微晃(handheld)增强临场感；
-   - 展现环境/全貌：使用后拉(pull)或横摇(pan)。
+1. **按剧情决定运镜与切镜**：固定机位与连续固定镜头均可用，但 H3 的 shots_timeline 必须用连续 1～2 秒窗口约束动作。完整对白可以属于同一个外层分镜，但不能由一个大时间段承载；每个窗口先写本段 camera 和 visible_characters，再只为实际入画的人物写动作、表情或因果反应。特写、过肩和画外音可以只列当前可见人物；未入画人物不写视觉轨迹。只在剧情信息、视角或反应需要时使用正反打；静止互看、无意义特写和空等不算动作。所有状态变化必须有剧情依据。
 2. **多模态音频设计**：
    - 有台词分镜：bgm_prompt 填空串""，保障说话人声与口型清晰；
-   - 无台词分镜（纯动作/潜行/环境/对峙）：**必须在 bgm_prompt 填写具体的电影原声配乐描述**（如“低沉紧迫的战术重低音脉冲与心跳打击乐”），供 H3 视频模型原生合成高质量背景音乐。
+   - 无语言但需要环境声/动作音：audio_lip_sync 必须为 silent_ambient，bgm_prompt 必须为空，可填写 sound_effects；
+   - 无语言且只需要配乐：audio_lip_sync 必须为 bgm_only，只填写纯器乐 bgm_prompt，sound_effects 必须为空；
+   - 真正完全静音：sound_plan.is_silent 必须为 true，台词、旁白、BGM、环境音和动作音全部为空；
+   - 上述三种无语言模式中，顶层 dialogue/narration、semantic_slots.speech_plan.text、video_slots.audio_lip_sync.dialogue_content 必须全部为空；video_slots.trajectories 与每个 shots_timeline.character_trajectories 的 mouth_state 必须明确为“双唇紧闭无口型”。
 3. **H3 视频生成物理硬约束与智能拆镜（适配 H3 模型 9 张参考图物理上限）**：
    - **模型物理上限为 9 张参考图**：MiniMax H3 单镜头输入包含：首尾帧锚点（至多2张）+ 场景图（1张）+ 角色人设图（每人1张）+ 道具图（每件1张）。一旦超出 9 张或单镜要素过多，模型将严重变形、崩溃或报错！
    - **单镜出场角色严格限制在 1～2 人**：绝不可把 3 个及以上角色塞入同一个分镜！遇多人交互场景，**必须主动拆镜**为正反打镜头序列（如：镜1「角色A动作中景」➔ 镜2「角色B反应特写/反打」➔ 镜3「角色C介入动作」）。
    - **单镜核心交互道具严格限制在 1 件**（至多不超过 2 件）：每个分镜只能聚焦 1 个核心交互道具（如拔枪、递药、看屏幕）。无实质物理交互的静态背景物件不作为道具挂载，**严禁在一个镜头中挂载 3 件以上道具**！
-   - **单镜动作原子化**：单个 4~8 秒分镜只承载 1 个连贯物理动作弧线。复杂长动作必须拆解为连续镜头序列，避免模型动作失真或无法收敛。
+   - **按连贯事件规划，不按动作个数拆镜**：单个 4~8 秒分镜可以包含多个连续或同时发生的动作、对白和人物反应。例如边说话边走近、伸手搀扶、对方借力坐起，可在同镜完成。不得把一句对白、一个动作、一个反应机械拆成独立分镜。仅当实际台词和事件超出时长、场景或造型变化、或剧情确需独立视角时拆镜；保持动作因果与空间关系清晰，不添加停顿来凑时长。
+   - **短剧镜内剪辑节奏**：每个外层分镜在 video_slots.shots_timeline 中必须规划连续的 1 或 2 个整数秒动作段，总和精确等于本镜4～8秒时长（例如 0–1、1–2、2–4 秒）。每段先声明本段 camera 和 visible_characters，再约束每个实际入画角色在该窗口内的动作、表情或因果反应；特写、过肩和画外音可以只列当前可见人物，未入画人物不写视觉轨迹。不得用一个完整大段、静态机位、无意义特写或安静互看填时长。正反打只在信息、反应或权力变化发生时切换。
+   - **同步视听事件（必须）**：video_slots.performance_contract 必须为 "sync_v1"。每个含对白的 shots_timeline 段必须填写 speech_action_alignment：mode="concurrent"、speech_window、speaker_action_window、speaker_action，以及每个其他画内角色的 listener_reactions。动作时间必须与发声时间重叠；不要把动作默认写成“台词说完后再做”。说话者边说边转身、抬手、操作或改变视线，听者在同一时间段边听边看、回应或操作。刻意停顿才使用 deliberate_pause，并填写 pause_reason。无对白段使用 mode="none"。
+   - **正反打是镜内语言，不是机械拆镜规则**：两人对话可在同一外层分镜的 shots_timeline 中使用正反打/过肩反打段落；只有信息交接、权力变化、关键反应或空间轴线确实改变时才新建外层分镜。禁止把“说一句话—两人互相看着—结束”当作剧情动作。台词结束后的每一秒都必须有剧本依据（扶起、递物、阻拦、受伤反应、移动、环境突发等）；没有依据就缩短到本镜实际事件结束，不要虚构相互凝视、无意义特写或等待来填满时长。
 4. **场面调度与 Z 轴纵深站位法则（Cinematic Blocking & Z-Axis Depth）**：
    - **严禁双人/多人扁平横向并排贴立**：短剧最忌讳像贴纸一样把多个人平排在同一条水平线上（只有左右而无前后远近）！
    - **多人同框必须确立立体 Z 轴远近关系（前后层级交错）**：
@@ -150,8 +1381,8 @@ ${directiveSection}
      * **主次战术掩护/前后梯次 (Staggered Layering)**：当前台词/动作核心人物处于中景主体位（如“画面中央中景前倾”），支援/掩护/聆听角色处于后景纵深处（如“画面右后方后景约3米处通道掩体旁持枪警戒”）；
      * **斜角纵深透视 (Diagonal Staging)**：一前一后形成空间对角线，强化景深虚化与电影感三维透视，彻底打破二维平面感！
 5. **纯物理视觉描写**：严禁心理修辞与文学隐喻（如“焦急凝结”、“高低对照”），只写可见姿态与光影。
-6. **生图提示词（image_prompt）与视频提示词（video_prompt）的绝对区分与定格物理法则**：
-   - 视频提示词（video_prompt）描述时间流逝、运镜推拉、动作发生全过程（如“从A走到B，按下肩膀，随后转头”）。
+6. **生图定格与 H3 视频槽位的绝对区分**：
+   - video_slots 描述时间流逝、运镜推拉、动作发生全过程（如“从A走到B，按下肩膀，随后转头”）。
    - 图片提示词（image_prompt）必须是【首帧决断时刻的纯静态画面定格摄影描写（Freeze-frame photo）】：
      a. **严禁视频化时序动态与过程动词**：绝对禁止出现“看了一眼”、“沿...走到...”、“开始转向”、“突然扑向”、“随后”等动态叙事词！必须转化为定格姿态（如：“蜂医沿掩体走到露娜右侧按下肩膀” ➔ 必须写成：“蜂医半蹲停在露娜右侧，单手按在露娜肩头，两人身体压低隐蔽在掩体后”；“快速向右侧岔路看了一眼” ➔ 必须写成：“头偏向右侧，目光警戒地注视着右侧岔路口”）。
      b. **严禁抽象或残缺姿态**：绝对禁止只写人物名字或“某某身体”！遇到动态失衡（如“失去平衡”），必须明确具体定格姿态（如“身体大幅向侧方倾斜失衡，单手伸出撑向地面，重心向下滑落的惊险定格瞬间”）。
@@ -160,8 +1391,8 @@ ${directiveSection}
         - 四肢与双手动作（双手搭在键盘上/单手按住掩体/右手紧握武器/单手按住对方肩膀）；
         - 头部角度与视线朝向（侧头注视右侧/目光紧盯屏幕/双眼戒备注视通道）。
 7. **台词时长硬预算与强制语义拆镜（Speech Timing Budget & Atomic Split）**：
-   - 视频模型标准语速每秒约 3.5~4 个中文字，且每个镜头必须保留至少 1 秒收尾动作与呼吸停顿。
-   - 镜头时长预算铁律：4秒<=12字；5秒<=16字；6秒<=20字；7秒<=24字；8秒<=28~32字。
+   - 人物对白与旁白统一使用自然语速，每秒约 4 个中文字；每个有台词镜头保留至少 1.5 秒无台词收尾时间，期间继续本镜所需动作或反应，不强制静止。
+   - 镜头时长预算铁律：4秒<=10字；5秒<=14字；6秒<=18字；7秒<=22字；8秒<=26字。
    - **绝对禁止在一个镜头内塞入超出时长预算的冗长对白或旁白！**
    - **长台词必须拆镜**：遇长台词或包含多句话的对白，必须在标点符号（逗号/句号/感叹号）处主动切分拆解为 2 个以上连续分镜（如正反打镜头：前一句配说话人动作，后一句切听者反应特写或说话人进一步动作承接）；
    - **禁止删改剧本台词**：拆镜时必须逐字完整保留原剧本对白与说话人，按顺序分配到拆解后的各分镜中，不允许缩写、偷换或通过强行加速说话来逃避拆镜！
@@ -195,11 +1426,48 @@ ${directiveSection}
        - "continuation": 接力续镜（动作接力延续，系统视频生成时自动提取上一镜视频尾帧作为起始帧，无需独立盲画首帧图）；
        - "tail": 终镜收束（长镜头组收尾镜头，同样承接上一镜尾帧）。
      * long_take_sequence: 组内接力次序（1, 2, 3...）。
+     * continuation/tail 必须同时设置 semantic_slots.h3_mode="fl2va"、first_frame_policy="inherit_tail"、continuity_type="long_take_continuation"、required_references=[]、speech_plan.audio_references=[]。执行器会等待同组上一段 H3 视频完成，再抽取真实尾帧作为本段首帧；严禁提前独立提交或用 Qwen-Image 伪造承接帧。
    - **长镜头动线与运镜合同**：
      * 组首、续镜、终镜机位与运镜必须具备空间与动线连续性（如 tracking -> pan/tracking -> handheld 逼近）；
-     * continuation/tail 镜头的 action 与 video_prompt 必须明确写出动作承接（例如：“紧接上一画面奔跑惯性，红狼冲入掩体并顺势滑铲...”）。
+     * continuation/tail 镜头的 action 与 video_slots 必须明确写出动作承接（例如：“紧接上一画面奔跑惯性，红狼冲入掩体并顺势滑铲...”）。
 
-【目标参数】：总分镜数约 ${targetCount} 镜，单镜平均约 ${singleShotDuration} 秒。`;
+10. **视听语言视线轴线铁律（字典仅供参考启发，严禁面向镜头直视空气说话）**：
+    对话场景中角色绝对禁止双双正面直视摄影机对着空气说话！建议参考 dialogue_framing 建立视线交汇闭环（【重要：字典选项仅供启发参考，不是必须填这些固定值！你完全可以根据剧本情节自由给出更精准、生动的构图描述】）：
+    - 常见参考模式：two_shot_face_to_face (双人面对面对视中景)、over_the_shoulder (经典过肩拍 OTS)、single_reaction_offscreen (单人近景目光看画外)、joint_observation (双人同向观察)、solo_action (单人动作无对话)，或任何贴合剧情的自定义构图。
+    - 每个镜内段都必须为每位画内角色明确 reaction_trigger、attention_target、head_pose 和 gaze。突发咳嗽、吐血、拔刀、摔落或发光等可见事件发生后，关联角色必须在当拍把头部和视线转向事件源，不得继续保持上一拍的无关视线。
+    - 画内直接对话默认建立说话人与受话人面部之间的视线轴。若剧情需要角色故意看米袋、血迹、手腕或其他物体，必须在 gaze_motivation 写明剧情原因，不得以“看向前方”“保持专注”等模糊描述代替。
+
+11. **场景空间全员在场法则（Scene Ensemble & Co-Presence，彻底杜绝角色突兀降临）**：
+    - **场景空间全员在场确立**：一个场景空间内（如书房、指挥室、客厅、工位），若剧情设定有特定几名角色在场（例如书房里有奕宸、妹妹、妈妈三个人），**他们自该场景建立起便物理恒常在场**！
+    - **主体人物 vs 背景在场人物分层**：
+      * **核心主体人物 (focal characters)**：处于前景/中景，负责本镜头的台词发声或核心动作（单镜 1~2 人）；
+      * **背景在场人物 (background_characters)**：同处该空间但在本镜头不负责发声/主动作的其他角色。**必须在构图与提示词中维持在场（后景景深、做自己的事、双唇紧闭严禁口型）**！
+      * **严禁人物突然凭空降临 (Zero Sudden Pop-in)**：
+        绝不能前几镜只画单人空房间，等到某角色说话时才突然凭空从虚空刷新出来！
+        必须在前序镜头的景深背景中交代其在场（如：“后景书架旁，妹妹正坐在书桌前低头翻看作业本，若隐若现”），或该角色在本镜必须有明确的入场动作（如“推开房门走入书房”）。
+    - **数据结构输出**：
+      * background_characters: 数组，填写本镜中处于背景的在场角色（如 [{"character_id": 2, "name": "妹妹", "depth_layer": "background", "screen_position": "画面右后方景深处书架旁", "activity": "低头安静翻看作业本", "mouth_state": "双唇紧闭，无台词口型，后景虚焦"}]）；无背景角色填 []。
+      * character_visuals 内部：出场角色（主体 + 背景角色）总计不超过 3 人，背景角色必须指定 depth_layer: "background"。
+
+12. **单镜头时序运动弧线（起幅态 ➔ 动作推进 ➔ 落幅态）与镜头过渡法则（Shot Arc & Transitions）**：
+    - 每个分镜必须是一个具备开端、演进、定格与衔接的完整视听单元：
+      * start_framing（起幅态）：机位从何处开始、画面初始构图与画内人物初始定格体态（例如：“起幅：中景俯拍，奕宸双手飞快敲击键盘，屏幕冷光照在其专注面孔上；后景书架旁，妹妹正低头写作业”）；
+      * action（动作时序推进）：主体发生的具体物理动作与时序推进；
+      * end_framing（落幅态）：镜头结束时的定格画面，为下一镜头提供明确的视觉承接锚点（例如：“落幅：镜头推至奕宸后背半身特写，手指悬停键盘，目光向右侧转动；焦点平滑拉至景深背景中正在起身的妹妹，为下镜做视线引导”）；
+      * transition_to_next（与下一镜过渡类型及承接说明）：
+        - "eyeline_match": 顺接上一镜头角色的视线落点（如：“顺接上一镜头奕宸向右侧偏头的视线，本镜头切至右侧书桌前的妹妹”）；
+        - "match_cut": 动作匹配切（上一镜头伸手端杯，下一镜头接茶杯离桌特写）；
+        - "rack_focus": 景深焦点拉移（从前景主体拉焦到后景人物）；
+        - "ots_reverse": 经典过肩正反打对峙；
+        - "continuous_tracking": 镜头连续推移跟拍（或长镜头接力）；
+        - "cut": 普通切机位。
+      * semantic_slots.continuity_from_previous（本镜如何接入上一镜）：除第1镜外必须填写 relationship、previous_end_state、entry_state、causal_link；声音有延续时填写 sound_bridge。它描述“本镜从哪里来”，不能用 transition_to_next 代替。eyeline_match 必须写清上一镜建立的视线来源与本镜目标；hard_cut 必须写清切换原因以及本镜开头如何重新建立空间。
+
+13. **基于戏剧节拍（Dramatic Beats）自适应规划分镜数量与节奏**：
+    - 绝非机械除法！必须根据剧情的戏剧冲突点（空间建构拍 ➔ 铺垫展开拍 ➔ 矛盾激化拍 ➔ 反应特写拍 ➔ 余波收束拍）自适应安排镜头数量与时长。
+
+【导演节奏规划】：本轮由导演根据剧情规划 ${targetCount} 镜、共 ${targetDuration} 秒；平均约 ${singleShotDuration} 秒不是逐镜固定时长。\n【用户明确要求】：${JSON.stringify(requestedPacing)}。空值为自动；手动值不得静默更改，冲突需反馈。\n本轮逐镜剧情任务与时长：${JSON.stringify(pacingPlan.shots)}。必须按既定剧情顺序展开，每镜时长匹配该规划。
+${universalPlanningSection}`;
 
   const userPrompt = `【剧本内容】：
 ${scriptContent}
@@ -207,12 +1475,33 @@ ${scriptContent}
 【任务要求】：
 请以纯 JSON 格式输出 {"storyboards": [...]}。每个分镜包含：
 - shot_number: 镜头序号 (从 1 递增)
+- dialogue_framing: 视听构图参考（字典仅供启发参考，不是必须填这些固定词，可填参考模式如 two_shot_face_to_face / over_the_shoulder / single_reaction_offscreen / joint_observation / solo_action，亦可结合剧情自由给出更贴切的构图描述）
 - long_take_group_id: 长镜头组ID (属于同一长镜头的子镜头填相同ID如 "ltg_1"，独立镜头填 null)
 - long_take_role: 长镜头角色 (head / continuation / tail，独立镜头填 null)
 - long_take_sequence: 长镜头组内次序 (1, 2, 3...，独立镜头填 null)
 - title: 3-5字镜头标题
 - scene_id: 所属场景ID (必须选自可用场景目录)
 - characters: 出场角色ID数组 (如 [1, 2]，单镜出场角色最多3人（<=3人），严禁超过3人（>3人）)
+- background_characters: 背景在场人物数组 (在场但不说话/主动作，保持空间恒常在场，绝不突然降临；如 [{"character_id": 2, "name": "妹妹", "depth_layer": "background", "screen_position": "画面右后方景深处书架旁", "activity": "低头安静翻看作业本", "mouth_state": "双唇紧闭，无台词口型，后景虚焦"}]，无背景角色填 []。铁律：同一个角色绝对严禁同时出现在 characters 与 background_characters 中！)
+- identity_visibility: 角色面部识别度 (clear_frontal/three_quarter/profile/back_view/silhouette/occluded，背影剪影严禁标为clear_frontal)
+- wardrobe_id: 当前镜头角色服装造型标识 (如 1 或 null，同一角色在同一镜头严禁出现多套服装)
+- speech_plan: 台词方案对象 ({"speaker_id": 1, "is_offscreen": false, "is_narration": false, "text": "台词正文", "speed": 1.0, "emotion": "坚定"}；若为画外音必须标 is_offscreen: true；若为旁白必须标 is_narration: true。铁律：画外音或旁白时，画内所有人物必须全员双唇紧闭，audio_lip_sync 填 offscreen_voiceover 或 narration，visible_characters_lip_state 填 strictly_sealed！)
+- sound_plan: 声音方案对象 ({"sound_effects": ["脚步声"], "bgm_prompt": "", "is_silent": false}；silent_ambient 只填环境/动作音，bgm_only 只填纯器乐配乐，完全静音才设 is_silent:true)
+- continuity_type: 镜头接续类型 (match_cut/eyeline_match/ots_reverse/hard_cut/continuation/long_take_continuation)
+- h3_mode: H3 视频模式，必须由你按剧情显式选择 fl2va 或 ref2va。FL2VA 用于“精确起幅构图/动作姿态是镜头核心、首帧本身足以承载视觉身份”的镜头；Ref2VA 用于“人物五官/服装/场景/道具/参考声音等多参考一致性是核心”的镜头。不得交给后端按有无对白猜测
+- h3_mode_reason: 选择该模式的具体剧情依据，必须说明本镜最重要的是起幅构图还是多参考一致性
+- first_frame_policy: 首帧策略 (none/generate_new/inherit_tail/layout_lock)。本项目采用节省资源的严格映射：FL2VA 必须选择 generate_new、inherit_tail 或 layout_lock；Ref2VA 必须选择 none，禁止 Ref2VA + AddGuide 混合首帧。跨场景时间跳跃严禁 inherit_tail
+- first_frame_reason: 首帧策略的具体剧情依据；Ref2VA 说明由哪些多参考素材承担约束，FL2VA 说明必须锁定的开场状态
+- last_frame_policy: 尾帧策略 (generate_tail/none)。仅 FL2VA 可按剧情选择 generate_tail；需要锁定明确结尾姿态、物体终态或转场落点时生成尾帧，其余选择 none。Ref2VA 必须为 none
+- last_frame_reason: 是否需要尾帧的具体剧情依据；必须说明需要锁定的结尾状态，或说明自然演化即可、无需额外尾帧
+  执行含义必须分清：generate_new/layout_lock 会调用 Qwen-Image 生成本镜首帧；generate_tail 会调用 Qwen-Image 生成目标尾帧；inherit_tail 不调用 Qwen-Image，而是在上一镜视频完成后用 ffmpeg 抽取其真实尾帧作为本镜首帧。上一镜的 generate_tail 与本镜的 inherit_tail 是两种不同用途，不得互相混淆
+- required_references: 本镜头生成所必需依赖的核心参考图清单。注意铁律：如果 h3_mode 为 fl2va，本字段必须为空数组 []（FL2VA 纯首帧模式严禁混入角色卡/场景卡多参考）；只有当 h3_mode 为 ref2va 时，才填入必须参考的人物/场景/道具清单（格式如 [{"id": 1, "type": "character", "name": "苏晚"}]，严格最多9张）！
+- audio_lip_sync: 口型控制模式 (in_frame_dialogue/offscreen_voiceover/narration/silent_ambient/bgm_only；silent_ambient 表示无语言但保留环境/动作音，bgm_only 表示无语言且只有纯器乐；画外音、旁白及全部无语言模式都要求画内全员双唇紧闭)
+- shot_duration: 镜头秒数 (4~8之间，必须匹配台词字数预算)
+- start_framing: 镜头起幅机位构图与角色初始姿态 (开端机位与画内人物初始定格状态)
+- end_framing: 镜头落幅定格构图与尾帧承接状态 (落幅定格状态，为下一镜头提供视觉承接锚点)
+- transition_to_next: 与下一镜过渡类型及承接说明 (如 "eyeline_match: 顺接奕宸向右侧偏头的视线，本镜头切至右侧书桌前的妹妹" / "match_cut" / "rack_focus" / "ots_reverse" / "continuous_tracking" / "cut")
+- continuity_from_previous: 本镜从上一镜进入的承接合同。除第1镜外必须填写：{"relationship":"continuation/eyeline_match/match_cut/ots_reverse/hard_cut","previous_end_state":"上一镜最后可见的角色、位置、姿态和事件结果","entry_state":"本镜第一秒可见的角色、位置、姿态和视线","causal_link":"上一镜事件如何触发本镜事件","sound_bridge":"可选的延续音效","requires_previous_tail":true或false}。第1镜使用 relationship:"opening"，previous_end_state 填空，但仍填写 entry_state 和 causal_link。
 - props: 出场或交互的核心道具ID数组 (如 [1]，选自可用道具目录，严格0~2件，无道具填 [])
 - shot_type: 景别 (大远景/远景/全景/中景/近景/特写)
 - angle_h: 水平视角 (front/front_left/front_right/left/right/back)
@@ -225,211 +1514,378 @@ ${scriptContent}
 - cinematic_lens: 电影镜头光学参数 (如 35mm宽银幕变形镜头/85mm定焦大光圈浅景深焦外散景)
 - depth_of_field: 景深 (shallow/medium/deep)
 - duration: 本镜秒数 (整数，4~8之间，必须匹配台词字数预算)
-- action: 核心物理动作
+- action: 核心物理动作 (严禁单镜头出现中途换装、变身等无法维持单镜一致性的动作)
 - result: 动作收束结果
 - dialogue: 台词 ("角色名: \"台词\""，无对话填 "")
 - narration: 旁白 (无则 "")
-- bgm_prompt: 背景音乐描述 (无对话时必填具体的音乐风格与节奏)
+- bgm_prompt: 背景音乐描述 (仅 bgm_only 填具体纯器乐风格与节奏；有语言、silent_ambient 或完全静音时填空串)
 - sound_effect: 现场音效与动作声音
 - layout_description: 画面站位与物体尺度空间合同
 - emotion: 核心情绪
-- character_visuals: 出场角色视觉槽位数组 (每个出场角色必须完整填写槽位，严禁套话：
-    {"character_id": 1, "name": "角色名", "depth_layer": "画面纵深层级(foreground/midground/background)", "screen_position": "构图站位与远近前后(必须同时交代左右与前后远近，如: 画面左侧前景过肩/画面右侧中景/画面后景深处)", "environmental_anchor": "物理环境依托（掩体后/书桌前等）", "facing": "朝向（正面面对镜头/背向镜头/侧身朝向画面左侧/侧身朝向画面右侧）", "expression": "具象面部微表情（咬肌紧绷/瞳孔微聚/嘴角抿直等）", "head_pose": "头部姿态（头部正对前方/头部微仰/低头/侧头偏向右侧）", "gaze": "目光视线（双眼紧盯前方/目光警惕锁定右侧岔路）", "posture": "具体的躯干体态与重心定格", "hands": "双手与四肢具体动作", "prop_interaction": "手指与道具具体的物理接触点", "appearance_details": "服装质地与生理战损微状态"}
+- character_visuals: 出场角色视觉槽位数组 (每个出场角色必须完整填写槽位，包含主体与背景在场人物，背景在场人物 depth_layer 必须为 "background"：
+    {"character_id": 1, "name": "角色名", "depth_layer": "画面纵深层级(foreground/midground/background)", "screen_position": "构图站位与远近前后(必须同时交代左右与前后远近，必须包含画面左侧/画面右侧/画面中央/画面正中/画面左前/画面右前/画面前景/画面中景/画面后景等明确词，如: 画面左侧前景过肩/画面右侧中景)", "environmental_anchor": "物理环境依托（掩体后/书桌前等）", "facing": "朝向（正面面对镜头/背向镜头/侧身朝向画面左侧/侧身朝向画面右侧/四分之三侧身朝左）", "expression": "具象面部微表情（咬肌紧绷/瞳孔微聚/嘴角抿直等）", "head_pose": "头部姿态（必须包含头/仰/俯/侧头/低头/转头/正对等词，如：头部正对前方/头部微仰/低头看地/侧头偏向右侧）", "gaze": "目光视线（必须包含目光/视线/看/盯/凝视等词，如：双眼紧盯前方/目光警惕锁定右侧岔路）", "posture": "具体的躯干体态与重心定格（必须包含站/蹲/坐/卧/趴/扑/俯/仰/倾/跪/靠/立/挺等姿态词，如：身体前倾30度坐姿/双腿挺直站立/单膝跪地支撑重心等，严禁无姿态词！）", "hands": "双手与四肢具体动作（必须包含手/臂/指/握/按/托/持/掌/抓等词，如：右手平按在膝头/双手下垂于身侧/单手轻握衣角）", "prop_interaction": "手指与道具具体的物理接触点（无道具填 无道具接触）", "appearance_details": "服装质地与生理战损微状态"}
+  严格定格瞬间，严禁包含视频化时序动态描述（如：先...再...、然后、随后、逐渐、开始、走到、跑向等）！
   无角色填 [])
-- image_prompt: 画面视觉构图提示词 (供AI生图使用，按上述槽位综合生成的首帧纯静态定格摄影描写)
+- last_frame_visuals: 尾帧人物视觉槽位数组；需要尾帧时按 character_visuals 的同一完整结构规划动作收束状态，不需要尾帧时显式填 []
+- video_slots: Agent 规划的视频执行语义对象，必须完整包含 performance_contract:"sync_v1"、camera、audio_lip_sync、trajectories、environment_vfx、timing、shots_timeline 七个键。含对白的镜内段还必须包含 speech_action_alignment，明确语音与动作的重叠时间。trajectories 及每个 shots_timeline.character_trajectories 必须统一使用 terminal_pose、facial_expression、facing、head_pose、gaze、attention_target、gaze_motivation、reaction_trigger 与 mouth_state 字段。每个镜内剪辑段必须是 1 或 2 个整数秒的连续窗口，先填写本段 camera 和 visible_characters，再让 character_trajectories 精确覆盖本段实际入画人物；特写、过肩和画外音可以只列当前可见人物，未入画人物不写视觉轨迹。每个可见人物必须明确该窗口内发生的动作、表情或因果反应，以及“什么事件使他反应、头转向哪里、眼睛实际落在谁或什么东西上”。说话者口型与台词对应，听者不能用静止互看填充整段；安静倾听必须伴随具体反应。示例中每位角色必须像这样给出视线字段：{"character_id":1,"trajectory":"抬手施压","terminal_pose":"食指停在门框方向","facial_expression":"冷笑收紧","facing":"四分之三侧身朝向受话人","head_pose":"头部微俯转向受话人面部","gaze":"双眼锁定受话人眼睛","attention_target":"受话人面部","gaze_motivation":"直接施压对话","reaction_trigger":"自己开口说出威胁","mouth_state":"speaker_synced"}。突发事件后下一拍必须更新 reaction_trigger、attention_target、head_pose 和 gaze，不得沿用无关的旧视线。
+- semantic_slots: Agent 的跨层权威语义对象，必须完整包含 visible_characters、background_characters、identity_visibility、speech_plan、sound_plan、continuity_type、continuity_from_previous、h3_mode、h3_mode_reason、first_frame_policy、first_frame_reason、last_frame_policy、last_frame_reason、required_references、audio_lip_sync、shot_duration。长剧本分批规划时还必须包含 source_script_unit_ids，由当前批次协议给出的不可变原文单元 ID 连续分配；后端会据此恢复只读 source_script_excerpt。上面列出的同名语义决策必须写入此对象，不得只散落在顶层。例如 {"visible_characters":[{"id":1,"name":"角色名"}],"background_characters":[],"identity_visibility":"three_quarter","speech_plan":{"speaker_id":1,"speaker_name":"角色名","is_offscreen":false,"is_narration":false,"text":"实际台词","speed":1.0,"emotion":"坚定","audio_references":[]},"sound_plan":{"sound_effects":["脚步声"],"bgm_prompt":"","acoustic_env":"室内","is_silent":false},"continuity_type":"continuation","continuity_from_previous":{"relationship":"opening","previous_end_state":"","entry_state":"角色位于画面左侧掩体后，身体前倾","causal_link":"开场直接建立任务现场","sound_bridge":"","requires_previous_tail":false},"h3_mode":"ref2va","h3_mode_reason":"本镜为角色对白近景，需要人物卡与音色参考保持身份一致","first_frame_policy":"none","first_frame_reason":"人物卡与场景卡直接约束 Ref2VA，本镜无需额外首帧","last_frame_policy":"none","last_frame_reason":"对白结束后的表情允许模型自然收束，无需锁定尾帧","required_references":[{"type":"character","id":1,"character_id":1,"name":"角色名"}],"audio_lip_sync":"in_frame_dialogue","shot_duration":5,"source_script_unit_ids":["B1U1"]}
+图片与视频提示词由执行器从上述已通过门禁的槽位确定性编译，禁止输出或手写 <imageN>/<Picture N> 管线占位标签。
 
 只返回纯 JSON，不要 markdown。`;
 
   onProgress(40, '导演智能体正在规划场面调度、机位构图与动感运镜...');
   log.info('[导演Agent] 阶段一：初稿推演生成中...');
-  const firstDraftRaw = await aiClient.generateText(db, log, 'text', userPrompt, systemPrompt, { max_tokens: 8000, reasoning_effort: 'high' });
-  const parsedFirstDraft = safeParseAIJSON(firstDraftRaw, null, log);
-  let shots = extractFirstArray(parsedFirstDraft) || [];
+  const draftBatches = working.draftBatches || buildDirectorDraftBatches(scriptContent, targetCount);
+  working.draftBatches = draftBatches;
+  checkpoint.save();
+  directorTrace.record('draft_batches_planned', { target_count: targetCount, batches: draftBatches });
+  const batchMode = draftBatches.length > 1;
+  let shots = working.shots || [];
+  let previousEnding = working.previousEnding || '';
 
-  if (shots.length === 0) {
-    throw new Error('导演智能体生成分镜失败：模型未返回合法分镜数组');
+  for (let batchIndex = working.nextBatch || 0; batchIndex < draftBatches.length; batchIndex++) {
+    const batch = draftBatches[batchIndex];
+    const batchProgress = Math.min(68, 40 + Math.floor((batchIndex / draftBatches.length) * 28));
+    const batchRetry = {
+      maxAttempts: maxReflectionRounds,
+      onProgress,
+      progress: batchProgress,
+    };
+    const sourceAssignments = working.sourceAssignments || (batchMode
+      ? await planDirectorSourceAssignments(db, log, batch, batchRetry)
+      : null);
+    working.sourceAssignments = sourceAssignments;
+    saveStage(`第 ${batchIndex + 1} 批原文规划完成`);
+    const firstShotNumber = shots.length + 1;
+    const lastShotNumber = firstShotNumber + batch.shot_count - 1;
+    const batchDirective = batchMode ? `
+
+【长剧本分批展开协议——本批次优先级最高】
+这是整集连续导演规划的第 ${batchIndex + 1}/${draftBatches.length} 批。整集目标约 ${targetCount} 镜；本批只输出第 ${firstShotNumber}～${lastShotNumber} 镜，必须恰好 ${batch.shot_count} 镜，不得重述前文，也不得提前处理后续片段。
+本批原文已经由系统切成下列不可变单元，并由原文覆盖规划 Agent 选择了连续分组。每镜必须严格使用锁定分组中的 semantic_slots.source_script_unit_ids；不得遗漏、重复、倒序、跨镜移动或虚构。不要抄写原文，系统会在门禁通过后按 ID 确定性恢复 source_script_excerpt：
+${JSON.stringify(batch.source_units, null, 2)}
+锁定分组：${JSON.stringify(sourceAssignments.map((ids, index) => ({ shot_slot: index + 1, source_script_unit_ids: ids })))}
+${previousEnding ? `上一批落幅连续性摘要：${previousEnding}\n` : ''}本批唯一允许展开的连续源剧本片段：
+<<<SOURCE_SEGMENT_${batchIndex + 1}>>>
+${batch.script_segment}
+<<<END_SOURCE_SEGMENT_${batchIndex + 1}>>>
+只返回 {"storyboards":[...]}，数组中恰好 ${batch.shot_count} 个完整镜头。` : '';
+    const batchPacing = pacingPlan.shots.slice(firstShotNumber - 1, lastShotNumber);
+    const batchUserPrompt = (batchMode
+      ? isolateDirectorDraftBatchPrompt(userPrompt, scriptContent, batch.script_segment)
+      : userPrompt) + `\n本批导演节奏规划（按顺序展开，duration 必须一致）：${JSON.stringify(batchPacing)}`;
+    const batchSystemPrompt = batchMode ? `${systemPrompt}
+
+【当前原子批次输出合同——覆盖上文的整集目标数量】
+本次调用不是生成整集，只处理第 ${batchIndex + 1}/${draftBatches.length} 批。
+只允许输出镜号 ${firstShotNumber}～${lastShotNumber}，storyboards 必须恰好 ${batch.shot_count} 项。
+不得输出、复述或修订该范围之外的任何镜头；不得按段落数自行增加镜头。
+当前 user 消息中的批次源片段是本次唯一可展开文本。
+本调用只负责核心剧情、机位、声音语义和 H3 决策层。不要输出 character_visuals、last_frame_visuals 或 video_slots；后续专用导演 Agent 会读取本轮核心决策并规划这些执行层。` : systemPrompt;
+
+    let batchShots = working.batchShots || null;
+    let lastBatchError = null;
+    for (let attempt = 1; !batchShots && attempt <= maxReflectionRounds; attempt++) {
+      const retryDirective = lastBatchError
+        ? `\n\n【上一轮本批输出被完整性门禁拒绝】${lastBatchError.message}。丢弃上一轮结果，从当前批次源片段重新生成；storyboards 只能有 ${batch.shot_count} 项，镜号只能是 ${firstShotNumber}～${lastShotNumber}，不要返回解释。`
+        : '';
+      const batchBudget = batchMode ? directorOutputTokenBudget(batch.shot_count) : outputTokenBudget;
+      try {
+        const parsed = await agentsRuntime.runAgent(db, log, {
+          name: 'director-storyboard-draft',
+          instructions: batchSystemPrompt,
+          input: `${batchDirective}\n\n${batchUserPrompt}${retryDirective}`,
+          outputType: agentsRuntime.storyboardBatchOutputType(batch.shot_count, batch.source_units, sourceAssignments),
+          maxTokens: batchBudget,
+          temperature: batchMode ? 0.2 : 0.7,
+        });
+        const candidate = Array.isArray(parsed?.storyboards) ? parsed.storyboards : [];
+        if (batchMode) {
+          assertDirectorDraftBatch(batch, candidate);
+        } else if (!candidate.length) {
+          throw new Error('模型未返回合法分镜数组');
+        }
+        if (candidate.length !== batch.shot_count) throw new Error(`导演已规划本批 ${batch.shot_count} 镜，实际返回 ${candidate.length} 镜；不得遗漏剧情`);
+        candidate.forEach((shot, index) => {
+          if (Number(shot.duration) !== batchPacing[index].duration) throw new Error(`分镜 #${firstShotNumber + index} 时长应为导演规划的 ${batchPacing[index].duration} 秒，实际为 ${shot.duration} 秒，请修正`);
+        });
+        batchShots = batchMode ? materializeDirectorDraftBatchExcerpts(batch, candidate) : candidate;
+        break;
+      } catch (batchErr) {
+        lastBatchError = batchErr;
+        log.warn('[导演Agent] 初稿批次未通过完整性门禁，退回 Agent 重试', {
+          batch: batchIndex + 1,
+          total_batches: draftBatches.length,
+          attempt,
+          error: batchErr.message,
+        });
+        reportDirectorLayerRetry(
+          batchRetry,
+          `导演初稿第 ${batchIndex + 1}/${draftBatches.length} 批`,
+          attempt,
+          batchErr.message
+        );
+      }
+    }
+    if (!batchShots) {
+      throw new Error(`导演智能体生成分镜失败：第 ${batchIndex + 1}/${draftBatches.length} 批经过 ${maxReflectionRounds} 轮门禁反馈仍未通过完整性门禁：${lastBatchError?.message || '未知错误'}`);
+    }
+    batchShots = batchShots.map((shot, index) => ({ ...shot, shot_number: firstShotNumber + index }));
+    working.batchShots = batchShots;
+    saveStage(`第 ${batchIndex + 1} 批核心初稿完成`);
+    for (let shotIndex = 0; shotIndex < batchShots.length; shotIndex++) {
+      const shotProgress = Math.min(
+        68,
+        40 + Math.floor(((batchIndex + ((shotIndex + 1) / batchShots.length)) / draftBatches.length) * 28)
+      );
+      const shotRetry = {
+        maxAttempts: maxReflectionRounds,
+        onProgress,
+        progress: shotProgress,
+      };
+      working.currentShot = batchShots[shotIndex].shot_number;
+      // These functions revalidate a saved slot and call the model only if needed.
+      batchShots[shotIndex] = await ensureDirectorCharacterVisuals(db, log, batchShots[shotIndex], shotRetry);
+      saveStage(`分镜 #${working.currentShot} 人物槽位完成`);
+      batchShots[shotIndex] = await ensureDirectorVideoSlots(db, log, batchShots[shotIndex], shotRetry);
+      saveStage(`分镜 #${working.currentShot} 视频槽位完成`);
+    }
+    shots.push(...batchShots);
+    const last = batchShots[batchShots.length - 1] || {};
+    previousEnding = [last.title, last.end_framing, last.result, last.transition_to_next].filter(Boolean).join('；').slice(0, 1200);
+    Object.assign(working, { shots, previousEnding, nextBatch: batchIndex + 1, batchShots: null, sourceAssignments: null, currentShot: null });
+    saveStage(`第 ${batchIndex + 1} 批完成`);
+    onProgress(
+      Math.min(68, 40 + Math.floor(((batchIndex + 1) / draftBatches.length) * 28)),
+      `导演初稿第 ${batchIndex + 1}/${draftBatches.length} 批完成 · 已规划 ${shots.length}/${targetCount} 镜`
+    );
   }
 
-  // 3. 阶段二：运行视听本体质量门禁（SHACL Invariants Check）
+  if (batchMode && shots.length < targetCount) {
+    throw new Error(`导演初稿完整性门禁失败：目标约 ${targetCount} 镜，实际仅 ${shots.length} 镜，禁止以不完整分镜覆盖旧数据`);
+  }
+  if (batchMode && normalizeCoverageText(batchCoverageText(shots)) !== normalizeCoverageText(scriptContent)) {
+    throw new Error('导演初稿完整性门禁失败：整集 source_script_excerpt 未完整覆盖原剧本，禁止落库');
+  }
+
+  // 3. 阶段二：运行视听本体质量门禁（SHACL Invariants Check - 严禁后端预先补造视觉槽位）
   onProgress(70, '初稿分镜推演完成，正在执行视听本体硬门禁审查...');
   log.info('[导演Agent] 阶段二：执行视听本体硬门禁审查', { shot_count: shots.length });
-  let audit = validateAllInvariants(shots, { db, props: semPkg.catalogs.props, dramaEra: semPkg.drama.era });
+  const invariantOptions = {
+    db,
+    props: semPkg.catalogs.props,
+    dramaEra: semPkg.drama.era,
+    directorPlanningMode: universalOmni ? 'universal' : 'classic',
+    requestedPacing,
+  };
+  let audit = auditDirectorDraft(shots, invariantOptions);
+  directorTrace.record('draft_audited', { episode_id: episodeId, shots, audit });
 
-  // 4. 阶段三：反思自纠环（Critic & Reflection Loop）
-  if (!audit.valid && audit.error_count > 0) {
-    onProgress(75, '检测到门禁规则瑕疵，触发导演智能体自省纠偏推理中...');
-    log.warn('[导演Agent] 阶段三：发现硬门禁违规，触发自省纠偏环', { violations: audit.violations });
+  // 4. 阶段三：反思自纠环。持续把结构化违规退回 Agent，直到通过或达到显式安全上限。
+  const initialReflectionErrors = Math.max(1, audit.error_count);
+  let bestRemainingErrors = audit.error_count;
+  let reflectionRepairs = working.reflectionRepairs || 0;
+  let lastRejectedRepair = working.lastRejectedRepair || null;
+  saveStage('整集门禁自纠');
+  for (let reflectionRound = 1; reflectionRound <= maxReflectionRounds; reflectionRound++) {
+    if (audit.valid || audit.error_count === 0) break;
+    const repairTarget = selectDirectorRepairTarget(shots, audit.violations);
+    if (!repairTarget) throw new Error('导演智能体无法将剩余门禁违规定位到可修复镜头');
+    const repairContext = repairContextForViolations(shots, repairTarget.violations);
+    const resolvedRatio = (initialReflectionErrors - bestRemainingErrors) / initialReflectionErrors;
+    const repairProgress = Math.min(86, 72 + Math.floor(Math.max(0, resolvedRatio) * 14));
+    const shotViolations = audit.violations.filter(item => Number(item.shot_number) === repairTarget.shot_number);
+    let parsedRepaired = null;
+    let candidateAudit = null;
+    const traceRound = { round: reflectionRound, shot_number: repairTarget.shot_number };
+    directorTrace.record('repair_started', { ...traceRound, selected_violations: repairTarget.violations,
+      shot_violations: shotViolations, before_errors: audit.error_count, context: repairContext });
+
+    onProgress(
+      repairProgress,
+      `ReAct 单镜自纠第 ${reflectionRound}/${maxReflectionRounds} 轮 · 正在修复分镜 #${repairTarget.shot_number} · 本轮处理 ${repairTarget.violations.length} 项 / 本镜剩余 ${shotViolations.length} 项 · 整集剩余 ${audit.error_count} 项...`
+    );
+    log.warn(`[导演Agent] 阶段三：第${reflectionRound}轮执行单镜原子纠偏`, {
+      target_shot: repairTarget.shot_number,
+      target_violations: repairTarget.violations,
+      total_remaining_errors: audit.error_count,
+      readonly_context_shots: repairContext.map((shot) => shot.shot_number),
+    });
+
+    const requiresStructuralRepair = repairTarget.violations.some(requiresDirectorStructuralRepair);
+    const repairOutputProtocol = requiresStructuralRepair
+      ? `【本轮只允许拆镜修复】
+只返回 {"structural_repairs":[{"replace_shot_number":${repairTarget.shot_number},"storyboards":[完整的新镜头对象1,完整的新镜头对象2]}]}。
+- replace_shot_number 必须为 ${repairTarget.shot_number}。
+- storyboards 至少包含2个完整新镜头；逐字保留原台词和 source_script_excerpt，并按原顺序无损分配。
+- 每个新镜头必须包含完整 semantic_slots 对象，原文分配写入 semantic_slots.source_script_excerpt；speech_plan、h3_mode、required_references 等语义决策只写在 semantic_slots 内，禁止用顶层同名字段代替。creation_mode、universal_segment_text、long_take_group_id、long_take_role、long_take_sequence 必须显式保留或规划，禁止省略、占位、写“同上”。
+- 所有替换镜头必须使用同一个新的 long_take_group_id，依次填写 long_take_sequence=1..N；首段 role=head，后续为 continuation，末段为 tail。第2段起必须设置 semantic_slots.h3_mode="fl2va"、first_frame_policy="inherit_tail"、continuity_type="long_take_continuation"、required_references=[]、speech_plan.audio_references=[]，以便执行器等待上一段完成并继承其真实视频尾帧。
+- 禁止返回 repairs、完整整集 storyboards、markdown或解释。`
+      : `【本轮只允许字段 Patch】
+只返回 {"repairs":[{"shot_number":${repairTarget.shot_number},"patch":{仅包含需要修改的字段}}]}。
+- repairs 必须且只能有1项，shot_number 必须为 ${repairTarget.shot_number}。
+- 未列出的字段由系统原样保留；数组字段需要修改时返回修改后的完整数组。
+- 同一语义若同时存在于顶层、semantic_slots 或 video_slots，必须在同一个 patch 内同步修正。
+- 禁止返回 structural_repairs、完整分镜对象、完整整集 storyboards、markdown或解释。`;
+
     const reflectionPrompt = `你在刚才推演的分镜草稿中违反了视听本体硬门禁规则：
-${audit.violations.map(v => `- [${v.rule}] 镜头 ${v.shot_number || '全局'}: ${v.message}`).join('\n')}
+${repairTarget.violations.map(v => `- [${v.rule}] 镜头 ${v.shot_number || '全局'}: ${v.message}`).join('\n')}
+${directorAtomicRepairHint(repairTarget.violations[0])}
+【本轮选中违规的结构化定位】
+${JSON.stringify(repairTarget.violations[0])}
+【本镜其他待处理问题，仅作上下文，不得越过本轮 Schema 修改】
+${JSON.stringify(shotViolations)}
+【本任务镜头时长范围】${requestedPacing.range.min}～${requestedPacing.range.max} 秒；H3 的 8 秒能力上限不覆盖本任务设置。
+${lastRejectedRepair?.shot_number === repairTarget.shot_number ? `【上轮修复被拒绝的完整反馈】\n${JSON.stringify(lastRejectedRepair)}\n上轮补丁没有写入当前镜头。请根据被拒绝的补丁与复检路径调整本轮方案，不得把相同的无效补丁再次提交。` : ''}
 
-请进行专业导演自省反思：
-1. 立即将违规的固定镜头(static)修改为符合剧情动线的动态运镜（推镜 push、跟镜 tracking、手持 handheld 等）；
-2. 为所有无对白的镜头补充高质量具体的 bgm_prompt 背景音乐描述；
-3. 修正任何群戏或人脸拥挤违规；
-4. 针对所有超出台词时长预算的分镜（INVARIANT_SPEECH_OVER_BUDGET），必须在标点符号处按语义拆分为 2 个以上连续分镜，或在 4~8 秒安全范围内适当延长镜头时长，严禁删减台词！
-5. 针对生图槽位不全或包含动态动词的分镜（INVARIANT_SLOT_*）：
-   必须为每个出场角色补齐完整槽位：screen_position(画面构图位置)、facing(朝向)、expression(微表情)、head_pose(头部姿态)、gaze(视线目光)、posture(体态重心)、hands(双手动作)、prop_interaction(道具物理接触点)，彻底消除“从A走到B”等导致多角色的时序位移动态词！
-6. 严禁使用千篇一律的机械套话（如“身体保持戒备低姿，重心稳固隐蔽”、“双手紧握装备保持待发状态”），必须根据每个镜头剧本具体动作重写为具象的肢体定格姿态、手部微接触与生动微表情！
-7. 针对双人/多人同框分镜：严禁扁平横向并排贴立！必须一前一后确立清晰的 Z 轴远近纵深关系（如：一人位于前景过肩/近身侧背，另一人位于中景正对；或中景核心主角 vs 后景纵深掩护）。
+本轮唯一可修改目标是分镜 #${repairTarget.shot_number}。相邻镜头只用于读取连戏上下文，严禁返回它们的 Patch。
 
-请输出修正后的完整 JSON: {"storyboards": [...]}`;
+请进行专业导演自省反思并按以下铁律彻底纠正：
+1. 固定机位与连续镜头均合法，只依据当前违规及剧情需求修正；不得为了修复其他字段强行添加动态运镜或切镜；
+2. 无语言镜头必须按剧情明确选择声音合同：动作、环境与拟音为 silent_ambient（BGM空）；纯器乐蒙太奇为 bgm_only（音效空）；真正无任何声音才设 is_silent:true。三者都必须清空全部台词槽位，并让所有画内角色在顶层及每个 timeline 段明确“双唇紧闭无口型”；
+3. 画外音与口型：标记为画外音(is_offscreen: true)或旁白(narration)时，必须在 patch.video_slots.audio_lip_sync.visible_characters_lip_state 精确写入 "strictly_sealed"，并把 patch.video_slots.trajectories 及每个 patch.video_slots.shots_timeline[].character_trajectories[] 中所有画内角色的 mouth_state 写为“双唇紧闭无口型”。严禁只改顶层 audio_lip_sync 字符串，那不是视频执行槽位！
+4. 旁白解说：客观无源旁白严禁作为画内角色的台词口型同步！
+5. 静音镜头：声明为静音(is_silent: true)时，严禁填入对白、BGM 描述或音效！
+6. 角色定位：同一个角色绝不能同时属于主角 (visible_characters) 与背景人物 (background_characters)！
+7. 构图人数：单人专注构图 (solo_action) 严格仅限 1 人；双人对视/过肩构图严格仅限 2 人！
+8. 正脸与背影：背身、侧后方、剪影严禁标为清晰正脸识别 (clear_frontal)！
+9. 服装一致：同一镜头内同一角色绝不允许出现多套不同服装，单镜服装必须统一！
+10. 尾帧承接：跨越不同场景、时间线跳跃或角色换装时，严禁使用 inherit_tail 继承上一镜尾帧，必须使用 generate_new 全新生成！
+11. 单镜造型：单镜头内严禁出现中途换衣、脱去外袍、换上战甲、变身等动作，必须拆为两个镜头！
+12. H3 参考容量上限：出场主角严格 <= 3 人，核心道具严格 <= 2 件，必要参考图 required_references 严格 <= 9 张，音频参考 <= 3 个！超标必须拆镜或精简，禁止塞入多余素材！
+13. Picture 标签对齐：若提示词引用 <Picture N>，N 必须与 required_references 序号完全对应，绝不悬空！
+14. FL2VA 纯净度：纯血首帧模式严禁包含角色卡、场景卡或音频参考！
+15. 台词时长预算：超出时长预算的分镜必须在标点符号处按语义拆分为 2 个以上连续分镜，严禁随意删减台词！
+16. H3 完整执行方案：每镜必须由导演 Agent 把 h3_mode、首帧策略、尾帧策略及三项理由作为一套完整决策；FL2VA 必须有首帧、尾帧按剧情选配且不得携带多参考（required_references 必须为 []），Ref2VA 的首尾帧策略都必须为 none！
+17. 角色视觉槽位必须具象完整：每个在场角色的 character_visuals 必须同时包含：
+    - posture（躯干重心定格，必须有站/蹲/坐/卧/趴/扑/俯/仰/倾/跪/靠/立/挺等词，如：身体前倾30度坐姿/双腿挺直站立）；
+    - facing（身体朝向，必须明确朝向搭档、道具或具体画面方向，禁止无理由正面对摄影机）；
+    - head_pose（头部姿态，必须有头/仰/俯/侧头/低头/转头/正对等词，如：头部正对前方/低头凝视）；
+    - gaze（必须写明双眼的具体落点，如受话人眼睛、嘴角血迹、被扣手腕或发光掌心，不得只写“看向前方”）；
+    - screen_position（构图位置，必须有画面左侧/画面右侧/画面中央/画面正中/画面前景/画面中景/画面后景等词）；
+    - hands（双手动作，必须有手/指/握/按/托/持/掌/抓等词）；
+18. 严禁时序动态混入生图：character_visuals 中严禁出现“然后、随后、逐渐、开始、走到、跑向、先...再...”等动态时序过程，必须为静态定格瞬时瞬间！
+19. 短剧镜内剪辑：video_slots.shots_timeline 必须把总时长完整拆成连续的 1 或 2 个整数秒动作段（4 秒至少 2 段，8 秒至少 4 段），按 0–1、1–2 这样的窗口逐段约束动作；禁止使用一个完整大段、禁止使用小数秒。每段必须使用 shot_number、timestamp、duration、camera、visible_characters、action、result、character_trajectories、audio_lip_sync 字段。visible_characters 是本段实际入画人物，特写、过肩和画外音可以是外层人物清单的子集；character_trajectories 必须且只能覆盖该子集。禁止使用 segment、time、beat、dialogue_text、duration_seconds 等执行层不读取的别名。每项轨迹使用 character_id、name、trajectory、terminal_pose、facial_expression、facing、head_pose、gaze、attention_target、gaze_motivation、reaction_trigger、mouth_state；“说完后互相看着、保持不动、等待”不能作为段落动作或收尾。对白跨切口必须连续，不得重读、漏字或在切换时重新起句！
+20. 事件驱动注意力：人物咳嗽、吐血、受伤、摔倒、拔刀、抛出道具或发光时，所有应当反应的画内角色必须在对应镜内段把 attention_target 指向事件源，并给出对应头部转向和眼睛落点。直接对话若故意不看受话人，必须在 gaze_motivation 明确剧情理由。
+21. 剧本覆盖合同：semantic_slots.source_script_excerpt 是只读的原剧本覆盖证据。普通字段修复不得改写它；拆镜时必须把原镜的 source_script_excerpt 按原顺序无损分配到新镜，拼接后必须与原值完全一致。
+
+${DIRECTOR_ACTION_COMPLETION_CONTRACT}
+${repairOutputProtocol}`;
 
     try {
-      const repairedRaw = await aiClient.generateText(db, log, 'text', `${userPrompt}\n\n当前草稿：\n${JSON.stringify({ storyboards: shots })}\n\n${reflectionPrompt}`, systemPrompt, { max_tokens: 8000, reasoning_effort: 'high' });
-      const parsedRepaired = safeParseAIJSON(repairedRaw, null, log);
-      const repairedShots = extractFirstArray(parsedRepaired);
-      if (Array.isArray(repairedShots) && repairedShots.length > 0) {
-        shots = repairedShots;
-        audit = validateAllInvariants(shots, { db, props: semPkg.catalogs.props, dramaEra: semPkg.drama.era });
-        log.info('[导演Agent] 自省纠偏完成，重新质检', { valid: audit.valid, remaining_errors: audit.error_count });
-        onProgress(82, '自省纠偏完成，视听门禁质检通过...');
+      const repairTokenBudget = requiresStructuralRepair
+        ? 24576
+        : directorRepairTokenBudget(repairTarget.violations.length, 1);
+      const repairUserPrompt = `${reflectionPrompt}\n\n【目标镜头与只读相邻连戏上下文】\n${JSON.stringify({ target_shot_number: repairTarget.shot_number, storyboards: repairContext })}`;
+      parsedRepaired = await agentsRuntime.runAgent(db, log, {
+        name: 'director-invariant-repair',
+        instructions: '你是导演分镜的单镜原子修复节点。系统已完成整集初稿；你只能依据用户消息中的门禁反馈修复指定镜头。相邻镜头只读。严格遵守本轮唯一输出协议和 JSON Schema，禁止重新生成整集，禁止输出解释。',
+        input: repairUserPrompt,
+        outputType: requiresStructuralRepair
+          ? agentsRuntime.directorStructuralRepairOutputType(repairTarget.shot_number)
+          : agentsRuntime.directorPatchRepairOutputType(
+            repairTarget.shot_number,
+            directorAtomicPatchSchema(
+              repairTarget.violations[0],
+              shots.find((shot) => Number(shot.shot_number) === repairTarget.shot_number)
+            )
+          ),
+        maxTokens: repairTokenBudget,
+        temperature: 0.2,
+      });
+      directorTrace.record('repair_response', { ...traceRound, original_patch: parsedRepaired });
+      const returnedTarget = Array.isArray(parsedRepaired?.repairs) && parsedRepaired.repairs.length
+        ? Number(parsedRepaired.repairs[0]?.shot_number)
+        : Number(parsedRepaired?.structural_repairs?.[0]?.replace_shot_number);
+      if (returnedTarget !== repairTarget.shot_number) {
+        throw new Error(`Director repair 越界：本轮只允许修复分镜 #${repairTarget.shot_number}`);
+      }
+      const appliedRepair = applyDirectorRepairPlan(shots, parsedRepaired);
+      candidateAudit = auditDirectorDraft(appliedRepair.shots, invariantOptions);
+      directorTrace.record('repair_audited', { ...traceRound, before_errors: audit.error_count,
+        after_errors: candidateAudit.error_count, violations: candidateAudit.violations });
+      if (!appliedRepair.structural && candidateAudit.error_count >= audit.error_count) {
+        const candidateShotErrors = candidateAudit.violations
+          .filter((item) => Number(item?.shot_number) === repairTarget.shot_number)
+          .map((item) => `[${item.rule}] ${item.message}`)
+          .join('；');
+        throw new Error(
+          `候选 Patch 未减少整集门禁违规（${audit.error_count} → ${candidateAudit.error_count}），已拒绝且未污染当前最佳状态。`
+          + (candidateShotErrors ? `候选镜头仍有：${candidateShotErrors}` : '')
+        );
+      }
+      shots = appliedRepair.shots;
+      lastRejectedRepair = null;
+      directorTrace.record('repair_accepted', { ...traceRound, after_errors: candidateAudit.error_count,
+        changed_shots: appliedRepair.changed_count });
+      reflectionRepairs += 1;
+      audit = candidateAudit;
+      bestRemainingErrors = Math.min(bestRemainingErrors, audit.error_count);
+      Object.assign(working, { shots, reflectionRepairs, lastRejectedRepair: null, reflectionRound: (working.reflectionRound || 0) + 1 });
+      checkpoint.save();
+      log.info(`[导演Agent] 第${reflectionRound}轮 Agent Patch 已确定性合并并重新质检`, {
+        valid: audit.valid,
+        remaining_errors: audit.error_count,
+        changed_shots: appliedRepair.changed_count,
+        structural_repair: appliedRepair.structural,
+        output_token_budget: repairTokenBudget,
+      });
+      onProgress(
+        Math.min(87, 73 + Math.floor(((initialReflectionErrors - bestRemainingErrors) / initialReflectionErrors) * 14)),
+        audit.valid
+          ? `ReAct 单镜自纠第 ${reflectionRound}/${maxReflectionRounds} 轮完成 · 分镜 #${repairTarget.shot_number} 已通过 · 整集硬门禁已通过`
+          : `ReAct 单镜自纠第 ${reflectionRound}/${maxReflectionRounds} 轮完成 · 已修复分镜 #${repairTarget.shot_number} · 整集剩余 ${audit.error_count} 项`
+      );
+      if (audit.valid) {
+        onProgress(87, '单镜自纠完成，视听门禁质检通过...');
+        break;
       }
     } catch (refErr) {
-      log.warn('[导演Agent] 自我纠偏推理异常，回退使用工程兜底修复', { error: refErr.message });
+      lastRejectedRepair = { ...traceRound, original_patch: parsedRepaired, rejection: refErr.message,
+        candidate_violations: candidateAudit?.violations?.filter(item => Number(item.shot_number) === repairTarget.shot_number) || refErr.violations || [] };
+      directorTrace.record('repair_rejected', lastRejectedRepair);
+      Object.assign(working, { lastRejectedRepair, reflectionRound: (working.reflectionRound || 0) + 1 });
+      checkpoint.save();
+      log.warn(`[导演Agent] 第${reflectionRound}轮自纠推理异常`, { error: refErr.message });
     }
   }
 
-  // 5. 阶段四：实体对齐与工程终检（确保每个镜头的数据完整性）
-  onProgress(86, '正在校准对白节奏与分镜时长安全区间...');
-  const speechDelivery = require('../services/speechDeliveryService');
-  const { planShotDuration } = require('../utils/shotDurationRange');
-  const { assessVideoSpeech } = require('../utils/speechTiming');
-  const { enforceStoryboardSpeechTiming } = require('../services/storyboardSpeechService');
+  // 严格把关：若经过自省纠偏后仍存在致命门禁错误，必须携带结构化违规项阻断抛出，严禁静默保存无效语义！
+  if (!audit.valid && audit.error_count > 0) {
+    const err = new Error(`导演智能体经过 ${maxReflectionRounds} 轮 ReAct 自纠后仍未通过视听本体硬门禁审查（共 ${audit.error_count} 处违规）：${audit.violations.map(v => `[${v.rule}] ${v.message}`).join('；')}`);
+    err.status = 422;
+    err.violations = audit.violations;
+    err.valid = false;
+    throw err;
+  }
+
+  if (batchMode) {
+    if (shots.length < targetCount) {
+      throw new Error(`导演 ReAct 完整性终检失败：目标约 ${targetCount} 镜，修复后仅 ${shots.length} 镜，旧分镜不会被覆盖`);
+    }
+    if (normalizeCoverageText(batchCoverageText(shots)) !== normalizeCoverageText(scriptContent)) {
+      throw new Error('导演 ReAct 完整性终检失败：修复过程破坏了原剧本覆盖合同，旧分镜不会被覆盖');
+    }
+  }
+
+  // 5. 阶段四：无损格式规范化与终检（严禁后端静默修改运镜、时长、台词、道具或补造槽位）
+  onProgress(88, '初稿通过门禁，正在执行无损格式校验与最终审查...');
   const {
-    synthesizeCharacterVisualSlots,
     compileImagePromptFromSlots,
-    validateCharacterVisualSlots,
   } = require('./visualSlots');
 
-  const finalShots = shots.map((s, idx) => {
-    const shotNum = idx + 1;
-    // 强制消除遗留的 static 违规
-    let mov = angleService.normalizeMovement(s.movement);
-    if (!mov || mov === 'static') {
-      mov = angleService.inferMovement(s, { upgradeStatic: true });
-    }
+  const normalizedShots = normalizeDirectorShots(shots, universalOmni);
 
-    // 强制消除无对白漏 BGM 违规
-    let bgm = String(s.bgm_prompt || '').trim();
-    if (!s.dialogue && (!bgm || bgm === '无' || bgm === '无BGM' || bgm === '禁BGM')) {
-      bgm = angleService.inferBgmPrompt(s);
-    }
-
-    // H3 视频生成物理上限铁律：出场角色严格限制 <= 2，核心道具严格限制 <= 2（优先单件）
-    const chars = (Array.isArray(s.characters) ? s.characters : []).slice(0, 2);
-    const pids = (Array.isArray(s.props) ? s.props : (Array.isArray(s.prop_ids) ? s.prop_ids : [])).slice(0, 2);
-
-    return {
-      ...s,
-      shot_number: shotNum,
-      characters: chars,
-      props: pids,
-      movement: mov,
-      bgm_prompt: bgm,
-      lighting_style: angleService.normalizeLighting(s.lighting_style) || 'dramatic',
-      depth_of_field: angleService.normalizeDof(s.depth_of_field) || 'medium',
-      long_take_group_id: s.long_take_group_id ? String(s.long_take_group_id).trim() : null,
-      long_take_role: s.long_take_role ? String(s.long_take_role).trim().toLowerCase() : null,
-      long_take_sequence: s.long_take_sequence != null ? Number(s.long_take_sequence) : null,
-    };
-  });
-
-  // 台词时长预算硬门禁兜底：自动时长适配或安全拆镜
-  const speechValidatedShots = [];
-  for (const s of finalShots) {
-    const hasDialogue = !!(s.dialogue && String(s.dialogue).trim() && !/^(?:无|无对白|无对话|无台词|none|null|n\/a)[。.!！\s]*$/iu.test(String(s.dialogue).trim()));
-    const hasNarration = !!(s.narration && String(s.narration).trim() && !/^(?:无|无旁白|无解说|none|null|n\/a)[。.!！\s]*$/iu.test(String(s.narration).trim()));
-
-    if (!hasDialogue && !hasNarration) {
-      speechValidatedShots.push(s);
-      continue;
-    }
-
-    let dur = Number(s.duration) > 0 ? Number(s.duration) : 5;
-    let delOptions = {};
-    try {
-      const del = speechDelivery.resolve(semPkg.drama?.style, s);
-      delOptions = speechDelivery.budgetOptions(del);
-    } catch (_) {
-      delOptions = { speechRate: 1.44, turnPauseSeconds: 0 };
-    }
-
-    const assessment = assessVideoSpeech(s, s.video_prompt || '', dur, delOptions);
-    if (assessment.ok) {
-      speechValidatedShots.push(s);
-      continue;
-    }
-
-    // 若超载，优先在安全时长范围 [4, 8] 秒内尝试扩展镜头时长适配
-    const plannedDur = planShotDuration(s, { min: 4, max: 8 }, delOptions);
-    const reAssessment = assessVideoSpeech(s, s.video_prompt || '', plannedDur, delOptions);
-    if (reAssessment.ok) {
-      log.info('[导演Agent] 镜头对白超出时长预算，自动在安全范围内微调镜头时长', {
-        shot_number: s.shot_number,
-        old_duration: dur,
-        new_duration: plannedDur,
-        required: reAssessment.requiredSeconds,
-      });
-      speechValidatedShots.push({ ...s, duration: plannedDur });
-      continue;
-    }
-
-    // 若在 8 秒上限内仍放不下（长台词），启动智能拆镜
-    log.info('[导演Agent] 镜头对白严重超长（8秒安全上限无法容纳），执行强制语义拆镜', {
-      shot_number: s.shot_number,
-      required: assessment.requiredSeconds,
-    });
-    try {
-      const splitFragments = await enforceStoryboardSpeechTiming([s], {
-        durationRange: { min: 4, max: 8 },
-        generate: async (user, sys) => aiClient.generateText(db, log, 'text', user, sys, { max_tokens: 4000, reasoning_effort: 'high' }),
-        onRepair: () => {},
-      });
-      speechValidatedShots.push(...splitFragments);
-    } catch (splitErr) {
-      log.warn('[导演Agent] 智能拆镜异常，采用上限时长兜底', { error: splitErr.message });
-      speechValidatedShots.push({ ...s, duration: Math.min(10, Math.ceil(assessment.requiredSeconds)) });
-    }
+  // 严格二次门禁：无损规整后的候选实体必须重新通过本体门禁审查，绝不带病入库！
+  pacing.assertManualTargets(normalizedShots, requestedPacing);
+  const finalAudit = auditDirectorDraft(normalizedShots, invariantOptions);
+  if (!finalAudit.valid && finalAudit.error_count > 0) {
+    const err = new Error(`分镜落库前终检未通过视听本体硬门禁审查（共 ${finalAudit.error_count} 处违规）：${finalAudit.violations.map(v => `[${v.rule}] ${v.message}`).join('；')}`);
+    err.status = 422;
+    err.violations = finalAudit.violations;
+    err.valid = false;
+    throw err;
   }
-
-  // 角色构图预置槽位、首尾帧与视频语义槽位硬门禁终检与自动补齐
-  const { synthesizeLastFrameVisualSlots } = require('./visualSlots');
-  const { synthesizeVideoSlots, compileVideoPromptFromSlots } = require('./videoSlots');
-
-  const normalizedShots = speechValidatedShots.map((s, idx) => {
-    const shotNum = idx + 1;
-    let visuals = s.character_visuals;
-    if (typeof visuals === 'string') {
-      try { visuals = JSON.parse(visuals); } catch (_) { visuals = null; }
-    }
-    if (!Array.isArray(visuals) || visuals.length === 0 || validateCharacterVisualSlots(s, visuals).length > 0) {
-      visuals = synthesizeCharacterVisualSlots(s, semPkg.catalogs.characters);
-    }
-
-    let lastVisuals = s.last_frame_visuals;
-    if (typeof lastVisuals === 'string') {
-      try { lastVisuals = JSON.parse(lastVisuals); } catch (_) { lastVisuals = null; }
-    }
-    if (!Array.isArray(lastVisuals) || lastVisuals.length === 0) {
-      lastVisuals = synthesizeLastFrameVisualSlots(s, semPkg.catalogs.characters, visuals);
-    }
-
-    let vidSlots = s.video_slots;
-    if (typeof vidSlots === 'string') {
-      try { vidSlots = JSON.parse(vidSlots); } catch (_) { vidSlots = null; }
-    }
-    if (!vidSlots || typeof vidSlots !== 'object' || !vidSlots.camera || !vidSlots.audio_lip_sync) {
-      vidSlots = synthesizeVideoSlots({ ...s, character_visuals: visuals, last_frame_visuals: lastVisuals }, semPkg.catalogs.characters);
-    }
-
-    return {
-      ...s,
-      shot_number: shotNum,
-      character_visuals: visuals,
-      last_frame_visuals: lastVisuals,
-      video_slots: vidSlots,
-    };
-  });
 
   // 6. 阶段五：原子化持久化入库（软删除历史分镜，插入新分镜并生成完整图片与视频提示词）
   onProgress(92, '视听本体质检通过，正在持久化写入分镜数据...');
@@ -439,41 +1895,38 @@ ${audit.violations.map(v => `- [${v.rule}] 镜头 ${v.shot_number || '全局'}: 
   const dramaRow = db.prepare('SELECT style, metadata FROM dramas WHERE id = ?').get(dramaId) || {};
   const { resolvedStreamStyleFromDrama } = require('../utils/dramaStyleMerge');
   const finalStyle = resolvedStreamStyleFromDrama('', dramaRow) || cfg?.style?.default_style || '';
-  let dramaAspectRatio = null;
-  try {
-    if (dramaRow.metadata) {
-      const meta = typeof dramaRow.metadata === 'string' ? JSON.parse(dramaRow.metadata) : dramaRow.metadata;
-      if (meta?.aspect_ratio) dramaAspectRatio = meta.aspect_ratio;
-    }
-  } catch (_) {}
-  const videoRatio = dramaAspectRatio || cfg?.style?.default_video_ratio || '16:9';
-
   const insertedIds = [];
 
   db.transaction(() => {
+    checkpoint.assertCurrent();
+    linkEpisodeCharacters(db, epId, normalizedShots);
     db.prepare('UPDATE storyboards SET deleted_at = ? WHERE episode_id = ? AND deleted_at IS NULL').run(now, epId);
 
     const insertStmt = db.prepare(`
       INSERT INTO storyboards (
         episode_id, scene_id, storyboard_number, title, description, location, time, duration,
         dialogue, narration, action, result, atmosphere, movement, lighting_style, depth_of_field,
-        angle_h, angle_v, angle_s, shot_type, bgm_prompt, sound_effect, layout_description,
+        angle_h, angle_v, angle_s, dialogue_framing, shot_type, bgm_prompt, sound_effect, layout_description,
         characters, character_visuals, last_frame_visuals, video_slots, image_prompt, video_prompt, polished_prompt,
         long_take_group_id, long_take_role, long_take_sequence,
+        start_framing, end_framing, transition_to_next, background_characters, semantic_slots,
+        creation_mode, universal_segment_text,
         status, created_at, updated_at
       ) VALUES (
         ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?,
+        ?, ?, ?, ?, ?,
+        ?, ?,
         'pending', ?, ?
       )
     `);
 
     for (const s of normalizedShots) {
       const scene = semPkg.getScene(s.scene_id) || semPkg.catalogs.scenes[0] || {};
-      const dur = Math.max(1, Number(s.duration) || singleShotDuration);
+      const dur = Math.max(1, Number(s.duration));
       totalDuration += dur;
 
       const charJson = Array.isArray(s.characters) ? JSON.stringify(s.characters) : '[]';
@@ -485,35 +1938,23 @@ ${audit.violations.map(v => `- [${v.rule}] 镜头 ${v.shot_number || '全局'}: 
         environment_depth: s.environment_depth || '',
         lighting_chiaroscuro: s.lighting_chiaroscuro || '',
         cinematic_lens: s.cinematic_lens || '',
-        shot_type: s.shot_type || '中景',
-        movement: s.movement || 'push',
-        lighting_style: s.lighting_style || 'natural',
-        depth_of_field: s.depth_of_field || 'medium',
-        angle_h: s.angle_h || 'front',
-        angle_v: s.angle_v || 'eye_level',
-        angle_s: s.angle_s || 'medium',
+        shot_type: s.shot_type,
+        movement: s.movement,
+        lighting_style: s.lighting_style,
+        depth_of_field: s.depth_of_field,
+        angle_h: s.angle_h,
+        angle_v: s.angle_v,
+        angle_s: s.angle_s,
         bgm_prompt: s.bgm_prompt || '',
         sound_effect: s.sound_effect || '',
       };
-
-      const charAppearances = (Array.isArray(s.characters) ? s.characters : []).map(cid => {
-        const c = semPkg.getCharacter(cid);
-        return c ? (c.appearance ? `「${c.name}」${c.appearance}` : c.name) : null;
-      }).filter(Boolean).join('\n');
 
       const visuals = s.character_visuals || [];
       const lastVisuals = s.last_frame_visuals || [];
       const vidSlots = s.video_slots || {};
 
-      const compiledImgPrompt = compileImagePromptFromSlots(sbWithAngles, visuals, { style: finalStyle });
-      const imgPrompt = compiledImgPrompt || (s.image_prompt && !isFlawedImagePrompt(s.image_prompt)
-        ? sanitizeStaticImagePrompt(s.image_prompt, sbWithAngles, finalStyle)
-        : composeStoryboardImagePrompt(sbWithAngles, finalStyle));
-      const vidPrompt = compileVideoPromptFromSlots(
-        charAppearances ? { ...sbWithAngles, character_appearances: charAppearances } : sbWithAngles,
-        vidSlots,
-        { style: finalStyle, videoRatio }
-      );
+      const imgPrompt = compileImagePromptFromSlots(sbWithAngles, visuals, { style: finalStyle });
+      if (!imgPrompt) throw new Error(`分镜 #${s.shot_number} 无法从 Agent 视觉槽位编译图片提示词`);
       const polishedPrompt = imgPrompt;
       const charVisualsJson = JSON.stringify(visuals);
       const lastVisualsJson = JSON.stringify(lastVisuals);
@@ -536,10 +1977,11 @@ ${audit.violations.map(v => `- [${v.rule}] 镜头 ${v.shot_number || '全局'}: 
         s.movement,
         s.lighting_style,
         s.depth_of_field,
-        s.angle_h || 'front',
-        s.angle_v || 'eye_level',
-        s.angle_s || 'medium',
-        s.shot_type || '中景',
+        s.angle_h,
+        s.angle_v,
+        s.angle_s,
+        s.dialogue_framing,
+        s.shot_type,
         s.bgm_prompt || '',
         s.sound_effect || '',
         s.layout_description || '',
@@ -548,11 +1990,18 @@ ${audit.violations.map(v => `- [${v.rule}] 镜头 ${v.shot_number || '全局'}: 
         lastVisualsJson,
         videoSlotsJson,
         imgPrompt,
-        vidPrompt,
+        null,
         polishedPrompt,
         s.long_take_group_id || null,
         s.long_take_role || null,
         s.long_take_sequence != null ? Number(s.long_take_sequence) : null,
+        s.start_framing || '',
+        s.end_framing || '',
+        s.transition_to_next || '',
+        JSON.stringify(s.background_characters || []),
+        JSON.stringify(s.semantic_slots),
+        s.creation_mode,
+        s.universal_segment_text,
         now,
         now
       );
@@ -565,17 +2014,11 @@ ${audit.violations.map(v => `- [${v.rule}] 镜头 ${v.shot_number || '全局'}: 
         }
       }
     }
+    working.published = true;
+    saveStage('已发布');
   })();
 
-  // 强化：为入库的分镜全量复核并重建角色造型与视频提示词
-  for (const sid of insertedIds) {
-    try {
-      rebuildPromptsForStoryboard(db, log, sid);
-    } catch (_) {}
-  }
-
-  // 阶段六：世界观资产自动对齐与清理（自动软删除在全剧剧本与分镜中均未使用的陈旧残留道具）
-  reconcileObsoleteDramaAssets(db, log, dramaId);
+  // 资产清理由显式审核操作触发。导演流程只返回诊断，不在落库后静默删除世界观资产。
 
   // 更新剧集总时长
   const durationMinutes = Math.ceil(totalDuration / 60);
@@ -583,19 +2026,23 @@ ${audit.violations.map(v => `- [${v.rule}] 镜头 ${v.shot_number || '全局'}: 
 
   log.info('[导演Agent] 分镜入库成功', {
     episode_id: epId,
-    shot_count: finalShots.length,
+    shot_count: normalizedShots.length,
     total_duration: totalDuration,
     semantic_revision: semPkg.semantic_revision,
   });
 
-  onProgress(100, `导演智能体分镜推演完成，共生成 ${finalShots.length} 个分镜。`);
+  onProgress(100, `导演智能体分镜推演完成，共生成 ${normalizedShots.length} 个分镜。`);
 
   return {
-    storyboards: finalShots,
-    total_shots: finalShots.length,
+    storyboards: normalizedShots,
+    total_shots: normalizedShots.length,
     audit,
     semantic_revision: semPkg.semantic_revision,
     total_duration: totalDuration,
+    reflection_repairs: reflectionRepairs,
+    max_reflection_rounds: maxReflectionRounds,
+    planning_mode: universalOmni ? 'universal' : 'classic',
+    pacing_plan: pacingPlan,
   };
 }
 
@@ -669,9 +2116,11 @@ async function runFullDramaDirectorAgent(db, log, cfg, dramaId, options = {}, pr
 
     log.info('[全流程导演Agent] 阶段三：编排第 ' + ep.episode_number + ' 集视听分镜', { episode_id: ep.id });
     const epRes = await runDirectorAgent(db, log, cfg, ep.id, {
-      storyboardCount: options.storyboardCount,
+      storyboardCount: options.storyboardCount ?? options.storyboard_count,
+      videoDuration: options.videoDuration ?? options.video_duration,
       forceExtractEntities: false, // 实体已在阶段二统一抽取
       userDirectives: options.userDirectives || options.directives || options.feedback,
+      universal_omni_storyboard: options.universal_omni_storyboard ?? options.universalOmniStoryboard,
     });
     episodeResults.push({
       episode_id: ep.id,
@@ -716,255 +2165,434 @@ async function runFullDramaDirectorAgent(db, log, cfg, dramaId, options = {}, pr
  * @param {string} userInstruction - 用户针对该元素的定向调整意见
  * @returns {Promise<object>} 更新后的分镜与质检结果
  */
-async function refineSingleStoryboard(db, log, cfg, storyboardId, userInstruction = '') {
+async function refineSingleStoryboardAttempt(db, log, cfg, storyboardId, userInstruction = '', correctionContext = '', workingCandidate = null) {
   const sbId = Number(storyboardId);
   const sb = db.prepare('SELECT * FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(sbId);
   if (!sb) throw new Error('分镜不存在');
 
-  const instruction = (userInstruction || '').trim();
+  const instruction = String(userInstruction || '').trim();
   if (!instruction) throw new Error('请提供针对该分镜的具体导演调整指令');
+  const universalOmni = sb.creation_mode === 'universal';
 
-  // 1. 编译当前剧集的不可变本体语义包
   const semPkg = compileDramaSemanticPackage(db, sb.episode_id);
-
-  // 2. 读取前后镜头上下文与连戏快照
-  let prevContinuity = null;
   const prevShot = db.prepare(
     'SELECT id, storyboard_number, action, location, time, movement, continuity_snapshot FROM storyboards WHERE episode_id = ? AND storyboard_number < ? AND deleted_at IS NULL ORDER BY storyboard_number DESC LIMIT 1'
   ).get(sb.episode_id, sb.storyboard_number);
-  if (prevShot && prevShot.continuity_snapshot) {
-    try { prevContinuity = JSON.parse(prevShot.continuity_snapshot); } catch (_) {}
-  }
-
   const nextShot = db.prepare(
     'SELECT id, storyboard_number, action, location, time FROM storyboards WHERE episode_id = ? AND storyboard_number > ? AND deleted_at IS NULL ORDER BY storyboard_number ASC LIMIT 1'
   ).get(sb.episode_id, sb.storyboard_number);
-
-  // 3. 构造精准定向的 Prompt
-  const systemPrompt = `你是一位严谨的院线级导演与摄影指导（Director Agent）。
-你正在对第 ${sb.storyboard_number} 镜进行【原子级定向微调（Targeted Shot Refine）】。
-用户给出了直指特定元素的微调指令，你必须精准响应用户的要求，调整指定的视听要素（如运镜、机位、情绪、道具持有、光影、BGM或对白）。
-同时，你必须遵从【不可变本体世界观契约】，严禁破坏角色外貌锚点、道具物理真实尺寸与场景地标，并保持与上一镜的连戏一致性。
-
-${semPkg.getSystemDigest()}
-
-【导演视听铁律】：
-1. 严格少用固定镜头 (static)，非必要不使用 static；
-2. 若无对白，必须在 bgm_prompt 中给出具体的配乐风格与情绪描写；
-3. 出场人物控制在 2 人以内；
-4. layout_description 必须标明人物站位与道具真实尺度。`;
-
-  const userPrompt = `【当前第 ${sb.storyboard_number} 镜原始参数】：
-- 标题: ${sb.title || ''}
-- 场景ID: ${sb.scene_id || ''} (${sb.location || ''} ${sb.time || ''})
-- 景别: ${sb.shot_type || '中景'}
-- 运镜: ${sb.movement || 'push'}
-- 视角: 水平 ${sb.angle_h || 'front'} / 俯仰 ${sb.angle_v || 'eye_level'} / 尺度 ${sb.angle_s || 'medium'}
-- 动作描述: ${sb.action || ''}
-- 动作结果: ${sb.result || ''}
-- 对白: ${sb.dialogue || ''}
-- 画面站位: ${sb.layout_description || ''}
-- 情绪: ${sb.emotion || ''}
-- 背景音乐: ${sb.bgm_prompt || ''}
-- 生图提示词: ${sb.polished_prompt || sb.image_prompt || ''}
-
-【上一镜头连戏快照上下文】：
-${prevContinuity ? JSON.stringify(prevContinuity) : (prevShot ? `上一镜动作: ${prevShot.action}` : '本镜为首镜')}
-${nextShot ? `下一镜动作: ${nextShot.action}` : '本镜为尾镜'}
-
-【用户导演直指定向微调指令（最高优先级执行，精准响应微调元素）】：
-${instruction}
-
-【任务要求】：
-请以纯 JSON 格式输出微调后的单个分镜对象：
-{
-  "title": "3-5字标题",
-  "scene_id": ${sb.scene_id || 1},
-  "characters": ${sb.characters || '[]'},
-  "shot_type": "特写/近景/中景/全景/远景",
-  "angle_h": "front/front_left/front_right/left/right/back",
-  "angle_v": "eye_level/low/high/worm",
-  "angle_s": "close_up/medium/wide",
-  "movement": "push/pull/pan/tilt/tracking/handheld/orbit (尽量不用 static)",
-  "lighting_style": "natural/side/backlit/dramatic/soft/golden_hour/blue_hour/night/neon",
-  "depth_of_field": "shallow/medium/deep",
-  "duration": ${sb.duration || 5},
-  "action": "微调后的物理动作",
-  "result": "动作结果收束",
-  "dialogue": "对白或空串",
-  "bgm_prompt": "无对白时必填高质量配乐描述",
-  "sound_effect": "音效",
-  "layout_description": "画面站位与物体尺度合同",
-  "emotion": "核心情绪",
-  "polished_prompt": "针对生图模型的专业单帧高质量提示词（融入角色外貌、道具尺度、场景光影与微调细节）"
-}`;
-
-  log.info('[导演Agent] 单分镜定向原子微调推理中...', { storyboard_id: sbId, instruction });
-  const rawResponse = await aiClient.generateText(db, log, 'text', userPrompt, systemPrompt, { max_tokens: 3000, reasoning_effort: 'high' });
-  const parsed = safeParseAIJSON(rawResponse, null, log);
-  if (!parsed || typeof parsed !== 'object') {
-    throw new Error('导演智能体未能解析微调结果');
-  }
-
-  // 门禁规则自纠
-  let mov = angleService.normalizeMovement(parsed.movement);
-  if (mov === 'static' && (!instruction.includes('固定') && !instruction.includes('static') && !instruction.includes('静止'))) {
-    mov = 'push';
-  }
-  let bgm = (parsed.bgm_prompt || '').trim();
-  if (!parsed.dialogue && !bgm) {
-    bgm = '富有张力的影视原声配乐，与当前情绪紧密咬合';
-  }
-
-  // 生成新的连戏快照
-  const newContinuitySnapshot = JSON.stringify({
-    characters: (Array.isArray(parsed.characters) ? parsed.characters : []).reduce((acc, charId) => {
-      const char = semPkg.getCharacter(charId);
-      if (char) {
-        acc[char.name] = {
-          screen_position: parsed.layout_description || 'in frame',
-          clothing: char.appearance || null,
-          expression: parsed.emotion || null,
-        };
+  const episodeMemory = db.prepare(`
+    SELECT * FROM storyboards
+    WHERE episode_id = ? AND deleted_at IS NULL
+    ORDER BY storyboard_number ASC
+  `).all(sb.episode_id).map((shot) => {
+    const memory = Object.fromEntries([
+      'id', 'storyboard_number', 'title', 'location', 'time', 'duration', 'action', 'result',
+      'dialogue', 'narration', 'characters', 'background_characters', 'dialogue_framing',
+      'start_framing', 'end_framing', 'transition_to_next', 'continuity_snapshot',
+    ].filter((field) => Object.prototype.hasOwnProperty.call(shot, field)).map((field) => [field, shot[field]]));
+    for (const field of ['characters', 'background_characters', 'continuity_snapshot']) {
+      if (typeof memory[field] === 'string') {
+        try { memory[field] = JSON.parse(memory[field]); } catch (_) {}
       }
-      return acc;
-    }, {}),
-    lighting: parsed.lighting_style || 'natural',
-    location: sb.location || 'scene',
-    overall_composition: parsed.layout_description || `${parsed.shot_type || '中景'} ${mov}`,
+    }
+    return memory;
   });
 
-  let finalStyle = '';
-  try {
-    const dramaRow = db.prepare('SELECT d.style, d.metadata FROM dramas d JOIN episodes e ON e.drama_id = d.id WHERE e.id = ?').get(sb.episode_id) || {};
-    const { resolvedStreamStyleFromDrama } = require('../utils/dramaStyleMerge');
-    finalStyle = resolvedStreamStyleFromDrama('', dramaRow) || dramaRow.style || '';
-  } catch (_) {
-    try {
-      const dramaRow = db.prepare('SELECT d.style FROM dramas d JOIN episodes e ON e.drama_id = d.id WHERE e.id = ?').get(sb.episode_id) || {};
-      finalStyle = dramaRow.style || '';
-    } catch (__) {}
-  }
-
-  const candidateImg = parsed.image_prompt || parsed.polished_prompt || (parsed.action ? composeStoryboardImagePrompt({ ...sb, ...parsed }, finalStyle) : sb.image_prompt);
-  const newImgPrompt = candidateImg && !isFlawedImagePrompt(candidateImg)
-    ? sanitizeStaticImagePrompt(candidateImg, { ...sb, ...parsed }, finalStyle)
-    : composeStoryboardImagePrompt({ ...sb, ...parsed }, finalStyle);
-  const newPolishedPrompt = parsed.polished_prompt && !isFlawedImagePrompt(parsed.polished_prompt)
-    ? sanitizeStaticImagePrompt(parsed.polished_prompt, { ...sb, ...parsed }, finalStyle)
-    : newImgPrompt;
-
-  const now = new Date().toISOString();
-  try {
-    db.prepare(`
-      UPDATE storyboards SET
-        title = ?,
-        shot_type = ?,
-        angle_h = ?,
-        angle_v = ?,
-        angle_s = ?,
-        movement = ?,
-        lighting_style = ?,
-        depth_of_field = ?,
-        duration = ?,
-        action = ?,
-        result = ?,
-        dialogue = ?,
-        bgm_prompt = ?,
-        sound_effect = ?,
-        layout_description = ?,
-        emotion = ?,
-        image_prompt = ?,
-        polished_prompt = ?,
-        continuity_snapshot = ?,
-        updated_at = ?
-      WHERE id = ? AND deleted_at IS NULL
-    `).run(
-      parsed.title || sb.title,
-      parsed.shot_type || sb.shot_type,
-      parsed.angle_h || sb.angle_h,
-      parsed.angle_v || sb.angle_v,
-      parsed.angle_s || sb.angle_s,
-      mov,
-      angleService.normalizeLighting(parsed.lighting_style) || sb.lighting_style,
-      angleService.normalizeDof(parsed.depth_of_field) || sb.depth_of_field,
-      Math.max(1, Number(parsed.duration) || sb.duration || 5),
-      parsed.action || sb.action,
-      parsed.result || sb.result,
-      parsed.dialogue ?? sb.dialogue,
-      bgm,
-      parsed.sound_effect ?? sb.sound_effect,
-      parsed.layout_description || sb.layout_description,
-      parsed.emotion || sb.emotion,
-      newImgPrompt,
-      newPolishedPrompt,
-      newContinuitySnapshot,
-      now,
-      sbId
-    );
-  } catch (upErr) {
-    if ((upErr.message || '').includes('image_prompt')) {
-      db.prepare(`
-        UPDATE storyboards SET
-          title = ?,
-          shot_type = ?,
-          angle_h = ?,
-          angle_v = ?,
-          angle_s = ?,
-          movement = ?,
-          lighting_style = ?,
-          depth_of_field = ?,
-          duration = ?,
-          action = ?,
-          result = ?,
-          dialogue = ?,
-          bgm_prompt = ?,
-          sound_effect = ?,
-          layout_description = ?,
-          emotion = ?,
-          polished_prompt = ?,
-          continuity_snapshot = ?,
-          updated_at = ?
-        WHERE id = ? AND deleted_at IS NULL
-      `).run(
-        parsed.title || sb.title,
-        parsed.shot_type || sb.shot_type,
-        parsed.angle_h || sb.angle_h,
-        parsed.angle_v || sb.angle_v,
-        parsed.angle_s || sb.angle_s,
-        mov,
-        angleService.normalizeLighting(parsed.lighting_style) || sb.lighting_style,
-        angleService.normalizeDof(parsed.depth_of_field) || sb.depth_of_field,
-        Math.max(1, Number(parsed.duration) || sb.duration || 5),
-        parsed.action || sb.action,
-        parsed.result || sb.result,
-        parsed.dialogue ?? sb.dialogue,
-        bgm,
-        parsed.sound_effect ?? sb.sound_effect,
-        parsed.layout_description || sb.layout_description,
-        parsed.emotion || sb.emotion,
-        newPolishedPrompt,
-        newContinuitySnapshot,
-        now,
-        sbId
-      );
+  const currentSemantic = {};
+  for (const field of ['characters', 'background_characters', 'character_visuals', 'last_frame_visuals', 'video_slots', 'semantic_slots', 'continuity_snapshot']) {
+    const value = sb[field];
+    if (typeof value === 'string') {
+      try { currentSemantic[field] = JSON.parse(value); } catch (_) { currentSemantic[field] = value; }
     } else {
-      throw upErr;
+      currentSemantic[field] = value;
     }
   }
-
   try {
-    rebuildPromptsForStoryboard(db, log, sbId);
-  } catch (_) {}
+    currentSemantic.props = db.prepare('SELECT prop_id FROM storyboard_props WHERE storyboard_id = ? ORDER BY prop_id').all(sbId).map((row) => row.prop_id);
+  } catch (_) {
+    currentSemantic.props = [];
+  }
+
+  const persistedCandidate = {
+    title: sb.title,
+    scene_id: sb.scene_id,
+    characters: currentSemantic.characters,
+    props: currentSemantic.props,
+    shot_type: sb.shot_type,
+    angle_h: sb.angle_h,
+    angle_v: sb.angle_v,
+    angle_s: sb.angle_s,
+    movement: sb.movement,
+    lighting_style: sb.lighting_style,
+    depth_of_field: sb.depth_of_field,
+    duration: sb.duration,
+    action: sb.action,
+    result: sb.result,
+    dialogue: sb.dialogue,
+    narration: sb.narration,
+    dialogue_framing: sb.dialogue_framing,
+    bgm_prompt: sb.bgm_prompt,
+    sound_effect: sb.sound_effect,
+    layout_description: sb.layout_description,
+    emotion: sb.emotion,
+    start_framing: sb.start_framing,
+    end_framing: sb.end_framing,
+    transition_to_next: sb.transition_to_next,
+    background_characters: currentSemantic.background_characters,
+    character_visuals: currentSemantic.character_visuals,
+    last_frame_visuals: currentSemantic.last_frame_visuals,
+    video_slots: currentSemantic.video_slots,
+    semantic_slots: currentSemantic.semantic_slots,
+    continuity_snapshot: currentSemantic.continuity_snapshot,
+    universal_segment_text: sb.universal_segment_text,
+  };
+  const currentCandidate = isPlainObject(workingCandidate)
+    ? mergeDirectorAgentPatch({}, workingCandidate)
+    : persistedCandidate;
+
+  const universalRefineContract = universalOmni
+    ? `
+【当前镜头属于全能分镜模式，局部微调不得破坏既有执行合同】
+- semantic_slots.h3_mode 必须保持 ref2va；first_frame_policy 与 last_frame_policy 必须保持 none。
+- required_references 第 1 项必须是当前 scene_id 对应的场景，随后覆盖所有画内主体与背景角色，总数不得超过 9。
+- 必须重新输出与本轮修改后动作、台词、时长一致的 universal_segment_text；其中 @图片N 与 required_references 顺序严格对应。
+${promptI18n.getStoryboardUniversalOmniModeSuffix(cfg)}
+`
+    : '';
+
+  const systemPrompt = `你是一位严谨的院线级导演与摄影指导（Director Agent）。
+你正在继续同一部短剧的导演会话，只对第 ${sb.storyboard_number} 镜进行原子级定向微调。本集完整剧本、整集分镜记忆、当前镜头完整槽位与前后镜连戏都会提供给你。
+你拥有全部语义决策权；后端只会校验并编译，不会替你补默认值、删除冲突项或改写运镜、时长、声音、人物及参考素材。
+只修改用户明确要求与为保持连戏所必需的字段；其他剧情、台词、时长、人物、造型、场景和镜头编号保持原样。
+直接对话默认建立说话人与受话人的视线轴；故意不看对方时必须在 gaze_motivation 写明剧情理由。咳嗽、吐血、受伤、摔倒、拔刀或发光等事件发生后，所有应当反应的画内角色必须在对应镜内段更新 facing、head_pose、gaze、attention_target、gaze_motivation 和 reaction_trigger。
+请精准响应用户指令，同时遵守不可变世界观、人物与道具合同，并保持前后连戏。
+
+${semPkg.getSystemDigest()}
+${DIRECTOR_ACTION_COMPLETION_CONTRACT}
+${universalRefineContract}`;
+
+  const userPrompt = `【本集完整剧本（持久导演记忆）】
+${semPkg.episode.script_content || '(本集剧本为空)'}
+
+【本集导演记忆（全部现有分镜摘要）】
+${JSON.stringify(episodeMemory, null, 2)}
+
+【当前工作候选（上一轮 Patch 已合并；本轮必须在此基础上继续修改）】
+${JSON.stringify(currentCandidate, null, 2)}
+
+【相邻镜头】
+上一镜：${prevShot ? JSON.stringify(prevShot) : '无'}
+下一镜：${nextShot ? JSON.stringify(nextShot) : '无'}
+
+【用户指令】
+${instruction}
+
+${correctionContext ? `【上一轮 ReAct 门禁反馈】\n${correctionContext}\n必须在本轮完整修复这些违规，不得改写与违规无关的内容。` : ''}
+
+只返回一个纯 JSON 对象，并严格二选一：
+1. 需要修改：{"patch":{"需要修改的字段":"修改后的值"}}
+2. 当前工作候选已经完整满足用户指令：{"noop":true,"reason":"说明哪些现有槽位已经满足"}
+
+- patch 只包含用户指令或本轮门禁反馈要求修改的字段，禁止重新输出完整分镜。
+- noop 必须有具体 reason，且不得同时包含 patch；禁止用空 patch 表示无需修改。
+- 未出现在 patch 中的字段由系统原样保留；禁止为了“完整”重复输出未修改字段。
+- 对象字段支持递归局部 Patch；数组字段一旦修改，必须返回该数组修改后的完整值。
+- 同一语义同时存在于 character_visuals、video_slots、semantic_slots 或 continuity_snapshot 时，必须在同一 patch 内同步修改相关位置，不能制造跨槽位冲突。
+- 不得修改 id、storyboard_number、episode_id、状态、时间戳等执行层字段。
+- 若需要新增或修复 video_slots.shots_timeline，每段必须且只能使用以下执行字段名：shot_number、timestamp、duration、camera、visible_characters、action、result、audio_lip_sync、character_trajectories。visible_characters 是本段实际入画人物，character_trajectories 必须且只能覆盖这些人物；特写、过肩和画外音可以使用外层人物清单的子集。timestamp 第一段可为 null，后续段使用 "00:02.000" 这类整数秒起始时间；duration 必须是正整数且不超过本镜总时长，全部段之和必须等于本镜总时长。camera 必须包含 shot_type、movement、movement_description。character_trajectories 必须且只能覆盖该段 visible_characters，每项使用 character_id、name、trajectory、terminal_pose、facial_expression、facing、head_pose、gaze、attention_target、gaze_motivation、reaction_trigger、mouth_state；禁止使用小数秒、segment、time、beat、dialogue_text、duration_seconds 或其他执行层不读取的同义字段。
+${universalOmni ? '- 若本轮修改影响动作、台词、时长或引用顺序，patch 必须同步包含 universal_segment_text。' : ''}`;
+
+  log.info('[导演Agent] 单分镜定向原子微调推理中...', { storyboard_id: sbId, instruction });
+  const outputTokenBudget = directorRepairTokenBudget(1, 1);
+  const parsedResponse = await agentsRuntime.runAgent(db, log, {
+    name: 'director-storyboard-refinement',
+    instructions: systemPrompt,
+    input: userPrompt,
+    outputType: agentsRuntime.directorRefinementOutputType,
+    maxTokens: outputTokenBudget,
+    temperature: 0.2,
+  });
+  if (!parsedResponse || typeof parsedResponse !== 'object' || Array.isArray(parsedResponse)) {
+    throw new Error('导演智能体未能解析微调 Patch');
+  }
+  const parsed = applySingleStoryboardPatch(currentCandidate, parsedResponse, sb.storyboard_number);
+  if (parsedResponse.noop === true) {
+    log.info('[导演Agent] 单分镜定向微调无需变更，当前候选已满足指令', {
+      storyboard_id: sbId,
+      reason: parsedResponse.reason,
+    });
+    return {
+      storyboard: sb,
+      continuity_snapshot: typeof sb.continuity_snapshot === 'string'
+        ? sb.continuity_snapshot
+        : JSON.stringify(currentCandidate.continuity_snapshot ?? null),
+      instruction,
+      no_op: true,
+      no_op_reason: String(parsedResponse.reason),
+      audit: { valid: true, error_count: 0, violations: [], no_op: true },
+    };
+  }
+
+  const requiredFields = [
+    'title', 'scene_id', 'characters', 'props', 'shot_type', 'angle_h', 'angle_v', 'angle_s',
+    'movement', 'lighting_style', 'depth_of_field', 'duration', 'action', 'result', 'dialogue',
+    'narration', 'dialogue_framing', 'bgm_prompt', 'sound_effect', 'layout_description', 'emotion',
+    'start_framing', 'end_framing', 'transition_to_next', 'background_characters',
+    'character_visuals', 'last_frame_visuals', 'video_slots', 'semantic_slots', 'continuity_snapshot',
+  ];
+  if (universalOmni) requiredFields.push('universal_segment_text');
+  const missing = requiredFields.filter((field) => !Object.prototype.hasOwnProperty.call(parsed, field));
+  if (missing.length) {
+    const error = Object.assign(new Error(`导演智能体微调结果缺少必要语义字段：${missing.join('、')}`), {
+      status: 422,
+      valid: false,
+      violations: missing.map((field) => ({
+        rule: 'INVARIANT_REQUIRED_AGENT_SLOT_MISSING',
+        severity: 'error',
+        shot_number: sb.storyboard_number,
+        conflict_slots: [field],
+        message: `分镜 #${sb.storyboard_number} 缺少 Agent 必须决策的语义字段 ${field}`,
+      })),
+    });
+    error.workingCandidate = parsed;
+    throw error;
+  }
+
+  const collectStructuralViolations = (value) => {
+    const violations = [];
+    for (const field of ['characters', 'props', 'background_characters', 'character_visuals', 'last_frame_visuals']) {
+      if (!Array.isArray(value[field])) violations.push({ field, expected: 'array' });
+    }
+    for (const field of ['video_slots', 'semantic_slots', 'continuity_snapshot']) {
+      if (!value[field] || typeof value[field] !== 'object' || Array.isArray(value[field])) {
+        violations.push({ field, expected: 'object' });
+      }
+    }
+    const valueDuration = Number(value.duration);
+    if (!Number.isFinite(valueDuration) || valueDuration <= 0) violations.push({ field: 'duration', expected: 'positive_number' });
+    if (!semPkg.getScene(value.scene_id)) violations.push({ field: 'scene_id', expected: 'existing_scene_id' });
+    for (const characterId of Array.isArray(value.characters) ? value.characters : []) {
+      if (!semPkg.getCharacter(characterId)) violations.push({ field: 'characters', expected: `existing_character_id:${characterId}` });
+    }
+    const knownProps = new Set((semPkg.catalogs.props || []).map((prop) => Number(prop.id)));
+    for (const propId of Array.isArray(value.props) ? value.props : []) {
+      if (!knownProps.has(Number(propId))) violations.push({ field: 'props', expected: `existing_prop_id:${propId}` });
+    }
+    return violations;
+  };
+
+  // 单镜 Patch 不强迫用户顺带重建历史旧槽位；只拦截本轮新引入的结构问题。
+  const baselineStructural = new Set(collectStructuralViolations(persistedCandidate).map((item) => JSON.stringify(item)));
+  const structuralViolations = collectStructuralViolations(parsed)
+    .filter((item) => !baselineStructural.has(JSON.stringify(item)));
+  const duration = Number(parsed.duration);
+  if (structuralViolations.length) {
+    const error = Object.assign(new Error('导演智能体微调结果的语义结构无效'), {
+      status: 422,
+      valid: false,
+      violations: structuralViolations.map(({ field, expected }) => ({
+        rule: 'INVARIANT_AGENT_SLOT_TYPE_INVALID',
+        severity: 'error',
+        shot_number: sb.storyboard_number,
+        conflict_slots: [field],
+        message: `字段 ${field} 必须满足 ${expected}`,
+      })),
+    });
+    error.workingCandidate = parsed;
+    throw error;
+  }
+
+  const baselineSlotShapes = new Set(agentSlotShapeViolations(persistedCandidate, sb.storyboard_number).map((item) => JSON.stringify([
+    item.rule, item.conflict_slots || [], item.message,
+  ])));
+  const slotShapeViolations = agentSlotShapeViolations(parsed, sb.storyboard_number).filter((item) => !baselineSlotShapes.has(JSON.stringify([
+    item.rule, item.conflict_slots || [], item.message,
+  ])));
+  if (slotShapeViolations.length) {
+    const error = Object.assign(new Error('导演智能体微调结果缺少完整语义槽位结构'), {
+      status: 422,
+      valid: false,
+      violations: slotShapeViolations,
+    });
+    error.workingCandidate = parsed;
+    throw error;
+  }
+
+  const candidate = {
+    ...sb,
+    ...parsed,
+    storyboard_number: sb.storyboard_number,
+    movement: angleService.normalizeMovement(parsed.movement),
+    lighting_style: angleService.normalizeLighting(parsed.lighting_style),
+    depth_of_field: angleService.normalizeDof(parsed.depth_of_field),
+    duration,
+  };
+  const scene = semPkg.getScene(parsed.scene_id);
+
+  const persistedEpisodeShots = db.prepare(
+    'SELECT * FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL ORDER BY storyboard_number ASC'
+  ).all(sb.episode_id).map((row) => {
+    const normalized = { ...row };
+    for (const field of ['characters', 'background_characters', 'character_visuals', 'last_frame_visuals', 'video_slots', 'semantic_slots']) {
+      if (typeof normalized[field] === 'string') {
+        try { normalized[field] = JSON.parse(normalized[field]); } catch (_) {}
+      }
+    }
+    return normalized;
+  });
+  const episodeShots = persistedEpisodeShots.map((row) => Number(row.id) === sbId ? candidate : row);
+  const auditOptions = {
+    db,
+    props: semPkg.catalogs.props,
+    dramaEra: semPkg.drama.era,
+    directorPlanningMode: 'persisted',
+  };
+  const baselineAudit = validateAllInvariants(persistedEpisodeShots, auditOptions);
+  const candidateAudit = validateAllInvariants(episodeShots, auditOptions);
+  const violationSignature = (item) => JSON.stringify([
+    item?.rule || '', item?.shot_number || null, item?.message || '', item?.conflict_slots || [],
+  ]);
+  const baselineViolations = new Set((baselineAudit.violations || []).map(violationSignature));
+  // 局部 Patch 只对本轮新引入的违规负责。目标镜已有的历史缺口保持可见但不阻塞一次无关微调；
+  // 一旦 Patch 改坏字段或影响相邻镜，违规签名会相对基线发生变化并被立即拦截。
+  const relevantViolations = (candidateAudit.violations || []).filter(
+    (item) => !baselineViolations.has(violationSignature(item))
+  );
+  const audit = {
+    ...candidateAudit,
+    valid: relevantViolations.length === 0,
+    error_count: relevantViolations.length,
+    violations: relevantViolations,
+    ignored_preexisting_error_count: Math.max(0, (candidateAudit.error_count || 0) - relevantViolations.length),
+  };
+  if (!audit.valid) {
+    const error = Object.assign(new Error(`单镜微调未通过视听本体硬门禁（${audit.error_count} 项）`), {
+      status: 422,
+      valid: false,
+      violations: audit.violations,
+    });
+    error.workingCandidate = parsed;
+    throw error;
+  }
+
+  let finalStyle = '';
+  const dramaRow = db.prepare('SELECT d.style, d.metadata FROM dramas d JOIN episodes e ON e.drama_id = d.id WHERE e.id = ?').get(sb.episode_id) || {};
+  const { resolvedStreamStyleFromDrama } = require('../utils/dramaStyleMerge');
+  finalStyle = resolvedStreamStyleFromDrama('', dramaRow) || dramaRow.style || '';
+
+  const { compileImagePromptFromSlots } = require('./visualSlots');
+  const characterAppearances = parsed.characters.map((charId) => {
+    const character = semPkg.getCharacter(charId);
+    return character ? (character.appearance ? `「${character.name}」${character.appearance}` : character.name) : '';
+  }).filter(Boolean).join('\n');
+  const promptCandidate = {
+    ...candidate,
+    location: scene.location || '',
+    time: scene.time || '',
+    character_appearances: characterAppearances,
+  };
+  const imagePrompt = compileImagePromptFromSlots(promptCandidate, parsed.character_visuals, { style: finalStyle });
+  const continuitySnapshot = JSON.stringify(parsed.continuity_snapshot);
+  const universalSegmentText = universalOmni
+    ? String(parsed.universal_segment_text || '').trim()
+    : sb.universal_segment_text;
+  const now = new Date().toISOString();
+
+  db.transaction(() => {
+    linkEpisodeCharacters(db, sb.episode_id, [parsed]);
+    db.prepare(`
+      UPDATE storyboards SET
+        title = ?, scene_id = ?, location = ?, time = ?, characters = ?,
+        shot_type = ?, angle_h = ?, angle_v = ?, angle_s = ?, movement = ?,
+        lighting_style = ?, depth_of_field = ?, duration = ?, action = ?, result = ?,
+        dialogue = ?, narration = ?, dialogue_framing = ?, bgm_prompt = ?, sound_effect = ?,
+        layout_description = ?, emotion = ?, image_prompt = ?, polished_prompt = ?, video_prompt = NULL,
+        character_visuals = ?, last_frame_visuals = ?, video_slots = ?, semantic_slots = ?,
+        start_framing = ?, end_framing = ?, transition_to_next = ?, background_characters = ?,
+        continuity_snapshot = ?, universal_segment_text = ?, updated_at = ?
+      WHERE id = ? AND deleted_at IS NULL
+    `).run(
+      parsed.title, Number(parsed.scene_id), scene.location || '', scene.time || '', JSON.stringify(parsed.characters),
+      parsed.shot_type, parsed.angle_h, parsed.angle_v, parsed.angle_s, candidate.movement,
+      candidate.lighting_style, candidate.depth_of_field, duration, parsed.action, parsed.result,
+      parsed.dialogue, parsed.narration, parsed.dialogue_framing, parsed.bgm_prompt, parsed.sound_effect,
+      parsed.layout_description, parsed.emotion, imagePrompt, imagePrompt,
+      JSON.stringify(parsed.character_visuals), JSON.stringify(parsed.last_frame_visuals),
+      JSON.stringify(parsed.video_slots), JSON.stringify(parsed.semantic_slots),
+      parsed.start_framing, parsed.end_framing, parsed.transition_to_next,
+      JSON.stringify(parsed.background_characters), continuitySnapshot, universalSegmentText, now, sbId
+    );
+
+    db.prepare('DELETE FROM storyboard_props WHERE storyboard_id = ?').run(sbId);
+    const insertProp = db.prepare('INSERT INTO storyboard_props (storyboard_id, prop_id) VALUES (?, ?)');
+    for (const propId of parsed.props) insertProp.run(sbId, Number(propId));
+  })();
 
   const updatedSb = db.prepare('SELECT * FROM storyboards WHERE id = ?').get(sbId);
   log.info('[导演Agent] 单分镜定向原子微调已完成入库', { storyboard_id: sbId });
+  return { storyboard: updatedSb, continuity_snapshot: continuitySnapshot, instruction, audit };
+}
 
-  return {
-    storyboard: updatedSb,
-    continuity_snapshot: newContinuitySnapshot,
-    instruction,
-  };
+/**
+ * 同一导演 Agent 的单镜局部会话：不重建整集，门禁失败时把结构化违规退回 Agent 继续 ReAct。
+ * 只有单镜候选通过整集连戏门禁后才会原子更新该分镜。
+ */
+async function refineSingleStoryboard(db, log, cfg, storyboardId, userInstruction = '', options = {}) {
+  const maxReflectionRounds = Math.max(1, Math.min(500, Number(
+    options.maxReflectionRounds || options.max_reflection_rounds || 500
+  )));
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : () => {};
+  let correctionContext = '';
+  let workingCandidate = null;
+  let lastError = null;
+
+  for (let round = 1; round <= maxReflectionRounds; round++) {
+    onProgress(
+      Math.min(95, 10 + Math.floor(((round - 1) / maxReflectionRounds) * 85)),
+      round === 1
+        ? '导演 Agent 正在读取本集记忆并局部修订目标分镜...'
+        : `单镜 ReAct 自纠第 ${round}/${maxReflectionRounds} 轮...`
+    );
+    try {
+      const result = await refineSingleStoryboardAttempt(
+        db, log, cfg, storyboardId, userInstruction, correctionContext, workingCandidate
+      );
+      return { ...result, reflection_rounds: round - 1, max_reflection_rounds: maxReflectionRounds };
+    } catch (error) {
+      lastError = error;
+      const violations = Array.isArray(error.violations) ? error.violations : [];
+      if (!violations.length || round >= maxReflectionRounds) break;
+      if (isPlainObject(error.workingCandidate)) {
+        workingCandidate = mergeDirectorAgentPatch({}, error.workingCandidate);
+      }
+      correctionContext = JSON.stringify({
+        error: error.message,
+        violations: violations.map((item) => ({
+          rule: item.rule,
+          shot_number: item.shot_number,
+          conflict_slots: item.conflict_slots || [],
+          message: item.message,
+        })),
+      }, null, 2);
+      log.warn('[导演Agent] 单分镜微调未通过门禁，继续 ReAct 自纠', {
+        storyboard_id: Number(storyboardId),
+        round,
+        violations: violations.length,
+        violation_details: violations.map((item) => ({
+          rule: item.rule,
+          conflict_slots: item.conflict_slots || [],
+          message: item.message,
+        })),
+      });
+    }
+  }
+
+  if (lastError) {
+    lastError.message = `单镜导演微调经过 ${maxReflectionRounds} 轮 ReAct 仍未通过门禁：${lastError.message}`;
+    throw lastError;
+  }
+  throw new Error('单镜导演微调未产生有效结果');
 }
 
 /**
@@ -1022,7 +2650,23 @@ function reconcileObsoleteDramaAssets(db, log, dramaId) {
 
 module.exports = {
   runDirectorAgent,
+  auditDirectorDraft,
   runFullDramaDirectorAgent,
   refineSingleStoryboard,
+  planDirectorSourceAssignments,
+  validTimelineDurationPlans,
   reconcileObsoleteDramaAssets,
+  directorOutputTokenBudget,
+  directorRepairTokenBudget,
+  buildDirectorDraftBatches,
+  assertDirectorDraftBatch,
+  isolateDirectorDraftBatchPrompt,
+  normalizeCoverageText,
+  selectDirectorRepairTarget,
+  directorAtomicRepairHint,
+  directorAtomicPatchSchema,
+  requiresDirectorStructuralRepair,
+  repairContextForViolations,
+  applyDirectorRepairPlan,
+  applySingleStoryboardPatch,
 };
