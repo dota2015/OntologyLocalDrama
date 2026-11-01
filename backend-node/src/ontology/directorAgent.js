@@ -491,6 +491,7 @@ function directorAtomicRepairHint(violation) {
     INVARIANT_MISSING_INCOMING_CONTINUITY: '在 semantic_slots 中补齐 continuity_from_previous，必须包含 relationship、previous_end_state、entry_state、causal_link；只修复当前镜头，不能改写上一镜。',
     INVARIANT_INCOMING_CONTINUITY_INCOMPLETE: '在 semantic_slots.continuity_from_previous 中补齐门禁指出的字段，并保持上一镜结束状态、本镜进入状态和因果关系一致。',
     INVARIANT_EYELINE_MATCH_WITHOUT_EYE_TARGET: '修正 continuity_from_previous 与对应 character_visuals/video_slots 的视线目标，明确上一镜视线来源、本镜目标和注意力落点。',
+    INVARIANT_SPEECH_SLOT_DIVERGENCE: '先修复台词槽位冲突，再重新评估时长：以当前镜头数据库 dialogue/narration 为不可变原文，逐字同步 semantic_slots.speech_plan.text 与 video_slots.audio_lip_sync.dialogue_content；禁止因为派生的超时结果直接拆镜或把下一镜台词带入本镜。',
   };
   const exact = fieldRules[item.rule] || '';
   const speechExtension = item.rule === 'INVARIANT_SPEECH_OVER_BUDGET'
@@ -618,6 +619,55 @@ function directorAtomicPatchSchemaSingle(violation, targetShot = null) {
           properties: { h3_mode: { const: 'ref2va' } },
         },
       },
+    };
+  }
+  if (violation?.rule === 'INVARIANT_SPEECH_SLOT_DIVERGENCE') {
+    // A speech-slot divergence is a prerequisite error for timing checks.  The
+    // Agent must first restore the one authoritative utterance across the DB
+    // dialogue/narration, semantic speech plan and H3 audio slot.  Keep this
+    // as a deterministic patch contract so a derived over-budget violation
+    // cannot make the Agent pull the next shot's line into this one.
+    const dialogueParts = require('../services/dialogueDubbingService').dialogueSegments(targetShot?.dialogue || '')
+      .filter((line) => String(line?.text || '').trim());
+    const narration = String(targetShot?.narration || '').trim();
+    const databasePart = dialogueParts.length === 1 ? dialogueParts[0] : null;
+    const canonicalText = databasePart?.text || narration;
+    const canonicalSpeaker = databasePart?.speaker || '';
+    if (!canonicalText) return null;
+
+    const patchProperties = {
+      dialogue: { const: String(targetShot?.dialogue || '') },
+      narration: { const: narration },
+      semantic_slots: {
+        type: 'object', additionalProperties: false, required: ['speech_plan'],
+        properties: {
+          speech_plan: {
+            type: 'object', additionalProperties: false, required: ['text'],
+            properties: {
+              text: { const: canonicalText },
+              ...(canonicalSpeaker ? { speaker_name: { const: canonicalSpeaker } } : {}),
+            },
+          },
+        },
+      },
+      video_slots: {
+        type: 'object', additionalProperties: false, required: ['audio_lip_sync'],
+        properties: {
+          audio_lip_sync: {
+            type: 'object', additionalProperties: false,
+            required: ['dialogue_content'],
+            properties: {
+              dialogue_content: { const: canonicalText },
+              ...(canonicalSpeaker ? { speaker_name: { const: canonicalSpeaker } } : {}),
+            },
+          },
+        },
+      },
+    };
+    return {
+      type: 'object', additionalProperties: false,
+      required: ['dialogue', 'narration', 'semantic_slots', 'video_slots'],
+      properties: patchProperties,
     };
   }
   if (['INVARIANT_MISSING_INCOMING_CONTINUITY', 'INVARIANT_INCOMING_CONTINUITY_INCOMPLETE', 'INVARIANT_EYELINE_MATCH_WITHOUT_EYE_TARGET'].includes(violation?.rule)) {
@@ -1846,7 +1896,15 @@ ${batch.script_segment}
       readonly_context_shots: repairContext.map((shot) => shot.shot_number),
     });
 
-    const requiresStructuralRepair = repairTarget.violations.some(requiresDirectorStructuralRepair);
+    // Speech-slot divergence is upstream of the timing assessment.  Repair the
+    // authoritative utterance first; otherwise the Agent sees a derived
+    // over-budget error and incorrectly performs a structural split that can
+    // pull the following shot's dialogue into the current shot.
+    const hasSpeechDivergence = repairTarget.violations.some(
+      (item) => item?.rule === 'INVARIANT_SPEECH_SLOT_DIVERGENCE'
+    );
+    const requiresStructuralRepair = !hasSpeechDivergence
+      && repairTarget.violations.some(requiresDirectorStructuralRepair);
     const repairOutputProtocol = requiresStructuralRepair
       ? `【本轮只允许拆镜修复】
 只返回 {"structural_repairs":[{"replace_shot_number":${repairTarget.shot_number},"storyboards":[新镜头变更字段1,新镜头变更字段2]}]}。
@@ -1872,6 +1930,8 @@ ${JSON.stringify(repairTarget.violations)}
 ${JSON.stringify(shotViolations)}
 【本任务镜头时长范围】${requestedPacing.range.min}～${requestedPacing.range.max} 秒；H3 的 8 秒能力上限不覆盖本任务设置。
 ${lastRejectedRepair?.shot_number === repairTarget.shot_number ? `【上轮修复被拒绝的完整反馈】\n${JSON.stringify(lastRejectedRepair)}\n上轮补丁没有写入当前镜头。请根据被拒绝的补丁与复检路径调整本轮方案，不得把相同的无效补丁再次提交。` : ''}
+
+${hasSpeechDivergence ? '【台词槽位优先级】本镜同时出现台词槽位冲突与时长违规时，本轮只统一数据库对白/旁白、semantic_slots.speech_plan 与 video_slots.audio_lip_sync 的实际朗读文本；不要拆镜、不要延长时长、不要把相邻镜头台词并入本镜。统一后系统会重新计算时长，只有仍然超限时下一轮才允许拆镜。' : ''}
 
 本轮唯一可修改目标是分镜 #${repairTarget.shot_number}。相邻镜头只用于读取连戏上下文，严禁返回它们的 Patch。
 

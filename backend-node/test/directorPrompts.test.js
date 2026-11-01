@@ -355,6 +355,27 @@ describe('Director Agent Prompt Generation & Persistence', () => {
     }
   });
 
+  it('repairs speech-slot divergence before considering a derived over-budget split', () => {
+    const targetShot = {
+      dialogue: '丽霞：“知道和做到之间，差的不是一句下次一定，而是你现在愿不愿意开始。',
+      narration: '',
+    };
+    assert.equal(requiresDirectorStructuralRepair({
+      rule: 'INVARIANT_SPEECH_OVER_BUDGET',
+      max_duration: 8,
+      assessment: { recommendedDuration: 11 },
+    }), true);
+    const schema = directorAtomicPatchSchema({
+      rule: 'INVARIANT_SPEECH_SLOT_DIVERGENCE',
+    }, targetShot);
+    assert.deepEqual(schema.required, ['dialogue', 'narration', 'semantic_slots', 'video_slots']);
+    assert.equal(schema.properties.dialogue.const, targetShot.dialogue);
+    assert.equal(schema.properties.semantic_slots.properties.speech_plan.properties.text.const,
+      '知道和做到之间，差的不是一句下次一定，而是你现在愿不愿意开始。');
+    assert.equal(schema.properties.video_slots.properties.audio_lip_sync.properties.dialogue_content.const,
+      '知道和做到之间，差的不是一句下次一定，而是你现在愿不愿意开始。');
+  });
+
   it('requires an Agent structural split when one outer shot contains multiple speakers', () => {
     assert.equal(requiresDirectorStructuralRepair({ rule: 'INVARIANT_MULTI_SPEAKER_SHOT' }), true);
   });
