@@ -21,8 +21,9 @@ function resolve(settings,shot,options={}){
   if(timing.spokenText(text.narration))labels.push('旁白');
   const turns=Array.isArray(options.segments ?? shot.speech_plan?.segments)
     ? (options.segments ?? shot.speech_plan.segments).map(s=>s.kind==='narration'?'旁白':s.speaker || '人物') : labels;
-  const switches=turns.reduce((n,s,i)=>n+(i>0 && s!==turns[i-1]?1:0),0);
-  const pauses=round(Math.min(2,switches*.25));
+  // Speaker changes are represented by the explicit speech timeline.  Do not
+  // subtract an implicit pause from every shot's usable duration.
+  const pauses=0;
   const hasSpeech=original.speechSeconds>0;
   const rate=1;
   let reason='语音倍速已停用，统一使用自然语速',source='fixed';
@@ -30,8 +31,8 @@ function resolve(settings,shot,options={}){
   const effectiveRate=1;
   const assessment=timing.assessSpeechTiming(text,duration,{speechRate:effectiveRate,turnPauseSeconds:pauses});
   return {mode:'fixed',speech_rate:rate,effective_rate:effectiveRate,reason,source,has_speech:hasSpeech,
-    duration,turn_pause_seconds:pauses,end_reserve_seconds:assessment.endReserveSeconds,han_budget:assessment.hanBudget,
-    english_word_budget:Math.floor(Math.max(0,duration-assessment.endReserveSeconds-pauses)*2.5*effectiveRate),
+    duration,turn_pause_seconds:pauses,end_reserve_seconds:0,han_budget:assessment.hanBudget,
+    english_word_budget:Math.floor(duration*2.5*effectiveRate),
     estimated_seconds:assessment.requiredSeconds,fits:assessment.ok};
 }
 function budgetOptions(plan){return {speechRate:plan.effective_rate,turnPauseSeconds:plan.turn_pause_seconds};}
@@ -56,6 +57,6 @@ function recordAiPlan(db,episodeId,shotId,aiShot){
 function planningInstructions(settings,maxDuration){
   narrative.normalize(settings);
   return `\n【自然语速与台词字数预算 / Natural speech budget】
-人物对白与旁白统一使用自然语速 1.0x，禁止输出或使用 speech_rate、speech_rate_reason，禁止通过加速把长台词塞入短镜头。可说话时间 = duration - 1.5秒收尾 - 0.25秒 × 说话者切换次数（切换预留最多2秒）；中文预算 floor(可说话时间 × 4)，英文预算 floor(可说话时间 × 2.5)，混合语言按用时相加。对白与旁白共用预算，人物名和表演标签不计入朗读字数。先完整表达剧情；单镜超出预算时，在配置范围内延长镜头，超过${maxDuration?maxDuration+'秒':'项目时长范围'}上限则按语义拆镜，逐字保留原文，不截断、不删字。 Use ordinary natural speech speed only; extend or split shots instead of time-stretching speech.`;
+人物对白与旁白统一使用自然语速 1.0x，禁止输出或使用 speech_rate、speech_rate_reason，禁止通过加速把长台词塞入短镜头。可说话时间 = duration；中文预算 floor(duration × 4)，英文预算 floor(duration × 2.5)，混合语言按用时相加。对白与旁白共用预算，人物名和表演标签不计入朗读字数。先完整表达剧情；单镜超出预算时，在配置范围内延长镜头，超过${maxDuration?maxDuration+'秒':'项目时长范围'}上限则按语义拆镜，逐字保留原文，不截断、不删字。动作与台词按显式时间轴同步安排，不添加固定收尾静音。 Use ordinary natural speech speed only; extend or split shots instead of time-stretching speech.`;
 }
 module.exports={resolve,budgetOptions,forShot,getShot,recordAiPlan,planningInstructions,sourceHash};

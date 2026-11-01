@@ -35,23 +35,23 @@ test('legacy pace inputs, density and emotion all resolve to natural speed', () 
   assert.deepEqual(narrative.normalize({ ...auto, speech_mode: 'unknown' }), { preset: 'balanced', speech_rate: 1, speech_mode: 'fixed' });
 });
 
-test('dialogue and narration share conservative mixed-language budgets and speaker turn reserves', () => {
+test('dialogue and narration share the full measured shot duration without implicit tail reserves', () => {
   const fixed = rate => ({ ...auto, speech_mode: 'fixed', speech_rate: rate });
   const shot = { duration: 5, dialogue: '王奕宸："好'.concat('好'.repeat(17), '。"') };
   const ordinary = delivery.resolve(fixed(1), shot);
   const brisk = delivery.resolve(fixed(1.3), shot);
-  assert.equal(ordinary.han_budget, 14);
-  assert.equal(ordinary.fits, false);
-  assert.equal(brisk.han_budget, 14);
-  assert.equal(brisk.fits, false);
+  assert.equal(ordinary.han_budget, 20);
+  assert.equal(ordinary.fits, true);
+  assert.equal(brisk.han_budget, 20);
+  assert.equal(brisk.fits, true);
   const mixed = delivery.resolve(fixed(1.3), { duration: 5 }, { segments: [
     { kind: 'dialogue', speaker: '王奕宸', text: '你好' },
     { kind: 'dialogue', speaker: '林教官', text: 'hello friend' },
     { kind: 'narration', text: '他们笑了' },
   ] });
-  assert.equal(mixed.turn_pause_seconds, 0.5);
-  assert.equal(mixed.han_budget, 12);
-  assert.equal(mixed.estimated_seconds, 4.3);
+  assert.equal(mixed.turn_pause_seconds, 0);
+  assert.equal(mixed.han_budget, 20);
+  assert.equal(mixed.estimated_seconds, 2.3);
   assert.equal(mixed.fits, true);
 });
 
@@ -60,7 +60,7 @@ test('legacy 1.5x settings are ignored and cannot expand the natural-speed budge
   const shot = { duration: 5, dialogue: '好'.repeat(22) };
   const res = delivery.resolve(auto15, shot);
   assert.equal(res.speech_rate, 1);
-  assert.equal(res.han_budget, 14);
+  assert.equal(res.han_budget, 20);
   assert.equal(res.fits, false);
   const instructions = delivery.planningInstructions(auto15, 5);
   assert.match(instructions, /自然语速 1.0x/);
@@ -115,6 +115,6 @@ test('speech planning uses natural speed before splitting and never loses overlo
   assert.equal(split.map(s => speechFingerprint(s.dialogue)).join(''), speechFingerprint(source.dialogue));
   assert.match(system, /禁止输出或使用 speech_rate、speech_rate_reason/);
   assert.match(system, /自然语速 1.0x/);
-  assert.match(system, /0.25秒/);
+  assert.doesNotMatch(system, /0\.25秒/);
   assert.match(system, /对白与旁白共用预算/);
 });

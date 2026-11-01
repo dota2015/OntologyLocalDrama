@@ -1,9 +1,10 @@
 // Conservative planning estimate, not a guarantee of generated speech fidelity.
 const HAN_PER_SECOND = 4;
 const WORDS_PER_SECOND = 2.5;
-// H3 speech is generated rather than deterministically time-stretched. Keep a
-// larger tail so the final syllables are not clipped at the video boundary.
-const END_RESERVE_SECONDS = 1.5;
+// Speech windows are planned to the actual shot boundary.  Do not reserve a
+// fixed silent tail: H3/TTS timing is now explicit at the second level and a
+// hard-coded tail needlessly clips otherwise valid dialogue.
+const END_RESERVE_SECONDS = 0;
 
 function spokenText(value) {
   let text = String(value ?? '').trim();
@@ -46,15 +47,15 @@ function assessSpeechTiming(shot, duration = shot?.duration, options = {}) {
 
 function timingError(shot, assessment) {
   const num = shot?.storyboard_number ?? shot?.shot_number;
-  return `${num ? `分镜 ${num}` : '当前镜头'}对白与旁白超出时长预算：${assessment.duration} 秒镜头约可容纳 ${assessment.hanBudget} 个中文字（对白与旁白合计，含收尾预留），当前约需 ${assessment.requiredSeconds} 秒。请按语义拆分镜头，或延长镜头并确认模型支持该时长；不会自动删减台词。`;
+  return `${num ? `分镜 ${num}` : '当前镜头'}对白与旁白超出时长预算：${assessment.duration} 秒镜头约可容纳 ${assessment.hanBudget} 个中文字（对白与旁白合计，按实际语音时长），当前约需 ${assessment.requiredSeconds} 秒。请按语义拆分镜头，或延长镜头并确认模型支持该时长；不会自动删减台词。`;
 }
 
 function timingInstructions(duration = 5) {
   const d = Number(duration) > 0 ? Number(duration) : 5;
   return `\n\n【强制对白时长预算 / Mandatory speech timing】
 完整保留剧本中的对白、旁白及其顺序，不得缩写、删字或用加速说话来凑镜头数。
-按每秒约 ${HAN_PER_SECOND} 个中文字或 ${WORDS_PER_SECOND} 个英文单词估算；混合语言相加，dialogue 与 narration 共用时间，每镜至少预留 ${END_RESERVE_SECONDS} 秒收尾，动作、停顿、情绪重的镜头应进一步减少对白。
-${d} 秒镜头最多约 ${Math.floor(Math.max(0, d - END_RESERVE_SECONDS) * HAN_PER_SECOND)} 个中文字；超过时按完整语义拆成连续镜头，保持人物、场景、动作衔接，每个新镜头 duration 使用 ${d} 秒。
+按每秒约 ${HAN_PER_SECOND} 个中文字或 ${WORDS_PER_SECOND} 个英文单词估算；混合语言相加，dialogue 与 narration 共用本镜实际时间，不预留固定收尾静音；动作、停顿、情绪重的镜头应按时间轴显式安排。
+${d} 秒镜头最多约 ${Math.floor(d * HAN_PER_SECOND)} 个中文字；超过时按完整语义拆成连续镜头，保持人物、场景、动作衔接，每个新镜头 duration 使用 ${d} 秒。
 此预算及台词完整性优先于镜头数量和总时长目标；允许增加镜头数。不要给每个镜头强塞重复旁白。台词分别写入 dialogue/narration，视频提示词中的台词必须与字段一致。`;
 }
 

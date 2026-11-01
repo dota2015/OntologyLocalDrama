@@ -3,7 +3,7 @@
     <span v-if="loading" class="speech-hint">计算台词预算中…</span>
     <el-button v-else-if="error" link size="small" @click="refresh">重试预算</el-button>
     <template v-else-if="plan && plan.has_speech">
-      <el-tooltip content="对白与旁白使用自然语速，共用时长预算，并预留收尾和换人停顿。" placement="top">
+      <el-tooltip content="对白与旁白使用自然语速，共用本镜实际时长；动作与台词按时间轴同步。" placement="top">
         <span class="speech-info">
           自然语速 · 约{{ plan.han_budget }}字{{ plan.fits ? '' : '(超出)' }}
         </span>

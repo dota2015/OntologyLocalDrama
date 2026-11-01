@@ -29,7 +29,7 @@ test('duration ranges reject invalid limits and keep the model durations when th
   assert.deepEqual(range.normalizeDurationRange(null,5),{min:4,max:5});
   const shots = [{duration:4, action:'一瞥'}, {duration:7,action:'走近并停下'}, {duration:5, dialogue:'甲：'+'字'.repeat(24)}];
   const output = await enforceStoryboardSpeechTiming(shots, {durationRange:{min:4,max:8},generate:() => assert.fail('Fits without splitting')});
-  assert.deepEqual(output.map(s=>s.duration),[4,7,8]);
+  assert.deepEqual(output.map(s=>s.duration),[4,7,6]);
   const persistedShot = { ...output[1] };
   const derived = deriveStoryboardFieldsFromAi(persistedShot,'', '16:9',{targetClipDuration:5,durationRange:{min:4,max:8}});
   assert.equal(persistedShot.duration,7,'persistence must not reset duration to the legacy fixed value');
@@ -50,7 +50,7 @@ test('speech exceeding the maximum splits without losing words and each fragment
   }});
   assert.equal(calls,1);
   assert.equal(preservesSpeech(source,output),true);
-  assert.deepEqual(output.map(s=>s.duration),[5,7,4]);
+  assert.deepEqual(output.map(s=>s.duration),[4,7,4]);
   assert.deepEqual(output.map(s=>s.long_take_role),['head','continuation','tail']);
   assert.deepEqual(output.map(s=>s.long_take_sequence),[1,2,3]);
   assert.equal(new Set(output.map(s=>s.long_take_group_id)).size,1);

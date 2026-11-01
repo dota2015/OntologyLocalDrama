@@ -46,8 +46,8 @@ test('a line finishing at 3s preserves the assisted rise through the 6s ending',
   const prompt = h3.compilePrompt(fixture.refs, fixture.speech, contract, {}, { timeline, duration: 6, allowChinese: true });
   assert.equal(JSON.stringify(fixture), before, 'compilation must not rewrite the planned actions');
   assert.match(prompt, /from second 0\.00 through second 3\.00/);
-  assert.match(prompt, /complete every final word by second 4\.5/);
-  assert.match(prompt, /final 1\.5 seconds free of speech while the planned actions and reactions continue/);
+  assert.match(prompt, /complete every final word by second 6\.0/);
+  assert.match(prompt, /use all remaining planned time for the ongoing action or reaction/);
   assert.match(prompt, /stops speaking until their next planned line and continues the planned actions/);
   assert.match(prompt, /3至5秒苏晚扶父亲由半躺转为坐姿/);
   assert.match(prompt, /5至6秒父亲坐稳/);

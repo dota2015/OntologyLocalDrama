@@ -119,8 +119,8 @@ async function enforceStoryboardSpeechTiming(storyboards, { targetDuration, dura
     let fragments;
     let lastError = timingError(source, assessment);
     for (let attempt = 0; attempt < 2; attempt++) {
-      const minCount = Math.max(2, Math.ceil(assessment.requiredSeconds / Math.max(1, (durationRange?.max || duration) - 1.5)));
-      const maxBudgetPerShot = Math.floor(Math.max(0, (durationRange?.max || duration) - 1.5) * 4);
+      const minCount = Math.max(2, Math.ceil(assessment.requiredSeconds / Math.max(1, durationRange?.max || duration)));
+      const maxBudgetPerShot = Math.floor((durationRange?.max || duration) * 4);
       const userPrompt = `将此超出对白预算的分镜按语义拆分为至少 ${minCount} 个连续分镜（当前台词/旁白约需 ${assessment.requiredSeconds} 秒，单镜上限 ${durationRange?.max || duration} 秒）。
 【必须拆镜】严禁只返回 1 个分镜！拆分后每个新分镜的台词/旁白字数绝不能超过 ${maxBudgetPerShot} 个中文字！只返回 JSON 数组，每项保留原分镜的字段结构。
 对白和旁白必须逐字完整、按句号/逗号原顺序分配切分到各个分镜中，保留说话人，禁止增删改写；不得重复整段台词。保持人物、场景、道具及动作连续，合理分配动作与停顿。

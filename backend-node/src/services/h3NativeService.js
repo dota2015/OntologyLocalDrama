@@ -844,7 +844,7 @@ function compilePrompt(refs, speech, translated, anchors = {}, options = {}) {
   if (timeline.length) {
     if (rawShotDescriptions.length !== timeline.length) throw new Error('H3 英文提示词整理未完整返回短剧镜内剪辑段，请重试');
     const hasDuration = Number(options.duration) > 0;
-    const deadline = hasDuration ? Math.max(0.5, Number(options.duration) - Number(options.delivery?.end_reserve_seconds || 1.5)) : null;
+    const deadline = hasDuration ? Number(options.duration) : null;
     let segmentStart = 0;
     const timedSegments = timeline.map((segment) => {
       const explicitStart = parseH3TimestampSeconds(segment.timestamp);
@@ -896,7 +896,7 @@ function compilePrompt(refs, speech, translated, anchors = {}, options = {}) {
       const speechAtBeat = startsHere.map(event => event.prompt).join(' ');
       if (index === 0) {
         const speechDeadline = events.length
-          ? `CRITICAL SPEECH DEADLINE: follow every stated utterance time and ${deadline == null ? 'complete every final word before the speech-free ending interval' : `complete every final word by second ${deadline.toFixed(1)}, leaving the final ${Number(options.delivery?.end_reserve_seconds || 1.5).toFixed(1)} seconds free of speech while the planned actions and reactions continue`}. ${speechAtBeat}${transitionOut} `
+          ? `CRITICAL SPEECH DEADLINE: follow every stated utterance time and ${deadline == null ? 'complete every final word within the declared shot duration' : `complete every final word by second ${deadline.toFixed(1)}; use all remaining planned time for the ongoing action or reaction`}. ${speechAtBeat}${transitionOut} `
           : '';
         return `[Shot 1] ${opening} ${speechDeadline}${subjectCue}${boundDirectionCue}${description}`;
       }
@@ -905,9 +905,9 @@ function compilePrompt(refs, speech, translated, anchors = {}, options = {}) {
     }).join('\n');
   } else {
     const hasDuration = Number(options.duration) > 0;
-    const deadline = hasDuration ? Math.max(0.5, Number(options.duration) - Number(options.delivery?.end_reserve_seconds || 1.5)) : null;
+    const deadline = hasDuration ? Number(options.duration) : null;
     const speechDeadline = events.length
-      ? `CRITICAL SPEECH DEADLINE: Dialogue follows the stated timing and ${deadline == null ? 'completes every final word before the speech-free ending interval' : `completes every final word by second ${deadline.toFixed(1)}`}. Planned actions and reactions continue during the speech-free ending interval. ${events.map(event => event.prompt).join(' ')}`
+      ? `CRITICAL SPEECH DEADLINE: Dialogue follows the stated timing and ${deadline == null ? 'completes every final word within the declared shot duration' : `completes every final word by second ${deadline.toFixed(1)}`}. The planned action and reaction continue in sync with speech, and the shot ends at the declared boundary. ${events.map(event => event.prompt).join(' ')}`
       : '';
     detailedTimeline = `[Shot 1] ${opening} ${speechDeadline} ${visual}`;
   }
@@ -929,7 +929,7 @@ async function prepare(db, log, opts) {
   const afterVoices = load(db, dramaId, shotId);
   if (hash([shotInputSnapshot(afterVoices.shot), h3SettingsSnapshot(afterVoices), narrative.fromMetadata(afterVoices.project.metadata)]) !== hash([shotInputSnapshot(initial.shot), h3SettingsSnapshot(initial), speech.narrative_style])) throw new Error('准备 H3 参考声音期间分镜内容或叙事设置已变化，请重试');
   const delivery=require('./speechDeliveryService').forShot(db,initial.shot,{segments:speech.lines,duration:opts.duration});
-  if(delivery.has_speech && !delivery.fits)throw new Error(`本镜提取后的对白与旁白约需 ${delivery.estimated_seconds} 秒（含收尾和换人停顿），超过 ${delivery.duration} 秒，请延长镜头或按语义拆镜`);
+  if(delivery.has_speech && !delivery.fits)throw new Error(`本镜提取后的对白与旁白约需 ${delivery.estimated_seconds} 秒，超过 ${delivery.duration} 秒，请延长镜头或按语义拆镜`);
   speech.narrative_style={...speech.narrative_style,speech_rate:delivery.speech_rate};
   const videoTimeline = plannedVideoTimeline(initial.shot);
   const voiceMap = {};

@@ -556,7 +556,7 @@ describe('Director Agent Prompt Generation & Persistence', () => {
     assert.match(draftInstructions, /UNIVERSAL DIRECTING PRINCIPLES/);
     assert.match(draftInstructions, /不以任何风格选项为开关/);
     assert.match(draftInstructions, /实际 TTS 时长/);
-    assert.match(draftInstructions, /语音收尾预留只限制发声，不要求身体静止/);
+    assert.match(draftInstructions, /不要预留固定的无台词收尾/);
     assert.match(draftInstructions, /后端不替你推测或补写语义/);
     assert.equal(directorCallOptions.some((options) => Object.hasOwn(options, 'reasoningEffort') || Object.hasOwn(options, 'reasoning_effort')), false,
       '导演不应覆盖 AI 配置中的思考强度');

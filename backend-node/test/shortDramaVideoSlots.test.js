@@ -246,7 +246,7 @@ test('legacy video slots stay readable until regenerated under sync_v1', () => {
   assert.equal(slots.validateVideoSlots(shot, legacy).some(v => v.rule === 'INVARIANT_SPEECH_ACTION_OVERLAP_MISSING'), false);
 });
 
-test('H3 prompt executes the Agent timeline and gives speech a protected ending beat', () => {
+test('H3 prompt executes the Agent timeline and uses the full declared speech window', () => {
   const refs = [
     { source: 'speaker.png', kind: 'character', character_id: 1 },
     { source: 'listener.png', kind: 'character', character_id: 2 },
@@ -283,7 +283,7 @@ test('H3 prompt executes the Agent timeline and gives speech a protected ending 
   });
   assert.match(prompt, /A 4-shot edit/);
   assert.match(prompt, /\[Shot 2\] At 00:02\.000/);
-  assert.match(prompt, /complete every final word by second 6\.5/);
+  assert.match(prompt, /complete every final word by second 8\.0/);
   assert.equal((prompt.match(/<scenetrans>/g) || []).length, 4, 'only the 2s and 4s cuts crossed by the utterance get paired transition markers');
   assert.equal((prompt.match(/这棚子姓赵。想住，就把口粮留下。/g) || []).length, 1);
   assert.match(prompt, /Character direction/);

@@ -41,7 +41,9 @@ async function prepare(db, log, dramaId, shotId, root, lines, duration, delivery
   const config = dubbing.configFor(db, profile.config_id);
   const speechRate = tts.isIndexTts(config) ? tts.defaultSpeed(config) : Number(delivery?.speech_rate || profile.speed || 1);
   const totalDuration = Number(duration);
-  const reserve = Number(delivery?.end_reserve_seconds || 1.5);
+  // The complete TTS track may use the full shot duration.  A fixed 1.5s
+  // silent tail clips valid final words and is no longer part of the contract.
+  const reserve = 0;
   const lineSpecs = lines.map(line => ({
     kind: line.kind,
     speaker: line.speaker || '',

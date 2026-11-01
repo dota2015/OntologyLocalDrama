@@ -121,7 +121,7 @@ test('H3 ignores saved per-shot pace and records the natural-speed budget', asyn
   const directory = path.join(root, 'projects/0001_20261022_test/h3-prompts');
   const record = JSON.parse(fs.readFileSync(path.join(directory, fs.readdirSync(directory)[0])));
   assert.equal(record.speech_delivery.speech_rate, 1);
-  assert.equal(record.speech_delivery.han_budget, 14);
+  assert.equal(record.speech_delivery.han_budget, 20);
   assert.equal(record.steps, 23);
 });
 test('selected stage reference reaches H3 and a new outfit starts from its own frame', async t => {
