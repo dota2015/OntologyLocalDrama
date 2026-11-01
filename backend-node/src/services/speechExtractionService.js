@@ -22,18 +22,32 @@ function parseObject(value) {
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
   } catch (_) { return null; }
 }
-function comparableSpeech(value) {
-  return plainText(value).replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
+function escapeRegExp(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+function withoutSpeakerLabel(value, speakerHints = []) {
+  let text = plainText(value);
+  for (const hint of speakerHints) {
+    const speaker = String(hint || '').trim();
+    if (!speaker) continue;
+    const prefix = new RegExp(`^${escapeRegExp(speaker)}\\s*[：:]\\s*`, 'u');
+    if (prefix.test(text)) return text.replace(prefix, '').trim();
+  }
+  return text;
+}
+function comparableSpeech(value, speakerHints = []) {
+  return withoutSpeakerLabel(value, speakerHints).replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
 }
 function structuredPlan(shot, parseDialogue) {
   const semantic = parseObject(shot.semantic_slots);
   const video = parseObject(shot.video_slots);
   const speech = semantic?.speech_plan && typeof semantic.speech_plan === 'object' ? semantic.speech_plan : null;
   const lip = video?.audio_lip_sync && typeof video.audio_lip_sync === 'object' ? video.audio_lip_sync : null;
-  const semanticText = meaningful(String(speech?.text || '')) ? plainText(speech.text) : '';
-  const videoText = meaningful(String(lip?.dialogue_content || '')) ? plainText(lip.dialogue_content) : '';
+  const speakerHints = [speech?.speaker_name, lip?.speaker_name];
+  const semanticText = meaningful(String(speech?.text || '')) ? withoutSpeakerLabel(speech.text, speakerHints) : '';
+  const videoText = meaningful(String(lip?.dialogue_content || '')) ? withoutSpeakerLabel(lip.dialogue_content, speakerHints) : '';
   if (!semanticText && !videoText) return null;
-  if (semanticText && videoText && comparableSpeech(semanticText) !== comparableSpeech(videoText)) {
+  if (semanticText && videoText && comparableSpeech(semanticText, speakerHints) !== comparableSpeech(videoText, speakerHints)) {
     throw new Error('分镜权威台词冲突：semantic_slots.speech_plan.text 与 video_slots.audio_lip_sync.dialogue_content 不一致，请让导演 Agent 修复后再生成');
   }
   const text = semanticText || videoText;
@@ -45,7 +59,7 @@ function structuredPlan(shot, parseDialogue) {
   }
   if (meaningful(shot.narration)) dbSegments.push({ kind: 'narration', speaker: '', text: plainText(shot.narration) });
   const sameKind = dbSegments.filter(item => item.kind === (narration ? 'narration' : 'dialogue'));
-  if (sameKind.length !== 1 || comparableSpeech(sameKind[0].text) !== comparableSpeech(text)) {
+  if (sameKind.length !== 1 || comparableSpeech(sameKind[0].text, [sameKind[0].speaker, ...speakerHints]) !== comparableSpeech(text, speakerHints)) {
     throw new Error('分镜权威台词冲突：结构化语义槽位与数据库对白/旁白不一致，请让导演 Agent 修复后再生成');
   }
   const speaker = narration ? '' : String(speech?.speaker_name || lip?.speaker_name || sameKind[0].speaker || '').trim();

@@ -51,8 +51,25 @@ function meaningfulSpeech(value) {
   return !!text && !/^(?:无|无对白|无对话|无台词|无旁白|none|null|n\/a|silent)[。.!！\s]*$/iu.test(text);
 }
 
-function comparableSpeech(value) {
-  return String(value || '')
+function escapeRegExp(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+// Database dialogue commonly stores a display label ("露娜：台词"), while
+// semantic/video slots store only the spoken text. The label is formatting,
+// not spoken content, so normalize it only when it matches a known speaker.
+function comparableSpeech(value, speakerHints = []) {
+  let text = String(value || '').trim();
+  for (const hint of speakerHints) {
+    const speaker = String(hint || '').trim();
+    if (!speaker) continue;
+    const prefix = new RegExp(`^${escapeRegExp(speaker)}\\s*[：:]\\s*`, 'u');
+    if (prefix.test(text)) {
+      text = text.replace(prefix, '');
+      break;
+    }
+  }
+  return text
     .replace(/^[“”"「」『』']+|[“”"「」『』']+$/gu, '')
     .replace(/[^\p{L}\p{N}]/gu, '')
     .toLowerCase();
@@ -171,11 +188,12 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
         }
         const authoritativeParts = dialogueParts.filter((line) => line.kind === (isSemanticNarration ? 'narration' : 'dialogue'));
         const dbPart = authoritativeParts.length === 1 ? authoritativeParts[0] : null;
+        const speechHints = [speechPlan.speaker_name, videoSpeech.speaker_name, dbPart?.speaker];
         const textsAgree = semanticText
           && videoText
           && dbPart
-          && comparableSpeech(semanticText) === comparableSpeech(videoText)
-          && comparableSpeech(semanticText) === comparableSpeech(dbPart.text);
+          && comparableSpeech(semanticText, speechHints) === comparableSpeech(videoText, speechHints)
+          && comparableSpeech(semanticText, speechHints) === comparableSpeech(dbPart.text, speechHints);
         if ((semanticText || videoText || dialogueParts.length) && !textsAgree) {
           violations.push({
             rule: 'INVARIANT_SPEECH_SLOT_DIVERGENCE',

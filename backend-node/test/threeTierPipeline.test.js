@@ -403,6 +403,26 @@ describe('Three-Tier Architectural Evolution: Agent First, Ontology Gatekeeper, 
         JSON.stringify(violations)
       );
     });
+
+    it('treats a matching speaker label in database dialogue as formatting', () => {
+      const shot = {
+        shot_number: 15,
+        dialogue: '露娜：简报第三项写得很清楚！',
+        characters: [1],
+        background_characters: [],
+        character_visuals: [{ character_id: 1 }],
+        semantic_slots: {
+          visible_characters: [{ id: 1, name: '露娜' }],
+          background_characters: [],
+          speech_plan: { speaker_id: 1, speaker_name: '露娜', text: '简报第三项写得很清楚！' },
+        },
+        video_slots: {
+          audio_lip_sync: { speaker_name: '露娜', dialogue_content: '简报第三项写得很清楚！' },
+        },
+      };
+      const violations = checkCrossSlotInvariants([shot]);
+      assert.equal(violations.filter((v) => v.rule === 'INVARIANT_SPEECH_SLOT_DIVERGENCE').length, 0);
+    });
   });
 
   describe('Tier 3: Execution Layer H3 Agent-Plan Compiler', () => {
