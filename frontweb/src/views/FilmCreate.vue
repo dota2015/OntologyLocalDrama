@@ -668,7 +668,8 @@ async function loadDrama() {
     shotDurationMax.value = Math.max(shotDurationMin.value, Math.min(8, Number(savedRange?.max) || videoClipDuration.value || 5))
     videoClipDuration.value = Math.round((shotDurationMin.value + shotDurationMax.value) / 2)
     storyboardIncludeNarration.value = !!(d.metadata && d.metadata.storyboard_include_narration)
-    storyboardUniversalOmni.value = !!(d.metadata && d.metadata.storyboard_universal_omni)
+    // 全能分镜不再提供项目级开关，始终默认启用；单镜 FL2VA 由分镜配置覆盖。
+    storyboardUniversalOmni.value = true
     storyboardUseFirstLastFrame.value = !!(d.metadata && d.metadata.storyboard_use_first_last_frame)
     lastFrameUseFirstLayoutLock.value = d.metadata?.last_frame_use_first_layout_lock !== false
     if (d.metadata && d.metadata.video_frame_contiguity !== undefined) {

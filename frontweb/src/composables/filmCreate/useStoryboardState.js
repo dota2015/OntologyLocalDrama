@@ -82,7 +82,8 @@ export function useStoryboardState({
   const storyboardCount = ref(null)
   const videoDuration = ref(null)
   const storyboardIncludeNarration = ref(false)
-  const storyboardUniversalOmni = ref(false)
+  // H3 全能分镜是系统默认规划；用户只在单个分镜配置中手动切换 FL2VA。
+  const storyboardUniversalOmni = ref(true)
   const storyboardUseFirstLastFrame = ref(false)
   const exportingStoryboardSheet = ref(false)
   const lastFrameUseFirstLayoutLock = ref(true)

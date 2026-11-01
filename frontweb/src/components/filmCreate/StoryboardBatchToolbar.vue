@@ -53,13 +53,6 @@
     </div>
 
     <div class="sb-config-row sb-narration-export-row" style="margin-top:10px;flex-wrap:wrap;align-items:center;gap:12px">
-      <el-checkbox
-        :model-value="storyboardUniversalOmni"
-        @update:model-value="$emit('update:storyboardUniversalOmni', $event)"
-        @change="$emit('save-settings', false)"
-      >
-        全能分镜模式（导演 Agent 按 H3 Ref2VA 多参考方案规划，并输出多子分镜段落）
-      </el-checkbox>
       <el-button
         v-if="hasStoryboards"
         class="sb-export-srt-btn"
@@ -239,7 +232,6 @@ defineProps({
   storyboardCount: { type: [Number, String, null], default: null },
   videoDuration: { type: [Number, String, null], default: null },
   gridMode: { type: String, default: 'single' },
-  storyboardUniversalOmni: { type: Boolean, default: false },
   storyboardUseFirstLastFrame: { type: Boolean, default: false },
   videoFrameContiguity: { type: Boolean, default: false },
   hasStoryboards: { type: Boolean, default: false },
@@ -271,7 +263,6 @@ defineEmits([
   'update:storyboardCount',
   'update:videoDuration',
   'update:gridMode',
-  'update:storyboardUniversalOmni',
   'update:videoFrameContiguity',
   'save-settings',
   'director-generate',

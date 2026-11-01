@@ -21,7 +21,6 @@
         v-model:storyboard-count="storyboardCount"
         v-model:video-duration="videoDuration"
         v-model:grid-mode="gridMode"
-        v-model:storyboard-universal-omni="storyboardUniversalOmni"
         v-model:video-frame-contiguity="videoFrameContiguity"
         :storyboard-use-first-last-frame="storyboardUseFirstLastFrame"
         :has-storyboards="storyboards.length > 0"
@@ -75,16 +74,22 @@
         </template>
       </StoryboardBatchToolbar>
       <div v-if="directorRunForDisplay" class="director-run-audit">
-        <div class="director-run-audit__main">
+        <div class="director-run-audit__header">
           <el-tag size="small" :type="directorRunTagType(directorRunForDisplay.status)">
             {{ directorRunStatusLabel(directorRunForDisplay.status) }}
           </el-tag>
           <strong>导演分镜版本 {{ latestDirectorRunVersion }}</strong>
-          <span>开始：{{ formatTaskTime(latestDirectorRun.created_at) }}</span>
-          <span v-if="latestDirectorRun.completed_at">完成：{{ formatTaskTime(latestDirectorRun.completed_at) }}</span>
-          <span v-if="latestDirectorRunResult.total_shots">{{ latestDirectorRunResult.total_shots }} 镜</span>
-          <span v-if="latestDirectorRunResult.planning_mode">规划：{{ latestDirectorRunResult.planning_mode }}</span>
-          <span v-if="latestDirectorRunResult.reflection_repairs != null">ReAct 修复：{{ latestDirectorRunResult.reflection_repairs }} 次</span>
+          <span class="director-run-audit__time">开始：{{ formatTaskTime(latestDirectorRun.created_at) }}</span>
+          <span v-if="latestDirectorRun.completed_at" class="director-run-audit__time">完成：{{ formatTaskTime(latestDirectorRun.completed_at) }}</span>
+          <span v-if="latestDirectorRunResult.total_shots" class="director-run-audit__badge">{{ latestDirectorRunResult.total_shots }} 镜</span>
+          <span v-if="latestDirectorRunResult.planning_mode" class="director-run-audit__badge">规划：{{ latestDirectorRunResult.planning_mode }}</span>
+          <span v-if="latestDirectorRunResult.reflection_repairs != null" class="director-run-audit__badge">ReAct 修复：{{ latestDirectorRunResult.reflection_repairs }} 次</span>
+        </div>
+        <div v-if="['pending', 'processing', 'running'].includes(directorRunForDisplay.status)" class="director-run-audit__progress">
+          <el-progress :percentage="Math.max(0, Math.min(100, Number(effectiveDirectorProgress) || 0))" :stroke-width="8" :show-text="false" />
+          <span>{{ effectiveDirectorMessage || '导演智能体正在后台推演...' }}</span>
+        </div>
+        <div v-if="latestDirectorRunResult.token_usage" class="director-run-audit__usage">
           <el-tooltip v-if="latestDirectorRunResult.token_usage" placement="top">
             <template #content>
               <div>累计本任务规划、生成与自纠请求；缓存和推理 Token 已包含在输入／输出中。</div>
@@ -92,7 +97,7 @@
                 {{ stage.agent }} · {{ stage.model }}：{{ stage.total_tokens.toLocaleString() }} Token（{{ stage.requests }} 次请求）
               </div>
             </template>
-            <span>
+            <span class="director-run-audit__usage-text">
               Token{{ latestDirectorRunResult.token_usage.unreported_requests ? '（已知部分）' : '' }}：{{ latestDirectorRunResult.token_usage.total_tokens.toLocaleString() }}
               · 输入 {{ latestDirectorRunResult.token_usage.input_tokens.toLocaleString() }}
               / 输出 {{ latestDirectorRunResult.token_usage.output_tokens.toLocaleString() }}
@@ -102,10 +107,13 @@
           </el-tooltip>
         </div>
         <el-alert v-if="directorRunForDisplay.status === 'failed' && latestDirectorRun.error" :title="latestDirectorRun.error" type="error" :closable="false" show-icon />
-        <div v-if="directorRunForDisplay.status === 'failed' && latestDirectorRun.checkpoint?.available">
-          <span>已保存断点：{{ latestDirectorRun.checkpoint.stage }} · {{ latestDirectorRun.checkpoint.completed_shots }} 镜初稿</span>
+        <div v-if="directorRunForDisplay.status === 'failed' && latestDirectorRun.checkpoint?.available" class="director-run-audit__checkpoint">
+          <div>
+            <strong>已保存断点</strong>
+            <span>{{ latestDirectorRun.checkpoint.stage }} · {{ latestDirectorRun.checkpoint.completed_shots }} 镜初稿</span>
+            <small>继续任务会沿用原规划；需要改变镜头数量或节奏，请重新生成。</small>
+          </div>
           <el-button type="primary" size="small" :disabled="isAnyDirectorGenerating" :loading="directorGenerating" @click="onDirectorAgentGenerate(latestDirectorRun.id)">继续失败任务</el-button>
-          <span>沿用原任务设置；需要改动规划时，请使用上方「导演生成分镜脚本」重新生成。</span>
         </div>
         <div class="director-run-audit__id" :title="latestDirectorRun.id">任务 {{ latestDirectorRun.id }}</div>
       </div>
@@ -3522,7 +3530,7 @@ async function onDirectorAgentGenerate(resumeTaskId = null) {
     const res = await ontologyAPI.directorGenerate(currentEpisodeId.value, resumeTaskId ? { resume_task_id: resumeTaskId } : {
       ...planningInputs,
       shot_duration_range: { min: shotDurationMin.value, max: shotDurationMax.value },
-      universal_omni_storyboard: !!storyboardUniversalOmni.value,
+      universal_omni_storyboard: true,
     })
     const taskData = res?.data ?? res
     const taskId = taskData?.task_id
@@ -4690,21 +4698,40 @@ html.light .empty-tip {
 .director-run-audit {
   margin-top: 10px;
   padding: 9px 12px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px 16px;
   border: 1px solid #dbeafe;
   border-radius: 8px;
   background: #f8fbff;
   color: #475569;
   font-size: 12px;
 }
-.director-run-audit__main { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
-.director-run-audit__main strong { color: #1e3a8a; }
+.director-run-audit__header { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 7px 12px; min-width: 0; }
+.director-run-audit__header strong { color: #1e3a8a; }
+.director-run-audit__time { color: #64748b; }
+.director-run-audit__badge { padding: 2px 7px; border-radius: 999px; background: #e0ecff; color: #315b9b; }
+.director-run-audit__progress { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; min-width: 0; color: #475569; }
+.director-run-audit__progress .el-progress { flex: 0 0 150px; }
+.director-run-audit__progress span { min-width: 0; overflow-wrap: anywhere; }
+.director-run-audit__usage { grid-column: 1 / -1; color: #475569; }
+.director-run-audit__usage-text { overflow-wrap: anywhere; }
+.director-run-audit__checkpoint { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border: 1px solid #fecaca; border-radius: 6px; background: #fff7f7; color: #7f1d1d; }
+.director-run-audit__checkpoint > div { display: grid; gap: 2px; min-width: 0; }
+.director-run-audit__checkpoint small { color: #991b1b; }
 .director-run-audit__id { color: #94a3b8; font-family: monospace; white-space: nowrap; }
 :global(html.dark .director-run-audit) { border-color: #334155; background: #0f172a; color: #cbd5e1; }
-:global(html.dark .director-run-audit__main strong) { color: #93c5fd; }
+:global(html.dark .director-run-audit__header strong) { color: #93c5fd; }
+:global(html.dark .director-run-audit__badge) { background: #172554; color: #bfdbfe; }
+:global(html.dark .director-run-audit__checkpoint) { border-color: #7f1d1d; background: #2a1111; color: #fecaca; }
+:global(html.dark .director-run-audit__checkpoint small) { color: #fca5a5; }
+@media (max-width: 800px) {
+  .director-run-audit { grid-template-columns: 1fr; }
+  .director-run-audit__progress { align-items: flex-start; flex-direction: column; }
+  .director-run-audit__progress .el-progress { flex-basis: auto; width: 100%; }
+  .director-run-audit__checkpoint { align-items: flex-start; flex-direction: column; }
+}
 
 .storyboard-generating-tip {
   display: flex;
