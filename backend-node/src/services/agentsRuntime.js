@@ -729,21 +729,26 @@ function directorStructuralRepairOutputType(shotNumber) {
       end_framing: { type: 'string', maxLength: 500 },
       transition_to_next: { type: 'string', maxLength: 400 },
       semantic_slots: {
-        type: 'object', additionalProperties: true,
+        type: 'object', additionalProperties: false,
         required: ['source_script_excerpt'],
         properties: {
           source_script_excerpt: { type: 'string' },
           source_script_unit_ids: { type: 'array', items: { type: 'string' } },
+          speech_plan: { type: 'object', additionalProperties: true },
+          audio_lip_sync: { type: 'string', maxLength: 80 },
+          shot_duration: { type: 'integer', minimum: 4, maximum: 8 },
+          continuity_from_previous: { type: 'object', additionalProperties: true },
         },
       },
-      video_slots: { type: 'object', additionalProperties: true },
-      character_visuals: { type: 'array', maxItems: 3, items: { type: 'object', additionalProperties: true } },
-      last_frame_visuals: { type: 'array', maxItems: 3, items: { type: 'object', additionalProperties: true } },
-      creation_mode: { type: 'string', maxLength: 80 },
-      universal_segment_text: { type: 'string', maxLength: 1200 },
-      long_take_group_id: { type: 'null' },
-      long_take_role: { type: 'null' },
-      long_take_sequence: { type: 'null' },
+      video_slots: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          performance_contract: { type: 'string', maxLength: 40 },
+          audio_lip_sync: { type: 'object', additionalProperties: true },
+          timing: { type: 'object', additionalProperties: true },
+          shots_timeline: { type: 'array', items: { type: 'object', additionalProperties: true } },
+        },
+      },
     },
   };
   return {

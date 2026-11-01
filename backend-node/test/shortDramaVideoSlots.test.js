@@ -56,8 +56,8 @@ test('structural director repairs use compact patches over the original shot', (
   assert.equal(semantic.properties.source_script_unit_ids.type, 'array');
   assert.ok(item.required.includes('video_slots'));
   assert.ok(item.required.includes('duration'));
-  assert.ok(item.properties.video_slots.additionalProperties);
-  assert.ok(item.properties.character_visuals);
+  assert.equal(item.properties.video_slots.additionalProperties, false);
+  assert.equal(item.properties.character_visuals, undefined);
 });
 
 test('legacy Agent trajectory aliases survive deterministic compilation', () => {
