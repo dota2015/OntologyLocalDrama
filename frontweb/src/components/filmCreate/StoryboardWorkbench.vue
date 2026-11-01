@@ -1132,7 +1132,7 @@
 </template>
 
 <script setup>
-import { directorPlanningInputs } from '@/utils/directorPlanningInputs'
+import { directorPlanningInputs, speechPlanningWarning } from '@/utils/directorPlanningInputs'
 import { ref, reactive, computed, watch, nextTick, inject, provide, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox, ElNotification, ElLoading } from 'element-plus'
 import { Loading, WarningFilled, Clock } from '@element-plus/icons-vue'
@@ -1194,6 +1194,7 @@ const scriptEstimateStoryboardTitle = ctx.scriptEstimateStoryboardTitle
 const scriptEstimateStoryboardHint = ctx.scriptEstimateStoryboardHint
 const scriptEstimateVideoDurationTitle = ctx.scriptEstimateVideoDurationTitle
 const scriptEstimateVideoDurationHint = ctx.scriptEstimateVideoDurationHint
+const scriptContent = ctx.scriptContent
 const storyboardCount = ctx.storyboardCount
 const videoDuration = ctx.videoDuration
 const storyboardIncludeNarration = ctx.storyboardIncludeNarration
@@ -3497,8 +3498,15 @@ function isDirectorRefiningShot(storyboardId) {
 const directorPlanningWarning = computed(() => {
   try {
     directorPlanningInputs(storyboardCount.value, videoDuration.value, { min: shotDurationMin.value, max: shotDurationMax.value })
-    return ''
   } catch (error) { return error.message }
+  const configuredSpeed = Number(store?.drama?.metadata?.tts_dubbing?.speed)
+  return speechPlanningWarning(
+    scriptContent?.value,
+    storyboardCount.value,
+    videoDuration.value,
+    { min: shotDurationMin.value, max: shotDurationMax.value },
+    Number.isFinite(configuredSpeed) && configuredSpeed > 0 ? configuredSpeed : 1.25,
+  )
 })
 
 async function onDirectorAgentGenerate(resumeTaskId = null) {

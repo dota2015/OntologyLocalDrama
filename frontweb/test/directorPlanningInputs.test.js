@@ -2,12 +2,22 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { parse, compileScript } from '@vue/compiler-sfc'
-import { directorPlanningInputs } from '../src/utils/directorPlanningInputs.js'
+import { directorPlanningInputs, estimateScriptSpeech, speechPlanningWarning } from '../src/utils/directorPlanningInputs.js'
 
 test('auto inputs are omitted and impossible manual combinations explain the adjustment',()=>{
   assert.deepEqual(directorPlanningInputs(null,undefined,{min:4,max:8}),{})
   assert.deepEqual(directorPlanningInputs(20,131,{min:4,max:8}),{storyboard_count:20,video_duration:131})
   assert.throws(()=>directorPlanningInputs(10,131,{min:4,max:8}),/17–32 镜/)
+})
+
+test('speech preflight uses the configured TTS speed and warns before submission', () => {
+  const script = Array.from({ length: 5 }, () => '妈妈："先把数学作业写完。"\n奕辰："马上马上，我打完这一局就写。"').join('\n')
+  const estimate = estimateScriptSpeech(script, 1.25)
+  assert.equal(estimate.han, 100)
+  assert.equal(estimate.speed, 1.25)
+  assert.ok(estimate.seconds > 0)
+  assert.match(speechPlanningWarning(script, 1, null, { min: 4, max: 8 }, 1.25), /TTS 1\.25x/)
+  assert.equal(speechPlanningWarning(script, 10, null, { min: 4, max: 8 }, 1.25), '')
 })
 
 const {descriptor}=parse(fs.readFileSync(new URL('../src/components/filmCreate/StoryboardWorkbench.vue',import.meta.url),'utf8'))

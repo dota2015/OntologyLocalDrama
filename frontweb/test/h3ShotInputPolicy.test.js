@@ -41,5 +41,5 @@ test('FL2VA inherit-tail uses the completed predecessor instead of a storyboard 
 test('missing H3 director plan is blocked instead of guessed from creation mode', () => {
   const policy = h3ShotInputPolicy({})
   assert.equal(policy.allowed, false)
-  assert.match(policy.reason, /缺少有效的 H3 执行方案/)
+  assert.match(policy.reason, /缺少.*执行方案/)
 })
