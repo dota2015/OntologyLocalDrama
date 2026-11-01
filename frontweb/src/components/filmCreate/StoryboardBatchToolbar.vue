@@ -12,9 +12,9 @@
           class="sb-config-input"
           @update:model-value="$emit('update:storyboardCount', $event)"
         />
-        <span class="sb-config-hint sb-config-hint--estimate" :title="scriptEstimateStoryboardTitle">
-          留空由 AI 决定{{ scriptEstimateStoryboardHint }}
-        </span>
+        <el-tooltip v-if="scriptEstimateStoryboardTitle" :content="scriptEstimateStoryboardTitle" placement="top">
+          <span class="sb-field-help" aria-label="分镜数量说明">ⓘ</span>
+        </el-tooltip>
       </label>
       <span class="sb-config-divider">｜</span>
       <label class="sb-config-item">
@@ -28,11 +28,10 @@
           class="sb-config-input"
           @update:model-value="$emit('update:videoDuration', $event)"
         />
-        <span class="sb-config-hint sb-config-hint--estimate" :title="scriptEstimateVideoDurationTitle">
-          留空由 AI 决定{{ scriptEstimateVideoDurationHint }}
-        </span>
+        <el-tooltip v-if="scriptEstimateVideoDurationTitle" :content="scriptEstimateVideoDurationTitle" placement="top">
+          <span class="sb-field-help" aria-label="视频总时长说明">ⓘ</span>
+        </el-tooltip>
       </label>
-      <span class="sb-config-hint">手动值须能容纳完整台词与动作；不足时导演会给出调整建议。</span>
       <el-alert v-if="planningWarning" :title="planningWarning" type="warning" :closable="false" show-icon />
       <span class="sb-config-divider">｜</span>
       <label class="sb-config-item">
@@ -48,7 +47,9 @@
           <el-option label="四宫格" value="quad_grid" />
           <el-option label="九宫格" value="nine_grid" />
         </el-select>
-        <span class="sb-config-hint">四/九宫格自动按视角拆分</span>
+        <el-tooltip content="四宫格或九宫格会按视角自动拆分图片；首尾帧模式下不可用。" placement="top">
+          <span class="sb-field-help" aria-label="序列图模式说明">ⓘ</span>
+        </el-tooltip>
       </label>
     </div>
 
@@ -305,5 +306,19 @@ defineEmits([
   flex-wrap: wrap;
   gap: 10px;
   align-items: center;
+}
+.sb-field-help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  border: 1px solid #a5b4fc;
+  border-radius: 50%;
+  color: #6366f1;
+  font-size: 11px;
+  line-height: 1;
+  cursor: help;
+  user-select: none;
 }
 </style>
