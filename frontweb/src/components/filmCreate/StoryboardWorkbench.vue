@@ -1133,7 +1133,7 @@
 
 <script setup>
 import { directorPlanningInputs, speechPlanningWarning } from '@/utils/directorPlanningInputs'
-import { ref, reactive, computed, watch, nextTick, inject, provide, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, watch, nextTick, inject, provide, onMounted, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox, ElNotification, ElLoading } from 'element-plus'
 import { Loading, WarningFilled, Clock } from '@element-plus/icons-vue'
 import StoryboardBatchToolbar from './StoryboardBatchToolbar.vue'
@@ -1205,6 +1205,36 @@ const gridMode = ctx.gridMode
 const videoClipDuration = ctx.videoClipDuration
 const shotDurationMin = ctx.shotDurationMin
 const shotDurationMax = ctx.shotDurationMax
+const ttsPlanningSpeed = ref(1.25)
+
+async function loadTtsPlanningSpeed() {
+  try {
+    const result = await aiAPI.list('tts')
+    const configs = Array.isArray(result) ? result : (result?.configs || result?.items || [])
+    const active = configs.filter((item) => item && item.is_active !== false)
+    const selectedId = store?.drama?.metadata?.tts_dubbing?.config_id
+    const selected = selectedId != null
+      ? active.find((item) => Number(item.id) === Number(selectedId))
+      : null
+    const config = selected || active.find((item) => item.is_default) || active[0]
+    if (!config) return
+    let settings = config.settings
+    if (typeof settings === 'string') {
+      try { settings = JSON.parse(settings) } catch (_) { settings = {} }
+    }
+    const configured = Number(settings?.speed)
+    if (Number.isFinite(configured) && configured > 0) {
+      ttsPlanningSpeed.value = configured
+      return
+    }
+    const provider = String(config.provider || '').toLowerCase()
+    ttsPlanningSpeed.value = /^(indextts|indextts2|indextts25)$/i.test(provider) || /7860/i.test(String(config.base_url || '')) ? 1.25 : 1
+  } catch (_) {
+    // The inline warning remains useful with the IndexTTS project default.
+  }
+}
+
+onMounted(loadTtsPlanningSpeed)
 const submitGenerationJob = ctx.submitGenerationJob
 const serverGenerationJobs = ctx.serverGenerationJobs
 const batchImageRunning = ctx.batchImageRunning
@@ -3499,13 +3529,12 @@ const directorPlanningWarning = computed(() => {
   try {
     directorPlanningInputs(storyboardCount.value, videoDuration.value, { min: shotDurationMin.value, max: shotDurationMax.value })
   } catch (error) { return error.message }
-  const configuredSpeed = Number(store?.drama?.metadata?.tts_dubbing?.speed)
   return speechPlanningWarning(
     scriptContent?.value,
     storyboardCount.value,
     videoDuration.value,
     { min: shotDurationMin.value, max: shotDurationMax.value },
-    Number.isFinite(configuredSpeed) && configuredSpeed > 0 ? configuredSpeed : 1.25,
+    ttsPlanningSpeed.value,
   )
 })
 
