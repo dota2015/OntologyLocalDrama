@@ -1948,15 +1948,23 @@ ${repairOutputProtocol}`;
       const repairScope = new Set(candidateAudit.audit_scope || [repairTarget.shot_number]);
       const countScopedViolations = (auditResult) => (auditResult?.violations || [])
         .filter((item) => repairScope.has(Number(item?.shot_number))).length;
+      const countTargetViolations = (auditResult) => (auditResult?.violations || [])
+        .filter((item) => Number(item?.shot_number) === Number(repairTarget.shot_number)).length;
       const beforeScopedErrors = countScopedViolations(audit);
       const afterScopedErrors = countScopedViolations(candidateAudit);
-      if (!appliedRepair.structural && afterScopedErrors >= beforeScopedErrors) {
+      const beforeTargetErrors = countTargetViolations(audit);
+      const afterTargetErrors = countTargetViolations(candidateAudit);
+      // Adjacent shots are read-only continuity context. Existing violations
+      // there must not block a valid repair of the selected target shot;
+      // reject only when the target did not improve or the patch adds errors
+      // inside the audited continuity scope.
+      if (!appliedRepair.structural && (afterTargetErrors >= beforeTargetErrors || afterScopedErrors > beforeScopedErrors)) {
         const candidateShotErrors = candidateAudit.violations
           .filter((item) => Number(item?.shot_number) === repairTarget.shot_number)
           .map((item) => `[${item.rule}] ${item.message}`)
           .join('；');
         throw new Error(
-          `候选 Patch 未减少目标镜头及相邻连戏镜头门禁违规（${beforeScopedErrors} → ${afterScopedErrors}；整集 ${audit.error_count} → ${candidateAudit.error_count}），已拒绝且未污染当前最佳状态。`
+          `候选 Patch 未减少目标镜头或新增相邻连戏违规（目标 ${beforeTargetErrors} → ${afterTargetErrors}；范围 ${beforeScopedErrors} → ${afterScopedErrors}；整集 ${audit.error_count} → ${candidateAudit.error_count}），已拒绝且未污染当前最佳状态。`
           + (candidateShotErrors ? `候选镜头仍有：${candidateShotErrors}` : '')
         );
       }
