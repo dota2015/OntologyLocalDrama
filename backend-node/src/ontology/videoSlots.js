@@ -236,25 +236,40 @@ function validateVideoSlots(shot, slots) {
     const speech = semantic.speech_plan || {};
     const speakerId = Number(speech.speaker_id || 0);
     const speakerName = String(speech.speaker_name || audio.speaker_name || '').trim();
-    const parseWindow = (value, duration) => {
+    const parseTimestampSeconds = (value) => {
+      if (typeof value === 'number' && Number.isFinite(value)) return value;
+      const text = String(value || '').trim();
+      const match = text.match(/^(?:(\d+):)?(\d+)(?:\.(\d+))?$/u);
+      if (!match) return 0;
+      const minutes = Number(match[1] || 0);
+      const seconds = Number(match[2] || 0);
+      const fraction = match[3] ? Number(`0.${match[3]}`) : 0;
+      return minutes * 60 + seconds + fraction;
+    };
+    const parseWindow = (value, duration, offset = 0) => {
       const start = Array.isArray(value) ? Number(value[0]) : Number(value?.start);
       const end = Array.isArray(value) ? Number(value[1]) : Number(value?.end);
-      if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || start < 0 || end > duration) return null;
-      return { start, end };
+      if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || start < 0) return null;
+      // Agents may express a window relative to its segment (0–2) or on the
+      // outer-shot timeline (2–4). Normalize both forms to absolute seconds.
+      if (end <= duration) return { start: start + offset, end: end + offset };
+      if (start >= offset && end <= offset + duration) return { start, end };
+      return null;
     };
     const overlaps = (a, b) => a && b && Math.min(a.end, b.end) > Math.max(a.start, b.start);
     slots.shots_timeline.forEach((segment, index) => {
       const dialogue = String(segment?.audio_lip_sync?.dialogue_content || '').trim();
       if (!dialogue) return;
       const duration = Number(segment?.duration || slots.timing?.duration || shot.duration || 0);
+      const segmentOffset = parseTimestampSeconds(segment?.timestamp);
       const alignment = segment.speech_action_alignment || {};
       const base = { shot_number: shotNum, severity: 'error', segment_index: index, conflict_slots: [] };
       if (alignment.mode !== 'concurrent') {
         violations.push({ ...base, rule: 'INVARIANT_SPEECH_ACTION_NOT_CONCURRENT', conflict_slots: [`video_slots.shots_timeline[${index}].speech_action_alignment.mode`], message: `分镜 ${shotNum} 的第 ${index + 1} 段包含对白，但未声明对白与动作同步发生。请使用 mode:"concurrent"，不要把动作默认安排在台词结束后。` });
         return;
       }
-      const speechWindow = parseWindow(alignment.speech_window, duration);
-      const actionWindow = parseWindow(alignment.speaker_action_window, duration);
+      const speechWindow = parseWindow(alignment.speech_window, duration, segmentOffset);
+      const actionWindow = parseWindow(alignment.speaker_action_window, duration, segmentOffset);
       if (!speechWindow || !actionWindow || !overlaps(speechWindow, actionWindow) || !String(alignment.speaker_action || '').trim()) {
         violations.push({ ...base, rule: 'INVARIANT_SPEECH_ACTION_OVERLAP_MISSING', conflict_slots: [`video_slots.shots_timeline[${index}].speech_action_alignment`], message: `分镜 ${shotNum} 的第 ${index + 1} 段必须填写有效 speech_window、speaker_action_window 与 speaker_action，且动作时间必须覆盖发声时间的一部分；动作与语音应同时发生。` });
       }
@@ -276,7 +291,7 @@ function validateVideoSlots(shot, slots) {
       if (audio.speaker_in_frame && segmentVisibleChars.length > 1) {
         for (const listener of segmentVisibleChars.filter(c => c.id !== resolvedSpeaker)) {
           const reaction = (Array.isArray(alignment.listener_reactions) ? alignment.listener_reactions : []).find(r => Number(r?.character_id) === listener.id);
-          const reactionWindow = parseWindow(reaction?.action_window, duration);
+          const reactionWindow = parseWindow(reaction?.action_window, duration, segmentOffset);
           if (!reaction || !String(reaction.action || '').trim() || !overlaps(speechWindow, reactionWindow)) {
             violations.push({ ...base, rule: 'INVARIANT_LISTENER_REACTION_OVERLAP_MISSING', character_id: listener.id, conflict_slots: [`video_slots.shots_timeline[${index}].speech_action_alignment.listener_reactions[character_id=${listener.id}]`], message: `分镜 ${shotNum} 的第 ${index + 1} 段中，角色「${listener.name || listener.id}」缺少与对白同步的听取/视线/动作反应。请写明 action 与 action_window，不能只写“说完后等待”。` });
           }
