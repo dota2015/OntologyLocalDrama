@@ -1,4 +1,4 @@
-const { assessVideoSpeech } = require('./speechTiming');
+const { assessVideoSpeech, hanCapacity, normalizeSpeechRate, DEFAULT_TTS_SPEED } = require('./speechTiming');
 
 function normalizeDurationRange(value, legacyDuration = 5) {
   const fallbackMax = Math.min(8, Math.max(4, Math.round(Number(legacyDuration) || 5)));
@@ -15,14 +15,15 @@ function planShotDuration(shot, range, speechOptions) {
   return Math.min(range.max, Math.max(range.min, suggested, Math.ceil(speech.requiredSeconds)));
 }
 function rangeTimingInstructions(range, narrativeStyle) {
-  const maxChars = Math.floor(range.max * 4);
+  const configuredRate = normalizeSpeechRate(narrativeStyle?.tts_speed, DEFAULT_TTS_SPEED);
+  const maxChars = hanCapacity(range.max, configuredRate);
   const shortShotAlert = range.max <= 5
-    ? `\n【4–5秒短镜头模式铁律】：人物和旁白固定使用自然语速 1.0x。每个镜头的对白或旁白总汉字数绝不能超过 ${maxChars} 个字；较长台词必须按语义拆成多个连续分镜，严禁通过语音加速硬塞！`
+    ? `\n【4–5秒短镜头模式铁律】：按当前 TTS 速度 ${configuredRate}x 计算本镜容量（上限约 ${maxChars} 个中文字），不要把固定字数当作自然规律；较长台词必须按语义拆成多个连续分镜，禁止删字或截断！`
     : '';
   return `\n\n【最高优先级：按需规划每镜时长与强制对白时长预算】
 单镜 duration 必须在 ${range.min}–${range.max} 秒内（含边界，整数秒）。这是显卡负载预算，不是固定时长；不要把所有分镜都机械写成 5 秒或都用上限。
 根据镜头任务分别分配：短反应、过场可用较短时长，动作过程、对白轮次、情绪停顿用较长时长；情节相同的相邻镜头可同长，不必强制凑不同数字。
-${narrativeStyle ? require('../services/speechDeliveryService').planningInstructions(narrativeStyle,range.max) : `对白与旁白合计按每秒约4个中文字或2.5个英文单词估算，混合语言相加；按实际语音时间轴安排动作、换人说话和停顿，不预留固定收尾静音。${range.max}秒的范围上限最多约 ${Math.floor(range.max * 4)} 个中文字；短镜的字数预算相应更少。`}
+${narrativeStyle ? require('../services/speechDeliveryService').planningInstructions(narrativeStyle,range.max) : `先按中文约4字/秒、英文约2.5词/秒的自然基准乘以实际 TTS 速度（IndexTTS 未配置时默认1.25x）估算；${range.max}秒上限当前约可容纳 ${maxChars} 个中文字。对白和旁白共用实际时间，按时间轴安排动作，不预留固定收尾静音。`}
 完整保留剧本的台词、旁白及说话者与顺序，禁止删字、缩写或超出本镜既定语速强行塞字。台词所需时长超过 ${range.max} 秒时按完整语义拆镜，每个新镜头重新在范围内按需分配；允许增加镜头数，不突破上限。${shortShotAlert}
 镜头数量与全片总时长只是规划参考，此范围和完整表达优先于凑镜数或总秒数。输出每个镜头各自的 duration，视频提示词与结构化台词一致。`;
 }

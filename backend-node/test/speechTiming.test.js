@@ -23,21 +23,21 @@ const h3 = { api_protocol: 'minimax_h3', model: ['MiniMax-H3'], default_model: '
 test('director drafts and saved video submissions share the natural speech budget', t => {
   const { checkSpeechTiming } = require('../src/ontology/invariants');
   const db = videoDb(t);
-  const line = '露娜：“我们不是输在枪法，而是输在你冲进去之前，根本没想过后果。”';
+  const line = '露娜：\"' + '字'.repeat(34) + '\"';
   db.prepare('UPDATE storyboards SET dialogue=?, duration=6 WHERE id=1').run(line);
   const draft = { shot_number: 2, duration: 6, dialogue: line };
   const violation = checkSpeechTiming([draft])[0];
   assert.equal(violation.rule, 'INVARIANT_SPEECH_OVER_BUDGET');
   assert.deepEqual(violation.assessment, validateVideoSpeech(db, { storyboard_id: 1 }, h3).assessment);
-  assert.equal(violation.assessment.requiredSeconds, 6.3);
+  assert.equal(violation.assessment.requiredSeconds, 6.8);
   assert.equal(checkSpeechTiming([{ ...draft, duration: 8 }]).length, 0);
-  assert.equal(checkSpeechTiming([draft], { deliveryOptions: { speechRate: 1.44 } }).length, 1);
+  assert.equal(checkSpeechTiming([draft], { deliveryOptions: { speechRate: 1.44 } }).length, 0);
 });
 
 test('director budgets structured-only speech and ignores compiled prompt turns', () => {
   const { checkSpeechTiming } = require('../src/ontology/invariants');
-  const shot = { duration: 6, semantic_slots: { speech_plan: { text: '字'.repeat(25) } } };
-  assert.equal(checkSpeechTiming([shot])[0].assessment.requiredSeconds, 6.3);
+  const shot = { duration: 6, semantic_slots: { speech_plan: { text: '字'.repeat(32) } } };
+  assert.equal(checkSpeechTiming([shot])[0].assessment.requiredSeconds, 6.4);
   assert.equal(checkSpeechTiming({}) .length, 0);
   const delivery = require('../src/services/speechDeliveryService');
   const base = { duration: 5, dialogue: '甲：“你好。”' };
@@ -49,15 +49,15 @@ test('real 34-character dialogue exceeds five seconds; short dialogue fits', () 
   const result = timing.assessSpeechTiming(source);
   assert.equal(result.han, 34);
   assert.equal(result.ok, false);
-  assert.equal(result.requiredSeconds, 8.5);
-  assert.equal(result.hanBudget, 20);
+  assert.equal(result.requiredSeconds, 6.8);
+  assert.equal(result.hanBudget, 25);
   assert.equal(timing.assessSpeechTiming({ dialogue: '赵总：“各位，马上开始！”', duration: 5 }).ok, true);
   assert.equal(timing.assessSpeechTiming({ dialogue: '无对白', narration: 'none', duration: 5 }).requiredSeconds, 0);
 });
 
 test('dialogue and narration share a budget; mixed language, speakers and parentheses count', () => {
   assert.equal(timing.assessSpeechTiming({ dialogue: '甲：“现在出发。”\n乙：“马上回来。”' }, 5).han, 8);
-  assert.equal(timing.assessSpeechTiming({ dialogue: 'Hello world', narration: '现在出发' }, 5).speechSeconds, 1.8);
+  assert.equal(timing.assessSpeechTiming({ dialogue: 'Hello world', narration: '现在出发' }, 5).speechSeconds, 1.44);
   assert.equal(timing.assessSpeechTiming({ dialogue: '甲：' + '字'.repeat(12), narration: '字'.repeat(8) }, 5).ok, true);
   assert.equal(timing.assessSpeechTiming({ dialogue: '甲：这是（非常重要）的任务' }, 5).han, 9);
 });
@@ -105,7 +105,7 @@ test('object-form slots are authoritative and narration is not double-counted', 
   assert.equal(resolved.narration, '夜幕降临。');
   const result = timing.assessVideoSpeech(shot, '对话：这段展示文字绝不能参与计算。', 4);
   assert.equal(result.han, 4);
-  assert.equal(result.requiredSeconds, 1);
+  assert.equal(result.requiredSeconds, 0.8);
 });
 
 test('repair splits without losing dialogue, renumbers shots and rebuilds prompts', async () => {
@@ -141,7 +141,7 @@ for (const [name, repair] of [
 }
 
 test('narration is preserved and empty fragments do not inherit the whole source dialogue', async () => {
-  const shot = { dialogue: '甲：字'.replace('字', '字'.repeat(18)), narration: '夜幕降临', duration: 5 };
+  const shot = { dialogue: '甲：字'.replace('字', '字'.repeat(25)), narration: '夜幕降临', duration: 5 };
   const result = await enforceStoryboardSpeechTiming([shot], {
     targetDuration: 5,
     generate: async () => JSON.stringify([{ dialogue: shot.dialogue }, { narration: shot.narration }]),
@@ -335,8 +335,8 @@ test('custom prompts, narration mode and requested shot count cannot override ti
   t.mock.method(aiClient, 'generateText', async (_db, _log, _type, user, system) => {
     assert.ok(user.includes('CUSTOM SUFFIX'));
     assert.ok(system.indexOf('强制对白时长预算') > system.indexOf('CUSTOM UNIVERSAL'));
-    assert.match(system, /自然语速 1.0x/);
-    assert.match(system, /可说话时间 = duration/);
+    assert.match(system, /实际 TTS speed=1.25x/);
+    assert.match(system, /实际 TTS 速度/);
     assert.match(system, /允许增加镜头数/);
     assert.match(system, /目标分镜数量/);
     return JSON.stringify([{ dialogue: '赵总：现在开始。', duration: 5, narration: '会议开始。' }]);

@@ -1,5 +1,5 @@
 const { planShotDuration, rangeTimingInstructions } = require('../utils/shotDurationRange');
-const { assessSpeechTiming, assessVideoSpeech, timingError, timingInstructions, speechFingerprint } = require('../utils/speechTiming');
+const { assessSpeechTiming, assessVideoSpeech, timingError, timingInstructions, speechFingerprint, hanCapacity } = require('../utils/speechTiming');
 const { safeParseAIJSON, extractFirstArray } = require('../utils/safeJson');
 
 function durationForShot(shot, target) {
@@ -110,14 +110,14 @@ async function enforceStoryboardSpeechTiming(storyboards, { targetDuration, dura
     let lastError = timingError(source, assessment);
     for (let attempt = 0; attempt < 2; attempt++) {
       const minCount = Math.max(2, Math.ceil(assessment.requiredSeconds / Math.max(1, durationRange?.max || duration)));
-      const maxBudgetPerShot = Math.floor((durationRange?.max || duration) * 4);
+      const maxBudgetPerShot = hanCapacity(durationRange?.max || duration, planned.options?.speechRate);
       const userPrompt = `将此超出对白预算的分镜按语义拆分为至少 ${minCount} 个连续分镜（当前台词/旁白约需 ${assessment.requiredSeconds} 秒，单镜上限 ${durationRange?.max || duration} 秒）。
 【必须拆镜】严禁只返回 1 个分镜！拆分后每个新分镜的台词/旁白字数绝不能超过 ${maxBudgetPerShot} 个中文字！只返回 JSON 数组，每项保留原分镜的字段结构。
 对白和旁白必须逐字完整、按句号/逗号原顺序分配切分到各个分镜中，保留说话人，禁止增删改写；不得重复整段台词。保持人物、场景、道具及动作连续，合理分配动作与停顿。
 ${durationRange ? `每镜 duration 在 ${durationRange.min}–${durationRange.max} 秒内按动作与台词分别规划，不突破上限。` : `每镜 duration 固定为 ${duration} 秒，不通过增加 duration 逃避拆镜。`}允许空旁白。重写各镜头的动作、结果、标题；不要返回 universal_segment_text/video_prompt/image_prompt，它们由系统重建。
 原分镜：${JSON.stringify(source)}\n上次校验：${lastError}`;
       try {
-        const raw = await generate(userPrompt, narrativeStyle ? rangeTimingInstructions(durationRange || {min:duration,max:duration},narrativeStyle) : durationRange ? rangeTimingInstructions(durationRange) : timingInstructions(duration));
+        const raw = await generate(userPrompt, narrativeStyle ? rangeTimingInstructions(durationRange || {min:duration,max:duration},narrativeStyle) : durationRange ? rangeTimingInstructions(durationRange) : timingInstructions(duration, planned.options));
         const parsed = safeParseAIJSON(raw);
         const items = Array.isArray(parsed) ? parsed : extractFirstArray(parsed);
         if (!items?.length || items.length < 2 || items.some(s => !s || typeof s !== 'object' || Array.isArray(s))) {

@@ -44,7 +44,12 @@ function dramaRow(db, id) {
 function getProfile(db, id) {
   const metadata = parseJson(dramaRow(db, id).metadata);
   const raw = metadata.tts_dubbing || {};
-  return { ...raw, speed: 1 };
+  // The selected engine owns the real speed used by synthesis and planning.
+  // IndexTTS defaults to 1.25x; other engines fall back to their configured
+  // speed (normally 1x). Do not erase this value when reading a project.
+  let speed = 1.25;
+  try { speed = tts.defaultSpeed(configFor(db, raw.config_id)); } catch (_) { /* config may not exist in a draft DB */ }
+  return { ...raw, speed };
 }
 function configFor(db, configId) {
   const service = require('./aiConfigService');

@@ -96,7 +96,7 @@ test('script expansion and current-episode rewrite receive selected narrative ru
  t.mock.method(ai,'generateText',async(_db,_log,_type,user,system)=>{calls.push({user,system});return JSON.stringify([{episode:1,title:'草稿',content:'王奕宸："先做一道题。"'}]);});
  await stories.generateStory(db,log,{drama_id:1,premise:'少年学会自律',episode_count:1});
  await scripts.generateEpisodeDraft(db,log,10);
- for(const call of calls){assert.match(call.system,/UNIVERSAL DIRECTING PRINCIPLES/);assert.match(call.system,/通用剧本组织/);assert.match(call.system,/连续动作链/);assert.match(call.system,/多个配角轮流总结/);assert.match(call.system,/人物与游戏身份映射/);assert.match(call.system,/自然语速 1.0x/);assert.doesNotMatch(call.system,/1.5x/);assert.match(call.system,/服装连续性/);assert.match(call.system,/Natural speech budget/);assert.match(call.system,/不要求每句简短/);assert.doesNotMatch(call.system,/台词要短|台词用短句|Keep spoken lines short/);}
+ for(const call of calls){assert.match(call.system,/UNIVERSAL DIRECTING PRINCIPLES/);assert.match(call.system,/通用剧本组织/);assert.match(call.system,/连续动作链/);assert.match(call.system,/多个配角轮流总结/);assert.match(call.system,/人物与游戏身份映射/);assert.match(call.system,/实际 TTS 配置计算/);assert.doesNotMatch(call.system,/speech_rate.*1.5x/);assert.match(call.system,/服装连续性/);assert.match(call.system,/TTS-aware speech budget/);assert.match(call.system,/不要求每句简短/);assert.doesNotMatch(call.system,/台词要短|台词用短句|Keep spoken lines short/);}
  assert.deepEqual(db.prepare('SELECT * FROM episodes ORDER BY id').all(),before);
 });
 test('H3 preserves literal dialogue and prioritizes opening-frame wardrobe at natural speech speed',()=>{
@@ -104,7 +104,7 @@ test('H3 preserves literal dialogue and prioritizes opening-frame wardrobe at na
  const prompt=native.compilePrompt([{source:'card',character_id:5,kind:'character_sheet'},{source:'start',kind:'first_frame'},{source:'end',kind:'last_frame'}],
  {narrative_style:{preset:'dialogue_fast',speech_rate:1.5},references:[{key:'character:5',kind:'dialogue'}],lines},
  {visual_description:'A boy talks at his desk.',overall_soundscape:'Soft room tone.',non_diegetic_music:'N/A'},{first:'start',last:'end'});
- assert.match(prompt,/ordinary 1.0x speech speed/);assert.doesNotMatch(prompt,/approximately 1.5 times/);assert.match(prompt,/opening frame defines the current outfit/);
+ assert.match(prompt,/configured TTS speed/);assert.doesNotMatch(prompt,/approximately 1.5 times/);assert.match(prompt,/opening frame defines the current outfit/);
  assert.match(prompt,/<d>\[Chinese\] 先做一道题。<\/d>/);assert.doesNotMatch(prompt,/measured delivery/);
 });
 test('image generation passes first-frame wardrobe reference even when camera-layout locking is disabled',async t=>{
@@ -167,8 +167,8 @@ test('actual storyboard planner receives the preset and saves evidence-backed ou
  assert.equal(wardrobe.getShot(db,shot.id).characters[0].stage_id,'silver');
  assert.match(systemPrompt,/"id":"silver"/);
  assert.equal(require('../src/services/speechDeliveryService').getShot(db,shot.id).speech_rate,1);
- assert.match(systemPrompt,/自然语速与台词字数预算/);
- assert.match(systemPrompt,/禁止输出或使用 speech_rate、speech_rate_reason/);
+ assert.match(systemPrompt,/实际 TTS 速度与台词预算/);
+ assert.match(systemPrompt,/实际 TTS 速度/);
  assert.match(systemPrompt,/不要求每句简短/);
  assert.doesNotMatch(systemPrompt,/台词要短|台词用短句|Keep spoken lines short/);
 });

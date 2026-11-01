@@ -1262,7 +1262,9 @@ async function runDirectorAgent(db, log, cfg, episodeId, options = {}, progressC
   if (!epRow) throw new Error('剧集不存在');
   const dramaId = epRow.drama_id;
   const metadataRow = db.prepare('SELECT metadata FROM dramas WHERE id = ?').get(dramaId);
-  const requestedPacing = pacing.constraints(options, require('../services/narrativeStyleService').parse(metadataRow?.metadata));
+  const projectMetadata = require('../services/narrativeStyleService').parse(metadataRow?.metadata);
+  const requestedPacing = pacing.constraints(options, projectMetadata);
+  requestedPacing.tts_speed = require('../services/speechDeliveryService').configuredTtsSpeed(db, projectMetadata);
 
   // 阶段零：故事与分集剧本创编（若提供了梗概 premise 或原剧本为空）
   let scriptContent = (epRow.script_content || '').trim();
@@ -1391,8 +1393,8 @@ ${DIRECTOR_ACTION_COMPLETION_CONTRACT}
         - 四肢与双手动作（双手搭在键盘上/单手按住掩体/右手紧握武器/单手按住对方肩膀）；
         - 头部角度与视线朝向（侧头注视右侧/目光紧盯屏幕/双眼戒备注视通道）。
 7. **台词时长硬预算与强制语义拆镜（Speech Timing Budget & Atomic Split）**：
-   - 人物对白与旁白统一使用自然语速，每秒约 4 个中文字；台词截止点由实际语音时长和镜内时间轴决定，不预留固定的无台词收尾。说话与动作同步规划，台词结束处应到达事件终态或继续执行已规划的剧情动作。
-   - 镜头时长预算铁律：4秒<=10字；5秒<=14字；6秒<=18字；7秒<=22字；8秒<=26字。
+   - 人物对白与旁白的台词截止点按实际 TTS 语音时长和镜内时间轴决定：以中文约4字/秒、英文约2.5词/秒的自然基准乘以实际 TTS speed（IndexTTS 未配置时默认1.25x，其他引擎按配置）。不预留固定收尾，不删字，不由 Agent 自行改变语速。说话与动作同步规划，台词结束处应到达事件终态或继续执行已规划的剧情动作。
+   - 镜头时长预算必须按实际 TTS speed 动态计算，不得套用固定的 4秒/10字、5秒/14字等静态表格；IndexTTS 未配置时按1.25x，其他引擎按配置。
    - **绝对禁止在一个镜头内塞入超出时长预算的冗长对白或旁白！**
    - **长台词必须拆镜**：遇长台词或包含多句话的对白，必须在标点符号（逗号/句号/感叹号）处主动切分拆解为 2 个以上连续分镜（如正反打镜头：前一句配说话人动作，后一句切听者反应特写或说话人进一步动作承接）；
    - **禁止删改剧本台词**：拆镜时必须逐字完整保留原剧本对白与说话人，按顺序分配到拆解后的各分镜中，不允许缩写、偷换或通过强行加速说话来逃避拆镜！
@@ -1476,7 +1478,7 @@ ${scriptContent}
 - background_characters: 背景在场人物数组 (在场但不说话/主动作，保持空间恒常在场，绝不突然降临；如 [{"character_id": 2, "name": "妹妹", "depth_layer": "background", "screen_position": "画面右后方景深处书架旁", "activity": "低头安静翻看作业本", "mouth_state": "双唇紧闭，无台词口型，后景虚焦"}]，无背景角色填 []。铁律：同一个角色绝对严禁同时出现在 characters 与 background_characters 中！)
 - identity_visibility: 角色面部识别度 (clear_frontal/three_quarter/profile/back_view/silhouette/occluded，背影剪影严禁标为clear_frontal)
 - wardrobe_id: 当前镜头角色服装造型标识 (如 1 或 null，同一角色在同一镜头严禁出现多套服装)
-- speech_plan: 台词方案对象 ({"speaker_id": 1, "is_offscreen": false, "is_narration": false, "text": "台词正文", "speed": 1.0, "emotion": "坚定"}；若为画外音必须标 is_offscreen: true；若为旁白必须标 is_narration: true。铁律：画外音或旁白时，画内所有人物必须全员双唇紧闭，audio_lip_sync 填 offscreen_voiceover 或 narration，visible_characters_lip_state 填 strictly_sealed！)
+- speech_plan: 台词方案对象 ({"speaker_id": 1, "is_offscreen": false, "is_narration": false, "text": "台词正文", "speed": 1.25, "emotion": "坚定"}；若为画外音必须标 is_offscreen: true；若为旁白必须标 is_narration: true。铁律：画外音或旁白时，画内所有人物必须全员双唇紧闭，audio_lip_sync 填 offscreen_voiceover 或 narration，visible_characters_lip_state 填 strictly_sealed！)
 - sound_plan: 声音方案对象 ({"sound_effects": ["脚步声"], "bgm_prompt": "", "is_silent": false}；silent_ambient 只填环境/动作音，bgm_only 只填纯器乐配乐，完全静音才设 is_silent:true)
 - continuity_type: 镜头接续类型 (match_cut/eyeline_match/ots_reverse/hard_cut/continuation；不得使用 long_take_continuation)
 - h3_mode: 固定为 "ref2va"。导演 Agent 不负责选择 FL2VA；用户生成后如果需要首帧强绑定，可在单镜设置中手动覆盖执行模式
@@ -1518,7 +1520,7 @@ ${scriptContent}
   无角色填 [])
 - last_frame_visuals: 尾帧人物视觉槽位数组；需要尾帧时按 character_visuals 的同一完整结构规划动作收束状态，不需要尾帧时显式填 []
 - video_slots: Agent 规划的视频执行语义对象，必须完整包含 performance_contract:"sync_v1"、camera、audio_lip_sync、trajectories、environment_vfx、timing、shots_timeline 七个键。含对白的镜内段还必须包含 speech_action_alignment，明确语音与动作的重叠时间。trajectories 及每个 shots_timeline.character_trajectories 必须统一使用 terminal_pose、facial_expression、facing、head_pose、gaze、attention_target、gaze_motivation、reaction_trigger 与 mouth_state 字段。每个镜内剪辑段必须是 1 或 2 个整数秒的连续窗口，先填写本段 camera 和 visible_characters，再让 character_trajectories 精确覆盖本段实际入画人物；特写、过肩和画外音可以只列当前可见人物，未入画人物不写视觉轨迹。每个可见人物必须明确该窗口内发生的动作、表情或因果反应，以及“什么事件使他反应、头转向哪里、眼睛实际落在谁或什么东西上”。说话者口型与台词对应，听者不能用静止互看填充整段；安静倾听必须伴随具体反应。示例中每位角色必须像这样给出视线字段：{"character_id":1,"trajectory":"抬手施压","terminal_pose":"食指停在门框方向","facial_expression":"冷笑收紧","facing":"四分之三侧身朝向受话人","head_pose":"头部微俯转向受话人面部","gaze":"双眼锁定受话人眼睛","attention_target":"受话人面部","gaze_motivation":"直接施压对话","reaction_trigger":"自己开口说出威胁","mouth_state":"speaker_synced"}。突发事件后下一拍必须更新 reaction_trigger、attention_target、head_pose 和 gaze，不得沿用无关的旧视线。
-- semantic_slots: Agent 的跨层权威语义对象，必须完整包含 visible_characters、background_characters、identity_visibility、speech_plan、sound_plan、continuity_type、continuity_from_previous、h3_mode、h3_mode_reason、first_frame_policy、first_frame_reason、last_frame_policy、last_frame_reason、required_references、audio_lip_sync、shot_duration。长剧本分批规划时还必须包含 source_script_unit_ids，由当前批次协议给出的不可变原文单元 ID 连续分配；后端会据此恢复只读 source_script_excerpt。上面列出的同名语义决策必须写入此对象，不得只散落在顶层。例如 {"visible_characters":[{"id":1,"name":"角色名"}],"background_characters":[],"identity_visibility":"three_quarter","speech_plan":{"speaker_id":1,"speaker_name":"角色名","is_offscreen":false,"is_narration":false,"text":"实际台词","speed":1.0,"emotion":"坚定","audio_references":[]},"sound_plan":{"sound_effects":["脚步声"],"bgm_prompt":"","acoustic_env":"室内","is_silent":false},"continuity_type":"continuation","continuity_from_previous":{"relationship":"opening","previous_end_state":"","entry_state":"角色位于画面左侧掩体后，身体前倾","causal_link":"开场直接建立任务现场","sound_bridge":"","requires_previous_tail":false},"h3_mode":"ref2va","h3_mode_reason":"本镜为角色对白近景，需要人物卡与音色参考保持身份一致","first_frame_policy":"none","first_frame_reason":"人物卡与场景卡直接约束 Ref2VA，本镜无需额外首帧","last_frame_policy":"none","last_frame_reason":"对白结束后的表情允许模型自然收束，无需锁定尾帧","required_references":[{"type":"character","id":1,"character_id":1,"name":"角色名"}],"audio_lip_sync":"in_frame_dialogue","shot_duration":5,"source_script_unit_ids":["B1U1"]}
+- semantic_slots: Agent 的跨层权威语义对象，必须完整包含 visible_characters、background_characters、identity_visibility、speech_plan、sound_plan、continuity_type、continuity_from_previous、h3_mode、h3_mode_reason、first_frame_policy、first_frame_reason、last_frame_policy、last_frame_reason、required_references、audio_lip_sync、shot_duration。长剧本分批规划时还必须包含 source_script_unit_ids，由当前批次协议给出的不可变原文单元 ID 连续分配；后端会据此恢复只读 source_script_excerpt。上面列出的同名语义决策必须写入此对象，不得只散落在顶层。例如 {"visible_characters":[{"id":1,"name":"角色名"}],"background_characters":[],"identity_visibility":"three_quarter","speech_plan":{"speaker_id":1,"speaker_name":"角色名","is_offscreen":false,"is_narration":false,"text":"实际台词","speed":1.25,"emotion":"坚定","audio_references":[]},"sound_plan":{"sound_effects":["脚步声"],"bgm_prompt":"","acoustic_env":"室内","is_silent":false},"continuity_type":"continuation","continuity_from_previous":{"relationship":"opening","previous_end_state":"","entry_state":"角色位于画面左侧掩体后，身体前倾","causal_link":"开场直接建立任务现场","sound_bridge":"","requires_previous_tail":false},"h3_mode":"ref2va","h3_mode_reason":"本镜为角色对白近景，需要人物卡与音色参考保持身份一致","first_frame_policy":"none","first_frame_reason":"人物卡与场景卡直接约束 Ref2VA，本镜无需额外首帧","last_frame_policy":"none","last_frame_reason":"对白结束后的表情允许模型自然收束，无需锁定尾帧","required_references":[{"type":"character","id":1,"character_id":1,"name":"角色名"}],"audio_lip_sync":"in_frame_dialogue","shot_duration":5,"source_script_unit_ids":["B1U1"]}
 图片与视频提示词由执行器从上述已通过门禁的槽位确定性编译，禁止输出或手写 <imageN>/<Picture N> 管线占位标签。
 
 只返回纯 JSON，不要 markdown。`;

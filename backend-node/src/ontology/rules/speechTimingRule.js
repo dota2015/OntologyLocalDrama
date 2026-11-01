@@ -28,7 +28,8 @@ class SpeechTimingRule extends BaseInvariantRule {
       const duration = Number(shot.duration) > 0 ? Number(shot.duration) : 5;
       // Drafts have no database ID. Apply exactly the same speech policy used
       // by persisted shots at submission; never assume accelerated speech.
-      const deliveryOptions = speechDelivery.budgetOptions(speechDelivery.resolve({}, shot, { duration }));
+      const explicit = options?.deliveryOptions && typeof options.deliveryOptions === 'object' ? options.deliveryOptions : {};
+      const deliveryOptions = speechDelivery.budgetOptions(speechDelivery.resolve({}, shot, { duration, ...explicit }));
       const assessment = assessVideoSpeech(shot, null, duration, deliveryOptions);
       if (!assessment.ok) {
         violations.push({

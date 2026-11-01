@@ -52,7 +52,7 @@ async function planEpisodePacing(db, log, script, requested, { maxAttempts = 500
     try {
       const result = await runtime.runAgent(db, log, {
         name: 'director-episode-pacing',
-        instructions: `你是同一导演工作流的整集节奏规划节点，先根据完整剧情、逐字保留的台词、动作完成与互动反应决定镜头数量和逐镜时长。禁止按字符数除法、固定镜数或均分秒数决定切镜。每镜用一句 purpose 说明其连续剧情范围与任务，不输出完整槽位。\n${rangeTimingInstructions(requested.range)}\n用户填写的数量和总秒数是明确要求；空值才表示由你决定，旧剧集时长和页面公式估算都不是约束。自动决定镜数时通常不得超过 ${AUTO_MAX_SHOTS} 镜；优先让一个镜头承载同一事件中的多个连续动作、对白和即时反应。禁止用“说一句话后互相看着”、无意义特写、空等或重复反应凑镜头。若手动数值太少或太短，不能删台词、漏剧情、加速或静默覆盖；返回 feasible:false、具体 reason，以及能完整表达剧情的建议 shots。无需修改已有剧本。`,
+        instructions: `你是同一导演工作流的整集节奏规划节点，先根据完整剧情、逐字保留的台词、动作完成与互动反应决定镜头数量和逐镜时长。禁止按字符数除法、固定镜数或均分秒数决定切镜。每镜用一句 purpose 说明其连续剧情范围与任务，不输出完整槽位。\n${rangeTimingInstructions(requested.range, { tts_speed: requested.tts_speed })}\n用户填写的数量和总秒数是明确要求；空值才表示由你决定，旧剧集时长和页面公式估算都不是约束。自动决定镜数时通常不得超过 ${AUTO_MAX_SHOTS} 镜；优先让一个镜头承载同一事件中的多个连续动作、对白和即时反应。禁止用“说一句话后互相看着”、无意义特写、空等或重复反应凑镜头。若手动数值太少或太短，不能删台词、漏剧情、加速或静默覆盖；返回 feasible:false、具体 reason，以及能完整表达剧情的建议 shots。无需修改已有剧本。`,
         input: `用户要求：${JSON.stringify(requested)}\n按连贯事件规划，不按动作个数拆镜：一个4～8秒镜头可以包含多个连续或同时发生的动作、对白和对方反应。不得为每句对白、每个动作、每次反应各建一镜；能自然同镜完成的应合并。只有真实时长超限、场景或造型变化、或剧情确需独立视角时拆镜。两人对话优先使用有明确叙事作用的正反打（shot-reverse-shot）或过肩反打；正反打必须服务信息、反应或权力变化，不能把每句台词机械拆成无意义特写。台词逐字保留，不能为减少镜数删减剧情；也不要重复表达同一信息、添加停顿凑时长。\n完整剧本：\n${script}\n${feedback ? `上轮门禁反馈：${feedback}` : ''}`,
         outputType: {
           type: 'json_schema', name: 'director_episode_pacing', strict: true,

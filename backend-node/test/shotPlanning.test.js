@@ -27,7 +27,7 @@ test('automatic per-shot models default to minimax_h3 and ignore speech switches
 test('duration ranges reject invalid limits and keep the model durations when they fit', async () => {
   for (const value of [{min:2,max:5},{min:7,max:5},{min:4,max:9},{min:4,max:16},{min:4.5,max:8}]) assert.throws(() => range.normalizeDurationRange(value));
   assert.deepEqual(range.normalizeDurationRange(null,5),{min:4,max:5});
-  const shots = [{duration:4, action:'一瞥'}, {duration:7,action:'走近并停下'}, {duration:5, dialogue:'甲：'+'字'.repeat(24)}];
+  const shots = [{duration:4, action:'一瞥'}, {duration:7,action:'走近并停下'}, {duration:5, dialogue:'甲：'+'字'.repeat(30)}];
   const output = await enforceStoryboardSpeechTiming(shots, {durationRange:{min:4,max:8},generate:() => assert.fail('Fits without splitting')});
   assert.deepEqual(output.map(s=>s.duration),[4,7,6]);
   const persistedShot = { ...output[1] };
@@ -37,15 +37,15 @@ test('duration ranges reject invalid limits and keep the model durations when th
 });
 
 test('speech exceeding the maximum splits without losing words and each fragment has its own duration', async () => {
-  const source={duration:5,dialogue:'甲：'+'字'.repeat(40),action:'陈述'};
+  const source={duration:5,dialogue:'甲：'+'字'.repeat(50),action:'陈述'};
   let calls=0;
   const output=await enforceStoryboardSpeechTiming([source],{durationRange:{min:4,max:8},generate:async (user,system)=>{
     calls++;
     assert.match(system,/按需规划/);
     return JSON.stringify([
-      {dialogue:'甲：'+'字'.repeat(12),duration:4},
-      {dialogue:'甲：'+'字'.repeat(20),duration:7},
-      {dialogue:'甲：'+'字'.repeat(8),duration:4},
+      {dialogue:'甲：'+'字'.repeat(16),duration:4},
+      {dialogue:'甲：'+'字'.repeat(24),duration:7},
+      {dialogue:'甲：'+'字'.repeat(10),duration:4},
     ]);
   }});
   assert.equal(calls,1);

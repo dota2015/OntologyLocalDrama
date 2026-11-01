@@ -1,6 +1,9 @@
 // Conservative planning estimate, not a guarantee of generated speech fidelity.
+// Natural-language reference rates. A shot's capacity is adjusted by the
+// actual TTS speed that will render it; these are not fixed shot limits.
 const HAN_PER_SECOND = 4;
 const WORDS_PER_SECOND = 2.5;
+const DEFAULT_TTS_SPEED = 1.25; // IndexTTS is the project's default engine.
 // Speech windows are planned to the actual shot boundary.  Do not reserve a
 // fixed silent tail: H3/TTS timing is now explicit at the second level and a
 // hard-coded tail needlessly clips otherwise valid dialogue.
@@ -24,11 +27,21 @@ function secondsForText(value) {
   return { seconds: han / HAN_PER_SECOND + words / WORDS_PER_SECOND, han, words };
 }
 
+function normalizeSpeechRate(value, fallback = DEFAULT_TTS_SPEED) {
+  const rate = Number(value);
+  return Number.isFinite(rate) && rate > 0 ? rate : fallback;
+}
+
+function hanCapacity(duration, speechRate = DEFAULT_TTS_SPEED, turnPauseSeconds = 0) {
+  const seconds = Math.max(0, Number(duration) || 0) - Math.max(0, Number(turnPauseSeconds) || 0);
+  return Math.floor(seconds * HAN_PER_SECOND * normalizeSpeechRate(speechRate));
+}
+
 function assessSpeechTiming(shot, duration = shot?.duration, options = {}) {
   const seconds = Number(duration) > 0 ? Number(duration) : 5;
   const dialogue = secondsForText(shot?.dialogue);
   const narration = secondsForText(shot?.narration);
-  const rate = Number(options.speechRate) > 0 ? Number(options.speechRate) : 1;
+  const rate = normalizeSpeechRate(options.speechRate);
   const turnPauses = Math.max(0, Number(options.turnPauseSeconds) || 0);
   const speechSeconds = (dialogue.seconds + narration.seconds) / rate;
   const requiredSeconds = speechSeconds > 0 ? speechSeconds + END_RESERVE_SECONDS + turnPauses : 0;
@@ -36,26 +49,29 @@ function assessSpeechTiming(shot, duration = shot?.duration, options = {}) {
     ok: requiredSeconds <= seconds + 0.2,
     duration: seconds,
     speechSeconds,
+    speechRate: rate,
     requiredSeconds: Math.ceil(requiredSeconds * 10) / 10,
     recommendedDuration: Math.ceil(requiredSeconds),
     endReserveSeconds: END_RESERVE_SECONDS,
     han: dialogue.han + narration.han,
     words: dialogue.words + narration.words,
-    hanBudget: Math.floor(Math.max(0, seconds - END_RESERVE_SECONDS - turnPauses) * HAN_PER_SECOND * rate),
+    hanBudget: hanCapacity(seconds - END_RESERVE_SECONDS, rate, turnPauses),
   };
 }
 
 function timingError(shot, assessment) {
   const num = shot?.storyboard_number ?? shot?.shot_number;
-  return `${num ? `分镜 ${num}` : '当前镜头'}对白与旁白超出时长预算：${assessment.duration} 秒镜头约可容纳 ${assessment.hanBudget} 个中文字（对白与旁白合计，按实际语音时长），当前约需 ${assessment.requiredSeconds} 秒。请按语义拆分镜头，或延长镜头并确认模型支持该时长；不会自动删减台词。`;
+  return `${num ? `分镜 ${num}` : '当前镜头'}对白与旁白超出时长预算：${assessment.duration} 秒镜头约可容纳 ${assessment.hanBudget} 个中文字（对白与旁白合计，按实际 TTS ${assessment.speechRate || DEFAULT_TTS_SPEED}x），当前约需 ${assessment.requiredSeconds} 秒。请按语义拆分镜头，或延长镜头并确认模型支持该时长；不会自动删减台词。`;
 }
 
-function timingInstructions(duration = 5) {
+function timingInstructions(duration = 5, options = {}) {
   const d = Number(duration) > 0 ? Number(duration) : 5;
+  const rate = normalizeSpeechRate(options.speechRate);
+  const capacity = hanCapacity(d, rate);
   return `\n\n【强制对白时长预算 / Mandatory speech timing】
-完整保留剧本中的对白、旁白及其顺序，不得缩写、删字或用加速说话来凑镜头数。
-按每秒约 ${HAN_PER_SECOND} 个中文字或 ${WORDS_PER_SECOND} 个英文单词估算；混合语言相加，dialogue 与 narration 共用本镜实际时间，不预留固定收尾静音；动作、停顿、情绪重的镜头应按时间轴显式安排。
-${d} 秒镜头最多约 ${Math.floor(d * HAN_PER_SECOND)} 个中文字；超过时按完整语义拆成连续镜头，保持人物、场景、动作衔接，每个新镜头 duration 使用 ${d} 秒。
+完整保留剧本中的对白、旁白及其顺序，不得缩写、删字或截断。
+先按中文约 ${HAN_PER_SECOND} 字/秒、英文约 ${WORDS_PER_SECOND} 词/秒的自然基准估算，再乘以本项目实际 TTS 速度 ${rate}x；IndexTTS 未配置速度时默认 1.25x，其他引擎使用其配置值。对白与旁白共用本镜实际时间，不预留固定收尾静音；动作、停顿、情绪重的镜头应按时间轴显式安排。
+${d} 秒镜头按当前 TTS 速度约可容纳 ${capacity} 个中文字；超过时按完整语义拆成连续镜头，保持人物、场景、动作衔接，每个新镜头重新按其实际 TTS 速度计算 duration。
 此预算及台词完整性优先于镜头数量和总时长目标；允许增加镜头数。不要给每个镜头强塞重复旁白。台词分别写入 dialogue/narration，视频提示词中的台词必须与字段一致。`;
 }
 
@@ -167,4 +183,4 @@ function assessVideoSpeech(shot, _prompt, duration, options = {}) {
   return assessSpeechTiming(authoritative, duration, options);
 }
 
-module.exports = { speechFromPrompt, authoritativeSpeech, assessSpeechTiming, assessVideoSpeech, timingError, timingInstructions, spokenText, speechFingerprint, cleanExtractedSpeech };
+module.exports = { speechFromPrompt, authoritativeSpeech, assessSpeechTiming, assessVideoSpeech, timingError, timingInstructions, spokenText, speechFingerprint, cleanExtractedSpeech, normalizeSpeechRate, hanCapacity, HAN_PER_SECOND, WORDS_PER_SECOND, DEFAULT_TTS_SPEED };

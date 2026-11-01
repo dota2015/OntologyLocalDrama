@@ -115,13 +115,13 @@ test('H3 ignores saved per-shot pace and records the natural-speed budget', asyn
     lines: [{ key: 'character:5', kind: 'dialogue', speaker: '王奕宸', text: '开始行动。' }],
   }));
   const result = await native.prepare(db, log, opts);
-  assert.match(result.prompt, /ordinary 1.0x speech speed/);
+  assert.match(result.prompt, /configured TTS speed/);
   assert.doesNotMatch(result.prompt, /approximately 1.4 times/);
   assert.equal(native.getSettings(db, 1, 2).steps, 23);
   const directory = path.join(root, 'projects/0001_20261022_test/h3-prompts');
   const record = JSON.parse(fs.readFileSync(path.join(directory, fs.readdirSync(directory)[0])));
-  assert.equal(record.speech_delivery.speech_rate, 1);
-  assert.equal(record.speech_delivery.han_budget, 20);
+  assert.equal(record.speech_delivery.speech_rate, 1.25);
+  assert.equal(record.speech_delivery.han_budget, 25);
   assert.equal(record.steps, 23);
 });
 test('selected stage reference reaches H3 and a new outfit starts from its own frame', async t => {

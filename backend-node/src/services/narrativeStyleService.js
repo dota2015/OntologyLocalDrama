@@ -43,16 +43,17 @@ Maintain a coherent causal chain in every genre. Put essential motives, choices,
 `;
 }
 function instructions(cfg) {
-  const s = normalize(cfg?.narrative_style || {});
+  const rawStyle = cfg?.narrative_style || {};
+  const s = normalize(rawStyle);
   const modes = {
     balanced: '对白优先的均衡叙事 / DIALOGUE-FIRST BALANCED: 用自然对白或必要旁白交代关键因果，再用紧凑可见动作支撑；不机械地给每个动作拆镜，不用镜头动作替代剧情信息。',
     narration: '旁白讲述 / NARRATION-LED: 旁白串联背景、因果与进展，人物对白用于关键冲突与情绪；画面配合讲述，旁白与对白不复述同一信息。 Narration connects context and causality; retain key character dialogue and avoid duplicated information.',
     atmosphere: '氛围慢节奏 / ATMOSPHERIC: 允许有叙事作用的动作、反应和停顿，用简单可生成画面呈现氛围；关键因果仍须能理解，不用连续微动作或难以辨认的小字代替情节。 Allow meaningful pauses and visual atmosphere while keeping essential causality understandable.',
   };
-  return `${directorPrinciples()}\n【项目叙事风格 / PROJECT NARRATIVE STYLE】\n${modes[s.preset]}\n人物对白与旁白统一使用自然语速 1.0x。叙事风格只控制内容与剪辑节奏，不改变声音倍率。${require('./speechDeliveryService').planningInstructions(s)}\n服装连续性始终生效：同一人物在连续剧情中沿用当前造型；换场景或换集本身不表示换装。只有原剧情明确换装、穿越、梦境、闪回或时间跳转，才在新分镜开始前切换造型，并在返回原时间线时恢复对应造型。每个人物在同一分镜只用一套造型，首尾帧与视频全程一致；需要表现换装时必须拆成多个连续分镜，不做镜内变装。 Preserve wardrobe across continuous events and scene/episode cuts; establish a wardrobe change only from explicit story evidence.`;
+  return `${directorPrinciples()}\n【项目叙事风格 / PROJECT NARRATIVE STYLE】\n${modes[s.preset]}\n人物对白与旁白的时长按实际 TTS 配置计算；IndexTTS 未配置时默认 1.25x，其他引擎按配置读取。叙事风格只控制内容与剪辑节奏，Agent 不自行改变声音倍率。${require('./speechDeliveryService').planningInstructions({ ...s, tts_speed: rawStyle.tts_speed })}\n服装连续性始终生效：同一人物在连续剧情中沿用当前造型；换场景或换集本身不表示换装。只有原剧情明确换装、穿越、梦境、闪回或时间跳转，才在新分镜开始前切换造型，并在返回原时间线时恢复对应造型。每个人物在同一分镜只用一套造型，首尾帧与视频全程一致；需要表现换装时必须拆成多个连续分镜，不做镜内变装。 Preserve wardrobe across continuous events and scene/episode cuts; establish a wardrobe change only from explicit story evidence.`;
 }
 function h3Delivery(settings) {
   normalize(settings || {});
-  return 'Use clear natural delivery at ordinary 1.0x speech speed, with pauses appropriate to the scene and complete intelligible lines. Speech remains at its original timing and natural pace throughout.';
+  return 'Use clear delivery at the configured TTS speed (IndexTTS defaults to 1.25x when unset), with pauses appropriate to the scene and complete intelligible lines. Use this configured rate consistently for every line.';
 }
 module.exports = { PRESETS, parse, normalize, fromMetadata, withConfig, mergeMetadata, instructions, h3Delivery, directorPrinciples };

@@ -272,7 +272,7 @@ describe('Audiovisual Drama Ontology & Semantic Invariants', () => {
       {
         shot_number: 2,
         duration: 6,
-        dialogue: '露娜: "红狼，别从正面过去！敌人在高台和仓库二层交叉射击，先等我找安全路线！"',
+        dialogue: '露娜: "红狼，别从正面过去！敌人在高台和仓库二层交叉射击，先等我找安全路线！这次一定要先确认撤离点再行动！"',
       },
     ];
     const violations = checkSpeechTiming(badShots);

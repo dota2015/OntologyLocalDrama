@@ -1513,6 +1513,8 @@ function generateStoryboard(db, log, episodeId, model, style, storyboardCount, v
   // 获取剧集风格和比例（如果未指定，则从 drama metadata / style 中获取完整提示词）
   const drama = db.prepare('SELECT style, metadata FROM dramas WHERE id = ?').get(episode.drama_id);
   cfg = require('./narrativeStyleService').withConfig(cfg, drama?.metadata);
+  const projectMetadata = require('./narrativeStyleService').parse(drama?.metadata);
+  cfg.narrative_style = { ...(cfg.narrative_style || {}), tts_speed: require('./speechDeliveryService').configuredTtsSpeed(db, projectMetadata) };
   const { resolvedStreamStyleFromDrama } = require('../utils/dramaStyleMerge');
   const finalStyle = resolvedStreamStyleFromDrama(style, drama);
 
