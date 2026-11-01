@@ -2,6 +2,7 @@ import { computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import { GEN_RESOURCE } from '@/stores/generationTaskStore'
 import { generationJobsAPI, activeGenerationJob } from '@/api/generationJobs'
+import { activeImageJobCoverage, storyboardImageTaskKey } from '@/utils/activeImageJobCoverage'
 
 export function useTaskNavigation({
   dramaId,
@@ -31,7 +32,6 @@ export function useTaskNavigation({
   batchVideoRunning,
   serverVideoBatch,
   batchVideoProgress,
-  storyboardUseFirstLastFrame,
   pipelineRunning,
   pipelineCurrentStep,
   pipelineCountdown,
@@ -114,6 +114,7 @@ export function useTaskNavigation({
   const allActiveTaskItems = computed(() => {
     const items = []
     const seen = new Set()
+    const serverImageCoverage = activeImageJobCoverage(activeImageJobs.value)
     function addItem(item) {
       const id = item.id || item.label
       if (!id || seen.has(id)) return
@@ -125,6 +126,7 @@ export function useTaskNavigation({
       })
     }
     for (const t of genStore.getAllRunningTasks()) {
+      if (serverImageCoverage.has(storyboardImageTaskKey(t.resourceType, t.resourceId))) continue
       const isWaiting = t.serverStatus === 'pending'
       const sbId = t.resourceId ? Number(t.resourceId) : null
       const sb = sbId ? (storyboards.value || []).find((s) => Number(s.id) === sbId) : null
@@ -223,91 +225,27 @@ export function useTaskNavigation({
                 })
               }
             } else {
-              // 任务展开前/排队中：先依序预挂载待处理的分镜步骤
-              const sbs = (storyboards.value || []).slice().sort((a, b) => (Number(a.storyboard_number || a.shot_number || 0) - Number(b.storyboard_number || b.shot_number || 0)))
-              const two = storyboardUseFirstLastFrame.value
-              for (const sb of sbs) {
-                // 长镜头承接镜/尾镜无需独立生成分镜首帧，直接承接上镜视频尾帧
-                if (sb.long_take_group_id && (sb.long_take_role === 'continuation' || sb.long_take_role === 'tail' || (sb.long_take_sequence != null && Number(sb.long_take_sequence) > 1))) {
-                  continue
-                }
-                const sbNum = sb.storyboard_number || sb.shot_number || ''
-                const numStr = sbNum ? ('#' + sbNum + ' ') : ''
-                if (two && sb.creation_mode !== 'universal') {
-                  addItem({
-                    id: `img-job-pending-${sb.id}-first`,
-                    label: `分镜 ${numStr}首帧 等待中`,
-                    kind: 'serverImageJob',
-                    job: imgJob,
-                    storyboardId: sb.id,
-                    order: Number(sbNum) || 0,
-                    isWaiting: true,
-                    createdAt: imgJobTime,
-                  })
-                  addItem({
-                    id: `img-job-pending-${sb.id}-last`,
-                    label: `分镜 ${numStr}尾帧 等待中`,
-                    kind: 'serverImageJob',
-                    job: imgJob,
-                    storyboardId: sb.id,
-                    order: (Number(sbNum) || 0) + 0.5,
-                    isWaiting: true,
-                    createdAt: imgJobTime,
-                  })
-                } else {
-                  addItem({
-                    id: `img-job-pending-${sb.id}-image`,
-                    label: `分镜 ${numStr}分镜图 等待中`,
-                    kind: 'serverImageJob',
-                    job: imgJob,
-                    storyboardId: sb.id,
-                    order: Number(sbNum) || 0,
-                    isWaiting: true,
-                    createdAt: imgJobTime,
-                  })
-                }
-              }
+              // 服务端展开后才能得到包含人工覆盖的最终逐镜方案，展开前不伪造首尾帧步骤。
+              addItem({
+                id: `img-job-plan-${imgJob.id}`,
+                label: '正在解析 Agent 逐镜参考帧方案...',
+                kind: 'serverImageJob',
+                job: imgJob,
+                order: 0,
+                isWaiting: true,
+                createdAt: imgJobTime,
+              })
             }
           }
         }
       } else {
-        const sbs = (storyboards.value || []).slice().sort((a, b) => (Number(a.storyboard_number || a.shot_number || 0) - Number(b.storyboard_number || b.shot_number || 0)))
-        const two = storyboardUseFirstLastFrame.value
-        for (const sb of sbs) {
-          // 长镜头承接镜/尾镜无需独立生成分镜首帧，直接承接上镜视频尾帧
-          if (sb.long_take_group_id && (sb.long_take_role === 'continuation' || sb.long_take_role === 'tail' || (sb.long_take_sequence != null && Number(sb.long_take_sequence) > 1))) {
-            continue
-          }
-          const sbNum = sb.storyboard_number || sb.shot_number || ''
-          const numStr = sbNum ? ('#' + sbNum + ' ') : ''
-          if (two && sb.creation_mode !== 'universal') {
-            addItem({
-              id: `batch-img-fb-${sb.id}-first`,
-              label: `分镜 ${numStr}首帧 等待中`,
-              kind: 'batchImage',
-              storyboardId: sb.id,
-              order: Number(sbNum) || 0,
-              isWaiting: true,
-            })
-            addItem({
-              id: `batch-img-fb-${sb.id}-last`,
-              label: `分镜 ${numStr}尾帧 等待中`,
-              kind: 'batchImage',
-              storyboardId: sb.id,
-              order: (Number(sbNum) || 0) + 0.5,
-              isWaiting: true,
-            })
-          } else {
-            addItem({
-              id: `batch-img-fb-${sb.id}-image`,
-              label: `分镜 ${numStr}分镜图 等待中`,
-              kind: 'batchImage',
-              storyboardId: sb.id,
-              order: Number(sbNum) || 0,
-              isWaiting: true,
-            })
-          }
-        }
+        addItem({
+          id: 'batch-img-agent-plan',
+          label: '正在解析 Agent 逐镜参考帧方案...',
+          kind: 'batchImage',
+          order: 0,
+          isWaiting: true,
+        })
       }
     }
     if (batchVideoRunning.value) {

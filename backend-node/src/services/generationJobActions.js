@@ -63,14 +63,14 @@ function createExecutor(db,cfg,log) {
     return sb;
   }
   function imagePlan(job,options,sb,force=false,slotsOverride) {
-    const isSingleExplicitShot = force && Array.isArray(options.storyboard_ids) && options.storyboard_ids.length === 1;
-    const isLongTakeContinuation = sb.long_take_group_id && (sb.long_take_role === 'continuation' || sb.long_take_role === 'tail' || (sb.long_take_sequence != null && sb.long_take_sequence > 1));
-    // 连贯长镜头接力续镜/尾镜：批量生图时无需生成参考首帧，其首帧由上一镜视频尾帧自动续接
-    if (isLongTakeContinuation && !isSingleExplicitShot) {
-      return [];
+    // 单镜按钮传入 slotsOverride 时尊重用户的显式操作；批量任务必须读取
+    // Agent 规划 + 人工模式覆盖后的同一份 H3 执行方案，禁止再看项目全局开关。
+    let slots = slotsOverride;
+    if (!slots) {
+      const { resolveH3SubmissionPlan, frameSlotsForPlan } = require('./h3ModeResolver');
+      const plan = resolveH3SubmissionPlan(db, job.drama_id, sb, { h3_mode: options.h3_mode });
+      slots = frameSlotsForPlan(plan);
     }
-    const two = options.use_first_last ?? metadata(db,job.drama_id).storyboard_use_first_last_frame ?? false;
-    const slots = slotsOverride || (two && sb.creation_mode !== 'universal' ? ['first','last'] : ['image']);
     return slots.filter(slot=>force || !frame(db,sb,slot)).flatMap(slot => [
       ...(slot === 'image' ? [] : [step('frame_prompt',`#${sb.storyboard_number} ${slot==='first'?'首帧':'尾帧'}提示词`,{storyboard_id:sb.id,slot,force})]),
       step('image',`#${sb.storyboard_number} ${slot==='last'?'尾帧':slot==='first'?'首帧':'分镜图'}`,{storyboard_id:sb.id,slot,force}),
@@ -204,8 +204,16 @@ function createExecutor(db,cfg,log) {
       if(active?.task_id){attach('task',active.task_id);return;}
       const requested=videoPayload(job,options,sb);
       const vc=require('./videoClient');
+      let semanticSlots=sb.semantic_slots;
+      if(typeof semanticSlots==='string'){try{semanticSlots=JSON.parse(semanticSlots)}catch(_){semanticSlots=null}}
+      const firstFramePolicy=semanticSlots?.first_frame_policy;
+      const continuityType=semanticSlots?.continuity_type;
       const isLongTakeContinuation = sb.long_take_group_id && (sb.long_take_role === 'continuation' || sb.long_take_role === 'tail' || (sb.long_take_sequence != null && sb.long_take_sequence > 1));
-      if((options.continuity || isLongTakeContinuation) && !requested.universal && !require('./wardrobeService').hasChange(db,sb.id)) {
+      const hasSemanticContinuity=!!(firstFramePolicy || continuityType);
+      const legacyContinuity=!hasSemanticContinuity && options.continuity;
+      const shouldInheritTail=(firstFramePolicy==='inherit_tail' || continuityType==='long_take_continuation' || isLongTakeContinuation || legacyContinuity)
+        && firstFramePolicy!=='generate_new' && continuityType!=='hard_cut';
+      if(shouldInheritTail && !requested.universal && !require('./wardrobeService').hasChange(db,sb.id)) {
         const previous = isLongTakeContinuation
           ? db.prepare('SELECT * FROM storyboards WHERE episode_id=? AND long_take_group_id=? AND (long_take_sequence < ? OR storyboard_number < ?) AND deleted_at IS NULL ORDER BY long_take_sequence DESC, storyboard_number DESC LIMIT 1').get(sb.episode_id, sb.long_take_group_id, sb.long_take_sequence || 9999, sb.storyboard_number)
           : db.prepare('SELECT * FROM storyboards WHERE episode_id=? AND storyboard_number<? AND deleted_at IS NULL ORDER BY storyboard_number DESC,id DESC LIMIT 1').get(sb.episode_id,sb.storyboard_number);
@@ -216,10 +224,11 @@ function createExecutor(db,cfg,log) {
           requested.image_url=requested.first_frame_url=url;
           requested.reference_image_urls=[url,requested.last_frame_url].filter(Boolean);
           try {
-            db.prepare('UPDATE storyboards SET image_url=?, local_path=?, updated_at=? WHERE id=?').run(url, tail, new Date().toISOString(), sb.id);
-            db.prepare(`INSERT INTO image_generations (drama_id, storyboard_id, image_url, local_path, prompt, status, created_at, updated_at)
-              VALUES (?, ?, ?, ?, ?, 'completed', ?, ?)`).run(job.drama_id, sb.id, url, tail, `[长镜头接力首帧] 承接分镜 #${previous.storyboard_number} 尾帧`, new Date().toISOString(), new Date().toISOString());
+            db.prepare(`INSERT INTO image_generations (drama_id, storyboard_id, image_url, local_path, frame_type, prompt, status, created_at, updated_at)
+              VALUES (?, ?, ?, ?, 'inherited_tail_frame', ?, 'completed', ?, ?)`).run(job.drama_id, sb.id, url, tail, `[长镜头接力首帧] 承接分镜 #${previous.storyboard_number} 尾帧`, new Date().toISOString(), new Date().toISOString());
           } catch (_) {}
+        } else if(firstFramePolicy==='inherit_tail' || continuityType==='long_take_continuation' || isLongTakeContinuation) {
+          throw new Error(`分镜 #${sb.storyboard_number} 要求继承上一镜尾帧，但前序视频尚未完成，禁止静默回退`);
         }
       }
       // Stop may arrive during ffmpeg. No new model submission after it was acknowledged.
@@ -244,27 +253,69 @@ function createExecutor(db,cfg,log) {
     throw new Error('未知后台步骤：'+item.action);
   }
   function videoPayload(job,options,sb) {
-    const first=mediaUrl(frame(db,sb,'first') || frame(db,sb,'image'));
-    const two=options.use_first_last ?? metadata(db,job.drama_id).storyboard_use_first_last_frame ?? false;
-    const last=two ? mediaUrl(frame(db,sb,'last')) : '';
     let universal=sb.creation_mode==='universal';
     const selected=require('./storyboardVideoModelService').resolveStoryboardModel(db,{drama_id:job.drama_id,storyboard_id:sb.id,model:sb.video_model || undefined});
-    if(require('./videoClient').resolveVideoProtocol(selected.config,selected.model)==='comfyui_wan22') universal=false;
-    let refs=[first,last].filter(Boolean);
-    if(universal) {
-      // Match the editor's @图片 slots: scene, characters in shot order, props.
-      const scene=sb.scene_id ? db.prepare('SELECT * FROM scenes WHERE id=? AND drama_id=? AND deleted_at IS NULL').get(sb.scene_id,job.drama_id) : null;
-      let ids=[];try{ids=JSON.parse(sb.characters || '[]').map(c=>Number(typeof c==='object'?c.id:c))}catch(_){}
-      if(!ids.length) ids=db.prepare('SELECT character_id FROM storyboard_characters WHERE storyboard_id=? ORDER BY id').all(sb.id).map(c=>c.character_id);
-      const chars=ids.map(id=>db.prepare('SELECT * FROM characters WHERE id=? AND drama_id=? AND deleted_at IS NULL').get(id,job.drama_id));
-      const props=db.prepare('SELECT p.* FROM props p JOIN storyboard_props sp ON sp.prop_id=p.id WHERE sp.storyboard_id=? AND p.drama_id=? AND p.deleted_at IS NULL ORDER BY p.id').all(sb.id,job.drama_id);
-      refs=[...new Set([scene,...chars,...props].filter(hasImage).map(mediaUrl))].slice(0,10);
+
+    // 自动解析与推导 H3 模式（Ref2VA + AddGuide vs FL2VA）并持久化依据
+    const { resolveH3SubmissionPlan } = require('./h3ModeResolver');
+    let slots = sb.semantic_slots;
+    if (typeof slots === 'string') {
+      try { slots = JSON.parse(slots); } catch (_) { slots = null; }
     }
-    if(universal ? !refs.length : !first) throw new Error(`分镜#${sb.storyboard_number}缺少参考图片，未提交视频`);
-    const prompt=universal ? sb.universal_segment_text || sb.video_prompt : sb.video_prompt || sb.universal_segment_text;
-    if(!String(prompt || '').trim()) throw new Error(`分镜#${sb.storyboard_number}缺少视频提示词，未提交视频`);
-    return {drama_id:job.drama_id,storyboard_id:sb.id,model:selected.model || undefined,prompt,
-      image_url:universal?refs[0]:first,first_frame_url:universal?undefined:first,last_frame_url:universal?undefined:last || undefined,reference_image_urls:refs,universal,
+    const plan = resolveH3SubmissionPlan(db, job.drama_id, { ...sb, semantic_slots: slots || sb.semantic_slots }, { h3_mode: options.h3_mode });
+    try {
+      db.prepare('UPDATE storyboards SET h3_generation_plan=? WHERE id=?').run(JSON.stringify(plan), sb.id);
+    } catch (_) {}
+
+    const first = plan.requires_first_frame ? mediaUrl(frame(db,sb,'first') || frame(db,sb,'image')) : '';
+    const last = plan.mode === 'fl2va' && plan.last_frame_policy === 'generate_tail'
+      ? mediaUrl(frame(db,sb,'last'))
+      : '';
+
+    if (plan.requires_first_frame && !first && plan.first_frame_policy !== 'inherit_tail') {
+      throw new Error(`分镜 #${sb.storyboard_number} 缺少首帧图片（首帧生成失败或未就绪），已终止任务，禁止静默降级为无首帧生成！`);
+    }
+
+    let refs=[first,last].filter(Boolean);
+    if(plan.mode === 'ref2va') {
+      if (Array.isArray(plan.references) && plan.references.length > 0) {
+        refs = plan.references.map(r => {
+          if (r.url) return r.url;
+          if (r.type === 'scene' && r.id) {
+            const sc = db.prepare('SELECT * FROM scenes WHERE id=? AND drama_id=? AND deleted_at IS NULL').get(r.id, job.drama_id);
+            return mediaUrl(sc);
+          }
+          if (r.type === 'character' && r.id) {
+            const ch = db.prepare('SELECT * FROM characters WHERE id=? AND drama_id=? AND deleted_at IS NULL').get(r.id, job.drama_id);
+            return mediaUrl(ch);
+          }
+          if (r.type === 'prop' && r.id) {
+            const pr = db.prepare('SELECT * FROM props WHERE id=? AND drama_id=? AND deleted_at IS NULL').get(r.id, job.drama_id);
+            return mediaUrl(pr);
+          }
+          return '';
+        }).filter(Boolean);
+      } else if (universal) {
+        // Match the editor's @图片 slots: scene, characters in shot order, props.
+        const scene=sb.scene_id ? db.prepare('SELECT * FROM scenes WHERE id=? AND drama_id=? AND deleted_at IS NULL').get(sb.scene_id,job.drama_id) : null;
+        let ids=[];try{ids=JSON.parse(sb.characters || '[]').map(c=>Number(typeof c==='object'?c.id:c))}catch(_){}
+        if(!ids.length) ids=db.prepare('SELECT character_id FROM storyboard_characters WHERE storyboard_id=? ORDER BY id').all(sb.id).map(c=>c.character_id);
+        const chars=ids.map(id=>db.prepare('SELECT * FROM characters WHERE id=? AND drama_id=? AND deleted_at IS NULL').get(id,job.drama_id));
+        const props=db.prepare('SELECT p.* FROM props p JOIN storyboard_props sp ON sp.prop_id=p.id WHERE sp.storyboard_id=? AND p.drama_id=? AND p.deleted_at IS NULL ORDER BY p.id').all(sb.id,job.drama_id);
+        refs=[...new Set([scene,...chars,...props].filter(hasImage).map(mediaUrl))];
+      }
+      if (refs.length > 9) {
+        throw new Error(`分镜 #${sb.storyboard_number} 参考图片数量 (${refs.length}) 超过上限 (9 张)，已终止任务以避免静默截断！请调整分镜参考素材。`);
+      }
+    }
+
+    if(plan.mode === 'ref2va' && !refs.length && !(plan.audio_references || []).length) {
+      const speech=slots?.speech_plan || {};
+      if(!String(speech.text || sb.dialogue || sb.narration || '').trim()) throw new Error(`分镜#${sb.storyboard_number}的 Ref2VA 计划缺少图片或声音参考，未提交视频`);
+    }
+    return {drama_id:job.drama_id,storyboard_id:sb.id,model:selected.model || undefined,
+      image_url:universal?refs[0]:first,first_frame_url:universal?undefined:first,last_frame_url:universal?undefined:last || undefined,
+      reference_image_urls:refs,universal,h3_mode:plan.mode,resolution_plan:plan,
       aspect_ratio:options.aspect_ratio,style:options.style,resolution:options.resolution,duration:sb.duration};
   }
   async function invokeAndAttach(handler,params,body,attach) {

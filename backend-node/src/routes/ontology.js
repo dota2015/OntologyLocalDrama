@@ -13,6 +13,10 @@ const { validateAllInvariants } = require('../ontology/invariants');
 const { extractAllEntitiesFromScript, autocompleteEntityFromScript } = require('../ontology/extractionAgent');
 const { runDirectorAgent, runFullDramaDirectorAgent, refineSingleStoryboard } = require('../ontology/directorAgent');
 const taskService = require('../services/taskService');
+const directorCheckpoint = require('../services/directorCheckpoint');
+const { withTaskTokenUsage } = require('../services/agentTokenUsage');
+const { withTaskTrace } = require('../services/directorTrace');
+const runDirectorTask = (db, taskId, work) => withTaskTrace(db, taskId, () => withTaskTokenUsage(db, taskId, work));
 const { loadConfig } = require('../config');
 
 function ontologyRoutes(db, log) {
@@ -39,20 +43,26 @@ function ontologyRoutes(db, log) {
       try {
         const episodeId = Number(req.params.episode_id);
         const pkg = compileDramaSemanticPackage(db, episodeId);
-        const shots = db.prepare('SELECT * FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL ORDER BY storyboard_number ASC').all(episodeId);
+        let shots = [];
+        if (Array.isArray(req.body?.storyboards) && req.body.storyboards.length > 0) {
+          // 允许直接校验内存中的候选分镜（支持「校验候选→结构化退回→原子保存」，无需预先落库）
+          shots = req.body.storyboards;
+        } else {
+          shots = db.prepare('SELECT * FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL ORDER BY storyboard_number ASC').all(episodeId);
 
-        // 挂载当前集各分镜关联的道具 ID（storyboard_props）
-        const sbIds = shots.map(s => s.id);
-        if (sbIds.length > 0) {
-          const placeholders = sbIds.map(() => '?').join(',');
-          const spRows = db.prepare(`SELECT storyboard_id, prop_id FROM storyboard_props WHERE storyboard_id IN (${placeholders})`).all(...sbIds);
-          const propMap = {};
-          for (const row of spRows) {
-            if (!propMap[row.storyboard_id]) propMap[row.storyboard_id] = [];
-            propMap[row.storyboard_id].push(row.prop_id);
-          }
-          for (const s of shots) {
-            s.prop_ids = propMap[s.id] || [];
+          // 挂载当前集各分镜关联的道具 ID（storyboard_props）
+          const sbIds = shots.map(s => s.id);
+          if (sbIds.length > 0) {
+            const placeholders = sbIds.map(() => '?').join(',');
+            const spRows = db.prepare(`SELECT storyboard_id, prop_id FROM storyboard_props WHERE storyboard_id IN (${placeholders})`).all(...sbIds);
+            const propMap = {};
+            for (const row of spRows) {
+              if (!propMap[row.storyboard_id]) propMap[row.storyboard_id] = [];
+              propMap[row.storyboard_id].push(row.prop_id);
+            }
+            for (const s of shots) {
+              s.prop_ids = propMap[s.id] || [];
+            }
           }
         }
 
@@ -125,6 +135,15 @@ function ontologyRoutes(db, log) {
       try {
         const episodeId = Number(req.params.episode_id);
         const cfg = loadConfig();
+        const active = db.prepare(`SELECT id FROM async_tasks WHERE resource_id=? AND type='director_storyboard_generation'
+          AND status IN ('pending','processing') AND deleted_at IS NULL`).get(String(episodeId));
+        if (active) return response.error(res, 409, 'DIRECTOR_ACTIVE', '当前集已有导演任务运行，请等待完成或停止后再操作', { task_id: active.id });
+        let requestOptions = req.body || {};
+        if (requestOptions.resume_task_id) {
+          const saved = directorCheckpoint.requireResume(db, requestOptions.resume_task_id, episodeId, cfg);
+          // Resume uses the original creative inputs, never silently the current form.
+          requestOptions = { ...saved.options, resume_task_id: requestOptions.resume_task_id };
+        }
         const task = taskService.createTask(db, log, 'director_storyboard_generation', String(episodeId));
         const taskId = task.id;
 
@@ -133,17 +152,26 @@ function ontologyRoutes(db, log) {
           taskService.updateTaskStatus(db, taskId, 'processing', 5, '导演智能体正在准备视听本体调度...');
           try {
             const options = {
-              ...(req.body || {}),
+              ...requestOptions,
+              taskId,
               onProgress: (pct, msg) => {
+                if (!['pending', 'processing'].includes(taskService.getTask(db, taskId)?.status)) throw new Error('导演任务已停止，检查点已保留');
                 taskService.updateTaskStatus(db, taskId, 'processing', pct, msg);
               },
             };
-            const result = await runDirectorAgent(db, log, cfg, episodeId, options);
+            const result = await runDirectorTask(db, taskId, () => runDirectorAgent(db, log, cfg, episodeId, options));
             taskService.updateTaskStatus(db, taskId, 'completed', 100, '视听本体硬门禁审查与自纠完毕，分镜已入库。');
             taskService.updateTaskResult(db, taskId, result);
           } catch (agentErr) {
             log.error('directorGenerate task failed', { error: agentErr.message, task_id: taskId });
-            taskService.updateTaskError(db, taskId, agentErr.message || '导演智能体推演失败');
+            taskService.updateTaskError(db, taskId, agentErr.message || '导演智能体推演失败', {
+              valid: false,
+              violations: agentErr.violations || [],
+              status: agentErr.status || 422,
+              planning_advice: agentErr.planning_advice || null,
+              token_usage: agentErr.token_usage,
+              trace_file: agentErr.trace_file,
+            });
           }
         })();
 
@@ -154,7 +182,7 @@ function ontologyRoutes(db, log) {
         });
       } catch (err) {
         log.error('ontology directorGenerate', { error: err.message });
-        response.internalError(res, err.message);
+        response.badRequest(res, err.message);
       }
     },
 
@@ -170,13 +198,19 @@ function ontologyRoutes(db, log) {
         (async () => {
           taskService.updateTaskStatus(db, taskId, 'processing', 5, '全生命周期导演智能体已就绪，正在准备推演...');
           try {
-            const result = await runFullDramaDirectorAgent(db, log, cfg, dramaId, req.body || {}, (progress, message) => {
+            const result = await runDirectorTask(db, taskId, () => runFullDramaDirectorAgent(db, log, cfg, dramaId, req.body || {}, (progress, message) => {
               taskService.updateTaskStatus(db, taskId, 'processing', progress, message);
-            });
+            }));
             taskService.updateTaskResult(db, taskId, result);
           } catch (agentErr) {
             log.error('directorFullPipeline task failed', { error: agentErr.message, task_id: taskId });
-            taskService.updateTaskError(db, taskId, agentErr.message || '全流程导演智能体推演失败');
+            taskService.updateTaskError(db, taskId, agentErr.message || '全流程导演智能体推演失败', {
+              token_usage: agentErr.token_usage,
+              trace_file: agentErr.trace_file,
+              valid: false,
+              violations: agentErr.violations || [],
+              status: agentErr.status || 422,
+            });
           }
         })();
 
@@ -197,11 +231,49 @@ function ontologyRoutes(db, log) {
         const storyboardId = Number(req.params.id);
         const cfg = loadConfig();
         const instruction = (req.body?.instruction || req.body?.user_feedback || req.body?.directives || '').trim();
-        const result = await refineSingleStoryboard(db, log, cfg, storyboardId, instruction);
-        response.success(res, result);
+        if (!Number.isFinite(storyboardId) || storyboardId <= 0) {
+          return response.badRequest(res, '分镜 ID 无效');
+        }
+        if (!instruction) {
+          return response.badRequest(res, '请提供针对该分镜的具体导演调整指令');
+        }
+        const storyboard = db.prepare(
+          'SELECT id, storyboard_number FROM storyboards WHERE id = ? AND deleted_at IS NULL'
+        ).get(storyboardId);
+        if (!storyboard) return response.notFound(res, '分镜不存在');
+
+        const task = taskService.createTask(db, log, 'director_storyboard_refinement', String(storyboardId));
+        const taskId = task.id;
+        (async () => {
+          taskService.updateTaskStatus(db, taskId, 'processing', 5, `导演 Agent 正在读取第 ${storyboard.storyboard_number} 镜及本集记忆...`);
+          try {
+            const result = await runDirectorTask(db, taskId, () => refineSingleStoryboard(db, log, cfg, storyboardId, instruction, {
+              maxReflectionRounds: req.body?.max_reflection_rounds,
+              onProgress: (pct, msg) => taskService.updateTaskStatus(db, taskId, 'processing', pct, msg),
+            }));
+            taskService.updateTaskResult(db, taskId, result);
+          } catch (agentErr) {
+            log.error('refineStoryboard task failed', { error: agentErr.message, task_id: taskId, storyboard_id: storyboardId });
+            taskService.updateTaskError(db, taskId, agentErr.message || '导演单镜微调失败', {
+              token_usage: agentErr.token_usage,
+              trace_file: agentErr.trace_file,
+              valid: false,
+              violations: agentErr.violations || [],
+              status: agentErr.status || 422,
+            });
+          }
+        })();
+
+        response.success(res, {
+          task_id: taskId,
+          status: 'pending',
+          storyboard_id: storyboardId,
+          storyboard_number: storyboard.storyboard_number,
+          message: '导演单镜微调已转入后台，刷新页面后仍可恢复进度。',
+        });
       } catch (err) {
         log.error('ontology refineStoryboard', { error: err.message });
-        response.badRequest(res, err.message);
+        response.internalError(res, err.message);
       }
     },
 
@@ -224,6 +296,17 @@ function ontologyRoutes(db, log) {
         response.success(res, result);
       } catch (err) {
         log.error('ontology autocompleteEntity', { error: err.message });
+        response.badRequest(res, err.message);
+      }
+    },
+
+    // 查询视听本体槽位统一数据字典规范
+    getDataDictionary: (req, res) => {
+      try {
+        const { AUDIOTISUAL_DATA_DICTIONARY } = require('../ontology/schema');
+        response.success(res, AUDIOTISUAL_DATA_DICTIONARY);
+      } catch (err) {
+        log.error('ontology getDataDictionary', { error: err.message });
         response.badRequest(res, err.message);
       }
     },

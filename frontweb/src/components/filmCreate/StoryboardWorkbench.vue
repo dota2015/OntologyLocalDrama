@@ -22,14 +22,16 @@
         v-model:video-duration="videoDuration"
         v-model:grid-mode="gridMode"
         v-model:storyboard-universal-omni="storyboardUniversalOmni"
+        v-model:video-frame-contiguity="videoFrameContiguity"
         :storyboard-use-first-last-frame="storyboardUseFirstLastFrame"
         :has-storyboards="storyboards.length > 0"
         :has-episode="!!currentEpisodeId"
+        :planning-warning="directorPlanningWarning"
         :script-estimate-storyboard-title="scriptEstimateStoryboardTitle"
         :script-estimate-storyboard-hint="scriptEstimateStoryboardHint"
         :script-estimate-video-duration-title="scriptEstimateVideoDurationTitle"
         :script-estimate-video-duration-hint="scriptEstimateVideoDurationHint"
-        :director-generating="directorGenerating"
+        :director-generating="isAnyDirectorGenerating"
         :storyboard-generating="storyboardGenerating"
         :universal-omni-polish-running="universalOmniPolishRunning"
         :inferring-params="inferringParams"
@@ -38,7 +40,6 @@
         :batch-video-running="batchVideoRunning"
         :batch-image-stopping="batchImageStopping"
         :batch-video-stopping="batchVideoStopping"
-        :batch-dubbing-starting="batchDubbingStarting"
         :pipeline-running="pipelineRunning"
         :single-shot-image-info="singleShotImageInfo"
         :batch-image-progress="batchImageProgress"
@@ -48,15 +49,16 @@
         :batch-video-submitting="batchVideoSubmitting"
         :exporting-storyboard-sheet="exportingStoryboardSheet"
         @save-settings="saveProjectSettings"
-        @director-generate="onDirectorAgentGenerate"
+        @director-generate="onDirectorAgentGenerate()"
         @add-storyboard="onAddSingleStoryboard"
         @batch-infer-params="onBatchInferParams"
         @audit-invariants="onAuditInvariants"
         @start-batch-image="startBatchImageGeneration"
         @start-batch-video="startBatchVideoGeneration"
-        @start-batch-dubbing="startBatchDubbing"
         @stop-batch-image="stopBatchImageGeneration"
         @stop-batch-video="stopBatchVideoGeneration"
+        @clear-media="onClearEpisodeMedia"
+        @clear-storyboards="onClearEpisodeStoryboards"
         @export-storyboard-sheet="onExportStoryboardSheet"
         @export-narration-srt="onExportNarrationSrt"
         @clear-batch-image-errors="batchImageErrors = []"
@@ -72,6 +74,41 @@
           />
         </template>
       </StoryboardBatchToolbar>
+      <div v-if="directorRunForDisplay" class="director-run-audit">
+        <div class="director-run-audit__main">
+          <el-tag size="small" :type="directorRunTagType(directorRunForDisplay.status)">
+            {{ directorRunStatusLabel(directorRunForDisplay.status) }}
+          </el-tag>
+          <strong>导演分镜版本 {{ latestDirectorRunVersion }}</strong>
+          <span>开始：{{ formatTaskTime(latestDirectorRun.created_at) }}</span>
+          <span v-if="latestDirectorRun.completed_at">完成：{{ formatTaskTime(latestDirectorRun.completed_at) }}</span>
+          <span v-if="latestDirectorRunResult.total_shots">{{ latestDirectorRunResult.total_shots }} 镜</span>
+          <span v-if="latestDirectorRunResult.planning_mode">规划：{{ latestDirectorRunResult.planning_mode }}</span>
+          <span v-if="latestDirectorRunResult.reflection_repairs != null">ReAct 修复：{{ latestDirectorRunResult.reflection_repairs }} 次</span>
+          <el-tooltip v-if="latestDirectorRunResult.token_usage" placement="top">
+            <template #content>
+              <div>累计本任务规划、生成与自纠请求；缓存和推理 Token 已包含在输入／输出中。</div>
+              <div v-for="stage in latestDirectorRunResult.token_usage.stages" :key="`${stage.agent}/${stage.model}`">
+                {{ stage.agent }} · {{ stage.model }}：{{ stage.total_tokens.toLocaleString() }} Token（{{ stage.requests }} 次请求）
+              </div>
+            </template>
+            <span>
+              Token{{ latestDirectorRunResult.token_usage.unreported_requests ? '（已知部分）' : '' }}：{{ latestDirectorRunResult.token_usage.total_tokens.toLocaleString() }}
+              · 输入 {{ latestDirectorRunResult.token_usage.input_tokens.toLocaleString() }}
+              / 输出 {{ latestDirectorRunResult.token_usage.output_tokens.toLocaleString() }}
+              · {{ latestDirectorRunResult.token_usage.requests }} 次请求
+              <template v-if="latestDirectorRunResult.token_usage.unreported_requests">（{{ latestDirectorRunResult.token_usage.unreported_requests }} 次未返回用量）</template>
+            </span>
+          </el-tooltip>
+        </div>
+        <el-alert v-if="directorRunForDisplay.status === 'failed' && latestDirectorRun.error" :title="latestDirectorRun.error" type="error" :closable="false" show-icon />
+        <div v-if="directorRunForDisplay.status === 'failed' && latestDirectorRun.checkpoint?.available">
+          <span>已保存断点：{{ latestDirectorRun.checkpoint.stage }} · {{ latestDirectorRun.checkpoint.completed_shots }} 镜初稿</span>
+          <el-button type="primary" size="small" :disabled="isAnyDirectorGenerating" :loading="directorGenerating" @click="onDirectorAgentGenerate(latestDirectorRun.id)">继续失败任务</el-button>
+          <span>沿用原任务设置；需要改动规划时，请使用上方「导演生成分镜脚本」重新生成。</span>
+        </div>
+        <div class="director-run-audit__id" :title="latestDirectorRun.id">任务 {{ latestDirectorRun.id }}</div>
+      </div>
       <div v-if="storyboardGenerating || universalOmniPolishRunning || isAnyDirectorGenerating" class="storyboard-generating-tip">
         <el-icon class="is-loading"><Loading /></el-icon>
         <span v-if="isAnyDirectorGenerating">
@@ -94,19 +131,7 @@
           <StoryboardCard :sb="sb" :index="i" :storyboards="storyboards" />
         </template>
       </div>
-      <!-- 分镜生成中提示条 -->
-      <div v-if="storyboardGenerating || universalOmniPolishRunning || isAnyDirectorGenerating" class="sb-generating-tip">
-        <span class="sb-gen-dot" /><span class="sb-gen-dot" /><span class="sb-gen-dot" />
-        <span v-if="isAnyDirectorGenerating" class="sb-gen-text">
-          🎬 导演智能体推演中{{ effectiveDirectorProgress ? ` (${effectiveDirectorProgress}%)` : '' }}：{{ effectiveDirectorMessage || '正在规划场面调度与自纠质检，客官稍等片刻…' }}
-        </span>
-        <span v-else-if="universalOmniPolishRunning" class="sb-gen-text">
-          全能片段润色中 {{ universalOmniPolishProgress.current }}/{{ universalOmniPolishProgress.total }}
-          <template v-if="universalOmniPolishProgress.label"> · {{ universalOmniPolishProgress.label }}</template>
-        </span>
-        <span v-else class="sb-gen-text">分镜持续生成中，客官稍等片刻…</span>
-      </div>
-      <div v-else-if="storyboards.length === 0" class="empty-tip">请先生成分镜</div>
+      <div v-if="storyboards.length === 0 && !storyboardGenerating && !universalOmniPolishRunning && !isAnyDirectorGenerating" class="empty-tip">请先生成分镜</div>
     </section>
 
     <StoryboardSpeechEditor ref="speechEditor" :drama-id="dramaId" @saved="onSpeechSaved" />
@@ -121,82 +146,345 @@
       @close="sbPromptTarget = null"
     >
       <el-tabs v-model="sbPromptActiveTab" class="sb-prompt-tabs">
-        <el-tab-pane label="🖼 图片提示词" name="image">
-          <el-form v-if="sbPromptTarget" label-width="0" class="sb-prompt-dialog-form">
-            <el-form-item label="">
-              <div style="width:100%">
-                <div style="font-size:12px; color:#6b7280; margin-bottom:4px;">原始提示词（分镜生成时写入，仅供参考）</div>
-                <el-input
-                  v-model="sbPromptImageText"
-                  type="textarea"
-                  :rows="4"
-                  placeholder="分镜生成时由 AI 写入的原始描述"
-                />
-              </div>
-            </el-form-item>
-            <el-form-item label="">
-              <div style="width:100%">
-                <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
-                  <span style="font-size:12px; color:#6b7280;">通用优化提示词（🎬 导演本体优化，注入角色锚点/道具真实尺度/场景地标）</span>
-                  <el-button
-                    size="small"
-                    type="warning"
-                    plain
-                    :loading="sbPromptPolishing"
-                    @click="onPolishSbPrompt"
-                  >{{ sbPromptPolishedText ? '🎬 重新导演优化' : '🎬 导演本体优化' }}</el-button>
-                </div>
-                <el-input
-                  v-model="sbPromptPolishedText"
-                  type="textarea"
-                  :rows="6"
-                  placeholder="点击「导演本体优化」生成高契约度提示词（融入角色外貌、道具物理尺度与场景地标）"
-                />
-              </div>
-            </el-form-item>
-            <div class="sb-prompt-section-title" style="margin-top:10px; display:flex; align-items:center; gap:6px;">
-              <span>💡 🎬 导演定向微调指导（直指微调元素，携带本体与连戏快照上下文）</span>
-            </div>
-            <el-form-item label="">
-              <div style="width:100%">
-                <el-input
-                  v-model="sbPromptUserFeedback"
-                  type="textarea"
-                  :rows="2"
-                  placeholder="输入针对特定元素的定向微调指令（如：聚焦手持佩剑近景特写，剑身有微光，神情坚毅，冷峻侧光等）"
-                />
-              </div>
-            </el-form-item>
-          </el-form>
-        </el-tab-pane>
-
-        <el-tab-pane label="🎬 视频提示词与槽位" name="video">
+        <el-tab-pane label="🖼 图片提示词与构图槽位" name="image">
           <el-form v-if="sbPromptTarget" label-width="0" class="sb-prompt-dialog-form">
             <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
-              <el-radio-group v-model="sbPromptVideoSubTab" size="small">
-                <el-radio-button label="slots">📋 多镜头时间线与语义槽位 (H3 / Slots)</el-radio-button>
-                <el-radio-button label="preview">📝 视频提示词文本预览</el-radio-button>
+              <el-radio-group v-model="sbPromptImageSubTab" size="small">
+                <el-radio-button label="slots">📋 首帧构图与视觉槽位 (Visual Slots)</el-radio-button>
+                <el-radio-button label="preview">📝 图片提示词分层预览 (Prompt Text)</el-radio-button>
               </el-radio-group>
               <div style="display:flex; align-items:center; gap:8px;">
                 <el-button
                   size="small"
                   type="info"
                   plain
-                  :loading="sbPromptRebuilding"
-                  @click="onRebuildSbVideoPrompt"
-                >按分镜参数重建</el-button>
+                  :loading="sbPromptImageRebuilding"
+                  @click="onRebuildSbImagePrompt"
+                >按分镜参数重新编译</el-button>
                 <el-button
                   size="small"
                   type="warning"
                   plain
-                  :loading="sbPromptVideoPolishing"
-                  @click="onPolishSbVideoPrompt"
-                >{{ sbPromptVideoPolishing ? 'AI 润色中…' : 'AI 润色优化' }}</el-button>
+                  :loading="sbPromptPolishing"
+                  @click="onPolishSbPrompt"
+                >{{ sbPromptPolishedText ? '🎬 重新导演优化' : '🎬 导演本体优化' }}</el-button>
               </div>
             </div>
 
+            <!-- 子视图 1：结构化首帧构图与视觉槽位 -->
+            <div v-show="sbPromptImageSubTab === 'slots'" class="sb-slots-view">
+              <div v-if="sbPromptVisualSlots" class="sb-slots-timeline-container">
+                <!-- 1. 场景空间与环境纵深卡片 -->
+                <div class="sb-slot-shot-card">
+                  <div class="sb-slot-shot-header">
+                    <div class="sb-slot-shot-title">
+                      <span class="sb-slot-shot-badge" style="background:#0284c7;">🏞️ 场景空间与三层纵深</span>
+                      <el-input v-model="sbPromptVisualSlots.location" size="small" style="width:240px;" placeholder="场景位置" @input="syncVisualSlotsToPromptPreview" />
+                    </div>
+                    <div style="display:flex; align-items:center; gap:6px;">
+                      <span style="font-size:12px; color:#6b7280;">时间与光照:</span>
+                      <el-input v-model="sbPromptVisualSlots.time" size="small" style="width:130px;" placeholder="如：阴天白昼" @input="syncVisualSlotsToPromptPreview" />
+                    </div>
+                  </div>
+                  <div class="sb-slot-action-row">
+                    <span class="sb-slot-field-label">空间三层纵深（前景遮挡/中景聚焦/后景灭点）：</span>
+                    <el-input
+                      v-model="sbPromptVisualSlots.environment_depth"
+                      size="small"
+                      placeholder="空间三层纵深层次分明：前景轻微遮挡虚化引线，中景主体聚焦清晰，后景延伸至深邃视觉灭点"
+                      @input="syncVisualSlotsToPromptPreview"
+                    />
+                  </div>
+                  <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                    <span class="sb-slot-field-label" style="width:105px; flex-shrink:0;">视听构图关系：</span>
+                    <el-select
+                      v-model="sbPromptVisualSlots.dialogue_framing"
+                      size="small"
+                      filterable
+                      allow-create
+                      default-first-option
+                      style="flex:1;"
+                      placeholder="选择或输入构图关系"
+                      @change="syncVisualSlotsToPromptPreview"
+                    >
+                      <el-option value="two_shot_face_to_face" label="two_shot_face_to_face (双人面对面对视中景)" />
+                      <el-option value="over_the_shoulder" label="over_the_shoulder (经典过肩拍，前虚后实)" />
+                      <el-option value="single_reaction_offscreen" label="single_reaction_offscreen (单人近景目光看画外)" />
+                      <el-option value="joint_observation" label="joint_observation (双人同向警戒或看大屏)" />
+                      <el-option value="solo_action" label="solo_action (单人动作无对话)" />
+                    </el-select>
+                  </div>
+                </div>
+
+                <!-- 2. 机位景别与摄影参数卡片 -->
+                <div class="sb-slot-shot-card">
+                  <div class="sb-slot-section-subtitle">🎥 机位景别与电影光学镜头参数：</div>
+                  <div style="display:grid; grid-template-columns: repeat(5, 1fr); gap:10px; margin-top:6px;">
+                    <div>
+                      <span class="sb-slot-mini-label">景别</span>
+                      <el-select v-model="sbPromptVisualSlots.shot_type" size="small" style="width:100%" @change="syncVisualSlotsToPromptPreview">
+                        <el-option value="大远景" label="大远景 (Extreme Wide)" />
+                        <el-option value="远景" label="远景 (Wide Shot)" />
+                        <el-option value="中景" label="中景 (Medium Shot)" />
+                        <el-option value="近景" label="近景 (Close-up)" />
+                        <el-option value="特写" label="特写 (Extreme Close-up)" />
+                      </el-select>
+                    </div>
+                    <div>
+                      <span class="sb-slot-mini-label">俯仰角度</span>
+                      <el-select v-model="sbPromptVisualSlots.angle_v" size="small" style="width:100%" @change="syncVisualSlotsToPromptPreview">
+                        <el-option value="eye_level" label="平视 (Eye Level)" />
+                        <el-option value="low" label="仰拍 (Low Angle)" />
+                        <el-option value="high" label="俯拍 (High Angle)" />
+                        <el-option value="worm" label="极低仰拍 (Worm's Eye)" />
+                        <el-option value="top_down" label="顶拍 (Top Down)" />
+                      </el-select>
+                    </div>
+                    <div>
+                      <span class="sb-slot-mini-label">水平机位</span>
+                      <el-select v-model="sbPromptVisualSlots.angle_h" size="small" style="width:100%" @change="syncVisualSlotsToPromptPreview">
+                        <el-option value="front" label="正面 (Front)" />
+                        <el-option value="front_left" label="前左 45°" />
+                        <el-option value="front_right" label="前右 45°" />
+                        <el-option value="left" label="左侧 (Left Profile)" />
+                        <el-option value="right" label="右侧 (Right Profile)" />
+                        <el-option value="back" label="背向 (Back View)" />
+                      </el-select>
+                    </div>
+                    <div>
+                      <span class="sb-slot-mini-label">景深</span>
+                      <el-select v-model="sbPromptVisualSlots.depth_of_field" size="small" style="width:100%" @change="syncVisualSlotsToPromptPreview">
+                        <el-option value="shallow" label="浅景深 (背景虚化)" />
+                        <el-option value="medium" label="中景深 (自然过渡)" />
+                        <el-option value="deep" label="大景深 (全景深清晰)" />
+                        <el-option value="extreme_shallow" label="超浅景深 (特写微距)" />
+                      </el-select>
+                    </div>
+                    <div>
+                      <span class="sb-slot-mini-label">画面尺度</span>
+                      <el-input v-model="sbPromptVisualSlots.angle_s" size="small" placeholder="medium / close_up" @input="syncVisualSlotsToPromptPreview" />
+                    </div>
+                  </div>
+                  <div style="margin-top:8px;">
+                    <span class="sb-slot-mini-label">电影级镜头规格</span>
+                    <el-input v-model="sbPromptVisualSlots.cinematic_lens" size="small" placeholder="如：50mm经典电影大师镜头·f/2.8标准视场角·通透写实质感" @input="syncVisualSlotsToPromptPreview" />
+                  </div>
+                </div>
+
+                <!-- 3. 出场角色构图、姿态与视线槽位 (Character Visual Slots) -->
+                <div class="sb-slot-chars-container">
+                  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+                    <span class="sb-slot-section-subtitle" style="margin-bottom:0;">👤 出场角色空间站位、朝向与微表情槽位：</span>
+                    <el-tag size="small" type="success">严格出场人数：{{ sbPromptVisualSlots.character_visuals?.length || 0 }} 人</el-tag>
+                  </div>
+                  <div v-if="sbPromptVisualSlots.character_visuals && sbPromptVisualSlots.character_visuals.length" style="display:flex; flex-direction:column; gap:8px;">
+                    <div
+                      v-for="(c, cIdx) in sbPromptVisualSlots.character_visuals"
+                      :key="c.name || cIdx"
+                      class="sb-slot-char-card"
+                    >
+                      <div class="sb-slot-char-name" style="font-weight:600; color:#1e293b; display:flex; align-items:center; gap:6px;">
+                        <span>「{{ c.name }}」</span>
+                        <span style="font-size:11px; color:#64748b; font-weight:normal;">出场角色 #{{ cIdx + 1 }}</span>
+                      </div>
+                      <div class="sb-slot-char-grid" style="grid-template-columns: repeat(4, 1fr); gap:8px; margin-top:4px;">
+                        <div>
+                          <span class="sb-slot-mini-label">角色 ID</span>
+                          <el-input-number v-model="c.character_id" size="small" controls-position="right" style="width:100%" />
+                        </div>
+                        <div>
+                          <span class="sb-slot-mini-label">景深层级</span>
+                          <el-input v-model="c.depth_layer" size="small" placeholder="foreground / midground / background" @input="syncVisualSlotsToPromptPreview" />
+                        </div>
+                        <div>
+                          <span class="sb-slot-mini-label">画面位置</span>
+                          <el-input v-model="c.screen_position" size="small" placeholder="如：画面左侧前景" @input="syncVisualSlotsToPromptPreview" />
+                        </div>
+                        <div>
+                          <span class="sb-slot-mini-label">环境锚点</span>
+                          <el-input v-model="c.environmental_anchor" size="small" placeholder="如：破棚木柱旁" @input="syncVisualSlotsToPromptPreview" />
+                        </div>
+                      </div>
+                      <div class="sb-slot-char-grid" style="grid-template-columns: repeat(4, 1fr); gap:8px; margin-top:6px;">
+                        <div>
+                          <span class="sb-slot-mini-label">空间站位锚点</span>
+                          <el-input v-model="c.spatial_anchor" size="small" placeholder="画面左侧前景近景" @input="syncVisualSlotsToPromptPreview" />
+                        </div>
+                        <div>
+                          <span class="sb-slot-mini-label">身体朝向</span>
+                          <el-input v-model="c.facing" size="small" placeholder="3/4侧身面向搭档" @input="syncVisualSlotsToPromptPreview" />
+                        </div>
+                        <div>
+                          <span class="sb-slot-mini-label">表情</span>
+                          <el-input v-model="c.expression" size="small" placeholder="具体微表情" @input="syncVisualSlotsToPromptPreview" />
+                        </div>
+                        <div>
+                          <span class="sb-slot-mini-label">头部姿态 head_pose</span>
+                          <el-input v-model="c.head_pose" size="small" placeholder="头部转向搭档面部" @input="syncVisualSlotsToPromptPreview" />
+                        </div>
+                      </div>
+                      <div class="sb-slot-char-grid" style="grid-template-columns: repeat(4, 1fr); gap:8px; margin-top:6px;">
+                        <div>
+                          <span class="sb-slot-mini-label">视线落点 gaze</span>
+                          <el-input v-model="c.gaze" size="small" placeholder="目光锁定搭档双眼" @input="syncVisualSlotsToPromptPreview" />
+                        </div>
+                        <div>
+                          <span class="sb-slot-mini-label">身体姿态与重心</span>
+                          <el-input v-model="c.posture" size="small" placeholder="挺拔立姿微侧，重心稳固" @input="syncVisualSlotsToPromptPreview" />
+                        </div>
+                        <div>
+                          <span class="sb-slot-mini-label">手部与肢体动作</span>
+                          <el-input v-model="c.hands" size="small" placeholder="双手微弯自然悬于身侧" @input="syncVisualSlotsToPromptPreview" />
+                        </div>
+                        <div>
+                          <span class="sb-slot-mini-label">头部与视线兼容字段</span>
+                          <el-input v-model="c.head_gaze" size="small" placeholder="兼容旧数据" @input="syncVisualSlotsToPromptPreview" />
+                        </div>
+                      </div>
+                      <div class="sb-slot-char-grid" style="grid-template-columns: 1fr 1fr; gap:8px; margin-top:6px;">
+                        <div>
+                          <span class="sb-slot-mini-label">道具交互</span>
+                          <el-input v-model="c.prop_interaction" size="small" placeholder="与具体道具的接触关系" @input="syncVisualSlotsToPromptPreview" />
+                        </div>
+                        <div>
+                          <span class="sb-slot-mini-label">本镜造型细节</span>
+                          <el-input v-model="c.appearance_details" size="small" placeholder="服装、发型、污损等本镜细节" @input="syncVisualSlotsToPromptPreview" />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div v-else class="sb-h3-empty-hint">
+                    当前镜头未绑定出场角色。
+                  </div>
+                </div>
+
+                <!-- 4. 光影影调与色彩氛围卡片 -->
+                <div class="sb-slot-shot-card">
+                  <div class="sb-slot-section-subtitle">💡 光影影调与色彩氛围 (Lighting & Chiaroscuro)：</div>
+                  <div style="display:grid; grid-template-columns: 180px 1fr; gap:10px; margin-top:6px; align-items:center;">
+                    <div>
+                      <span class="sb-slot-mini-label">光影风格</span>
+                      <el-select v-model="sbPromptVisualSlots.lighting_style" size="small" style="width:100%" @change="syncVisualSlotsToPromptPreview">
+                        <el-option value="natural" label="自然漫反射光 (Natural)" />
+                        <el-option value="side" label="高反差侧光 (Side Light)" />
+                        <el-option value="backlit" label="轮廓逆光切边 (Backlit/Rim)" />
+                        <el-option value="dramatic" label="经典戏剧光 (Dramatic Noir)" />
+                        <el-option value="soft" label="柔光箱细腻漫射 (Soft)" />
+                        <el-option value="golden_hour" label="暖金夕阳斜射 (Golden Hour)" />
+                        <el-option value="blue_hour" label="幽蓝冷调暮光 (Blue Hour)" />
+                        <el-option value="night" label="暗夜微光焦点 (Night)" />
+                        <el-option value="neon" label="赛博霓虹反差光 (Neon)" />
+                      </el-select>
+                    </div>
+                    <div>
+                      <span class="sb-slot-mini-label">光影影调细节描述</span>
+                      <el-input v-model="sbPromptVisualSlots.lighting_chiaroscuro" size="small" placeholder="如：幽蓝冷调暮光氛围，环境冷光与面部弱冷光交融" @input="syncVisualSlotsToPromptPreview" />
+                    </div>
+                  </div>
+                </div>
+
+                <div class="sb-slot-shot-card">
+                  <div class="sb-slot-section-subtitle">🎞 起幅、落幅与下镜转场合同：</div>
+                  <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-top:6px;">
+                    <el-input v-model="sbPromptVisualSlots.start_framing" type="textarea" :rows="2" placeholder="起幅构图" @input="syncVisualSlotsToPromptPreview" />
+                    <el-input v-model="sbPromptVisualSlots.end_framing" type="textarea" :rows="2" placeholder="落幅构图" @input="syncVisualSlotsToPromptPreview" />
+                    <el-input v-model="sbPromptVisualSlots.transition_to_next" type="textarea" :rows="2" placeholder="转入下一镜的连续性动作" @input="syncVisualSlotsToPromptPreview" />
+                  </div>
+                </div>
+
+                <el-collapse>
+                  <el-collapse-item title="尾帧角色视觉槽位（last_frame_visuals）" name="last-frame-slots">
+                    <SlotTreeEditor v-model="sbPromptVisualSlots.last_frame_visuals" />
+                  </el-collapse-item>
+                  <el-collapse-item title="完整图片槽位数据（包含所有字段）" name="all-image-slots">
+                    <SlotTreeEditor v-model="sbPromptVisualSlots" />
+                  </el-collapse-item>
+                </el-collapse>
+              </div>
+
+              <div v-else class="sb-slots-empty-card">
+                <p style="color:#6b7280; font-size:13px; margin-bottom:10px;">当前分镜尚未解析出构图视觉槽位，您可以一键重新编译。</p>
+                <el-button type="primary" size="small" :loading="sbPromptImageRebuilding" @click="onRebuildSbImagePrompt">按分镜参数合成视觉槽位</el-button>
+              </div>
+            </div>
+
+            <!-- 子视图 2：分层结构化提示词卡片与文本预览 -->
+            <div v-show="sbPromptImageSubTab === 'preview'" class="sb-preview-view">
+              <!-- 结构化分层卡片展示 (替代黑乎乎一大坨文本) -->
+              <div v-if="parsedImagePromptLayers.length" class="sb-image-prompt-layers-box">
+                <div style="font-size:12px; font-weight:600; color:#374151; margin-bottom:8px; display:flex; align-items:center; justify-content:space-between;">
+                  <span>分层结构化提示词预览 (按 5 层视听本体划分)</span>
+                  <span style="font-size:11px; color:#9ca3af; font-weight:normal;">结构化分块提升模型理解度，杜绝文本黏连</span>
+                </div>
+                <div class="sb-image-prompt-layers-grid">
+                  <div
+                    v-for="layer in parsedImagePromptLayers"
+                    :key="layer.title"
+                    class="sb-image-layer-card"
+                    :class="'layer--' + layer.key"
+                  >
+                    <div class="sb-image-layer-header">
+                      <el-tag size="small" :type="layer.tagType" effect="dark" class="sb-image-layer-tag">
+                        {{ layer.badge }}
+                      </el-tag>
+                    </div>
+                    <div class="sb-image-layer-body">
+                      {{ layer.content }}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 原始与优化编辑框 -->
+              <el-form-item label="" style="margin-top:12px;">
+                <div style="width:100%">
+                  <div style="font-size:12px; color:#6b7280; margin-bottom:4px;">图片提示词全文（支持自由编辑，保存后生效）：</div>
+                  <el-input
+                    v-model="sbPromptImageText"
+                    type="textarea"
+                    :rows="6"
+                    placeholder="分镜生成时由 AI 写入的完整描述"
+                  />
+                </div>
+              </el-form-item>
+              <el-form-item label="">
+                <div style="width:100%">
+                  <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
+                    <span style="font-size:12px; color:#6b7280;">通用优化提示词（🎬 导演本体优化，注入角色锚点/道具真实尺度/场景地标）：</span>
+                  </div>
+                  <el-input
+                    v-model="sbPromptPolishedText"
+                    type="textarea"
+                    :rows="4"
+                    placeholder="点击上方「导演本体优化」生成高契约度提示词"
+                  />
+                </div>
+              </el-form-item>
+              <div class="sb-prompt-section-title" style="margin-top:10px; display:flex; align-items:center; gap:6px;">
+                <span>💡 🎬 导演定向微调指导（直指微调元素，携带本体与连戏快照上下文）</span>
+              </div>
+              <el-form-item label="">
+                <div style="width:100%">
+                  <el-input
+                    v-model="sbPromptUserFeedback"
+                    type="textarea"
+                    :rows="2"
+                    placeholder="输入针对特定元素的定向微调指令（如：聚焦手持佩剑近景特写，剑身有微光，神情坚毅，冷峻侧光等）"
+                  />
+                </div>
+              </el-form-item>
+            </div>
+          </el-form>
+        </el-tab-pane>
+
+        <el-tab-pane label="🎬 视频提示词与槽位" name="video">
+          <el-form v-if="sbPromptTarget" label-width="0" class="sb-prompt-dialog-form">
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;">
+              <strong style="font-size:13px;">📋 H3 权威多镜头时间线与语义槽位</strong>
+            </div>
+
             <!-- 子视图 1：结构化多镜头时间线与语义槽位 -->
-            <div v-show="sbPromptVideoSubTab === 'slots'" class="sb-slots-view">
+            <div class="sb-slots-view">
               <div v-if="sbPromptVideoSlots" class="sb-slots-timeline-container">
                 <!-- MiniMax H3 多模态参考素材与声音绑定卡片 (Picture & Audio Slots) -->
                 <div class="sb-slot-h3-media-card" v-loading="sbPromptH3Loading">
@@ -204,26 +492,55 @@
                     <span class="sb-slot-section-title">🎬 MiniMax H3 多模态参考素材与声音绑定 (Picture & Audio Slots)</span>
                     <div class="sb-slot-h3-header-right">
                       <div style="display:flex; align-items:center; gap:6px;">
-                        <span style="font-size:11.5px; color:#6b7280;">上一镜尾帧衔接：</span>
+                        <span style="font-size:11.5px; color:#6b7280;">H3模式：</span>
                         <el-select
                           v-if="sbPromptH3Data"
-                          v-model="sbPromptH3Data.continuity"
+                          v-model="sbPromptH3Data.engine_mode"
                           size="small"
-                          style="width:230px;"
+                          style="width:160px;"
                         >
-                          <el-option value="off" label="使用本镜独立首帧 (默认)" />
-                          <el-option value="auto" label="自动：相邻同场景使用上一镜尾帧" />
-                          <el-option value="previous_tail" label="指定：强制使用上一镜尾帧" />
+                          <el-option value="auto" label="⚡ 采用 Agent 方案 (推荐)" />
+                          <el-option value="fl2va" label="🎯 首帧强绑定 (FL2VA)" />
+                          <el-option value="ref2va" label="🎭 角色多参考 (Ref2VA)" />
+                        </el-select>
+                        <span style="font-size:11.5px; color:#6b7280; margin-left:8px;">首帧：</span>
+                        <el-select
+                          v-if="sbPromptH3Data"
+                          v-model="sbPromptH3Data.first_frame_policy_override"
+                          size="small"
+                          style="width:210px;"
+                          :disabled="sbPromptH3Data.engine_mode === 'ref2va' || (sbPromptH3Data.engine_mode === 'auto' && sbPromptH3Data.agent_mode === 'ref2va')"
+                        >
+                          <el-option value="agent" label="采用 Agent 方案" />
+                          <el-option value="generate_new" label="Qwen 生成新首帧" />
+                          <el-option value="layout_lock" label="Qwen 布局锁定首帧" />
+                          <el-option value="inherit_tail" label="继承上镜真实尾帧" />
+                        </el-select>
+                        <span style="font-size:11.5px; color:#6b7280; margin-left:8px;">尾帧：</span>
+                        <el-select
+                          v-if="sbPromptH3Data"
+                          v-model="sbPromptH3Data.last_frame_policy_override"
+                          size="small"
+                          style="width:170px;"
+                          :disabled="sbPromptH3Data.engine_mode === 'ref2va' || (sbPromptH3Data.engine_mode === 'auto' && sbPromptH3Data.agent_mode === 'ref2va')"
+                        >
+                          <el-option value="agent" label="采用 Agent 方案" />
+                          <el-option value="none" label="不生成尾帧" />
+                          <el-option value="generate_tail" label="Qwen 生成尾帧" />
                         </el-select>
                       </div>
                       <div v-if="sbPromptH3Data" style="font-size:11px; color:#94a3b8; text-align:right; margin-top:2px;">
-                        <span v-if="sbPromptH3Data.continuity === 'off'">使用本分镜独立首帧生成视频（画面独立可控）</span>
-                        <span v-else-if="sbPromptH3Data.previous_storyboard">
-                          上一镜：#{{ sbPromptH3Data.previous_storyboard.number }} · {{ sbPromptH3Data.previous_storyboard.same_scene ? '同场景' : '不同场景' }} · {{ sbPromptH3Data.previous_storyboard.video_ready ? '视频已就绪' : '尚无已完成视频' }}
-                        </span>
-                        <span v-else>本集第一镜，使用本镜首帧。</span>
+                        <span v-if="sbPromptH3Data.engine_mode === 'auto'">⚡ Agent 建议：{{ sbPromptH3Data.agent_mode?.toUpperCase() || '未规划' }} · </span>
+                        <span v-else-if="sbPromptH3Data.engine_mode === 'fl2va'">🎯 首帧强绑定：100% 贴合分镜，无跳脸漂移 · </span>
+                        <span v-else>🎭 角色多参考：不生成首尾帧，以人物卡、场景卡和声音参考保持一致 · </span>
+                        <span>最终：{{ sbPromptH3Data.h3_generation_plan?.first_frame_policy || '未规划' }} / {{ sbPromptH3Data.h3_generation_plan?.last_frame_policy || '未规划' }}</span>
                       </div>
                     </div>
+                  </div>
+
+                  <!-- FL2VA 模式高亮提示 -->
+                  <div v-if="sbPromptH3Data && sbPromptH3Data.engine_mode === 'fl2va'" style="margin: 8px 0; padding: 8px 12px; background: rgba(59, 130, 246, 0.08); border-left: 3px solid #3b82f6; border-radius: 4px; font-size: 12px; color: #1e40af; line-height: 1.5;">
+                    <b>🎯 当前已开启【首帧强绑定模式 (FL2VA)】</b>：分镜首帧直接作为起始关键帧驱动视频生成，人物卡与场景卡已自动避让（避免特征打架导致的面部和构图漂移）。
                   </div>
 
                   <!-- 画面参考槽位 (<Picture N>) -->
@@ -323,6 +640,14 @@
                   </div>
                   <el-button size="small" type="primary" plain @click="addTimelineShot">➕ 添加分镜头切分</el-button>
                 </div>
+                <el-alert
+                  v-if="!sbPromptVideoSlots.shots_timeline?.length"
+                  title="该镜数据库中没有 shots_timeline；页面不会自动伪造导演时间线。请使用“导演微调”让 Agent 补齐，或在此手动添加。"
+                  type="warning"
+                  :closable="false"
+                  show-icon
+                  style="margin-bottom:8px;"
+                />
 
                 <!-- 镜头时间轴切分卡片 -->
                 <div
@@ -394,6 +719,18 @@
                           <el-input v-model="c.mouth_state" size="small" placeholder="如：开口说话并同步口型 / 双唇紧闭" @input="syncSlotsToPromptPreview" />
                         </div>
                       </div>
+                      <div class="sb-slot-char-grid" style="margin-top:6px;">
+                        <div class="sb-slot-char-item"><span class="sb-slot-mini-label">运动轨迹</span><el-input v-model="c.trajectory" size="small" @input="syncSlotsToPromptPreview" /></div>
+                        <div class="sb-slot-char-item"><span class="sb-slot-mini-label">面部表情</span><el-input v-model="c.facial_expression" size="small" @input="syncSlotsToPromptPreview" /></div>
+                        <div class="sb-slot-char-item"><span class="sb-slot-mini-label">身体朝向</span><el-input v-model="c.facing" size="small" @input="syncSlotsToPromptPreview" /></div>
+                        <div class="sb-slot-char-item"><span class="sb-slot-mini-label">头部姿态 head_pose</span><el-input v-model="c.head_pose" size="small" @input="syncSlotsToPromptPreview" /></div>
+                      </div>
+                      <div class="sb-slot-char-grid" style="margin-top:6px;">
+                        <div class="sb-slot-char-item"><span class="sb-slot-mini-label">视线落点 gaze</span><el-input v-model="c.gaze" size="small" @input="syncSlotsToPromptPreview" /></div>
+                        <div class="sb-slot-char-item"><span class="sb-slot-mini-label">注意对象</span><el-input v-model="c.attention_target" size="small" @input="syncSlotsToPromptPreview" /></div>
+                        <div class="sb-slot-char-item"><span class="sb-slot-mini-label">视线动机</span><el-input v-model="c.gaze_motivation" size="small" @input="syncSlotsToPromptPreview" /></div>
+                        <div class="sb-slot-char-item"><span class="sb-slot-mini-label">反应触发事件</span><el-input v-model="c.reaction_trigger" size="small" @input="syncSlotsToPromptPreview" /></div>
+                      </div>
                     </div>
                   </div>
 
@@ -444,48 +781,25 @@
                     </div>
                   </div>
                 </div>
+
+                <el-collapse v-model="sbSlotOpenSections">
+                  <el-collapse-item title="Agent 导演决策槽位（semantic_slots，完整可编辑）" name="semantic-slots">
+                    <SlotTreeEditor v-if="sbPromptSemanticSlots" v-model="sbPromptSemanticSlots" />
+                  </el-collapse-item>
+                  <el-collapse-item title="全局角色运动轨迹（video_slots.trajectories）" name="global-trajectories">
+                    <SlotTreeEditor v-model="sbPromptVideoSlots.trajectories" />
+                  </el-collapse-item>
+                  <el-collapse-item title="完整视频槽位数据（camera / audio / timing / timeline / VFX / H3）" name="all-video-slots">
+                    <SlotTreeEditor v-model="sbPromptVideoSlots" />
+                  </el-collapse-item>
+                </el-collapse>
               </div>
 
               <!-- 槽位未初始化提示 -->
               <div v-else class="sb-slots-empty-card">
                 <p style="color:#6b7280; font-size:13px; margin-bottom:10px;">当前分镜尚未合成结构化镜头时间线槽位，您可以一键按分镜参数构建。</p>
-                <el-button type="primary" size="small" :loading="sbPromptRebuilding" @click="onRebuildSbVideoPrompt">按分镜参数合成槽位与时间线</el-button>
+                <p style="color:#b45309;font-size:12px;">请重新运行「导演生成分镜脚本」，由导演 Agent 补齐权威槽位。</p>
               </div>
-            </div>
-
-            <!-- 子视图 2：提示词文本预览与通用编辑 -->
-            <div v-show="sbPromptVideoSubTab === 'preview'" class="sb-preview-view">
-              <!-- H3 编译结果预览 (如果存在) -->
-              <div v-if="sbPromptVideoSlots?.h3_multimodal?.integrated_multimodal_description" style="margin-bottom:12px; background:#f9fafb; border:1px solid #e5e7eb; border-radius:6px; padding:10px 12px;">
-                <div style="font-size:12px; font-weight:600; color:#374151; margin-bottom:4px;">
-                  🎬 MiniMax H3 规范多镜头时间线描述（由槽位编译器实时驱动）
-                </div>
-                <div style="font-size:12px; color:#4b5563; white-space:pre-wrap; line-height:1.5; font-family:monospace; max-height:140px; overflow-y:auto; background:#ffffff; padding:6px 8px; border-radius:4px; border:1px solid #e5e7eb;">{{ sbPromptVideoSlots.h3_multimodal.integrated_multimodal_description }}</div>
-              </div>
-
-              <div style="font-size:12px; color:#6b7280; margin-bottom:4px;">通用视频生成提示词（用于 Kling / Seedance / Wan 等通用模型）</div>
-              <el-form-item label="">
-                <el-input
-                  v-model="sbPromptVideoText"
-                  type="textarea"
-                  :rows="9"
-                  placeholder="视频生成提示词（可点击「AI 润色优化」进行二次润色，或点击「按分镜参数重建」重构）"
-                />
-              </el-form-item>
-
-              <div class="sb-prompt-section-title" style="margin-top:10px; display:flex; align-items:center; gap:6px;">
-                <span>💡 AI 视频优化指导意见（选填，对「AI 润色优化」生效）</span>
-              </div>
-              <el-form-item label="">
-                <div style="width:100%">
-                  <el-input
-                    v-model="sbPromptUserFeedback"
-                    type="textarea"
-                    :rows="2"
-                    placeholder="输入修改指导（如：增强受击紧张感，镜头缓慢推进，避免过快运动等）"
-                  />
-                </div>
-              </el-form-item>
             </div>
           </el-form>
         </el-tab-pane>
@@ -547,7 +861,7 @@
       </template>
     </el-dialog>
 
-    <!-- 首尾帧提示词编辑器（显示最终发给AI的完整提示词，支持编辑保存） -->
+    <!-- 首尾帧提示词编辑器（显示当前可编辑提示词正文，支持编辑保存） -->
     <el-dialog
       v-model="showFramePromptEditor"
       :title="`${editingFramePromptSlot === 'last' ? '尾帧' : '首帧'}图生提示词 · 编辑`"
@@ -556,7 +870,7 @@
     >
       <div class="frame-prompt-editor-body" v-loading="editingFramePromptLoading" element-loading-text="正在读取或生成帧提示词，请稍候…">
         <div class="frame-prompt-editor-hint">
-          此提示词将直接发给AI生成首/尾帧图片。支持编辑后保存，保存后点击「生成」即可使用新提示词。
+          这里是当前首/尾帧提示词正文，可编辑保存。提交时还会附加有序参考素材和本镜服装；最终提交内容请到「生成记录·实际输入」查看。
         </div>
 
         <!-- 空间布局锚点（生成分镜时 AI 输出的最高优先级站位合同） -->
@@ -570,7 +884,7 @@
           v-model="editingFramePromptText"
           type="textarea"
           :rows="14"
-          placeholder="在此编辑最终发给AI生图的完整提示词..."
+          placeholder="在此编辑当前首/尾帧提示词正文..."
           class="frame-prompt-editor-textarea"
           :disabled="editingFramePromptLoading || editingFramePromptRegenerating"
         />
@@ -600,7 +914,7 @@
             <el-radio-button value="classic">经典分镜</el-radio-button>
             <el-radio-button value="universal">全能模式</el-radio-button>
           </el-radio-group>
-          <div class="vp-mode-hint">全能模式：中间为片段描述；生视频时使用 <strong>AI 配置里当前启用的视频</strong>（接口规范 <code>kling_omni</code> / <code>volcengine_omni</code>，或「低价 Seedance2」，或勾选「确认支持全能模式」）并合并场景/角色/道具等参考图（不含经典分镜主图）。经典字段保留，可随时切回。</div>
+          <div class="vp-mode-hint">全能模式：由 H3 Ref2VA 合并场景、角色、道具等参考图（不含经典分镜主图）。经典字段保留，可随时切回。</div>
         </el-form-item>
         <el-row :gutter="12">
           <el-col :span="12">
@@ -776,7 +1090,7 @@
         <el-form-item v-if="canSplitSbByAudio(videoParamsTarget)" label="多角色对白">
           <div class="sb-split-audio-row">
             <p class="sb-split-audio-tip">
-              本镜含多句对白或「对白+旁白」，Seedance 同镜易串音。可拆成多条分镜（每条仅一人说话或仅旁白），再分别生视频。
+              本镜含多句对白或「对白+旁白」，H3 同镜可能发生说话人串音。可拆成多条分镜（每条仅一人说话或仅旁白），再分别生视频。
             </p>
             <el-button
               type="warning"
@@ -790,17 +1104,6 @@
         </el-form-item>
         <el-form-item label="画面结果">
           <el-input v-model="sbResult[videoParamsTarget.id]" type="textarea" :rows="2" placeholder="动作完成后的画面结果" />
-        </el-form-item>
-        <el-form-item label="视频提示词">
-          <div class="vp-video-prompt-hint">保存后将根据上方字段，由系统按最新规则自动生成（含角色音色锚点）。</div>
-          <el-input
-            v-if="videoParamsTarget?.video_prompt"
-            :model-value="videoParamsTarget.video_prompt"
-            type="textarea"
-            :rows="3"
-            readonly
-            style="color:#6b7280;margin-top:8px"
-          />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -821,11 +1124,13 @@
 </template>
 
 <script setup>
+import { directorPlanningInputs } from '@/utils/directorPlanningInputs'
 import { ref, reactive, computed, watch, nextTick, inject, provide, onBeforeUnmount } from 'vue'
 import { ElMessage, ElMessageBox, ElNotification, ElLoading } from 'element-plus'
 import { Loading, WarningFilled, Clock } from '@element-plus/icons-vue'
 import StoryboardBatchToolbar from './StoryboardBatchToolbar.vue'
 import StoryboardCard from './StoryboardCard.vue'
+import SlotTreeEditor from './SlotTreeEditor.vue'
 import BatchSpeechGeneration from '../BatchSpeechGeneration.vue'
 import StoryboardSpeechEditor from '../StoryboardSpeechEditor.vue'
 import GenerationJobs from '../GenerationJobs.vue'
@@ -845,7 +1150,8 @@ import { missingStoryboardImageSlots } from '@/utils/storyboardImageBatch'
 import { exportStoryboardSheet } from '@/utils/exportStoryboardSheet'
 import { GEN_RESOURCE } from '@/stores/generationTaskStore'
 import { useAgentContext } from '@/stores/agentContext'
-import { canUseUniversalOmniVideoApi } from '@/utils/videoOmniSupport'
+import { canUseUniversalOmniVideoApi, isH3VideoAiConfig } from '@/utils/videoOmniSupport'
+import { h3ShotInputPolicy } from '@/utils/h3ShotInputPolicy'
 
 const ctx = inject('filmCreateContext', {})
 
@@ -857,7 +1163,6 @@ const storyboards = ctx.storyboards || computed(() => store?.storyboards || [])
 const pipelineRunning = ctx.pipelineRunning
 const generationJobsPanel = ctx.generationJobsPanel
 const storyboardJobsPanel = ctx.storyboardJobsPanel || ref(null)
-const dubbingPanel = ctx.dubbingPanel
 const onGenerationJobsUpdated = ctx.onGenerationJobsUpdated
 const characters = ctx.characters
 const scenes = ctx.scenes
@@ -988,23 +1293,114 @@ const baseUrl = ctx.baseUrl || ref('')
 const genStore = ctx.genStore
 const directorTaskMessage = ref('')
 const directorTaskProgress = ref(0)
+const latestDirectorRun = ref(null)
+
+function parseTaskResult(task) {
+  const raw = task?.result
+  if (!raw) return {}
+  if (typeof raw === 'object') return raw
+  try { return JSON.parse(raw) || {} } catch (_) { return {} }
+}
+
+const latestDirectorRunResult = computed(() => parseTaskResult(directorRunForDisplay.value))
+const latestDirectorRunVersion = computed(() => {
+  const result = latestDirectorRunResult.value
+  return result.semantic_revision || result.version || (latestDirectorRun.value?.id ? latestDirectorRun.value.id.slice(0, 8) : '—')
+})
+
+function directorRunStatusLabel(status) {
+  return ({ pending: '等待中', processing: '生成中', completed: '已成功', failed: '失败' })[status] || status || '未知'
+}
+
+function directorRunTagType(status) {
+  return ({ pending: 'info', processing: 'warning', completed: 'success', failed: 'danger' })[status] || 'info'
+}
+
+function formatTaskTime(value) {
+  if (!value) return '—'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('zh-CN', { hour12: false })
+}
+
+async function loadLatestDirectorRun(episodeId = currentEpisodeId?.value) {
+  if (!episodeId) {
+    latestDirectorRun.value = null
+    return
+  }
+  try {
+    const tasks = await taskAPI.listByResource(String(episodeId))
+    latestDirectorRun.value = (tasks || []).find((task) => task.type === 'director_storyboard_generation') || null
+    const task = latestDirectorRun.value
+    if (task && ['pending', 'processing', 'running'].includes(task.status) && genStore) {
+      const meta = {
+        dramaId: dramaId.value,
+        episodeId: Number(episodeId),
+        dramaTitle: store.drama?.title,
+        episodeNumber: store.currentEpisode?.episode_number,
+        resourceType: GEN_RESOURCE.GENERATE_STORYBOARD,
+        resourceId: Number(episodeId),
+        label: `${store.currentEpisode?.title || '当前集'} 导演生成分镜`,
+        taskId: task.id,
+        taskType: task.type,
+        serverStatus: task.status,
+        progress: task.progress,
+        message: task.message,
+        result: task.result,
+        startedAt: task.created_at ? new Date(task.created_at).getTime() : undefined,
+      }
+      genStore.markRunning(meta)
+      void genStore.attachPollIfNeeded(task.id, meta, async () => {
+        await loadDrama()
+        await loadLatestDirectorRun(episodeId)
+      }, { ElMessage, maxAttempts: Infinity, interval: 2000, showErrorToast: false, showTimeoutToast: false })
+    }
+  } catch (_) {
+    latestDirectorRun.value = null
+  }
+}
 
 const activeDirectorTask = computed(() => {
   if (!genStore || !currentEpisodeId?.value) return null
   const running = genStore.getRunningForEpisode(dramaId?.value, currentEpisodeId?.value) || []
-  return running.find((t) => t.resourceType === GEN_RESOURCE.GENERATE_STORYBOARD)
+  return running.find((t) => (
+    t.resourceType === GEN_RESOURCE.GENERATE_STORYBOARD
+    && (t.taskType === 'director_storyboard_generation' || String(t.label || '').includes('导演生成分镜'))
+  ))
+})
+
+const directorRunForDisplay = computed(() => {
+  if (!latestDirectorRun.value) return null
+  if (!activeDirectorTask.value) return latestDirectorRun.value
+  return {
+    ...latestDirectorRun.value,
+    status: activeDirectorTask.value.serverStatus || 'processing',
+    progress: activeDirectorTask.value.progress,
+    message: activeDirectorTask.value.message,
+    result: activeDirectorTask.value.result ?? latestDirectorRun.value.result,
+  }
+})
+
+watch(activeDirectorTask, (current, previous) => {
+  if (!current && previous) loadLatestDirectorRun(currentEpisodeId?.value)
 })
 
 const effectiveDirectorMessage = computed(() => {
-  return activeDirectorTask.value?.message || directorTaskMessage.value || ''
+  return activeDirectorTask.value?.message || directorTaskMessage.value || latestDirectorRun.value?.message || ''
 })
 
 const effectiveDirectorProgress = computed(() => {
-  return activeDirectorTask.value?.progress ?? directorTaskProgress.value ?? 0
+  return activeDirectorTask.value?.progress ?? latestDirectorRun.value?.progress ?? directorTaskProgress.value ?? 0
 })
 
 const isAnyDirectorGenerating = computed(() => {
-  return Boolean((directorGenerating && directorGenerating.value) || activeDirectorTask.value)
+  const latestStatus = latestDirectorRun.value?.status
+  return Boolean(
+    (directorGenerating && directorGenerating.value)
+    || activeDirectorTask.value
+    || latestStatus === 'pending'
+    || latestStatus === 'processing'
+    || latestStatus === 'running'
+  )
 })
 
 const agentContext = useAgentContext()
@@ -1026,18 +1422,19 @@ const regeneratingLayoutSbIds = reactive(new Set())
 const showSbPromptDialog = ref(false)
 const sbPromptTarget = ref(null)
 const sbPromptActiveTab = ref('image')  // 'image' | 'video'
+const sbPromptImageSubTab = ref('slots') // 'slots' | 'preview'
+const sbPromptVisualSlots = ref(null)    // 首帧构图与视觉槽位结构化对象
+const sbPromptSemanticSlots = ref(null)  // Agent 原始 semantic_slots，决定 H3 模式、参考素材、声音与连戏
 const sbPromptImageText = ref('')       // 原始 image_prompt
 const sbPromptPolishedText = ref('')    // AI 优化后 polished_prompt
-const sbPromptVideoText = ref('')       // video_prompt
-const sbPromptVideoSubTab = ref('slots') // 'slots' | 'preview'
 const sbPromptVideoSlots = ref(null)     // video_slots 结构化对象
 const sbPromptH3Data = ref(null)         // H3 原生素材与声音绑定对象
 const sbPromptH3Loading = ref(false)     // H3 素材加载中
 const sbPromptSaving = ref(false)
 const sbPromptPolishing = ref(false)
-const sbPromptRebuilding = ref(false)
-const sbPromptVideoPolishing = ref(false)
+const sbPromptImageRebuilding = ref(false)
 const sbPromptUserFeedback = ref('')     // 用户调整意见 / AI 优化指导
+const sbSlotOpenSections = ref(['semantic-slots'])
 
 // 分镜 AI 拆分弹窗
 const showSplitDialog = ref(false)
@@ -1063,8 +1460,6 @@ const videoParamsTarget = ref(null)
 const videoParamsSaving = ref(false)
 
 // 编辑提示词行内状态
-const editingSbVideoPromptId = ref(null)
-const editingSbVideoPromptText = ref('')
 const editingSbImagePromptId = ref(null)
 const editingSbImagePromptText = ref('')
 
@@ -1085,7 +1480,6 @@ let sbTtsPreviewAudio = null
 // 语音与配音组件引用
 const speechEditor = ref(null)
 const speechSummaries = ref({})
-const batchDubbingStarting = ref(false)
 const videoModelConfigs = ref([])
 
 const videoModelChoices = computed(() => videoModelConfigs.value.flatMap(c =>
@@ -1135,7 +1529,7 @@ async function openFramePromptEditor(sb, slot) {
   editingFramePromptText.value = ''
   showFramePromptEditor.value = true
   editingFramePromptLoading.value = true
-  // 异步加载最终发给AI的真实提示词
+  // 异步加载当前帧提示词正文
   try {
     const pro = await ensureProfessionalFramePrompt(sb, slot)
     if (request === framePromptEditorRequest && showFramePromptEditor.value) editingFramePromptText.value = pro || ''
@@ -1234,11 +1628,11 @@ async function startBatchVideoGeneration(options = {}) {
     const todo = orderedVideoShots(store.storyboards || []).filter(sb => {
       if (filterIds && !filterIds.has(Number(sb.id))) return false
       if (!filterIds && (sbVideos.value[sb.id] || []).some(v => v.status === 'completed' && recordHasPlayableVideoUrl(v))) return false
-      if (isSbUniversalMode(sb.id)) return sbCanSubmitVideo(sb) && collectSbOmniReferenceAbsoluteUrls(sb).length > 0
-      return !!getSbFirstFrameUrl(sb)
+      // H3 以权威槽位为输入；具体首帧与参考素材由后端门禁。
+      return sbCanSubmitVideo(sb)
     })
     if (!todo.length) {
-      ElMessage.info('没有需要生成视频的分镜（分镜缺少图片，或视频已全部生成）')
+      ElMessage.info('没有需要生成视频的分镜（缺少导演槽位，或视频已全部生成）')
       return
     }
     // Snapshot all selected inputs once. The server submits each shot after its predecessor finishes.
@@ -1249,7 +1643,7 @@ async function startBatchVideoGeneration(options = {}) {
       let referenceUrls = universal ? refs : [first].filter(Boolean)
       if (!universal && last && !referenceUrls.includes(last)) referenceUrls.push(last)
       return {
-        storyboard_id: sb.id, model: selectedShotModel(sb), prompt: buildSbVideoPromptForApi(sb),
+        storyboard_id: sb.id, model: selectedShotModel(sb),
         image_url: universal ? refs[0] : first, first_frame_url: first, last_frame_url: last,
         reference_image_urls: referenceUrls, universal,
         style: getSelectedStyle(), aspect_ratio: projectAspectRatio.value || '16:9',
@@ -1334,6 +1728,7 @@ const videoBatchMonitor = createVideoBatchMonitor({
 watch(currentEpisodeId, episodeId => {
   applyVideoBatchStatus(null)
   videoBatchMonitor.watch(episodeId)
+  loadLatestDirectorRun(episodeId)
 }, { immediate: true })
 
 onBeforeUnmount(() => {
@@ -2076,33 +2471,11 @@ function buildUniversalSegmentFieldOverrides(sb) {
   }
 }
 
-function universalSegmentAtImageToGrokTags(text) {
-  return (text || '').replace(/@图片(\d+)/g, '<IMAGE_$1>')
-}
-
-function onUniversalSegmentToGrokVideoTags(sb) {
-  if (!sb?.id) return
-  const raw = (sbUniversalSegmentText.value[sb.id] ?? '').toString()
-  if (!raw.trim()) {
-    ElMessage.warning('请先填写或生成片段描述')
-    return
-  }
-  const next = universalSegmentAtImageToGrokTags(raw)
-  if (next === raw) {
-    ElMessage.info('未找到 @图片N 标记，无需转换')
-    return
-  }
-  sbUniversalSegmentText.value = { ...sbUniversalSegmentText.value, [sb.id]: next }
-  void onSaveUniversalSegmentField(sb)
-  ElMessage.success('已改为 Grok 视频占位符格式（<IMAGE_N>）')
-}
-
 function onUniversalSegmentPromptMenu(sb, cmd) {
   if (cmd === 'generate') onGenerateUniversalSegmentPrompt(sb, {})
   else if (cmd === 'generate-force') onGenerateUniversalSegmentPrompt(sb, { forceWithoutReferenceImages: true })
   else if (cmd === 'polish') onPolishUniversalSegmentPromptStream(sb, {})
   else if (cmd === 'polish-force') onPolishUniversalSegmentPromptStream(sb, { forceWithoutReferenceImages: true })
-  else if (cmd === 'to-grok-video-tags') onUniversalSegmentToGrokVideoTags(sb)
 }
 
 async function onGenerateUniversalSegmentPrompt(sb, opts = {}) {
@@ -2236,22 +2609,13 @@ function sbUniversalSegmentTrimmed(sb) {
 }
 
 function sbCanSubmitVideo(sb) {
-  if (!sb) return false
-  const vp = (sb.video_prompt || '').toString().trim()
-  if (vp) return true
-  if (isSbUniversalMode(sb.id)) return !!sbUniversalSegmentTrimmed(sb)
-  return false
-}
-
-function buildSbVideoPromptForApi(sb, { preferClassicPrompt = false } = {}) {
-  const vp = (sb.video_prompt || '').toString().trim()
-  const seg = sbUniversalSegmentTrimmed(sb)
-  if (preferClassicPrompt) return vp || seg
-  if (isSbUniversalMode(sb.id)) {
-    if (seg) return seg
-    return vp
+  if (!sb?.id) return false
+  const semantic = parseSlotObject(sb.semantic_slots)
+  let video = sb.video_slots
+  if (typeof video === 'string') {
+    try { video = JSON.parse(video) } catch (_) { video = null }
   }
-  return vp
+  return !!(semantic && Object.keys(semantic).length && video && typeof video === 'object')
 }
 
 function getSbUniversalOmniRefSlots(sb) {
@@ -2352,7 +2716,7 @@ function invalidateActiveVideoAiConfigCache() {
   activeVideoAiConfigCacheAt = 0
 }
 
-async function confirmUniversalNonSeedance2Video() {
+async function confirmUniversalUnsupportedVideo() {
   await ElMessageBox.confirm(
     '你当前视频模型不支持多图参考，全能模式将降级：优先用分镜主图，否则仅传场景参考图。是否继续？',
     '全能模式与模型不匹配',
@@ -2375,18 +2739,18 @@ async function onOpenSbPromptDialog(sb, initialTab = 'image') {
     title: sb.title || `第${sb.storyboard_number}镜`,
   })
   sbPromptActiveTab.value = initialTab === 'video' ? 'video' : 'image'
-  sbPromptVideoSubTab.value = 'slots'
+  sbPromptImageSubTab.value = 'slots'
   sbPromptTarget.value = sb
   sbPromptUserFeedback.value = ''
-  sbPromptImageText.value = (sb.image_prompt || '').toString()
-  sbPromptPolishedText.value = (sb.polished_prompt || '').toString()
-  const rawVideo = (sb.video_prompt || '').toString()
-  sbPromptVideoText.value = formatVideoPromptForEdit(rawVideo)
+  sbPromptVisualSlots.value = ensureVisualSlots(sb)
+  sbPromptSemanticSlots.value = parseSlotObject(sb.semantic_slots)
+  sbPromptImageText.value = formatImagePromptForEdit((sb.image_prompt || '').toString())
+  sbPromptPolishedText.value = formatImagePromptForEdit((sb.polished_prompt || '').toString())
   let rawSlots = sb.video_slots
   if (typeof rawSlots === 'string') {
     try { rawSlots = JSON.parse(rawSlots) } catch (_) { rawSlots = null }
   }
-  sbPromptVideoSlots.value = ensureShotsTimeline(rawSlots ? JSON.parse(JSON.stringify(rawSlots)) : null, sb)
+  sbPromptVideoSlots.value = ensureShotsTimeline(rawSlots ? JSON.parse(JSON.stringify(rawSlots)) : null)
   sbPromptH3Data.value = null
   if (dramaId.value && sb.id) {
     sbPromptH3Loading.value = true
@@ -2400,166 +2764,40 @@ async function onOpenSbPromptDialog(sb, initialTab = 'image') {
     const fresh = await storyboardsAPI.get(sb.id)
     if (fresh?.id) {
       sbPromptTarget.value = fresh
-      sbPromptImageText.value = (fresh.image_prompt || '').toString()
-      sbPromptPolishedText.value = (fresh.polished_prompt || '').toString()
-      sbPromptVideoText.value = formatVideoPromptForEdit((fresh.video_prompt || '').toString())
+      sbPromptVisualSlots.value = ensureVisualSlots(fresh)
+      sbPromptSemanticSlots.value = parseSlotObject(fresh.semantic_slots)
+      sbPromptImageText.value = formatImagePromptForEdit((fresh.image_prompt || '').toString())
+      sbPromptPolishedText.value = formatImagePromptForEdit((fresh.polished_prompt || '').toString())
       let freshSlots = fresh.video_slots
       if (typeof freshSlots === 'string') {
         try { freshSlots = JSON.parse(freshSlots) } catch (_) { freshSlots = null }
       }
       if (freshSlots) {
-        sbPromptVideoSlots.value = ensureShotsTimeline(JSON.parse(JSON.stringify(freshSlots)), fresh)
+        sbPromptVideoSlots.value = ensureShotsTimeline(JSON.parse(JSON.stringify(freshSlots)))
       }
     }
   } catch (_) {}
 }
 
-function ensureShotsTimeline(slots, sb = {}) {
-  if (!slots || typeof slots !== 'object') {
-    slots = {}
+function parseSlotObject(value) {
+  if (!value) return {}
+  if (value && typeof value === 'object' && !Array.isArray(value)) return JSON.parse(JSON.stringify(value))
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch (_) {
+    return {}
   }
-  if (!slots.camera) {
-    slots.camera = { shot_type: sb.shot_type || '中景', movement: sb.movement || 'tracking', movement_description: '' }
-  }
-  if (!slots.audio_lip_sync) {
-    slots.audio_lip_sync = {
-      mode: sb.dialogue ? 'in_frame_dialogue' : 'silent_ambient',
-      speaker_name: (sb.dialogue || '').match(/^([^:：]+)[:：]/)?.[1] || '',
-      dialogue_content: (sb.dialogue || '').replace(/^[^:：]+[:：]\s*/, '').replace(/^["“](.*)["”]$/, '$1'),
-      lip_sync_rule: sb.dialogue ? '说话人开口说话并同步口型，其余人员双唇紧闭' : '画内全员紧闭双唇，无台词口型',
-    }
-  }
-  if (!Array.isArray(slots.trajectories)) {
-    slots.trajectories = []
-  }
-  if (!slots.timing) {
-    slots.timing = { duration: Number(sb.duration) || 5, pacing: '稳健推进' }
-  }
-  if (!slots.environment_vfx) {
-    slots.environment_vfx = {
-      lighting_atmosphere: sb.atmosphere || '',
-      physical_phenomena: '',
-      terminal_event: sb.result || '',
-    }
-  }
+}
 
-  const dur = Number(slots.timing?.duration || sb.duration || 5)
-  const h3Shots = slots.h3_multimodal?.shots || []
-
-  // 如果 shots_timeline 缺失或为空，从现有数据自动派生重建
-  if (!Array.isArray(slots.shots_timeline) || slots.shots_timeline.length === 0) {
-    if (h3Shots.length > 0) {
-      slots.shots_timeline = h3Shots.map((hs, idx) => {
-        const isCut = !!hs.timestamp
-        return {
-          shot_number: hs.shot_number || (idx + 1),
-          timestamp: hs.timestamp || null,
-          duration: isCut ? (dur - Math.round(dur / 2)) : (h3Shots.length > 1 ? Math.round(dur / 2) : dur),
-          camera: {
-            shot_type: isCut ? (slots.camera?.shot_type === '特写' ? '中景' : '特写') : (slots.camera?.shot_type || '中景'),
-            movement: isCut ? 'static' : (slots.camera?.movement || 'tracking'),
-            movement_description: isCut ? '平稳对焦终态反应' : (slots.camera?.movement_description || ''),
-          },
-          action: isCut ? (sb.result || hs.description || '动作收束并完成交互反应') : (sb.action || hs.description || '场景主体动作开启推进'),
-          result: isCut ? (sb.result || '') : '',
-          character_trajectories: (slots.trajectories || []).map((t) => ({
-            ...t,
-            mouth_state: isCut
-              ? (slots.audio_lip_sync?.speaker_name === t.name ? '开口说话并同步口型' : '双唇紧闭，严禁张嘴说话，无任何台词口型动作')
-              : (slots.audio_lip_sync?.dialogue_content && h3Shots.length > 1 ? '双唇紧闭，严禁张嘴说话，无任何台词口型动作' : t.mouth_state),
-            shot_number: hs.shot_number || (idx + 1),
-          })),
-          audio_lip_sync: isCut
-            ? { ...slots.audio_lip_sync }
-            : (h3Shots.length > 1 ? { mode: 'silent_ambient', speaker_name: '', dialogue_content: '', lip_sync_rule: '初始建立镜头，画内全员紧闭双唇，无台词口型' } : { ...slots.audio_lip_sync }),
-        }
-      })
-    } else {
-      const needsCut = dur >= 6 && (String(sb.result || '').trim().length > 0 || String(sb.dialogue || '').trim().length > 0)
-      if (!needsCut) {
-        slots.shots_timeline = [
-          {
-            shot_number: 1,
-            timestamp: null,
-            duration: dur,
-            camera: {
-              shot_type: slots.camera?.shot_type || '中景',
-              movement: slots.camera?.movement || 'tracking',
-              movement_description: slots.camera?.movement_description || '',
-            },
-            action: sb.action || '场景主体动作稳健推进',
-            result: sb.result || '',
-            character_trajectories: (slots.trajectories || []).map((t) => ({ ...t, shot_number: 1 })),
-            audio_lip_sync: { ...slots.audio_lip_sync },
-          },
-        ]
-      } else {
-        const cutSec = Math.round((dur / 2) * 2) / 2
-        const mm = String(Math.floor(cutSec / 60)).padStart(2, '0')
-        const ss = String(Math.floor(cutSec % 60)).padStart(2, '0')
-        const timecode = `${mm}:${ss}.000`
-        slots.shots_timeline = [
-          {
-            shot_number: 1,
-            timestamp: null,
-            duration: cutSec,
-            camera: {
-              shot_type: slots.camera?.shot_type || '中景',
-              movement: slots.camera?.movement || 'tracking',
-              movement_description: '',
-            },
-            action: sb.action || '场景主体动作开启推进',
-            result: '',
-            character_trajectories: (slots.trajectories || []).map((t) => ({
-              ...t,
-              mouth_state: '双唇紧闭，严禁张嘴说话，无任何台词口型动作',
-              shot_number: 1,
-            })),
-            audio_lip_sync: { mode: 'silent_ambient', speaker_name: '', dialogue_content: '', lip_sync_rule: '初始建立镜头，画内全员紧闭双唇，无台词口型' },
-          },
-          {
-            shot_number: 2,
-            timestamp: timecode,
-            duration: dur - cutSec,
-            camera: {
-              shot_type: slots.camera?.shot_type === '特写' ? '中景' : '特写',
-              movement: 'static',
-              movement_description: '',
-            },
-            action: sb.result || '动作收束并完成交互反应',
-            result: sb.result || '',
-            character_trajectories: (slots.trajectories || []).map((t) => ({
-              ...t,
-              mouth_state: slots.audio_lip_sync?.speaker_name === t.name ? '开口说话并同步口型' : '双唇紧闭，严禁张嘴说话，完全无任何开口动作',
-              shot_number: 2,
-            })),
-            audio_lip_sync: { ...slots.audio_lip_sync },
-          },
-        ]
-      }
-    }
-  }
-
-  // 保证每个镜头下的各属性非空
-  slots.shots_timeline.forEach((st, idx) => {
-    if (!st.camera) st.camera = { shot_type: slots.camera?.shot_type || '中景', movement: slots.camera?.movement || 'tracking', movement_description: '' }
-    if (!st.audio_lip_sync) st.audio_lip_sync = { mode: 'silent_ambient', speaker_name: '', dialogue_content: '', lip_sync_rule: '' }
-    if (!Array.isArray(st.character_trajectories) || st.character_trajectories.length === 0) {
-      st.character_trajectories = (slots.trajectories || []).map((t) => ({ ...t, shot_number: st.shot_number || (idx + 1) }))
-    }
-  })
-
-  // 确保 h3_multimodal
-  if (!slots.h3_multimodal) {
-    slots.h3_multimodal = {
-      shots: [],
-      integrated_multimodal_description: '',
-      overall_soundscape: sb.sound_effect ? `Ambient environmental audio, room tone, and physical impact sounds: ${sb.sound_effect}.` : '',
-      non_diegetic_music: sb.bgm_prompt || 'N/A',
-    }
-  }
-
-  return slots
+function ensureShotsTimeline(slots) {
+  // 页面只展示 Agent 已落库的真实槽位。缺失字段保持缺失，禁止在编辑器中
+  // 静默合成动作、时间线、口型或视线计划后冒充导演决策。
+  if (!slots || typeof slots !== 'object' || Array.isArray(slots)) return null
+  const normalized = JSON.parse(JSON.stringify(slots))
+  if (!Array.isArray(normalized.trajectories)) normalized.trajectories = []
+  if (!Array.isArray(normalized.shots_timeline)) normalized.shots_timeline = []
+  return normalized
 }
 
 function addTimelineShot() {
@@ -2646,11 +2884,244 @@ function syncSlotsToPromptPreview() {
   }
 }
 
-function formatVideoPromptForEdit(text) {
+function formatImagePromptForEdit(text) {
   if (!text) return ''
   return text
-    .replace(/([。；])\s*(主体|运动|环境|运镜|美学|声音|时长)：/g, '$1\n$2：')
+    .replace(/([。；\n])\s*(【[^】]+】)/g, '$1\n$2')
+    .replace(/([。；])\s*(【[^】]+】)/g, '$1\n$2')
     .replace(/^\s+|\s+$/g, '')
+}
+
+const parsedImagePromptLayers = computed(() => {
+  const text = (sbPromptImageText.value || sbPromptPolishedText.value || '').trim()
+  if (!text) return []
+
+  const regex = /【([^】]+)】([\s\S]*?)(?=(?:【[^】]+】|$))/g
+  const layers = []
+  let match
+  while ((match = regex.exec(text)) !== null) {
+    const title = match[1].trim()
+    const content = match[2].trim()
+    let key = 'other'
+    let badge = `【${title}】`
+    let tagType = 'info'
+
+    if (title.includes('场景') || title.includes('空间') || title.includes('环境') || title.includes('纵深')) {
+      key = 'location'
+      badge = '🏞️ ' + title
+      tagType = 'primary'
+    } else if (title.includes('机位') || title.includes('景别') || title.includes('镜头') || title.includes('视角')) {
+      key = 'camera'
+      badge = '🎥 ' + title
+      tagType = 'warning'
+    } else if (title.includes('角色') || title.includes('人物') || title.includes('姿态') || title.includes('构图')) {
+      key = 'characters'
+      badge = '👤 ' + title
+      tagType = 'success'
+    } else if (title.includes('光') || title.includes('影调') || title.includes('氛围')) {
+      key = 'lighting'
+      badge = '💡 ' + title
+      tagType = 'warning'
+    } else if (title.includes('摄影') || title.includes('风格') || title.includes('画质') || title.includes('美学')) {
+      key = 'style'
+      badge = '🎞️ ' + title
+      tagType = 'info'
+    }
+
+    layers.push({
+      key,
+      title,
+      badge,
+      tagType,
+      content,
+    })
+  }
+
+  if (layers.length === 0 && text) {
+    layers.push({
+      key: 'general',
+      title: '画面综合描述',
+      badge: '🖼️ 画面综合描述',
+      tagType: 'primary',
+      content: text,
+    })
+  }
+
+  return layers
+})
+
+function ensureVisualSlots(sb = {}) {
+  if (!sb) return null
+  let cv = sb.character_visuals
+  if (typeof cv === 'string') {
+    try { cv = JSON.parse(cv) } catch (_) { cv = null }
+  }
+  if (!Array.isArray(cv) || cv.length === 0) {
+    cv = []
+  } else {
+    cv = JSON.parse(JSON.stringify(cv)).map((c, idx) => ({
+      ...c,
+      character_id: c.character_id,
+      name: c.name || `角色${idx + 1}`,
+      depth_layer: c.depth_layer || '',
+      screen_position: c.screen_position || '',
+      environmental_anchor: c.environmental_anchor || '',
+      spatial_anchor: c.spatial_anchor || '',
+      facing: c.facing || '',
+      expression: c.expression || '',
+      head_pose: c.head_pose || '',
+      gaze: c.gaze || '',
+      posture: c.posture || '',
+      hands: c.hands || '',
+      head_gaze: c.head_gaze || '',
+      prop_interaction: c.prop_interaction || '',
+      appearance_details: c.appearance_details || '',
+    }))
+  }
+
+  let lastFrameVisuals = sb.last_frame_visuals
+  if (typeof lastFrameVisuals === 'string') {
+    try { lastFrameVisuals = JSON.parse(lastFrameVisuals) } catch (_) { lastFrameVisuals = [] }
+  }
+  if (!Array.isArray(lastFrameVisuals)) lastFrameVisuals = []
+
+  const shotType = sb.shot_type || ''
+  const angleH = sb.angle_h || ''
+  const angleV = sb.angle_v || ''
+  const dof = sb.depth_of_field || ''
+  const lens = sb.cinematic_lens || ''
+
+  let envDepth = sb.environment_depth
+
+  return {
+    location: sb.location || '',
+    time: sb.time || '',
+    environment_depth: envDepth,
+    shot_type: shotType,
+    angle_h: angleH,
+    angle_v: angleV,
+    angle_s: sb.angle_s || '',
+    depth_of_field: dof,
+    cinematic_lens: lens,
+    character_visuals: cv,
+    last_frame_visuals: JSON.parse(JSON.stringify(lastFrameVisuals)),
+    lighting_style: sb.lighting_style || '',
+    lighting_chiaroscuro: sb.lighting_chiaroscuro || '',
+    dialogue_framing: sb.dialogue_framing || '',
+    start_framing: sb.start_framing || '',
+    end_framing: sb.end_framing || '',
+    transition_to_next: sb.transition_to_next || '',
+  }
+}
+
+function syncVisualSlotsToPromptPreview() {
+  const vs = sbPromptVisualSlots.value
+  if (!vs) return
+
+  const parts = []
+
+  // 1. 场景空间与纵深
+  const locParts = [vs.location, vs.time].filter(Boolean)
+  const locStr = locParts.length ? `${locParts.join('，')}。` : ''
+  const envStr = vs.environment_depth ? `${vs.environment_depth}。` : ''
+  parts.push(`【场景空间与纵深】${locStr}${envStr}`)
+
+  // 2. 机位景别
+  const shotMap = {
+    '特写': '特写镜头 (Close-up)',
+    '大特写': '微距大特写 (Extreme Close-up)',
+    '近景': '近景镜头 (Medium Close-up)',
+    '中景': '中景镜头 (Medium Shot)',
+    '中全景': '中全景镜头 (Medium Long Shot)',
+    '全景': '全景镜头 (Long Shot / Full Shot)',
+    '远景': '大远景镜头 (Extreme Long Shot)',
+  }
+  const hMap = {
+    front: '正面平视',
+    '3_4_left': '四分之三侧身朝左',
+    '3_4_right': '四分之三侧身朝右',
+    side_left: '正侧面朝左',
+    side_right: '正侧面朝右',
+    back: '背面视角',
+    overhead: '俯视顶拍',
+  }
+  const vMap = {
+    eye_level: '平视拍摄',
+    low_angle: '微仰角仰拍',
+    high_angle: '微俯角俯拍',
+    dutch_angle: '倾斜荷兰角',
+  }
+  const dofMap = {
+    shallow: '浅景深主体突出，背景奶油般柔和虚化',
+    medium: '中等景深，主体与环境自然过渡',
+    deep: '大景深，前后景均清晰可见',
+    extreme_shallow: '超浅景深，焦点极其微薄细腻',
+  }
+
+  const shotName = shotMap[vs.shot_type] || vs.shot_type || '中景'
+  const hName = hMap[vs.angle_h] || vs.angle_h || ''
+  const vName = vMap[vs.angle_v] || vs.angle_v || ''
+  const dofName = dofMap[vs.depth_of_field] || ''
+  const lensName = vs.cinematic_lens || ''
+
+  const camDesc = [shotName, hName, vName, dofName, lensName].filter(Boolean).join('，')
+  parts.push(`【机位景别】${camDesc}`)
+
+  // 3. 角色构图与姿态
+  const chars = vs.character_visuals || []
+  if (chars.length > 0) {
+    const charPhrases = chars.map((c) => {
+      const charName = `角色「${c.name}」`
+      const items = []
+      if (c.depth_layer) items.push(`景深层级${c.depth_layer}`)
+      if (c.screen_position) items.push(c.screen_position)
+      if (c.environmental_anchor) items.push(c.environmental_anchor)
+      else if (c.spatial_anchor) items.push(c.spatial_anchor)
+      if (c.facing) items.push(c.facing)
+      if (c.expression) items.push(c.expression)
+      if (c.head_pose) items.push(c.head_pose)
+      if (c.gaze) items.push(c.gaze)
+      if (c.posture) items.push(c.posture)
+      if (c.hands) items.push(c.hands)
+      if (c.prop_interaction) items.push(c.prop_interaction)
+      if (c.appearance_details) items.push(c.appearance_details)
+      return `${charName}：${items.join('，')}`
+    })
+    const countRule = `画面中仅有且必须仅有 ${chars.length} 个人物（${chars.map((c) => c.name).join('、')}）。`
+    parts.push(`【角色构图与姿态】${countRule}${charPhrases.join('；')}`)
+  }
+
+  // 4. 光影影调
+  if (vs.lighting_chiaroscuro) {
+    parts.push(`【光影影调】${vs.lighting_chiaroscuro}`)
+  }
+
+  if (vs.start_framing) parts.push(`【起幅构图】${vs.start_framing}`)
+  if (vs.end_framing) parts.push(`【落幅构图】${vs.end_framing}`)
+  if (vs.transition_to_next) parts.push(`【下镜转场】${vs.transition_to_next}`)
+
+  // 5. 摄影风格
+  parts.push('【摄影风格】photorealistic, ultra-detailed, 8k uhd, sharp focus, natural cinematic lighting, RAW photo, real skin texture，首帧静止画面')
+
+  sbPromptImageText.value = parts.join('\n')
+}
+
+async function onRebuildSbImagePrompt() {
+  const sb = sbPromptTarget.value
+  if (!sb?.id) return
+  sbPromptImageRebuilding.value = true
+  try {
+    const res = await storyboardsAPI.rebuildImagePrompt(sb.id)
+    if (res?.image_prompt) {
+      sbPromptImageText.value = formatImagePromptForEdit(res.image_prompt)
+      sbPromptVisualSlots.value = ensureVisualSlots(res)
+      ElMessage.success('已按最新分镜与角色参数重新编译生图提示词与构图槽位')
+    }
+  } catch (e) {
+    ElMessage.error(e.message || '编译生图提示词失败')
+  } finally {
+    sbPromptImageRebuilding.value = false
+  }
 }
 
 async function onPolishSbPrompt() {
@@ -2672,78 +3143,53 @@ async function onPolishSbPrompt() {
   }
 }
 
-async function onRebuildSbVideoPrompt() {
-  const sb = sbPromptTarget.value
-  if (!sb?.id) return
-  sbPromptRebuilding.value = true
-  try {
-    const res = await storyboardsAPI.rebuildVideoPrompt(sb.id)
-    if (res?.video_prompt) {
-      sbPromptVideoText.value = formatVideoPromptForEdit(res.video_prompt)
-      let slots = res.video_slots
-      if (typeof slots === 'string') {
-        try { slots = JSON.parse(slots) } catch (_) { slots = null }
-      }
-      if (slots) {
-        sbPromptVideoSlots.value = ensureShotsTimeline(JSON.parse(JSON.stringify(slots)), sb)
-      }
-      ElMessage.success('已按最新分镜参数重建视频提示词与多模态槽位')
-    }
-  } catch (e) {
-    ElMessage.error(e.message || '重建失败')
-  } finally {
-    sbPromptRebuilding.value = false
-  }
-}
-
-async function onPolishSbVideoPrompt() {
-  const sb = sbPromptTarget.value
-  if (!sb?.id) return
-  sbPromptVideoPolishing.value = true
-  const initialText = sbPromptVideoText.value
-  sbPromptVideoText.value = ''
-  try {
-    const res = await storyboardsAPI.polishClassicVideoPromptStream(
-      sb.id,
-      {
-        draft_video_prompt: initialText,
-        user_feedback: sbPromptUserFeedback.value.trim() || undefined,
-      },
-      (delta) => {
-        sbPromptVideoText.value += delta
-      }
-    )
-    if (res?.video_prompt) {
-      sbPromptVideoText.value = formatVideoPromptForEdit(res.video_prompt)
-      ElMessage.success('视频提示词已由 AI 润色优化')
-    }
-  } catch (e) {
-    if (!sbPromptVideoText.value) {
-      sbPromptVideoText.value = initialText
-    }
-    ElMessage.error(e.message || '润色失败，请检查文本模型配置')
-  } finally {
-    sbPromptVideoPolishing.value = false
-  }
-}
-
 async function onSaveSbPromptDialog() {
   const sb = sbPromptTarget.value
   if (!sb?.id) return
   sbPromptSaving.value = true
   try {
-    syncSlotsToPromptPreview()
-    const normalizedVideo = (sbPromptVideoText.value || '').replace(/\s+/g, ' ').trim()
+    if (sbPromptImageSubTab.value === 'slots' && sbPromptVisualSlots.value) {
+      syncVisualSlotsToPromptPreview()
+    }
+    if (sbPromptVideoSlots.value) {
+      syncSlotsToPromptPreview()
+    }
     const patch = {
       image_prompt: sbPromptImageText.value.trim() || null,
       polished_prompt: sbPromptPolishedText.value.trim() || null,
-      video_prompt: normalizedVideo || null,
+    }
+    if (sbPromptVisualSlots.value) {
+      const vs = sbPromptVisualSlots.value
+      patch.character_visuals = vs.character_visuals
+      patch.last_frame_visuals = vs.last_frame_visuals
+      patch.location = vs.location
+      patch.time = vs.time
+      patch.dialogue_framing = vs.dialogue_framing
+      patch.lighting_style = vs.lighting_style
+      patch.depth_of_field = vs.depth_of_field
+      patch.shot_type = vs.shot_type
+      patch.angle_h = vs.angle_h
+      patch.angle_v = vs.angle_v
+      patch.angle_s = vs.angle_s
+      patch.start_framing = vs.start_framing
+      patch.end_framing = vs.end_framing
+      patch.transition_to_next = vs.transition_to_next
+      patch.cinematic_lens = vs.cinematic_lens
+      patch.environment_depth = vs.environment_depth
+      patch.lighting_chiaroscuro = vs.lighting_chiaroscuro
     }
     if (sbPromptVideoSlots.value) {
       patch.video_slots = sbPromptVideoSlots.value
     }
-    if (sbPromptH3Data.value?.continuity && dramaId.value) {
-      videosAPI.saveH3Inputs(dramaId.value, sb.id, { continuity: sbPromptH3Data.value.continuity }).catch(() => {})
+    if (sbPromptSemanticSlots.value) {
+      patch.semantic_slots = sbPromptSemanticSlots.value
+    }
+    if (sbPromptH3Data.value && dramaId.value) {
+      await videosAPI.saveH3Inputs(dramaId.value, sb.id, {
+        engine_mode: sbPromptH3Data.value.engine_mode || 'auto',
+        first_frame_policy: (sbPromptH3Data.value.engine_mode === 'ref2va' || (sbPromptH3Data.value.engine_mode === 'auto' && sbPromptH3Data.value.agent_mode === 'ref2va')) ? 'agent' : (sbPromptH3Data.value.first_frame_policy_override || 'agent'),
+        last_frame_policy: (sbPromptH3Data.value.engine_mode === 'ref2va' || (sbPromptH3Data.value.engine_mode === 'auto' && sbPromptH3Data.value.agent_mode === 'ref2va')) ? 'agent' : (sbPromptH3Data.value.last_frame_policy_override || 'agent'),
+      })
     }
     await storyboardsAPI.update(sb.id, patch)
     Object.assign(sb, patch)
@@ -2777,12 +3223,6 @@ async function onSaveSbImagePrompt(sb) {
   } catch (e) {
     ElMessage.error(e.message || '保存失败')
   }
-}
-
-function onEditSbVideoPrompt(sb) {
-  if (!sb?.id) return
-  editingSbVideoPromptId.value = sb.id
-  editingSbVideoPromptText.value = (sb.video_prompt || '').toString()
 }
 
 function angleToPromptFragment(h, v, s) {
@@ -2824,37 +3264,14 @@ async function onSaveSbVideoFields(sb) {
       universal_segment_text: (sbUniversalSegmentText.value[sb.id] || '').toString().trim() || null,
     }
     await storyboardsAPI.update(sb.id, patch)
-    const rebuilt = await storyboardsAPI.rebuildVideoPrompt(sb.id)
-    const newVp = (rebuilt?.video_prompt && String(rebuilt.video_prompt).trim()) || ''
-    if (newVp) {
-      patch.video_prompt = newVp
-      videoParamsTarget.value = { ...sb, ...patch }
-    }
+    videoParamsTarget.value = { ...sb, ...patch }
     Object.assign(sb, patch)
     const list = store.currentEpisode?.storyboards
     if (Array.isArray(list)) {
       const row = list.find((x) => Number(x.id) === Number(sb.id))
       if (row) Object.assign(row, patch)
     }
-    ElMessage.success('已保存，视频提示词已按最新规则自动生成')
-  } catch (e) {
-    ElMessage.error(e.message || '保存失败')
-  }
-}
-
-async function onSaveSbVideoPrompt(sb) {
-  if (!sb?.id) return
-  const val = (editingSbVideoPromptText.value || '').toString().trim() || null
-  try {
-    await storyboardsAPI.update(sb.id, { video_prompt: val })
-    sb.video_prompt = val
-    const list = store.currentEpisode?.storyboards
-    if (Array.isArray(list)) {
-      const row = list.find((x) => Number(x.id) === Number(sb.id))
-      if (row) row.video_prompt = val
-    }
-    editingSbVideoPromptId.value = null
-    ElMessage.success('视频提示词已保存')
+    ElMessage.success('已保存，H3 将从最新权威槽位编译输入')
   } catch (e) {
     ElMessage.error(e.message || '保存失败')
   }
@@ -2965,7 +3382,7 @@ async function onAuditInvariants() {
     let detailHtml = `
       <div style="font-size: 13px; line-height: 1.6;">
         <p><strong>语义版本:</strong> <code>${data.semantic_revision || 'N/A'}</code></p>
-        <p><strong>运镜动感度:</strong> 固定镜头占比 ${(stats.static_ratio * 100 || 0).toFixed(1)}% (门禁上限 15%)</p>
+        <p><strong>运镜动感度:</strong> 固定镜头占比 ${(stats.static_ratio * 100 || 0).toFixed(1)}% （仅供参考，由导演按剧情决定）</p>
         <p><strong>动感镜头数:</strong> ${stats.dynamic_shots || 0} / ${stats.total_shots || 0}</p>
         <p><strong>无对白已配BGM:</strong> ${stats.silent_with_bgm || 0} / ${stats.silent_shots || 0}</p>
     `
@@ -3010,6 +3427,10 @@ async function onAuditInvariants() {
 
 async function onDirectorRefineSingleShot(sb) {
   if (!sb?.id) return
+  if (isDirectorRefiningShot(sb.id)) {
+    ElMessage.info(`第 ${sb.storyboard_number ?? ''} 镜正在后台微调，可刷新页面继续查看进度`)
+    return
+  }
   try {
     const { value: instruction } = await ElMessageBox.prompt(
       `请输入您对第 ${sb.storyboard_number ?? ''} 镜的导演微调意见。\n智能体将携带【不可变本体世界观（角色外貌/道具真实尺度/场景地标）】与【上一镜连戏快照】，直指您指定的元素进行定向微调：`,
@@ -3025,24 +3446,31 @@ async function onDirectorRefineSingleShot(sb) {
     )
     if (!instruction || !instruction.trim()) return
 
-    const loadingInstance = ElLoading.service({
-      lock: true,
-      text: `🎬 导演智能体正在定向重构第 ${sb.storyboard_number ?? ''} 镜并校验视听契约...`,
-      background: 'rgba(0, 0, 0, 0.7)',
-    })
-    try {
-      const res = await ontologyAPI.directorRefineShot(sb.id, instruction.trim())
-      const data = res?.data ?? res
+    const res = await ontologyAPI.directorRefineShot(sb.id, instruction.trim())
+    const data = res?.data ?? res
+    const taskId = data?.task_id
+    if (!taskId) throw new Error(data?.message || '未能创建导演微调任务')
+    const meta = {
+      dramaId: dramaId.value,
+      episodeId: currentEpisodeId.value,
+      dramaTitle: store.drama?.title,
+      episodeNumber: store.currentEpisode?.episode_number,
+      resourceType: GEN_RESOURCE.DIRECTOR_REFINE_SHOT,
+      resourceId: Number(sb.id),
+      label: `${store.currentEpisode?.title || '当前集'} 导演微调 #${sb.storyboard_number ?? sb.id}`,
+      taskId,
+    }
+    genStore?.markRunning(meta)
+    ElMessage.success(`第 ${sb.storyboard_number ?? ''} 镜已进入后台微调，刷新页面不会中断`)
+    genStore?.pollTask(taskId, meta, async () => {
       await loadDrama()
       ElNotification({
         title: `🎬 第 ${sb.storyboard_number ?? ''} 镜定向微调完成`,
-        message: `已精准更新该镜头动作、运镜(${data?.storyboard?.movement || '动态'})、光影、BGM与生图提示词，时空连戏快照已同步！`,
+        message: '镜头动作、运镜、光影、声音与完整语义槽位已通过门禁并原子更新。',
         type: 'success',
         duration: 5000,
       })
-    } finally {
-      loadingInstance.close()
-    }
+    }, { ElMessage, maxAttempts: 21600, interval: 2000 })
   } catch (err) {
     if (err !== 'cancel') {
       ElMessage.error(err.message || '定向微调失败')
@@ -3050,8 +3478,27 @@ async function onDirectorRefineSingleShot(sb) {
   }
 }
 
-async function onDirectorAgentGenerate() {
+function isDirectorRefiningShot(storyboardId) {
+  if (!genStore || storyboardId == null) return false
+  return genStore.getRunningForEpisode(dramaId?.value, currentEpisodeId?.value).some((task) => (
+    task.resourceType === GEN_RESOURCE.DIRECTOR_REFINE_SHOT
+    && Number(task.resourceId) === Number(storyboardId)
+  ))
+}
+
+const directorPlanningWarning = computed(() => {
+  try {
+    directorPlanningInputs(storyboardCount.value, videoDuration.value, { min: shotDurationMin.value, max: shotDurationMax.value })
+    return ''
+  } catch (error) { return error.message }
+})
+
+async function onDirectorAgentGenerate(resumeTaskId = null) {
   if (!currentEpisodeId.value) return
+  let planningInputs
+  try {
+    planningInputs = resumeTaskId ? {} : directorPlanningInputs(storyboardCount.value, videoDuration.value, { min: shotDurationMin.value, max: shotDurationMax.value })
+  } catch (error) { ElMessage.warning(error.message); return }
   if (storyboards.value.length > 0) {
     try {
       await ElMessageBox.confirm(
@@ -3072,7 +3519,11 @@ async function onDirectorAgentGenerate() {
   directorTaskMessage.value = '正在启动导演智能体...'
   directorTaskProgress.value = 5
   try {
-    const res = await ontologyAPI.directorGenerate(currentEpisodeId.value)
+    const res = await ontologyAPI.directorGenerate(currentEpisodeId.value, resumeTaskId ? { resume_task_id: resumeTaskId } : {
+      ...planningInputs,
+      shot_duration_range: { min: shotDurationMin.value, max: shotDurationMax.value },
+      universal_omni_storyboard: !!storyboardUniversalOmni.value,
+    })
     const taskData = res?.data ?? res
     const taskId = taskData?.task_id
     if (!taskId) {
@@ -3088,69 +3539,18 @@ async function onDirectorAgentGenerate() {
       resourceId: Number(currentEpisodeId.value),
       label: `${store.currentEpisode?.title || '当前集'} 导演生成分镜`,
       taskId,
+      taskType: 'director_storyboard_generation',
     }
-    if (genStore) {
-      genStore.markRunning(meta)
-    }
+    await loadLatestDirectorRun(currentEpisodeId.value)
 
     ElMessage.info('🎬 导演智能体推演已在后台启动，正在规划分镜与自纠质检...')
-    pollDirectorTask(taskId, meta)
+    directorGenerating.value = false
   } catch (e) {
     ElMessage.error(e.message || '导演智能体启动失败')
     directorGenerating.value = false
     directorTaskMessage.value = ''
     directorTaskProgress.value = 0
   }
-}
-
-async function pollDirectorTask(taskId, meta = null) {
-  const maxAttempts = 600
-  for (let i = 0; i < maxAttempts; i++) {
-    await new Promise((r) => setTimeout(r, 2000))
-    try {
-      const tr = await taskAPI.get(taskId)
-      const task = tr?.data ?? tr
-      if (!task) continue
-
-      if (task.message) {
-        directorTaskMessage.value = task.message
-      }
-      if (typeof task.progress === 'number' && task.progress > 0) {
-        directorTaskProgress.value = task.progress
-      }
-
-      if (task.status === 'completed') {
-        directorGenerating.value = false
-        directorTaskMessage.value = ''
-        directorTaskProgress.value = 0
-        if (genStore && meta) genStore.markDone(meta)
-        await loadDrama()
-        const result = task.result || {}
-        ElNotification({
-          title: '🎬 导演智能体推演完成',
-          message: `分镜生成已闭环完成！共生成 ${result.total_shots || 0} 个高质量运镜分镜，门禁通过率 100%，自纠修正 ${result.reflection_repairs || 0} 次。`,
-          type: 'success',
-          duration: 6000,
-        })
-        return
-      }
-
-      if (task.status === 'failed') {
-        directorGenerating.value = false
-        directorTaskMessage.value = ''
-        directorTaskProgress.value = 0
-        if (genStore && meta) genStore.markFailed(meta, task.error || '导演智能体推演失败')
-        ElMessage.error(task.error || '导演智能体推演失败')
-        return
-      }
-    } catch (err) {
-      // transient poll error, continue
-    }
-  }
-  directorGenerating.value = false
-  directorTaskMessage.value = ''
-  directorTaskProgress.value = 0
-  ElMessage.warning('导演智能体推演任务仍在后台执行，请稍后刷新查看。')
 }
 
 async function onInferCurrentShotParams() {
@@ -3208,12 +3608,28 @@ async function onRegenerateLayoutDescription(sb) {
 async function onGenerateSbVideo(sb) {
   if (!dramaId.value || !sb?.id || !sbCanSubmitVideo(sb)) return
   const universal = isSbUniversalMode(sb.id)
-  let universalOmniApi = universal
-  if (universal) {
-    const videoCfg = await getActiveVideoAiConfig(selectedShotModel(sb))
+  const shotModel = selectedShotModel(sb)
+  const videoCfg = await getActiveVideoAiConfig(shotModel)
+  const h3Request = isH3VideoAiConfig(videoCfg, shotModel)
+  let h3Policy = null
+  if (h3Request) {
+    try {
+      const h3Data = await videosAPI.h3Inputs(dramaId.value, sb.id)
+      h3Policy = h3ShotInputPolicy(h3Data, { hasFirstFrame: !!getSbFirstFrameUrl(sb) })
+    } catch (e) {
+      ElMessage.error(e.message || '读取 H3 执行方案失败')
+      return
+    }
+    if (!h3Policy.allowed) {
+      await ElMessageBox.alert(h3Policy.reason, 'H3 输入尚未就绪', { confirmButtonText: '知道了', type: 'warning' })
+      return
+    }
+  }
+  let universalOmniApi = universal && !h3Request
+  if (universalOmniApi) {
     if (!canUseUniversalOmniVideoApi(videoCfg)) {
       try {
-        await confirmUniversalNonSeedance2Video()
+        await confirmUniversalUnsupportedVideo()
       } catch {
         return
       }
@@ -3221,14 +3637,14 @@ async function onGenerateSbVideo(sb) {
     }
   }
   const omniRefs = universalOmniApi ? collectSbOmniReferenceAbsoluteUrls(sb) : []
-  const sceneOnlyRefs = universal && !universalOmniApi ? collectSbSceneOnlyReferenceAbsoluteUrls(sb) : []
+  const sceneOnlyRefs = universal && !h3Request && !universalOmniApi ? collectSbSceneOnlyReferenceAbsoluteUrls(sb) : []
   const hasClassicFrame = !!getSbFirstFrameUrl(sb)
-  let hasAnyImage = false
-  if (universalOmniApi) {
+  let hasAnyImage = h3Request ? true : false
+  if (!h3Request && universalOmniApi) {
     hasAnyImage = omniRefs.length > 0
-  } else if (universal) {
+  } else if (!h3Request && universal) {
     hasAnyImage = hasClassicFrame || sceneOnlyRefs.length > 0
-  } else {
+  } else if (!h3Request) {
     hasAnyImage = hasClassicFrame
   }
   if (!hasAnyImage) {
@@ -3260,7 +3676,19 @@ async function onGenerateSbVideo(sb) {
   try {
     let absoluteUrl = ''
     let referenceUrls = undefined
-    if (universalOmniApi) {
+    if (h3Request && h3Policy.mode === 'ref2va') {
+      // The backend resolves the Agent-planned character/scene/prop references.
+      // Sending browser frame fields here would contaminate pure Ref2VA execution.
+      absoluteUrl = ''
+      referenceUrls = undefined
+    } else if (h3Request && h3Policy.firstFramePolicy === 'inherit_tail') {
+      // The backend extracts the completed predecessor's actual tail frame.
+      absoluteUrl = ''
+      referenceUrls = undefined
+    } else if (h3Request && h3Policy.mode === 'fl2va') {
+      absoluteUrl = toAbsoluteImageUrl(await getMainImageUrlForVideo(sb))
+      referenceUrls = absoluteUrl ? [absoluteUrl] : undefined
+    } else if (universalOmniApi) {
       referenceUrls = omniRefs.length ? omniRefs : undefined
       absoluteUrl = omniRefs[0] || ''
     } else if (universal) {
@@ -3277,19 +3705,20 @@ async function onGenerateSbVideo(sb) {
       absoluteUrl = toAbsoluteImageUrl(firstFrameUrl)
       referenceUrls = absoluteUrl ? [absoluteUrl] : undefined
     }
-    const { first: vFirst, last: vLast } = sbVideoFirstLastUrls(sb, universalOmniApi, null)
-    if (!universalOmniApi && vLast && referenceUrls && !referenceUrls.includes(vLast)) {
+    const useH3StoryboardFrames = h3Request && h3Policy.useStoryboardFrames
+    const { first: vFirst, last: vLast } = useH3StoryboardFrames
+      ? sbVideoFirstLastUrls(sb, false, null)
+      : (h3Request ? { first: undefined, last: undefined } : sbVideoFirstLastUrls(sb, universalOmniApi, null))
+    if ((!h3Request || useH3StoryboardFrames) && !universalOmniApi && vLast && referenceUrls && !referenceUrls.includes(vLast)) {
       referenceUrls = [...referenceUrls, vLast]
     }
-    const preferClassicPrompt = universal && !universalOmniApi
     const res = await videosAPI.create({
       drama_id: dramaId.value,
       storyboard_id: sb.id,
       model: selectedShotModel(sb),
-      prompt: buildSbVideoPromptForApi(sb, { preferClassicPrompt }),
-      image_url: universalOmniApi ? undefined : ((vFirst || absoluteUrl) || undefined),
-      first_frame_url: universalOmniApi ? undefined : (vFirst || absoluteUrl || undefined),
-      last_frame_url: universalOmniApi ? undefined : vLast,
+      image_url: (universalOmniApi || (h3Request && !useH3StoryboardFrames)) ? undefined : ((vFirst || absoluteUrl) || undefined),
+      first_frame_url: (universalOmniApi || (h3Request && !useH3StoryboardFrames)) ? undefined : (vFirst || absoluteUrl || undefined),
+      last_frame_url: (universalOmniApi || (h3Request && !useH3StoryboardFrames)) ? undefined : vLast,
       reference_image_urls: referenceUrls,
       style: getSelectedStyle(),
       aspect_ratio: projectAspectRatio.value || '16:9',
@@ -3495,18 +3924,10 @@ async function onUsePrevTailAsFirst(sb) {
   }
 }
 
-async function startBatchDubbing() {
-  if (batchDubbingStarting.value) return
-  batchDubbingStarting.value = true
-  try { await dubbingPanel?.value?.generateAllAudio() }
-  finally { batchDubbingStarting.value = false }
-}
-
 function speechStatus(sb) { return shotSpeechStatus(sb, speechSummaries.value[sb.id]) }
 function defaultShotModel(sb) { return automaticVideoModel(videoModelConfigs.value, speechStatus(sb)) }
 function selectedShotModel(sb) { return sb.video_model || defaultShotModel(sb) || undefined }
 function videoModelLabel(model) {
-  if (/wan2[._-]?2/i.test(model || '')) return 'Wan2.2'
   if (/minimax[_-]?h3/i.test(model || '')) return 'H3'
   return model || '服务默认模型'
 }
@@ -3553,7 +3974,6 @@ async function onBatchSpeechUpdated() {
     sbDialogue.value[sb.id] = sb.dialogue || ''
     sbNarration.value[sb.id] = sb.narration || ''
   }
-  await dubbingPanel?.value?.refresh()
 }
 
 watch(dramaId, () => { speechSummaries.value = {}; loadVideoModelChoices() }, { immediate: true })
@@ -3649,6 +4069,174 @@ async function onDeleteSingleStoryboard(sbId) {
   }
 }
 
+async function onClearEpisodeMedia(mode = 'all') {
+  if (!currentEpisodeId.value) return
+  let title = '确认清除参考帧与分镜视频'
+  let message = '确定要清除当前集所有分镜的参考帧（首尾帧图片）和分镜视频吗？相关的生成历史记录也将被重置。'
+  let clearImages = true
+  let clearVideos = true
+
+  if (mode === 'videos') {
+    title = '确认清除分镜视频'
+    message = '确定要清除当前集所有分镜的生成视频吗？参考帧（首尾帧图片）将保留。'
+    clearImages = false
+    clearVideos = true
+  } else if (mode === 'images') {
+    title = '确认清除参考帧图片'
+    message = '确定要清除当前集所有分镜的参考帧（首尾帧图片）吗？分镜视频将保留。'
+    clearImages = true
+    clearVideos = false
+  }
+
+  try {
+    await ElMessageBox.confirm(message, title, {
+      confirmButtonText: '确定清除',
+      cancelButtonText: '取消',
+      type: 'warning',
+      confirmButtonClass: 'el-button--danger',
+    })
+  } catch {
+    return
+  }
+
+  const loading = ElLoading.service({
+    lock: true,
+    text: '正在清除分镜媒体与关联任务...',
+    background: 'rgba(0, 0, 0, 0.7)',
+  })
+  try {
+    const res = await storyboardsAPI.clearEpisodeMedia(currentEpisodeId.value, {
+      clear_images: clearImages,
+      clear_videos: clearVideos,
+    })
+    const data = res?.data ?? res
+    if (clearImages) {
+      sbSelectedImgId.value = {}
+      sbSelectedLastImgId.value = {}
+    }
+    if (clearVideos) {
+      sbSelectedVideoId.value = {}
+      sbVideoErrors.value = {}
+    }
+    if (typeof refreshStoryboardsOnly === 'function') {
+      await refreshStoryboardsOnly()
+    } else if (typeof loadDrama === 'function') {
+      await loadDrama()
+    }
+    if (typeof loadStoryboardMedia === 'function') {
+      await loadStoryboardMedia()
+    }
+    if (typeof restoreSelectionsFromBackend === 'function') {
+      restoreSelectionsFromBackend()
+    }
+    const count = data?.cleared_storyboards ?? 0
+    ElMessage.success(`清除完成，已重置 ${count} 条分镜媒体`)
+  } catch (err) {
+    ElMessage.error(err.message || '清除失败')
+  } finally {
+    loading.close()
+  }
+}
+
+async function onClearEpisodeStoryboards() {
+  if (!currentEpisodeId.value || !storyboards.value.length) return
+  try {
+    await ElMessageBox.confirm(
+      '将软删除当前集全部分镜脚本，并清除关联参考帧、视频和相关生成记录。剧本、角色、道具、场景不会删除。确认后再点击“导演生成分镜脚本”即可从空白状态重新规划。',
+      '清空当前集分镜脚本',
+      {
+        confirmButtonText: '确认清空',
+        cancelButtonText: '取消',
+        type: 'warning',
+        confirmButtonClass: 'el-button--danger',
+      },
+    )
+  } catch {
+    return
+  }
+
+  const loading = ElLoading.service({
+    lock: true,
+    text: '正在清空当前集分镜脚本与媒体...',
+    background: 'rgba(0, 0, 0, 0.7)',
+  })
+  try {
+    const res = await storyboardsAPI.clearEpisodeStoryboards(currentEpisodeId.value)
+    const data = res?.data ?? res
+    await loadDrama()
+    sbSelectedImgId.value = {}
+    sbSelectedLastImgId.value = {}
+    sbSelectedVideoId.value = {}
+    sbVideoErrors.value = {}
+    ElMessage.success(`已清空 ${data?.cleared_storyboards ?? 0} 个分镜脚本，现在可以重新生成`)
+  } catch (err) {
+    ElMessage.error(err.message || '清空分镜脚本失败')
+  } finally {
+    loading.close()
+  }
+}
+
+async function onClearSingleStoryboardMedia(sb, mode = 'all') {
+  if (!sb?.id) return
+  const num = sb.storyboard_number ? `#${sb.storyboard_number}` : ''
+  let title = `确认清除分镜 ${num} 媒体`
+  let message = `确定要清除分镜 ${num} 的参考帧与视频吗？`
+  let clearImages = true
+  let clearVideos = true
+
+  if (mode === 'videos') {
+    title = `确认清除分镜 ${num} 视频`
+    message = `确定要清除分镜 ${num} 的生成视频吗？参考帧将保留。`
+    clearImages = false
+    clearVideos = true
+  } else if (mode === 'images') {
+    title = `确认清除分镜 ${num} 参考帧`
+    message = `确定要清除分镜 ${num} 的参考帧（首尾帧图片）吗？分镜视频将保留。`
+    clearImages = true
+    clearVideos = false
+  }
+
+  try {
+    await ElMessageBox.confirm(message, title, {
+      confirmButtonText: '确定清除',
+      cancelButtonText: '取消',
+      type: 'warning',
+      confirmButtonClass: 'el-button--danger',
+    })
+  } catch {
+    return
+  }
+
+  try {
+    await storyboardsAPI.clearStoryboardMedia(sb.id, {
+      clear_images: clearImages,
+      clear_videos: clearVideos,
+    })
+    if (clearImages) {
+      delete sbSelectedImgId.value[sb.id]
+      delete sbSelectedLastImgId.value[sb.id]
+    }
+    if (clearVideos) {
+      delete sbSelectedVideoId.value[sb.id]
+      delete sbVideoErrors.value[sb.id]
+    }
+    if (typeof loadSingleStoryboardMedia === 'function') {
+      await loadSingleStoryboardMedia(sb.id)
+    } else if (typeof loadStoryboardMedia === 'function') {
+      await loadStoryboardMedia()
+    }
+    if (typeof refreshStoryboardsOnly === 'function') {
+      await refreshStoryboardsOnly()
+    }
+    if (typeof restoreSelectionsFromBackend === 'function') {
+      restoreSelectionsFromBackend()
+    }
+    ElMessage.success(`分镜 ${num} 媒体已清除`)
+  } catch (err) {
+    ElMessage.error(err.message || '清除失败')
+  }
+}
+
 function getFirstImageFile(dataTransfer) {
   if (!dataTransfer?.files?.length) return null
   const file = Array.from(dataTransfer.files).find((f) => f.type.startsWith('image/'))
@@ -3713,10 +4301,13 @@ provide('filmCreateContext', {
   onOpenSplitDialog,
   onOpenVideoParamsDialog,
   onDirectorRefineSingleShot,
+  isDirectorRefiningShot,
   onDirectorAgentGenerate,
   onAddSingleStoryboard,
   onInsertStoryboardBefore,
   onDeleteSingleStoryboard,
+  onClearEpisodeMedia,
+  onClearSingleStoryboardMedia,
   onExportStoryboardSheet,
   onExportNarrationSrt,
   onBatchInferParams,
@@ -3727,7 +4318,6 @@ provide('filmCreateContext', {
   stopBatchVideoGeneration,
   clearBatchVideoErrors,
   retryFailedBatchVideos,
-  startBatchDubbing,
   submitShotImageJob,
   onGenerateSbImage,
   onGenerateSbFramePair,
@@ -3795,8 +4385,6 @@ provide('filmCreateContext', {
   universalSegmentDurationSecForSb,
   getSbVideoDurationForApi,
   buildUniversalSegmentFieldOverrides,
-  universalSegmentAtImageToGrokTags,
-  onUniversalSegmentToGrokVideoTags,
   onUniversalSegmentPromptMenu,
   onGenerateUniversalSegmentPrompt,
   onPolishUniversalSegmentPromptStream,
@@ -3804,23 +4392,19 @@ provide('filmCreateContext', {
   toAbsoluteImageUrl,
   sbUniversalSegmentTrimmed,
   sbCanSubmitVideo,
-  buildSbVideoPromptForApi,
   getSbUniversalOmniRefSlots,
   collectSbOmniReferenceAbsoluteUrls,
   collectSbSceneOnlyReferenceAbsoluteUrls,
   getActiveVideoAiConfig,
-  confirmUniversalNonSeedance2Video,
+  confirmUniversalUnsupportedVideo,
   onEditSbImagePrompt,
-  onEditSbVideoPrompt,
-  formatVideoPromptForEdit,
+  formatImagePromptForEdit,
   onPolishSbPrompt,
-  onRebuildSbVideoPrompt,
-  onPolishSbVideoPrompt,
+  onRebuildSbImagePrompt,
   onSaveSbPromptDialog,
   onSaveSbImagePrompt,
   angleToPromptFragment,
   onSaveSbVideoFields,
-  onSaveSbVideoPrompt,
   onVideoParamsDialogClosed,
   countDialogueLinesInSb,
   canSplitSbByAudio,
@@ -3982,36 +4566,6 @@ defineExpose({
   flex: 1;
 }
 
-.sb-generating-tip {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 16px;
-  margin-top: 12px;
-  background: rgba(99, 102, 241, 0.08);
-  border: 1px dashed rgba(99, 102, 241, 0.35);
-  border-radius: 8px;
-}
-.sb-gen-text {
-  font-size: 0.85rem;
-  color: #a5b4fc;
-}
-.sb-gen-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #6366f1;
-  animation: sb-pulse 1.2s infinite ease-in-out;
-}
-.sb-gen-dot:nth-child(1) { animation-delay: 0s; }
-.sb-gen-dot:nth-child(2) { animation-delay: 0.2s; }
-.sb-gen-dot:nth-child(3) { animation-delay: 0.4s; }
-
-@keyframes sb-pulse {
-  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
-  40% { transform: scale(1); opacity: 1; }
-}
-
 .sb-config-row {
   display: flex;
   flex-wrap: wrap;
@@ -4132,6 +4686,25 @@ html.light .empty-tip {
 .storyboard-cards-list {
   margin-top: 20px;
 }
+
+.director-run-audit {
+  margin-top: 10px;
+  padding: 9px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  background: #f8fbff;
+  color: #475569;
+  font-size: 12px;
+}
+.director-run-audit__main { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.director-run-audit__main strong { color: #1e3a8a; }
+.director-run-audit__id { color: #94a3b8; font-family: monospace; white-space: nowrap; }
+:global(html.dark .director-run-audit) { border-color: #334155; background: #0f172a; color: #cbd5e1; }
+:global(html.dark .director-run-audit__main strong) { color: #93c5fd; }
 
 .storyboard-generating-tip {
   display: flex;
@@ -4502,5 +5075,94 @@ html.light .sb-slot-shot-card {
   border-radius: 8px;
   padding: 24px;
   text-align: center;
+}
+
+/* 图片提示词分层预览卡片样式 */
+.sb-image-prompt-layers-box {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+.sb-image-prompt-layers-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sb-image-layer-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-left: 4px solid #64748b;
+  border-radius: 6px;
+  padding: 10px 12px;
+  transition: all 0.2s ease;
+}
+.sb-image-layer-card:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+.sb-image-layer-card.layer--location {
+  border-left-color: #0284c7;
+  background: #f0f9ff;
+}
+.sb-image-layer-card.layer--camera {
+  border-left-color: #d97706;
+  background: #fffbeb;
+}
+.sb-image-layer-card.layer--characters {
+  border-left-color: #16a34a;
+  background: #f0fdf4;
+}
+.sb-image-layer-card.layer--lighting {
+  border-left-color: #ca8a04;
+  background: #fefce8;
+}
+.sb-image-layer-card.layer--style {
+  border-left-color: #6b7280;
+  background: #f9fafb;
+}
+.sb-image-layer-header {
+  margin-bottom: 6px;
+}
+.sb-image-layer-tag {
+  font-weight: 600;
+  font-size: 11px;
+}
+.sb-image-layer-body {
+  font-size: 13px;
+  line-height: 1.6;
+  color: #1e293b;
+  word-break: break-word;
+}
+:global(html.dark .sb-image-prompt-layers-box) {
+  background: #0f172a;
+  border-color: #334155;
+}
+:global(html.dark .sb-image-layer-card) {
+  background: #1e293b;
+  border-color: #334155;
+}
+:global(html.dark .sb-image-layer-card.layer--location) {
+  border-left-color: #38bdf8;
+  background: #0f172a;
+}
+:global(html.dark .sb-image-layer-card.layer--camera) {
+  border-left-color: #f59e0b;
+  background: #0f172a;
+}
+:global(html.dark .sb-image-layer-card.layer--characters) {
+  border-left-color: #4ade80;
+  background: #0f172a;
+}
+:global(html.dark .sb-image-layer-card.layer--lighting) {
+  border-left-color: #facc15;
+  background: #0f172a;
+}
+:global(html.dark .sb-image-layer-card.layer--style) {
+  border-left-color: #94a3b8;
+  background: #0f172a;
+}
+:global(html.dark .sb-image-layer-body) {
+  color: #f1f5f9;
 }
 </style>

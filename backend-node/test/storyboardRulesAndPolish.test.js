@@ -15,13 +15,13 @@ describe('Storyboard Rules & Classic Video Prompt Polish', () => {
 
   it('storyboardRules includes 4 core rules in zh and en', () => {
     const zh = storytellingPrompts.storyboardRules({ app: { language: 'zh' } });
-    assert.match(zh, /刚性动作单元铁律/);
+    assert.match(zh, /动作与节奏/);
     assert.match(zh, /禁止画面文字\/UI交代剧情/);
     assert.match(zh, /推行短剧正反打语法/);
     assert.match(zh, /纯物理视觉描写/);
 
     const en = storytellingPrompts.storyboardRules({ app: { language: 'en' } });
-    assert.match(en, /Rigid Single Action Unit/);
+    assert.match(en, /(?:Compact Causal Beat|Causal Beat & Compact Action)/);
     assert.match(en, /Ban On-Screen Text\/UI/);
     assert.match(en, /Shot-Reverse-Shot Syntax/);
     assert.match(en, /Pure Physical Visual Description/);

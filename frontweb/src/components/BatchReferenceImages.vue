@@ -2,10 +2,18 @@
   <div class="reference-batch">
     <div class="reference-batch-actions">
       <el-button type="primary" :loading="running" :disabled="disabled || !episodeId || running || missingCount === 0" @click="start('all')">
-        一键生成参考图<span v-if="missingCount">（缺 {{ missingCount }} 张）</span>
+        {{ missingCount === 0 ? '一键生成参考图（全部已生成）' : `一键生成参考图（缺 ${missingCount} 张）` }}
       </el-button>
       <el-button v-if="running" :disabled="stopRequested" @click="stop">
         {{ stopRequested ? '当前任务完成后停止' : '停止后续生成' }}
+      </el-button>
+      <el-button
+        v-if="!running && job?.id && ['completed', 'completed_with_errors', 'stopped'].includes(job?.status)"
+        size="small"
+        text
+        @click="dismiss"
+      >
+        清除进度记录
       </el-button>
       <span class="reference-batch-hint">仅补齐当前集角色、道具和场景的缺失图片，已有图片自动跳过。任务在后台执行，刷新或关闭页面不影响生成。</span>
     </div>
@@ -32,7 +40,10 @@ const props = defineProps({
 })
 const emit = defineEmits(['running-change', 'submitted'])
 const submitting = ref(false)
-const job = computed(() => props.jobs.find(j => j.kind === 'reference_images' && Number(j.episode_id) === Number(props.episodeId)))
+const job = computed(() => {
+  const matching = (props.jobs || []).filter(j => j.kind === 'reference_images' && Number(j.episode_id) === Number(props.episodeId))
+  return matching.find(j => activeGenerationJob(j)) || matching[0] || null
+})
 const running = computed(() => submitting.value || activeGenerationJob(job.value))
 const stopRequested = computed(() => job.value?.status === 'stopping')
 const labels = { character: '角色', prop: '道具', scene: '场景' }
@@ -42,6 +53,14 @@ const progress = computed(() => ({total:job.value?.total || 0,current:job.value?
   skipped:job.value?.items.filter(i=>i.status==='skipped').length || 0,pending:0,stopped:job.value?.status==='stopped',label:job.value?.label || '',
   errors:(job.value?.items || []).filter(i=>i.error).map(i=>({id:i.id,type:'',label:i.label,error:i.error}))}))
 watch(running, value => emit('running-change',value), {immediate:true})
+watch(
+  () => [job.value?.id, job.value?.current, job.value?.status],
+  ([newId, newCurr, newStatus], [oldId, oldCurr, oldStatus]) => {
+    if (newCurr !== oldCurr || newStatus !== oldStatus) {
+      props.refresh?.()
+    }
+  }
+)
 async function start(scope='all') {
   if(running.value || props.disabled || !props.episodeId) return
   submitting.value=true
@@ -54,6 +73,15 @@ async function start(scope='all') {
 async function stop() {
   try {await generationJobsAPI.control(props.dramaId,job.value.id,'stop');emit('submitted')}
   catch(e){ElMessage.error(e.message)}
+}
+async function dismiss() {
+  if (!job.value?.id) return
+  try {
+    await generationJobsAPI.control(props.dramaId, job.value.id, 'dismiss')
+    emit('submitted')
+  } catch (e) {
+    ElMessage.error(e.message)
+  }
 }
 defineExpose({start})
 </script>

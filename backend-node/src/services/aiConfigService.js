@@ -11,6 +11,7 @@ function normalizeApiKeyForService(serviceType, apiKey) {
 }
 const { applyDeepSeekConnectivityOptions } = require('./deepseekConfig');
 const { flattenModelIds, pickModelId, remapArkModelId, remapArkModelList, isOfficialArkBase } = require('./modelId');
+const { isSupportedVideoConfig, assertSupportedVideoConfig } = require('./videoModelSupport');
 function modelToDb(model) {
   if (model == null) return null;
   const ids = flattenModelIds(model);
@@ -57,7 +58,10 @@ function listConfigs(db, serviceType) {
     params.push(serviceType);
   }
   const rows = params.length ? db.prepare(sql).all(...params) : db.prepare(sql).all();
-  return rows.map(rowToConfig);
+  return rows.map(rowToConfig).filter((config) => {
+    if (config.service_type === 'jimeng2_character_auth' || config.service_type === 'model_ark_asset') return false;
+    return config.service_type !== 'video' || isSupportedVideoConfig(config);
+  });
 }
 
 function clearOtherDefault(db, serviceType, exceptId) {
@@ -73,33 +77,32 @@ function getConfig(db, id) {
 }
 
 function createConfig(db, log, req) {
+  const serviceType = String(req.service_type || 'text').toLowerCase();
+  if (serviceType === 'jimeng2_character_auth' || serviceType === 'model_ark_asset') {
+    throw Object.assign(new Error('Seedance 素材认证配置已停用'), { status: 400 });
+  }
+  const videoFamily = serviceType === 'video'
+    ? assertSupportedVideoConfig(req, req.default_model)
+    : null;
   const now = new Date().toISOString();
   const model = storedModelValue(req.base_url, req.model);
   let endpoint = req.endpoint || '';
   let queryEndpoint = req.query_endpoint || '';
-  if (!endpoint && req.provider) {
+  if (!endpoint && videoFamily === 'minimax_h3') {
+    endpoint = '/v2/video_generation';
+    queryEndpoint = queryEndpoint || '/v2/query/video_generation/{taskId}';
+  } else if (!endpoint && req.provider) {
     const p = req.provider.toLowerCase();
     const st = (req.service_type || 'text').toLowerCase();
     if (p === 'openai') {
       if (st === 'text') endpoint = '/chat/completions';
       else if (st === 'image') endpoint = '/images/generations';
-      else if (st === 'video') {
-        endpoint = '/videos';
-        queryEndpoint = '/videos/{taskId}';
-      }
     } else if (p === 'gemini' || p === 'google') {
       endpoint = '/v1beta/models/{model}:generateContent';
     } else if (p === 'dashscope' || p === 'qwen_image') {
       if (st === 'image' || st === 'storyboard_image') endpoint = '/api/v1/services/aigc/multimodal-generation/generation';
-      else if (st === 'video' && p === 'dashscope') {
-        endpoint = '/api/v1/services/aigc/image2video/video-synthesis';
-        queryEndpoint = '/api/v1/tasks/{taskId}';
-      }
     } else if (p === 'volces' || p === 'volcengine' || p === 'volc') {
-      if (st === 'video') {
-        endpoint = '/contents/generations/tasks';
-        queryEndpoint = '/contents/generations/tasks/{taskId}';
-      } else if (st === 'image' || st === 'storyboard_image') {
+      if (st === 'image' || st === 'storyboard_image') {
         endpoint = '/images/generations';
       }
     } else if (p === 'nano_banana') {
@@ -110,13 +113,6 @@ function createConfig(db, log, req) {
     } else if (p === 'agnes') {
       if (st === 'text') endpoint = '/chat/completions';
       else if (st === 'image' || st === 'storyboard_image') endpoint = '/images/generations';
-      else if (st === 'video') {
-        endpoint = '/videos';
-        queryEndpoint = '/videos/{taskId}';
-      }
-    } else if (p === 'cheap_seedance2' && st === 'video') {
-      endpoint = '/v1/videos';
-      queryEndpoint = '/v1/videos/{taskId}';
     }
   }
   const defaultModel = storedDefaultModel(req.base_url, req.default_model);
@@ -149,6 +145,10 @@ function createConfig(db, log, req) {
 function updateConfig(db, log, id, req) {
   const existing = getConfig(db, id);
   if (!existing) return null;
+  const prospective = { ...existing, ...req };
+  if (String(prospective.service_type || '').toLowerCase() === 'video') {
+    assertSupportedVideoConfig(prospective, prospective.default_model);
+  }
   const updates = [];
   const params = [];
   if (req.name != null) {
@@ -270,6 +270,22 @@ async function testConnection(opts) {
   if (!model && (opts.provider === 'gemini' || opts.provider === 'google')) throw new Error('model 必填');
   let endpoint = opts.endpoint || '';
 
+  if (serviceType === 'video') {
+    const family = assertSupportedVideoConfig(opts, model);
+    const defaultQuery = '/v2/query/video_generation/{taskId}';
+    let queryPath = String(opts.query_endpoint || defaultQuery)
+      .replace(/\{taskId\}|\{task_id\}|\{id\}/gi, 'connectivity-test');
+    if (!queryPath.startsWith('/')) queryPath = '/' + queryPath;
+    let probeBase = base;
+    if (family === 'minimax_h3') probeBase = probeBase.replace(/\/v[12]$/i, '');
+    const res = await fetch(probeBase + queryPath, {
+      method: 'GET',
+      headers: { Authorization: 'Bearer ' + (opts.api_key || '') },
+    });
+    if (res.status === 401 || res.status === 403) throw new Error(`API Key 无效 (${res.status})`);
+    return;
+  }
+
   // --- NanoBanana ---
   if (provider === 'nano_banana') {
     // 用 record-info 查询一个不存在的 taskId：401/403=key 无效，404=key 有效已联通
@@ -348,18 +364,16 @@ async function testConnection(opts) {
 
   // service_type 作为主要判断信号
   const isImageService = serviceType === 'image' || serviceType === 'storyboard_image';
-  const isVideoService = serviceType === 'video';
   const hasImageEndpoint = !!(endpoint && endpoint.includes('/images/'));
 
   const isDashscope = provider === 'dashscope' || provider === 'qwen_image';
   const isVolcengine = provider === 'volces' || provider === 'volcengine' || provider === 'volc';
   const modelLower = model.toLowerCase();
 
-  // 兜底识别图片/视频模型（service_type 未传时使用）
+  // 兜底识别图片模型（service_type 未传时使用）
   const looksLikeImageModel = /seedream|image2video|text2image|img2img|wanx|wan\d|flux|stable.?diff|dall.?e|imagen|agnes-image|-image$/i.test(modelLower)
     || (isVolcengine && /seedream|vision|image/i.test(modelLower));
-  const looksLikeVideoModel = /seedance|video.?gen|video2video|kf2v|cogvideo|sora|kling|agnes-video/i.test(modelLower);
-  // DashScope 图片/视频专用端点特征
+  // DashScope 图片专用端点特征
   const isDashscopeNonChatEndpoint = isDashscope && !!(endpoint && (endpoint.includes('aigc') || endpoint.includes('multimodal') || endpoint.includes('video')));
 
   // 综合判断是否为图片服务
@@ -367,9 +381,8 @@ async function testConnection(opts) {
     || looksLikeImageModel
     || (isVolcengine && !serviceType && !endpoint);
 
-  // --- DashScope 图片 / 视频 / 分镜 ---
-  // 通义万象 / WAN 系列：API key 通过 compatible-mode chat 接口验证即可（同一 key 通用）
-  if (isDashscope && (isImageService || isVideoService || looksLikeImageModel || looksLikeVideoModel || isDashscopeNonChatEndpoint)) {
+  // --- DashScope 图片 / 分镜 ---
+  if (isDashscope && (isImageService || looksLikeImageModel || isDashscopeNonChatEndpoint)) {
     const chatUrl = base.replace(/\/(api\/v1|compatible-mode)\/.*$/, '') + '/compatible-mode/v1/chat/completions';
     const body = { model: 'qwen-turbo', messages: [{ role: 'user', content: 'hi' }], max_tokens: 1 };
     console.log('[testConnection] DashScope 非文本服务，用 compatible chat 验证 key', { chatUrl, serviceType, model });
@@ -379,28 +392,6 @@ async function testConnection(opts) {
       body: JSON.stringify(body),
     });
     // 401/403 = key 无效，其他均视为联通
-    if (res.status === 401 || res.status === 403) {
-      const text = await res.text();
-      let errMsg = `API Key 无效 (${res.status})`;
-      try { const j = JSON.parse(text); errMsg = j.error?.message || j.message || errMsg; } catch {}
-      throw new Error(errMsg);
-    }
-    return;
-  }
-
-  // --- 视频生成服务（非 DashScope）：通过 chat/completions 验证 key 合法性 ---
-  // 视频生成 API 调用代价高昂，无法直接测试；但同账号 chat 接口验证 key 有效性即可
-  if (isVideoService || looksLikeVideoModel) {
-    const chatPath = '/chat/completions';
-    const url = base + chatPath;
-    const body = { model: model || '', messages: [{ role: 'user', content: 'hi' }], max_tokens: 1 };
-    console.log('[testConnection] 视频服务，用 chat/completions 验证 key', { url, serviceType, model });
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (opts.api_key || '') },
-      body: JSON.stringify(body),
-    });
-    // 401/403 = key 无效；其他（400 模型不存在等）视为联通
     if (res.status === 401 || res.status === 403) {
       const text = await res.text();
       let errMsg = `API Key 无效 (${res.status})`;

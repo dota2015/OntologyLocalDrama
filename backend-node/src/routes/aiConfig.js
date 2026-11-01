@@ -1,5 +1,6 @@
 const aiConfigService = require('../services/aiConfigService');
 const response = require('../response');
+const { assertSupportedVideoConfig } = require('../services/videoModelSupport');
 
 function list(db) {
   return (req, res) => {
@@ -49,6 +50,7 @@ function create(db, log, cfg) {
       response.created(res, config);
     } catch (err) {
       log.errorw('Create AI config failed', { error: err.message });
+      if (err.status === 400) return response.badRequest(res, err.message);
       response.internalError(res, '创建失败');
     }
   };
@@ -69,9 +71,15 @@ function update(db, log, cfg) {
       body = allowed;
     }
 
-    const config = aiConfigService.updateConfig(db, log, id, body);
-    if (!config) return response.notFound(res, '配置不存在');
-    response.success(res, config);
+    try {
+      const config = aiConfigService.updateConfig(db, log, id, body);
+      if (!config) return response.notFound(res, '配置不存在');
+      response.success(res, config);
+    } catch (err) {
+      log.error('Update AI config failed', { error: err.message, config_id: id });
+      if (err.status === 400) return response.badRequest(res, err.message);
+      response.internalError(res, '保存失败');
+    }
   };
 }
 
@@ -115,12 +123,17 @@ function testConnection(log) {
       return response.badRequest(res, '缺少 base_url 或 api_key');
     }
     try {
+      if (String(body.service_type || '').toLowerCase() === 'video') {
+        assertSupportedVideoConfig(body, Array.isArray(body.model) ? body.model[0] : body.model);
+      }
       await aiConfigService.testConnection({
         base_url: body.base_url,
         api_key: body.api_key,
         model: body.model,
         provider: body.provider,
+        api_protocol: body.api_protocol,
         endpoint: body.endpoint,
+        query_endpoint: body.query_endpoint,
         service_type: body.service_type,
         settings: body.settings,
       });
@@ -129,61 +142,6 @@ function testConnection(log) {
       log.error('AI config test connection failed', { error: err.message });
       response.badRequest(res, '连接测试失败: ' + (err.message || '未知错误'));
     }
-  };
-}
-
-/** ModelArk / 方舟私有资产库：代理调用 CreateAssetGroup、ListAssets 等（与官方 Action 名一致） */
-function modelArkAsset(log) {
-  return async (req, res) => {
-    const body = req.body || {};
-    const action = (body.action || '').toString().trim();
-    try {
-      const modelArkAssetProxyService = require('../services/modelArkAssetProxyService');
-      const data = await modelArkAssetProxyService.callModelArkAsset(
-        {
-          base_url: body.base_url,
-          api_key: body.api_key,
-          action,
-          body: body.payload,
-          path_mode: body.path_mode,
-          http_method: body.http_method,
-          api_version: body.api_version,
-          auth_mode: body.auth_mode,
-          access_key_id: body.access_key_id,
-          secret_access_key: body.secret_access_key,
-          sign_region: body.sign_region,
-          sign_service: body.sign_service,
-          session_token: body.session_token,
-          project_name: body.project_name,
-        },
-        log
-      );
-      response.success(res, data);
-    } catch (err) {
-      log.error('model-ark-asset proxy failed', { error: err.message, action });
-      const status = err.status >= 400 && err.status < 600 ? err.status : 400;
-      return response.error(res, status, 'MODEL_ARK_ASSET', err.message || '请求失败', err.payload);
-    }
-  };
-}
-
-/** 即梦2角色认证：代理 GET 素材列表（表单未保存也可用当前填写的网关与 Token） */
-function listJimeng2MaterialAssets(log) {
-  return async (req, res) => {
-    const body = req.body || {};
-    const base_url = (body.base_url || '').toString().trim().replace(/\/$/, '');
-    const { normalizeMaterialHubToken } = require('../services/jimengMaterialHubService');
-    let api_key = normalizeMaterialHubToken(body.api_key || '');
-    if (!base_url || !api_key) {
-      return response.badRequest(res, '请先填写网关 URL 与 Token');
-    }
-    const jimengMaterialHubService = require('../services/jimengMaterialHubService');
-    const ctx = { baseUrl: base_url, token: api_key };
-    const r = await jimengMaterialHubService.listAssets(ctx, { limit: body.limit, cursor: body.cursor }, log);
-    if (!r.ok) {
-      return response.badRequest(res, String(r.error || '列出素材失败').slice(0, 800));
-    }
-    response.success(res, r.data);
   };
 }
 
@@ -196,8 +154,6 @@ module.exports = function aiConfigRoutes(db, log, cfg) {
     update: update(db, log, cfg),
     delete: remove(db, log, cfg),
     testConnection: testConnection(log),
-    listJimeng2MaterialAssets: listJimeng2MaterialAssets(log),
-    modelArkAsset: modelArkAsset(log),
     bulkUpdateKey: bulkUpdateKey(db, log, cfg),
   };
 };

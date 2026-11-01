@@ -1,11 +1,11 @@
 <template>
   <div v-if="loading || error || (plan && plan.has_speech)" class="speech-delivery">
-    <span v-if="loading" class="speech-hint">计算语速中…</span>
-    <el-button v-else-if="error" link size="small" @click="refresh">重试语速</el-button>
+    <span v-if="loading" class="speech-hint">计算台词预算中…</span>
+    <el-button v-else-if="error" link size="small" @click="refresh">重试预算</el-button>
     <template v-else-if="plan && plan.has_speech">
-      <el-tooltip :content="`${plan.reason}。对白与旁白共用预算，已预留收尾和换人停顿。TTS 按此倍率生成；H3 为目标语速，实际可能不同。已有音视频保留。`" placement="top">
+      <el-tooltip content="对白与旁白使用自然语速，共用时长预算，并预留收尾和换人停顿。" placement="top">
         <span class="speech-info">
-          语速 {{ plan.speech_rate }}x · 约{{ plan.han_budget }}字{{ plan.fits ? '' : '(超出)' }}
+          自然语速 · 约{{ plan.han_budget }}字{{ plan.fits ? '' : '(超出)' }}
         </span>
       </el-tooltip>
     </template>

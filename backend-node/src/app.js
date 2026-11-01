@@ -53,6 +53,10 @@ function createApp() {
   try {
     if (!fs.existsSync(storageRoot)) fs.mkdirSync(storageRoot, { recursive: true });
     app.use('/static', express.static(storageRoot));
+    // 兼容根路径下的相对存储静态资源（如 /projects/...、/uploads/...、/media/...）
+    app.use('/projects', express.static(path.join(storageRoot, 'projects')));
+    app.use('/uploads', express.static(path.join(storageRoot, 'uploads')));
+    app.use('/media', express.static(path.join(storageRoot, 'media')));
   } catch (e) {
     console.warn('Static storage mount skipped:', e.message);
   }

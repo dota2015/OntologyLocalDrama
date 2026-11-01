@@ -70,7 +70,7 @@
                 <div class="pipeline-config-row">
                   <div class="config-cluster">
                     <span class="config-cluster-label">视听分镜：</span>
-                    <el-tooltip content="显示本地生成的输入画布尺寸，按 32 像素对齐。H3 使用原生约百万像素、23 步；Wan 经典首尾帧模式跟随首帧比例，尺寸可能不同。这里不含下载后的缩放。" placement="top">
+                    <el-tooltip content="显示 H3 本地生成的输入画布尺寸，按 32 像素对齐，这里不含下载后的缩放。" placement="top">
                       <el-select v-model="projectAspectRatio" style="width: 195px" @change="() => saveProjectSettings(false)">
                         <el-option label="16:9 横屏（1344×768）" value="16:9" />
                         <el-option label="9:16 竖屏（768×1344）" value="9:16" />
@@ -90,7 +90,7 @@
                       <span class="inline-sublabel">单镜时长</span>
                       <el-input-number v-model="shotDurationMin" :min="4" :max="shotDurationMax" :step="1" size="small" style="width:75px" @change="saveShotDurationRange" />
                       <span class="inline-sublabel">至</span>
-                      <el-input-number v-model="shotDurationMax" :min="shotDurationMin" :max="15" :step="1" size="small" style="width:75px" @change="saveShotDurationRange" />
+                      <el-input-number v-model="shotDurationMax" :min="shotDurationMin" :max="8" :step="1" size="small" style="width:75px" @change="saveShotDurationRange" />
                       <span class="inline-sublabel">秒</span>
                     </div>
                   </div>
@@ -98,9 +98,11 @@
                   <div class="config-divider" />
 
                   <div class="config-cluster">
-                    <el-checkbox v-model="storyboardUseFirstLastFrame" @change="onStoryboardUseFirstLastFrameChange">
-                      首尾帧参考图
-                    </el-checkbox>
+                    <el-tooltip content="仅切换手动编辑界面的首尾帧视图；批量参考帧由导演 Agent 的逐镜 H3 完整方案决定。" placement="top">
+                      <el-checkbox v-model="storyboardUseFirstLastFrame" @change="onStoryboardUseFirstLastFrameChange">
+                        首尾帧手动编辑视图
+                      </el-checkbox>
+                    </el-tooltip>
                     <el-checkbox v-model="storyboardIncludeNarration" @change="() => saveProjectSettings(false)">
                       按需补充旁白
                     </el-checkbox>

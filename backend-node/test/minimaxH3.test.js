@@ -42,9 +42,9 @@ describe('MiniMax H3 helpers', () => {
     assert.equal(extractMinimaxH3VideoUrl(data), 'https://cdn.example.com/out.mp4');
   });
 
-  it('clamps duration 4–15 and maps resolution', () => {
+  it('clamps provider safety duration to 4–8 and maps resolution', () => {
     assert.equal(normalizeMinimaxH3Duration(3), 4);
-    assert.equal(normalizeMinimaxH3Duration(20), 15);
+    assert.equal(normalizeMinimaxH3Duration(20), 8);
     assert.equal(normalizeMinimaxH3Duration(5), 5);
     assert.equal(normalizeMinimaxH3Resolution('1080p'), '2K');
     assert.equal(normalizeMinimaxH3Resolution('720p'), '768P');

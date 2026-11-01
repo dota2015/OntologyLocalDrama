@@ -39,7 +39,7 @@ function createDrama(db, log, req) {
       meta = {};
     }
   }
-  meta = narrative.mergeMetadata(meta, { narrative_style: meta.narrative_style || { preset: 'dialogue_fast', speech_mode: 'auto' } });
+  meta = narrative.mergeMetadata(meta, { narrative_style: meta.narrative_style || { preset: 'balanced' } });
   if (!meta.storage_folder_label) {
     meta.storage_folder_label = storageLayout.sanitizeFolderLabel(req.title || '');
   }
@@ -143,6 +143,15 @@ function getDrama(db, dramaId, baseUrl) {
         if (!seen.has(p.id)) {
           seen.add(p.id);
           ep.props.push(rowToProp(p));
+        }
+      }
+      if (ep.props.length === 0) {
+        const dramaProps = db.prepare('SELECT * FROM props WHERE drama_id=? AND deleted_at IS NULL ORDER BY id ASC').all(drama.id);
+        for (const p of dramaProps) {
+          if (!seen.has(p.id)) {
+            seen.add(p.id);
+            ep.props.push(rowToProp(p));
+          }
         }
       }
       ep.props.sort((a, b) => a.id - b.id);
@@ -383,6 +392,10 @@ function rowToStoryboard(r) {
       creation_mode: r.creation_mode === 'universal' ? 'universal' : 'classic',
       universal_segment_text: r.universal_segment_text ?? null,
       layout_description: r.layout_description ?? null,
+      semantic_slots: parseJsonColumn(r.semantic_slots),
+      video_slots: parseJsonColumn(r.video_slots),
+      character_visuals: parseJsonColumn(r.character_visuals),
+      last_frame_visuals: parseJsonColumn(r.last_frame_visuals),
       first_frame_image_id: r.first_frame_image_id ?? null,
       last_frame_image_id: r.last_frame_image_id ?? null,
       last_frame_image_url: sanitizeImageUrl(r.last_frame_image_url),
@@ -860,7 +873,8 @@ function finalizeEpisode(db, log, episodeId, baseUrl, body = {}) {
     scenes,
     provider: 'ffmpeg',
     merge_options: {
-      burn_narration_subtitles: !!(body && body.burn_narration_subtitles),
+      burn_subtitles: !!(body && body.burn_subtitles),
+      burn_narration_audio: !!(body && body.burn_narration_audio),
       burn_dialogue_audio: !!(body && body.burn_dialogue_audio),
       watermark_text: (body && body.watermark_text != null)
         ? String(body.watermark_text).trim().slice(0, 200)

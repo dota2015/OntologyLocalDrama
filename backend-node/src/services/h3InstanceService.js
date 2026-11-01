@@ -73,7 +73,9 @@ async function probeSingleInstance(url) {
 
 async function getInstances(db) {
   const bridgeUrl = getBridgeUrl(db);
-  const currentConcurrency = Number(settingsService.getGlobalSetting(db, 'pipeline_video_concurrency', 3)) || 3;
+  // H3 generation is process-wide serial.  The number of configured ComfyUI
+  // endpoints is not a permission to run independent GPU jobs in parallel.
+  const currentConcurrency = 1;
 
   // 1. Try querying the active video bridge
   try {
@@ -156,14 +158,12 @@ async function updateInstances(db, log, body) {
     log?.info?.('Bridge not reachable for hot update, config saved to file', { bridgeUrl });
   }
 
-  // 3. Automatically sync video concurrency to the number of configured H3 instances
-  const autoSync = body?.auto_sync_concurrency !== false;
-  if (autoSync) {
-    settingsService.setGlobalSetting(db, 'pipeline_video_concurrency', cleaned.length);
-    log?.info?.('Auto-synced pipeline_video_concurrency to H3 instances count', { count: cleaned.length });
-  }
-
-  const updatedConcurrency = Number(settingsService.getGlobalSetting(db, 'pipeline_video_concurrency', cleaned.length)) || cleaned.length;
+  // H3 is deliberately serialized even when several bridge endpoints are
+  // configured.  Keep the setting explicit so old databases cannot re-enable
+  // parallel dispatch through a stale value.
+  settingsService.setGlobalSetting(db, 'pipeline_video_concurrency', 1);
+  log?.info?.('H3 video concurrency locked to serial mode', { instances: cleaned.length });
+  const updatedConcurrency = 1;
   const probed = await Promise.all(cleaned.map(u => probeSingleInstance(u)));
 
   return {

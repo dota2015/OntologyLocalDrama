@@ -10,7 +10,7 @@ const path = require('path');
 const IMAGE_HTTP_TIMEOUT_MS = 600000;
 
 // 多参考图时注入到所有支持 negative_prompt 的模型，防止生成分割/拼贴布局；同时加入安全词以减少敏感拦截
-const ANTI_SPLIT_NEGATIVE_PROMPT = 'nsfw, nudity, naked, violence, blood, gore, sensitive content, split panels, side-by-side layout, collage, diptych, triptych, grid layout, multiple panels, comparison view, composite image, two images in one frame, duplicate characters, clone, cloned person, extra people, extra characters, multiple views of same person, duplicate face, character sheet layout, split screen, missing character, bad anatomy, deformed limbs, frontal standing portrait in center, standing pose, character standing in foreground, extra person in front of scene, passport photo, model sheet, character reference sheet, 正面站立肖像, 画面中心多余人物, 双重人物, 额外角色, 克隆人, 呆立, 证件照, 模特立绘';
+const ANTI_SPLIT_NEGATIVE_PROMPT = 'nsfw, nudity, naked, violence, blood, gore, sensitive content, duplicate person, clone, cloned person, two identical people, extra person, multiple views of same person, duplicate face, duplicate characters, extra people, background bystander, extra limbs, split panels, side-by-side layout, collage, diptych, triptych, grid layout, multiple panels, comparison view, composite image, two images in one frame, character sheet layout, split screen, missing character, bad anatomy, deformed limbs, frontal standing portrait in center, standing pose, character standing in foreground, extra person in front of scene, passport photo, model sheet, character reference sheet, 正面站立肖像, 画面中心多余人物, 双重人物, 额外角色, 克隆人, 呆立, 证件照, 模特立绘';
 
 function mergeNegativePromptFragments(auto, user) {
   const a = (auto || '').trim();

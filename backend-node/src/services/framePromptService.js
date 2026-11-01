@@ -89,6 +89,16 @@ function loadStoryboard(db, storyboardId) {
         lighting_style: row.lighting_style,
         depth_of_field: row.depth_of_field,
         layout_description: row.layout_description || null,   // 画面布局与人物站位合同（首尾帧强制一致核心）
+        dialogue_framing: row.dialogue_framing || '',
+        start_framing: row.start_framing || '',
+        end_framing: row.end_framing || '',
+        character_visuals: row.character_visuals || '[]',
+        semantic_slots: row.semantic_slots || null,
+        environment_depth: row.environment_depth || '',
+        cinematic_lens: row.cinematic_lens || '',
+        lighting_chiaroscuro: row.lighting_chiaroscuro || '',
+        last_frame_visuals: row.last_frame_visuals || '[]',
+        background_characters: row.background_characters || '[]',
       }
     : null;
 }
@@ -262,6 +272,41 @@ function loadScene(db, sceneId) {
   return row ? { id: row.id, location: row.location, time: row.time } : null;
 }
 
+function parseCharacterVisuals(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+/**
+ * 把导演 Agent 已通过门禁的首帧人物姿态与视线原样传给生图。
+ * 这是权威合同，不在执行层推断或修改人物该看谁。
+ */
+function compileFirstFrameVisualContract(sb) {
+  const visuals = parseCharacterVisuals(sb?.character_visuals);
+  if (!visuals.length) return '';
+  const lines = visuals.map((v) => {
+    const fields = [
+      v.screen_position && `站位=${v.screen_position}`,
+      v.depth_layer && `景深=${v.depth_layer}`,
+      v.facing && `身体朝向=${v.facing}`,
+      v.head_pose && `头部姿态=${v.head_pose}`,
+      v.gaze && `视线落点=${v.gaze}`,
+      v.expression && `表情=${v.expression}`,
+      v.posture && `躯干与重心=${v.posture}`,
+      v.hands && `手部=${v.hands}`,
+      v.prop_interaction && `道具接触=${v.prop_interaction}`,
+    ].filter(Boolean);
+    return `- ${v.name || '人物'}：${fields.join('；')}`;
+  });
+  return `【导演首帧人物姿态与视线合同·必须逐项呈现】\n${lines.join('\n')}\n所有视线必须落在上述具体人物或物体上，不得改成直视摄影机或无目标地看向空气。`;
+}
+
 function buildStoryboardContext(cfg, sb, scene, characterNames) {
   const parts = [];
   const styleZh = (cfg?.style?.default_style_zh || '').toString().trim();
@@ -288,14 +333,14 @@ ${ld}
 - Realistic physical scale and relative proportions of all major props (only props actually present in the shot; sizes must match the story's era/setting; nothing exaggerated or distorted).
 - Overall visual weight balance (character remains the clear focal point; all props stay secondary environmental elements).
 
-【ALLOWED + ENCOURAGED CINEMATIC EVOLUTION (5-15s videos — support declared movement with meaningful change)】
-- The last frame MUST show visible, cumulative framing evolution driven by the declared camera_movement over the full clip duration (typically 5-15 seconds). Evolution should be noticeable, not just tiny micro-adjustments.
+【ALLOWED + ENCOURAGED CINEMATIC EVOLUTION (4-8s videos — support declared movement with meaningful change)】
+- The last frame MUST show visible, cumulative framing evolution driven by the declared camera_movement over the full 4-8 second clip. Evolution should be noticeable, not just tiny micro-adjustments.
 - Examples (larger duration → larger allowed change):
-  - Slow push-in over 8-12s+: last frame noticeably tighter on the character (higher screen occupancy), background more compressed.
+  - Slow push-in over 6-8s: last frame noticeably tighter on the character (higher screen occupancy), background more compressed.
   - Handheld / tracking: natural framing drift, slight imperfect composition shifts, and movement-induced offsets are desirable and expected.
   - Pan / orbit / follow: clear natural entry/exit of elements on sides or minor camera drift.
 - Hard lock remains: core character placement (no L/R swap), realistic physical sizes of all props, basic spatial relationships, and perspective must stay consistent.
-- Goal: First and last frames must read as the same continuous physical scene and take, but with enough visual progression that the 5-15s video generated from them actually feels dynamic and realizes the declared movement, instead of looking nearly static or locked-off.
+- Goal: First and last frames must read as the same continuous physical scene and take, with enough visual progression for a dynamic 4-8s H3 clip.
 
 Violating hard lock = failure. Insufficient evolution that suppresses the movement = also bad result.`);
     } else {
@@ -343,6 +388,8 @@ ${ld}
       parts.unshift(`【角色视觉锚点 - 最高优先级铁律，必须严格遵守，禁止任何脑补或添加未提供的外貌细节】\n${characterNames.join('\n')}`);
     }
   }
+  const firstFrameVisualContract = compileFirstFrameVisualContract(sb);
+  if (firstFrameVisualContract) parts.push(firstFrameVisualContract);
   if (sb.action) {
     parts.push(promptI18n.formatUserPrompt(cfg, 'action_label', sb.action));
   }
@@ -442,6 +489,11 @@ function saveFramePrompt(db, log, storyboardId, frameType, prompt, description, 
 }
 
 async function generateSingleFrame(db, log, cfg, sb, scene, characterNames, model, frameKind, sanitizeOpts = {}) {
+  const plan = require('./storyboardImagePlan');
+  if (plan.isStructuredShot(sb) && ['first', 'last'].includes(frameKind)) {
+    const style = cfg?.style?.default_style_zh || cfg?.style?.default_style_en || cfg?.style?.default_style || '';
+    return { prompt: plan.compileFrame(sb, scene, frameKind, style), description: '由导演槽位编译' };
+  }
   const context = buildStoryboardContext(cfg, sb, scene, characterNames) + (sb.wardrobe_context || '');
   const allowedCharNames = parseNamesFromAnchorLines(characterNames);
   const allDramaNames = sanitizeOpts.allDramaNames || allowedCharNames;
@@ -483,12 +535,18 @@ async function generateSingleFrame(db, log, cfg, sb, scene, characterNames, mode
   log.info('[帧提示词] AI RAW RESPONSE:\n' + (aiResponse || '(empty)'));
   const parsed = parseFramePromptJSON(log, aiResponse);
   if (parsed) {
-    const cleanedPrompt = sanitizeFramePrompt(parsed.prompt, allowedCharNames, allDramaNames, {
+    let cleanedPrompt = sanitizeFramePrompt(parsed.prompt, allowedCharNames, allDramaNames, {
       log,
       source: 'frame_prompt_generation',
       storyboard_id: sb?.id,
       frame_kind: frameKind,
     });
+    if (frameKind === 'first') {
+      const visualContract = compileFirstFrameVisualContract(sb);
+      if (visualContract && !cleanedPrompt.includes('导演首帧人物姿态与视线合同')) {
+        cleanedPrompt = `${cleanedPrompt}\n${visualContract}`;
+      }
+    }
     log.info('[帧提示词] PARSED RESULT prompt:\n' + cleanedPrompt);
     return { ...parsed, prompt: cleanedPrompt };
   }
@@ -555,7 +613,7 @@ async function processFramePromptGeneration(db, log, taskId, storyboardId, frame
     if (frameType === 'first' || frameType === 'key' || frameType === 'last') {
       const frameKind = frameType;
       const single = await generateSingleFrame(db, log, cfg, sb, scene, characterNames, model, frameKind, sanitizeOpts);
-      combinedPrompt = single.prompt + sb.wardrobe_context;
+      combinedPrompt = single.prompt;
       if(require('./wardrobeService').promptContext(db,storyboardId,frameType)!==sb.wardrobe_context)throw new Error('生成帧提示词期间人物造型已变化，请重试');
       saveFramePrompt(db, log, storyboardId, frameType, combinedPrompt, single.description, '');
       description = single.description;
@@ -645,6 +703,7 @@ module.exports = {
   getFramePrompts: (db, storyboardId) => storyboardService.getFramePrompts(db, storyboardId),
   generateSingleFrameExported: generateSingleFrame,
   expandAngleDescription,
+  compileFirstFrameVisualContract,
   regenerateLayoutDescription,
 };
 

@@ -1,0 +1,133 @@
+{
+  "shot_number": 1,
+  "title": "画面暗下",
+  "scene_id": 100,
+  "characters": [],
+  "background_characters": [],
+  "props": [],
+  "shot_type": "特写",
+  "angle_h": "front",
+  "angle_v": "eye_level",
+  "angle_s": "close_up",
+  "movement": "pull",
+  "lighting_style": "night",
+  "depth_of_field": "shallow",
+  "duration": 4,
+  "action": "游戏中的控制室画面亮度持续下降，残存的冷色轮廓与屏幕光一同沉入黑暗，完成由战场到现实段落的转场。",
+  "result": "游戏画面完全暗下，下一镜切至第二天的教室。",
+  "dialogue": "",
+  "narration": "",
+  "bgm_prompt": "纯器乐背景音乐：低沉、克制的合成器长音托底，间隔稀疏的低音脉冲随游戏画面沉入黑暗而渐弱，最终随全黑自然收止；无旋律主题、无环境音效。",
+  "sound_effect": "",
+  "layout_description": "画面集中于游戏控制室影像及其逐渐消失的屏幕亮光，不出现现实人物；以黑屏作为转场落点。",
+  "emotion": "沉重、失败后的余波",
+  "start_framing": "起幅为游戏控制室的暗色画面，屏幕冷光仍勾出室内结构轮廓。",
+  "end_framing": "落幅画面全黑，游戏影像不再可辨，作为切入次日教室的视觉锚点。",
+  "transition_to_next": "hard_cut: 由全黑游戏画面切至第二天自然光下的教室小测验。",
+  "dialogue_framing": "solo_game_screen_transition",
+  "long_take_group_id": null,
+  "long_take_role": null,
+  "long_take_sequence": null,
+  "lighting_chiaroscuro": "控制室原有的冷色屏幕光从画面中心逐步消退，四周暗部吞没残留轮廓，最终全黑。",
+  "environment_depth": "前景无实体遮挡；中景为逐渐失去细节的游戏控制室画面；背景纵深与控制室结构一同沉入黑暗。",
+  "cinematic_lens": "50mm电影镜头，浅景深，细微数字屏幕质感。",
+  "creation_mode": "universal",
+  "universal_segment_text": "画面风格和类型: 真人写实, 电影风格, 高清画质, 现代现实主义短剧\n生成一个由以下1个分镜组成的视频。\n环境、光影与陈设定性参考 @图片1。若 @图片1 为宫格或多画面拼图，禁止成片复刻其分格或并列布局，仅提取统一的室内空间与光线语义；须单镜头完整连续画面。\n分镜1： 4秒: 镜头缓慢后拉，@图片1 所示废弃工厂控制室的游戏画面由冷色屏幕光逐渐沉入黑暗，室内轮廓随之消失，画面最终全黑，作为切入第二天教室的转场。无对白。",
+  "semantic_slots": {
+    "visible_characters": [],
+    "background_characters": [],
+    "identity_visibility": "occluded",
+    "speech_plan": {
+      "speaker_id": null,
+      "speaker_name": "",
+      "is_offscreen": false,
+      "is_narration": false,
+      "text": "",
+      "speed": 1,
+      "emotion": "",
+      "audio_references": []
+    },
+    "sound_plan": {
+      "sound_effects": [],
+      "bgm_prompt": "纯器乐背景音乐：低沉、克制的合成器长音托底，间隔稀疏的低音脉冲随游戏画面沉入黑暗而渐弱，最终随全黑自然收止；无旋律主题、无环境音效。",
+      "acoustic_env": "无环境声，仅纯器乐配乐",
+      "is_silent": false
+    },
+    "continuity_type": "hard_cut",
+    "h3_mode": "ref2va",
+    "h3_mode_reason": "本镜核心是游戏控制室环境随画面暗下的视觉转场，多参考场景一致性比独立起幅姿态更重要。",
+    "first_frame_policy": "none",
+    "first_frame_reason": "由场景参考 @图片1 约束游戏控制室环境；Ref2VA 不生成或继承首帧。",
+    "last_frame_policy": "none",
+    "last_frame_reason": "画面自然沉黑即可完成转场，无需额外锁定尾帧。",
+    "required_references": [
+      {
+        "type": "scene",
+        "id": 100,
+        "name": "测试控制室"
+      }
+    ],
+    "audio_lip_sync": "bgm_only",
+    "shot_duration": 4,
+    "source_script_unit_ids": [
+      "B12U1"
+    ],
+    "source_script_excerpt": "游戏画面暗下。"
+  },
+  "audio_lip_sync": "bgm_only",
+  "shot_duration": 4,
+  "source_script_unit_ids": [
+    "B12U1"
+  ],
+  "video_slots": {
+    "camera": {
+      "shot_type": "特写",
+      "angle_h": "正面",
+      "angle_v": "平视",
+      "angle_s": "近景",
+      "movement": "缓慢后拉",
+      "movement_description": "镜头平稳缓慢后拉，控制室游戏画面逐渐缩小并沉入黑暗。"
+    },
+    "audio_lip_sync": {
+      "mode": "bgm_only",
+      "speaker_name": "",
+      "speaker_in_frame": false,
+      "delivery_medium": "纯器乐",
+      "dialogue_content": "",
+      "visible_characters_lip_state": "画内无人，无嘴部状态。",
+      "lip_sync_rule": "纯器乐，无对白及音效，不涉及唇形同步。"
+    },
+    "trajectories": [],
+    "environment_vfx": {
+      "lighting_atmosphere": "冷色屏幕光逐渐衰减，四周暗部吞没控制室轮廓，最终全黑。",
+      "physical_phenomena": "仅播放低沉克制的纯器乐配乐，随游戏画面沉入黑暗而渐弱，最终随全黑自然收止。",
+      "terminal_event": "游戏控制室影像完全暗下，画面全黑，硬切至次日教室。"
+    },
+    "timing": {
+      "duration": 4,
+      "pacing": "单镜头连续后拉，冷光和环境细节渐隐，落于全黑。"
+    },
+    "shots_timeline": [
+      {
+        "shot_number": 1,
+        "timestamp": "0-4秒",
+        "duration": 4,
+        "camera": {
+          "shot_type": "特写",
+          "movement": "缓慢后拉",
+          "movement_description": "持续平稳后拉，随控制室画面逐渐变暗，最终落于全黑。"
+        },
+        "action": "冷色屏幕光勾出游戏控制室轮廓；光线持续减弱，室内结构逐步隐没，低沉克制的纯器乐配乐随画面沉入黑暗而渐弱。",
+        "result": "控制室游戏画面完全暗下，画面全黑，纯器乐配乐自然收止，作为切入第二天教室的转场。",
+        "character_trajectories": [],
+        "audio_lip_sync": {
+          "mode": "bgm_only",
+          "speaker_name": "",
+          "speaker_in_frame": false,
+          "dialogue_content": "",
+          "lip_sync_rule": "纯器乐，无对白及音效，不涉及唇形同步。"
+        }
+      }
+    ]
+  }
+}

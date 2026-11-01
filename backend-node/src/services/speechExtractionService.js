@@ -3,7 +3,10 @@ const { safeParseAIJSON } = require('../utils/safeJson');
 
 function parseJson(value) { try { return JSON.parse(value || '{}'); } catch (_) { return {}; } }
 function sourceHash(shot) {
-  return createHash('sha256').update(JSON.stringify([shot.dialogue, shot.narration, shot.universal_segment_text, shot.description, shot.action, shot.title])).digest('hex');
+  return createHash('sha256').update(JSON.stringify([
+    shot.dialogue, shot.narration, shot.universal_segment_text, shot.description, shot.action, shot.title,
+    shot.semantic_slots, shot.video_slots,
+  ])).digest('hex');
 }
 function isNarrator(name) { return /^(?:旁白|解说|解说旁白|画外音|旁白解说|narrator|narration|voice[- ]?over)$/iu.test(name || ''); }
 function meaningful(text) { return text?.trim() && !/^(?:无|无对白|无对话|无台词|无旁白|无解说|none|null|silent)[。.!！\s]*$/iu.test(text.trim()); }
@@ -11,14 +14,56 @@ function plainText(value) {
   return String(value || '').replace(/^[“”"「」『』']+|[“”"「」『』']+$/gu, '')
     .replace(/[（(](?:停顿|低声|大喊|小声|笑着|叹气|哭着|温柔|愤怒|pause|sigh)[^）)]*[）)]/giu, '').trim();
 }
+function parseObject(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch (_) { return null; }
+}
+function comparableSpeech(value) {
+  return plainText(value).replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
+}
+function structuredPlan(shot, parseDialogue) {
+  const semantic = parseObject(shot.semantic_slots);
+  const video = parseObject(shot.video_slots);
+  const speech = semantic?.speech_plan && typeof semantic.speech_plan === 'object' ? semantic.speech_plan : null;
+  const lip = video?.audio_lip_sync && typeof video.audio_lip_sync === 'object' ? video.audio_lip_sync : null;
+  const semanticText = meaningful(String(speech?.text || '')) ? plainText(speech.text) : '';
+  const videoText = meaningful(String(lip?.dialogue_content || '')) ? plainText(lip.dialogue_content) : '';
+  if (!semanticText && !videoText) return null;
+  if (semanticText && videoText && comparableSpeech(semanticText) !== comparableSpeech(videoText)) {
+    throw new Error('分镜权威台词冲突：semantic_slots.speech_plan.text 与 video_slots.audio_lip_sync.dialogue_content 不一致，请让导演 Agent 修复后再生成');
+  }
+  const text = semanticText || videoText;
+  const narration = speech?.is_narration === true || String(lip?.mode || '').toLowerCase() === 'narration';
+  const dbSegments = [];
+  for (const line of parseDialogue(shot.dialogue || '')) {
+    const value = plainText(line.text);
+    if (meaningful(value)) dbSegments.push({ kind: isNarrator(line.speaker) ? 'narration' : 'dialogue', speaker: line.speaker || '', text: value });
+  }
+  if (meaningful(shot.narration)) dbSegments.push({ kind: 'narration', speaker: '', text: plainText(shot.narration) });
+  const sameKind = dbSegments.filter(item => item.kind === (narration ? 'narration' : 'dialogue'));
+  if (sameKind.length !== 1 || comparableSpeech(sameKind[0].text) !== comparableSpeech(text)) {
+    throw new Error('分镜权威台词冲突：结构化语义槽位与数据库对白/旁白不一致，请让导演 Agent 修复后再生成');
+  }
+  const speaker = narration ? '' : String(speech?.speaker_name || lip?.speaker_name || sameKind[0].speaker || '').trim();
+  if (!narration && sameKind[0].speaker && speaker && sameKind[0].speaker !== speaker) {
+    throw new Error('分镜权威说话人冲突：结构化语义槽位与数据库人物标签不一致，请让导演 Agent 修复后再生成');
+  }
+  return {
+    source_hash: sourceHash(shot),
+    segments: [{ kind: narration ? 'narration' : 'dialogue', speaker, text }],
+    method: 'semantic_slots',
+  };
+}
 function cache(db, dramaId, shot) {
   const row = db.prepare('SELECT metadata FROM dramas WHERE id = ? AND deleted_at IS NULL').get(Number(dramaId));
   const stored = parseJson(row?.metadata).tts_speech_plans?.[shot.id];
   return stored?.source_hash === sourceHash(shot) ? stored : null;
 }
-function automaticPlan(db, dramaId, shot, parseDialogue) {
-  const saved = cache(db, dramaId, shot);
-  if (saved) return saved;
+function databasePlan(shot, parseDialogue) {
   const segments = [];
   for (const line of parseDialogue(shot.dialogue)) {
     const text = plainText(line.text);
@@ -30,6 +75,13 @@ function automaticPlan(db, dramaId, shot, parseDialogue) {
     if (!segments.some(s => s.kind === 'narration' && s.text === text)) segments.push({ kind: 'narration', speaker: '', text });
   }
   return { source_hash: sourceHash(shot), segments, method: 'labels' };
+}
+function automaticPlan(db, dramaId, shot, parseDialogue) {
+  const structured = structuredPlan(shot, parseDialogue);
+  if (structured) return structured;
+  const saved = cache(db, dramaId, shot);
+  if (saved) return saved;
+  return databasePlan(shot, parseDialogue);
 }
 function needsModel(shot, plan) {
   if (['model', 'edited'].includes(plan.method)) return false;
@@ -98,4 +150,4 @@ function orderedAudioFiles(db, shotId, row) {
   const files = plan.segments.map((segment, index) => parts.find(p => p.index === index)?.local_path);
   return files.length && files.every(Boolean) ? files : null;
 }
-module.exports = { recordAudio, orderedAudioFiles, automaticPlan, ensurePlan, needsModel, meaningful, sourceHash, isNarrator };
+module.exports = { recordAudio, orderedAudioFiles, automaticPlan, databasePlan, ensurePlan, needsModel, meaningful, sourceHash, isNarrator, structuredPlan };

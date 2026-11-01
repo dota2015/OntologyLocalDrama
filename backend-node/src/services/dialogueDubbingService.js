@@ -23,7 +23,7 @@ function cleanText(value) {
 function dialogueSegments(value) {
   const text = String(value || '').trim();
   if (!cleanText(text)) return [];
-  const label = /(?:^|[\n\r；;]|(?<=[”"」』]))\s*([\p{L}\p{N}_· @（）() .-]{1,40})[：:]\s*/gu;
+  const label = /(?:^|[\n\r；;]|(?<=[”"」』。！？!?]))\s*([\p{L}\p{N}_· @（）() .-]{1,40})[：:]\s*/gu;
   const matches = Array.from(text.matchAll(label));
   if (!matches.length) return [{ speaker: '', text: cleanText(text) }];
   const result = [];
@@ -44,7 +44,7 @@ function dramaRow(db, id) {
 function getProfile(db, id) {
   const metadata = parseJson(dramaRow(db, id).metadata);
   const raw = metadata.tts_dubbing || {};
-  return metadata.narrative_style ? { ...raw, speed: require('./narrativeStyleService').fromMetadata(metadata).speech_rate } : raw;
+  return { ...raw, speed: 1 };
 }
 function configFor(db, configId) {
   const service = require('./aiConfigService');
@@ -57,12 +57,29 @@ function configFor(db, configId) {
   return config;
 }
 const EDGE_VOICES = ['zh-CN-YunjianNeural', 'zh-CN-YunxiNeural', 'zh-CN-YunxiaNeural', 'zh-CN-XiaoyiNeural', 'zh-CN-XiaoxiaoNeural', 'zh-CN-YunyangNeural'];
-const INDEXTTS_VOICES = ['voice_01.wav', 'voice_02.wav', 'voice_03.wav', 'voice_04.wav', 'voice_05.wav', 'voice_06.wav', 'voice_07.wav', 'voice_08.wav', 'voice_09.wav', 'voice_11.wav', 'voice_12.wav'];
+const INDEXTTS_VOICES = [
+  'edge_yunxi.wav', 'edge_yunjian.wav', 'edge_yunxia.wav', 'edge_yunyang.wav', 'edge_xiaoyi.wav', 'edge_xiaoxiao.wav',
+  'edge_xiaobei.wav', 'edge_xiaoni.wav', 'edge_hiumaan.wav', 'edge_wanlung.wav', 'edge_hsiaochen.wav', 'edge_yunjhe.wav',
+  'voice_01.wav', 'voice_02.wav', 'voice_03.wav', 'voice_04.wav', 'voice_05.wav', 'voice_06.wav', 'voice_07.wav', 'voice_08.wav', 'voice_09.wav', 'voice_11.wav', 'voice_12.wav'
+];
+const EDGE_TO_INDEXTTS_MAP = {
+  'zh-CN-YunxiNeural': 'edge_yunxi.wav',
+  'zh-CN-YunjianNeural': 'edge_yunjian.wav',
+  'zh-CN-YunxiaNeural': 'edge_yunxia.wav',
+  'zh-CN-YunyangNeural': 'edge_yunyang.wav',
+  'zh-CN-XiaoyiNeural': 'edge_xiaoyi.wav',
+  'zh-CN-XiaoxiaoNeural': 'edge_xiaoxiao.wav',
+  'zh-CN-liaoning-XiaobeiNeural': 'edge_xiaobei.wav',
+  'zh-CN-shaanxi-XiaoniNeural': 'edge_xiaoni.wav',
+  'zh-HK-HiuMaanNeural': 'edge_hiumaan.wav',
+  'zh-HK-WanLungNeural': 'edge_wanlung.wav',
+  'zh-TW-HsiaoChenNeural': 'edge_hsiaochen.wav',
+  'zh-TW-YunJheNeural': 'edge_yunjhe.wav',
+};
 function normalizedProfile(db, id, raw = {}) {
   dramaRow(db, id);
   const config = configFor(db, raw.config_id);
-  const speed = Number(raw.speed ?? getProfile(db, id).speed ?? 1);
-  if (!Number.isFinite(speed) || speed < 0.5 || speed > 2) throw new Error('语速需在 0.5–2 之间');
+  const speed = tts.isIndexTts(config) ? tts.defaultSpeed(config) : 1;
   const voices = Object.create(null);
   for (const [name, voice] of Object.entries(raw.voices || {})) {
     if (name.length > 80 || typeof voice !== 'string' || voice.length > 200) throw new Error('角色音色设置无效');
@@ -70,8 +87,8 @@ function normalizedProfile(db, id, raw = {}) {
   }
   const edge = /^(edge-tts|edgetts|edge)$/i.test(config.provider);
   const indextts = /^(indextts|indextts2|indextts25)$/i.test(config.provider) || (config.base_url && /7860/i.test(config.base_url));
-  const rawDefault = raw.default_voice && (indextts && /Neural$/i.test(raw.default_voice) ? '' : raw.default_voice);
-  const rawNarrator = raw.narrator_voice && (indextts && /Neural$/i.test(raw.narrator_voice) ? '' : raw.narrator_voice);
+  const rawDefault = raw.default_voice && (indextts && /Neural$/i.test(raw.default_voice) ? (EDGE_TO_INDEXTTS_MAP[raw.default_voice] || '') : raw.default_voice);
+  const rawNarrator = raw.narrator_voice && (indextts && /Neural$/i.test(raw.narrator_voice) ? (EDGE_TO_INDEXTTS_MAP[raw.narrator_voice] || '') : raw.narrator_voice);
   const defaultVoice = String(rawDefault || (indextts ? 'voice_03.wav' : (edge ? 'zh-CN-YunjianNeural' : ''))).trim();
   const narrator = String(rawNarrator || (indextts ? 'voice_08.wav' : (edge ? 'zh-CN-YunyangNeural' : ''))).trim();
   if (defaultVoice.length > 200 || narrator.length > 200) throw new Error('音色 ID 过长');
@@ -84,10 +101,18 @@ function normalizedProfile(db, id, raw = {}) {
   }
   if (indextts) {
     for (const name of Object.keys(voices)) {
-      if (/Neural$/i.test(voices[name])) delete voices[name];
+      if (/Neural$/i.test(voices[name])) {
+        const mapped = EDGE_TO_INDEXTTS_MAP[voices[name]];
+        if (mapped) voices[name] = mapped;
+        else delete voices[name];
+      }
     }
     for (const cid of Object.keys(characterVoices)) {
-      if (/Neural$/i.test(characterVoices[cid])) delete characterVoices[cid];
+      if (/Neural$/i.test(characterVoices[cid])) {
+        const mapped = EDGE_TO_INDEXTTS_MAP[characterVoices[cid]];
+        if (mapped) characterVoices[cid] = mapped;
+        else delete characterVoices[cid];
+      }
     }
   }
   for (const [key, value] of Object.entries(raw.speaker_characters || {})) {
@@ -98,7 +123,17 @@ function normalizedProfile(db, id, raw = {}) {
     if (!voices[c.name] && characterVoices[c.id]) voices[c.name] = characterVoices[c.id];
   }
   const names = new Map(characters.map(c => [c.name, c]));
-  for (const shot of shotsFor(db, id)) for (const line of extraction.automaticPlan(db, id, shot, dialogueSegments).segments) if (line.kind === 'dialogue' && line.speaker && !names.has(line.speaker)) names.set(line.speaker, {});
+  // Voice allocation only needs explicit database speaker labels. Do not run
+  // every storyboard through the semantic speech gate here: preparing one
+  // valid H3 shot must not fail because an unrelated historical shot has a
+  // stale semantic/video speech contract. The target shot is still validated
+  // strictly by extraction.ensurePlan() before its reference audio is built.
+  for (const shot of shotsFor(db, id)) {
+    for (const line of dialogueSegments(shot.dialogue)) {
+      const name = speakerName(line.speaker);
+      if (name && !extraction.isNarrator(name) && !names.has(name)) names.set(name, {});
+    }
+  }
   if (edge) {
     const used = new Set(Object.values(voices).filter(Boolean));
     for (const [name, c] of names) {
@@ -123,9 +158,9 @@ function normalizedProfile(db, id, raw = {}) {
       if (target && voices[target.name]) { voices[name] = voices[target.name]; continue; }
       if (voices[name]) continue;
       const description = [name, c.description, c.appearance, c.voice_style].filter(Boolean).join(' ');
-      let preferred = ['voice_01.wav', 'voice_03.wav', 'voice_04.wav'];
-      if (/女性|女孩|少女|女人|女声|母亲|妈妈|女士|姑娘|女主/u.test(description)) preferred = ['voice_07.wav', 'voice_08.wav', 'voice_09.wav', 'voice_11.wav', 'voice_12.wav'];
-      else if (/男孩|少年|男童|小学生|十岁|小男/u.test(description)) preferred = ['voice_02.wav', 'voice_06.wav'];
+      let preferred = ['edge_yunxi.wav', 'edge_yunjian.wav', 'voice_01.wav', 'voice_03.wav', 'voice_04.wav'];
+      if (/女性|女孩|少女|女人|女声|母亲|妈妈|女士|姑娘|女主/u.test(description)) preferred = ['edge_xiaoyi.wav', 'edge_xiaoxiao.wav', 'voice_07.wav', 'voice_08.wav', 'voice_09.wav', 'voice_11.wav', 'voice_12.wav'];
+      else if (/男孩|少年|男童|小学生|十岁|小男/u.test(description)) preferred = ['edge_yunxia.wav', 'voice_02.wav', 'voice_06.wav'];
       const pool = [...preferred, ...INDEXTTS_VOICES].filter(v => v !== narrator);
       const selected = pool.find(v => !used.has(v)) || pool[0];
       voices[name] = selected;
@@ -149,7 +184,7 @@ function saveProfile(db, id, raw) {
   metadata.tts_dubbing = profile;
   if (metadata.narrative_style) {
     const previous=require('./narrativeStyleService').fromMetadata(metadata);
-    metadata.narrative_style = require('./narrativeStyleService').normalize({ ...previous, speech_rate: profile.speed, speech_mode: profile.speed!==previous.speech_rate?'fixed':previous.speech_mode });
+    metadata.narrative_style = require('./narrativeStyleService').normalize(previous);
   }
   db.prepare('UPDATE dramas SET metadata = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL')
     .run(JSON.stringify(metadata), new Date().toISOString(), Number(id));
@@ -169,7 +204,7 @@ function latestTask(db, id) {
     .get('dubbing:' + Number(id));
   return row ? tasks.getTask(db, row.id) : null;
 }
-function panel(db, id) {
+function profilePanel(db, id) {
   let profile = getProfile(db, id);
   const configs = require('./aiConfigService').listConfigs(db, 'tts').filter(c => c.is_active).map(c => {
     const settings = parseJson(c.settings);
@@ -179,6 +214,10 @@ function panel(db, id) {
   });
   if (configs.length) profile = normalizedProfile(db, id, profile);
   const characters = db.prepare('SELECT id, name FROM characters WHERE drama_id = ? AND deleted_at IS NULL ORDER BY sort_order, id').all(Number(id));
+  return { profile, configs, characters };
+}
+function panel(db, id) {
+  const { profile, configs, characters } = profilePanel(db, id);
   const shots = shotsFor(db, id).map(s => {
     const plan = extraction.automaticPlan(db, id, s, dialogueSegments);
     return { ...s, segments: plan.segments.filter(l => l.kind === 'dialogue').map(l => {
@@ -201,12 +240,13 @@ async function synthesizeShot(db, log, shot, storageRoot, profile, config, kind 
   const segments = selected;
   if (!segments.length) throw new Error(kind === 'narration' ? '分镜旁白为空' : '分镜对白为空');
   const delivery=require('./speechDeliveryService').forShot(db,shot,{segments:plan.segments,baseSpeed:profile.speed});
+  const ttsSpeed = tts.isIndexTts(config) ? tts.defaultSpeed(config) : delivery.speech_rate;
   const generated = [];
   for (const segment of segments) {
     const characterId = profile.speaker_characters?.[segment.speaker];
     const voice = kind === 'narration' ? profile.narrator_voice : (profile.character_voices?.[characterId] || (Object.hasOwn(profile.voices || {}, segment.speaker) ? profile.voices[segment.speaker] : ''));
     const result = await tts.synthesize(db, log, { text: segment.text, storyboard_id: shot.id,
-      storage_base: storageRoot, config, voice_id: voice || profile.default_voice || undefined, speed: delivery.speech_rate });
+      storage_base: storageRoot, config, voice_id: voice || profile.default_voice || undefined, speed: ttsSpeed });
     if (!result.local_path) throw new Error('TTS 未返回音频');
     generated.push(result.local_path);
   }
@@ -424,4 +464,4 @@ function startSpeechBatch(db, log, dramaId, body) {
   });
   return task;
 }
-module.exports = { latestSpeechTask, startSpeechBatch, speechEditor, extractSpeech, saveSpeech, planForId, dialogueSegments, panel, getProfile, saveProfile, normalizedProfile, configFor, synthesizeShot, single, startBatch, runBatch };
+module.exports = { latestSpeechTask, startSpeechBatch, speechEditor, extractSpeech, saveSpeech, planForId, dialogueSegments, profilePanel, panel, getProfile, saveProfile, normalizedProfile, configFor, synthesizeShot, single, startBatch, runBatch };

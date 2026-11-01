@@ -1,7 +1,9 @@
 // Conservative planning estimate, not a guarantee of generated speech fidelity.
 const HAN_PER_SECOND = 4;
 const WORDS_PER_SECOND = 2.5;
-const END_RESERVE_SECONDS = 1;
+// H3 speech is generated rather than deterministically time-stretched. Keep a
+// larger tail so the final syllables are not clipped at the video boundary.
+const END_RESERVE_SECONDS = 1.5;
 
 function spokenText(value) {
   let text = String(value ?? '').trim();
@@ -35,6 +37,7 @@ function assessSpeechTiming(shot, duration = shot?.duration, options = {}) {
     speechSeconds,
     requiredSeconds: Math.ceil(requiredSeconds * 10) / 10,
     recommendedDuration: Math.ceil(requiredSeconds),
+    endReserveSeconds: END_RESERVE_SECONDS,
     han: dialogue.han + narration.han,
     words: dialogue.words + narration.words,
     hanBudget: Math.floor(Math.max(0, seconds - END_RESERVE_SECONDS - turnPauses) * HAN_PER_SECOND * rate),
@@ -51,7 +54,7 @@ function timingInstructions(duration = 5) {
   return `\n\n【强制对白时长预算 / Mandatory speech timing】
 完整保留剧本中的对白、旁白及其顺序，不得缩写、删字或用加速说话来凑镜头数。
 按每秒约 ${HAN_PER_SECOND} 个中文字或 ${WORDS_PER_SECOND} 个英文单词估算；混合语言相加，dialogue 与 narration 共用时间，每镜至少预留 ${END_RESERVE_SECONDS} 秒收尾，动作、停顿、情绪重的镜头应进一步减少对白。
-${d} 秒镜头最多约 ${Math.floor(Math.max(0, d - 1) * HAN_PER_SECOND)} 个中文字；超过时按完整语义拆成连续镜头，保持人物、场景、动作衔接，每个新镜头 duration 使用 ${d} 秒。
+${d} 秒镜头最多约 ${Math.floor(Math.max(0, d - END_RESERVE_SECONDS) * HAN_PER_SECOND)} 个中文字；超过时按完整语义拆成连续镜头，保持人物、场景、动作衔接，每个新镜头 duration 使用 ${d} 秒。
 此预算及台词完整性优先于镜头数量和总时长目标；允许增加镜头数。不要给每个镜头强塞重复旁白。台词分别写入 dialogue/narration，视频提示词中的台词必须与字段一致。`;
 }
 
@@ -108,16 +111,59 @@ function speechFromPrompt(prompt) {
     ? labelledShot : quoteShot;
 }
 
-function assessVideoSpeech(shot, prompt, duration, options = {}) {
-  // Prompts repeat structured text: take the larger candidate per speech channel.
-  const parsed = speechFromPrompt(prompt);
-  const merged = {};
-  for (const key of ['dialogue', 'narration']) {
-    const stored = cleanExtractedSpeech(shot?.[key] || '');
-    const candidate = cleanExtractedSpeech(parsed[key] || '');
-    merged[key] = secondsForText(stored).seconds >= secondsForText(candidate).seconds ? stored : candidate;
+function parseSlotObject(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch (_) {
+    return null;
   }
-  return assessSpeechTiming(merged, duration, options);
 }
 
-module.exports = { speechFromPrompt, assessSpeechTiming, assessVideoSpeech, timingError, timingInstructions, spokenText, speechFingerprint, cleanExtractedSpeech };
+function longestSpeech(candidates) {
+  return candidates
+    .map(cleanExtractedSpeech)
+    .filter(Boolean)
+    .sort((a, b) => secondsForText(b).seconds - secondsForText(a).seconds)[0] || '';
+}
+
+/**
+ * Resolve speech only from persisted execution data. The three representations
+ * mirror the same utterance, so use the longest value in each channel instead
+ * of adding duplicates together.
+ */
+function authoritativeSpeech(shot = {}) {
+  const s = shot || {};
+  const semantic = parseSlotObject(s.semantic_slots);
+  const video = parseSlotObject(s.video_slots);
+  const dialogue = [s.dialogue];
+  const narration = [s.narration];
+
+  const speechPlan = semantic?.speech_plan;
+  if (speechPlan && typeof speechPlan === 'object' && speechPlan.text) {
+    (speechPlan.is_narration === true ? narration : dialogue).push(speechPlan.text);
+  }
+
+  const lipSync = video?.audio_lip_sync;
+  if (lipSync && typeof lipSync === 'object' && lipSync.dialogue_content) {
+    (String(lipSync.mode || '').toLowerCase() === 'narration' ? narration : dialogue)
+      .push(lipSync.dialogue_content);
+  }
+
+  return {
+    dialogue: longestSpeech(dialogue),
+    narration: longestSpeech(narration),
+    hasStructuredSlots: semantic !== null || video !== null,
+  };
+}
+
+function assessVideoSpeech(shot, _prompt, duration, options = {}) {
+  const authoritative = authoritativeSpeech(shot);
+  // Compiled prompts are presentation output. Execution gates only consume the
+  // persisted database fields and structured semantic/video slots above.
+  return assessSpeechTiming(authoritative, duration, options);
+}
+
+module.exports = { speechFromPrompt, authoritativeSpeech, assessSpeechTiming, assessVideoSpeech, timingError, timingInstructions, spokenText, speechFingerprint, cleanExtractedSpeech };

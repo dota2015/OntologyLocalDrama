@@ -67,9 +67,11 @@ class ApiTests(unittest.TestCase):
         bridge.download_locks.clear()
 
     def test_submission_sends_duration_to_comfy(self):
+        submitted = {}
         def handler(request):
             self.assertEqual(request.url.path, "/prompt")
             workflow = json.loads(request.content)["prompt"]
+            submitted.update(workflow)
             self.assertEqual(workflow["8"]["inputs"]["steps"], 23)
             self.assertEqual(workflow["5"]["inputs"]["length"], 158)
             self.assertEqual(workflow["15"]["inputs"]["length"], 144)
@@ -81,6 +83,15 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["duration"], 6)
         self.assertEqual(response.json()["id"], TASK_ID)
+        execution = response.json()["execution"]
+        self.assertEqual(execution["generation_frames"], 158)
+        self.assertEqual(execution["output_frames"], 144)
+        self.assertEqual(execution["seed"], submitted["9"]["inputs"]["noise_seed"])
+        self.assertEqual(execution["model"], submitted["1"]["inputs"]["unet_name"])
+        self.assertEqual(execution["sampler"], submitted["7"]["inputs"]["sampler_name"])
+        self.assertEqual(execution["steps"], 23)
+        self.assertNotIn("prompt", execution)
+        self.assertNotIn("content", execution)
 
     def test_invalid_payload_does_not_submit_a_job(self):
         with comfy_client(lambda _: self.fail("Invalid input reached ComfyUI")):

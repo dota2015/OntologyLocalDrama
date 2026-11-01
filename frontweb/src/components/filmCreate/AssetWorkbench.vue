@@ -90,55 +90,7 @@
                     </el-button>
                     <el-button size="small" :loading="addingCharToMaterialId === char.id" :disabled="!hasAssetImage(char)" @click="onAddCharacterToMaterialLibrary(char)">
                       加入素材库
-                    </el-button><el-button
-                      size="small"
-                      :type="char.seedance2_asset?.status === 'active' ? 'success' : 'warning'"
-                      plain
-                      :loading="sd2CertifyingId === char.id"
-                      :disabled="!hasAssetImage(char)"
-                      @click="onSd2PrimaryAction(char)"
-                    >
-                      {{ sd2ActionLabel(char) }}
                     </el-button>
-                  </div>
-
-                  <!-- Seedance 2.0 音色参考（仅该模型有效，其他模型不生效） -->
-                  <div class="sd2-voice-row" style="margin-top:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-                    <template v-if="char.seedance2_voice_asset?.status === 'active'">
-                      <!-- 音色参考已设置：显示试听 + 更换 -->
-                      <el-button
-                        size="small"
-                        type="success"
-                        plain
-                        @click="playSd2Voice(char)"
-                      >
-                        <el-icon><VideoPlay /></el-icon>
-                        <span style="margin-left:4px">试听</span>
-                      </el-button>
-                      <el-button
-                        size="small"
-                        type="primary"
-                        plain
-                        :loading="sd2VoiceUploadingId === char.id"
-                        @click="onSd2VoiceReplace(char)"
-                      >
-                        更换
-                      </el-button>
-                      <span style="font-size:11px;color:#67c23a">音色已设置</span>
-                    </template>
-                    <template v-else>
-                      <el-button
-                        size="small"
-                        :type="char.seedance2_voice_asset?.status === 'stale' ? 'warning' : 'info'"
-                        plain
-                        :loading="sd2VoiceUploadingId === char.id"
-                        @click="onSd2VoicePrimaryAction(char)"
-                      >
-                        {{ sd2VoiceActionLabel(char) }}
-                      </el-button>
-                      <span v-if="char.seedance2_voice_asset?.status === 'stale'" style="font-size:11px;color:#e6a23c">需刷新</span>
-                    </template>
-                    <span style="font-size:10px;color:#909399">仅 Seedance 2.0 模型生效</span>
                   </div>
                   <div v-if="getCharAffectedStoryboards(char.id).length" class="asset-storyboard-link">
                     <span class="asl-label">影响的分镜：</span>
@@ -889,37 +841,6 @@
       </template>
     </el-dialog>
 
-    <el-dialog
-      v-model="showCharSd2Cert"
-      title="SD2 认证详情"
-      width="min(720px, 92vw)"
-      destroy-on-close
-      class="sd2-cert-dialog"
-    >
-      <template v-if="charSd2CertPayload">
-        <el-descriptions :column="1" border size="small" class="sd2-cert-desc">
-          <el-descriptions-item label="素材 ID">
-            <span class="sd2-cert-value">{{ charSd2CertPayload.hub_asset_id || '—' }}</span>
-          </el-descriptions-item>
-          <el-descriptions-item label="asset_url">
-            <code class="sd2-cert-value">{{ charSd2CertPayload.asset_url || '—' }}</code>
-          </el-descriptions-item>
-          <el-descriptions-item label="状态">
-            <span class="sd2-cert-value">{{ charSd2CertPayload.status || '—' }}</span>
-          </el-descriptions-item>
-          <el-descriptions-item label="注册图片 URL">
-            <span class="sd2-cert-value">{{ charSd2CertPayload.source_image_url || '—' }}</span>
-          </el-descriptions-item>
-          <el-descriptions-item v-if="charSd2CertPayload.sd2_provider" label="认证提供方">
-            <span class="sd2-cert-value">{{ charSd2CertPayload.sd2_provider }}</span>
-          </el-descriptions-item>
-        </el-descriptions>
-      </template>
-      <template #footer>
-        <el-button @click="showCharSd2Cert = false">关闭</el-button>
-      </template>
-    </el-dialog>
-
     <!-- 编辑道具弹窗 -->
     <el-dialog v-model="showEditProp" :title="editPropForm?.id ? '编辑道具' : '添加道具'" width="75%" top="4vh" append-to-body class="asset-edit-dialog" @close="onClosePropDialog">
       <el-form v-if="editPropForm" label-width="90px">
@@ -1413,8 +1334,7 @@ async function pollUntilResourceHasImage(checker, maxAttempts = 20, intervalMs =
 
 // ── Composable: Characters ────────────────────────────
 const {
-  charactersGenerating, generatingCharIds, sd2CertifyingId, showCharSd2Cert, charSd2CertPayload,
-  sd2VoiceUploadingId, showCharLibrary, charLibraryList, charLibraryLoading, charLibraryPage,
+  charactersGenerating, generatingCharIds, showCharLibrary, charLibraryList, charLibraryLoading, charLibraryPage,
   charLibraryPageSize, charLibraryTotal, charLibraryKeyword, charLibraryTab, dramaAllCharList,
   dramaAllCharLoading, dramaAllCharPage, dramaAllCharPageSize, dramaAllCharTotal, dramaAllCharKeyword,
   showEditCharLibrary, editCharLibraryForm, editCharacterSaving, editCharacterPromptGenerating,
@@ -1424,8 +1344,7 @@ const {
   editCharLibrarySaving, addingCharToLibraryId, addingCharToMaterialId, addingCharFromLibraryId,
   charRoleLabel, onGenerateCharacters: onGenerateCharactersRaw, openAddCharacter, stopCharacterPromptPoll, editCharacter,
   saveCharRefImageIfAny, submitEditCharacter, doGenerateCharacterPrompt, doExtractCharFromImage,
-  extractIdentityAnchors, clearCharRefImage, onCloseCharDialog, onDeleteCharacter, onGenerateCharacterImage, onSd2CertifyCharacter, onSd2CertifyRefresh, sd2ActionLabel, onSd2PrimaryAction, openCharSd2CertDialog,
-  onSd2VoicePrimaryAction, onSd2VoiceReplace, sd2VoiceActionLabel, playSd2Voice,
+  extractIdentityAnchors, clearCharRefImage, onCloseCharDialog, onDeleteCharacter, onGenerateCharacterImage,
   loadCharLibraryList, debouncedLoadCharLibrary, loadDramaAllCharList, debouncedLoadDramaAllCharList,
   onCharLibraryDialogOpen, onCharLibraryTabChange, isCharAddToEpisodeLoading,
   openEditCharLibrary, submitEditCharLibrary,
@@ -2418,14 +2337,6 @@ defineExpose({
 }
 
 .library-dialog :deep(.el-dialog__body) { padding-top: 8px; }
-.sd2-cert-dialog :deep(.el-dialog__body) { padding-top: 10px; }
-.sd2-cert-desc :deep(.el-descriptions__cell) {
-  padding: 8px 12px;
-}
-.sd2-cert-value {
-  font-size: 12px;
-  word-break: break-all;
-}
 .library-toolbar { margin-bottom: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .library-team-hint { font-size: 12px; color: var(--el-text-color-secondary); }
 .library-team-hint--warn { color: var(--el-color-warning); }

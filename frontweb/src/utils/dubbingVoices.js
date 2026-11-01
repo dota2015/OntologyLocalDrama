@@ -8,6 +8,20 @@ export const EDGE_VOICE_OPTIONS = [
 ]
 
 export const INDEXTTS_VOICE_OPTIONS = [
+  // Edge TTS 高精克隆音色（置顶推荐）
+  { id: 'edge_yunxi.wav', label: '云希 · 男声（Edge克隆/热血青年）' },
+  { id: 'edge_yunjian.wav', label: '云健 · 男声（Edge克隆/成熟稳重）' },
+  { id: 'edge_yunxia.wav', label: '云夏 · 男声（Edge克隆/少年活力）' },
+  { id: 'edge_yunyang.wav', label: '云扬 · 男声（Edge克隆/播报旁白）' },
+  { id: 'edge_xiaoyi.wav', label: '晓伊 · 女声（Edge克隆/温柔自然）' },
+  { id: 'edge_xiaoxiao.wav', label: '晓晓 · 女声（Edge克隆/知性成熟）' },
+  { id: 'edge_xiaobei.wav', label: '晓北 · 东北女声（Edge克隆/幽默方言）' },
+  { id: 'edge_xiaoni.wav', label: '晓妮 · 陕西女声（Edge克隆/明亮方言）' },
+  { id: 'edge_hiumaan.wav', label: '晓曼 · 粤语女声（Edge克隆）' },
+  { id: 'edge_wanlung.wav', label: '云龙 · 粤语男声（Edge克隆）' },
+  { id: 'edge_hsiaochen.wav', label: '晓臻 · 台湾女声（Edge克隆）' },
+  { id: 'edge_yunjhe.wav', label: '云哲 · 台湾男声（Edge克隆）' },
+  // 原生示例音色
   { id: 'voice_01.wav', label: 'IndexTTS 01 · 青年男声' },
   { id: 'voice_02.wav', label: 'IndexTTS 02 · 阳光少年' },
   { id: 'voice_03.wav', label: 'IndexTTS 03 · 稳重男声' },

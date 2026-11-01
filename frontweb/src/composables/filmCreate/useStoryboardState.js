@@ -5,6 +5,7 @@ import { videosAPI } from '@/api/videos'
 import { storyboardsAPI } from '@/api/storyboards'
 import { GEN_RESOURCE } from '@/stores/generationTaskStore'
 import { missingStoryboardImageSlots } from '@/utils/storyboardImageBatch'
+import { resolveStoryboardCharacters } from '@/utils/storyboardCharacters'
 
 const EMPTY_ARR = []
 
@@ -93,9 +94,12 @@ export function useStoryboardState({
 
   function imageUrl(url) {
     if (!url) return ''
-    if (url.startsWith('http')) return url
+    if (/^(https?:|blob:|data:)/i.test(url)) return url
     const base = (baseUrl.value || '').replace(/\/$/, '')
-    return base ? base + '/' + url.replace(/^\//, '') : url
+    if (base) return base + '/' + url.replace(/^\//, '')
+    const trimmed = url.replace(/^\/+/, '')
+    if (trimmed.startsWith('static/')) return '/' + trimmed
+    return '/static/' + trimmed
   }
 
   function assetImageUrl(item) {
@@ -188,20 +192,20 @@ export function useStoryboardState({
   const scriptEstimateVideoDurationHint = computed(() => {
     const e = scriptStoryboardEstimate.value
     if (!e) return ''
-    return `（约 ${e.sec}s）`
+    return `（公式粗估约 ${e.sec}s，仅供参考）`
   })
 
   const scriptEstimateVideoDurationTitle = computed(() => {
     const e = scriptStoryboardEstimate.value
     if (!e) return ''
-    return `按当前剧本文本约 ${e.len} 个字符（含标点；常见汉字在浏览器里一字一算，并非按 UTF-8 字节翻倍）、短剧公式 round(10+(字符/600)×60) 粗估总时长约 ${e.sec} 秒；未填输入框时该值会作为约束传给生成接口。仅供参考`
+    return `按当前剧本文本约 ${e.len} 个字符（含标点；常见汉字在浏览器里一字一算，并非按 UTF-8 字节翻倍）、短剧公式 round(10+(字符/600)×60) 粗估总时长约 ${e.sec} 秒；仅供参考，不会作为生成约束；留空由导演按剧情、对白和动作规划`
   })
 
   const scriptEstimateStoryboardHint = computed(() => {
     const e = scriptStoryboardEstimate.value
     if (!e) return ''
     if (e.range && e.range.min !== e.range.max) {
-      return `（约 ${e.locked} 镜，参考 ${e.range.min}–${e.range.max}）`
+      return `（公式粗估约 ${e.locked} 镜，仅供参考）`
     }
     return `（约 ${e.locked} 镜）`
   })
@@ -209,7 +213,7 @@ export function useStoryboardState({
   const scriptEstimateStoryboardTitle = computed(() => {
     const e = scriptStoryboardEstimate.value
     if (!e) return ''
-    return `按估算时长 ${e.sec}s ÷ 时长范围中值 ${e.clip} 秒四舍五入粗估约 ${e.locked} 镜；旁注区间为 ±1 镜供参考。调整单镜时长范围会同步改变本估算；实际每镜由 AI 分配。`
+    return `按估算时长 ${e.sec}s ÷ 时长范围中值 ${e.clip} 秒四舍五入粗估约 ${e.locked} 镜；这是公式粗估，不参与生成约束。留空由导演按剧情、对白和动作决定数量；手动填写时会检查能否完整表达。`
   })
 
   function scriptTextTrimmedForEstimate() {
@@ -227,17 +231,11 @@ export function useStoryboardState({
   }
 
   function getVideoDurationForApi() {
-    if (userFilledVideoDuration()) return Math.round(Number(videoDuration.value))
-    const len = scriptTextTrimmedForEstimate().length
-    if (len < 1) return undefined
-    return estimateVideoDurationSecFromCharLen(len) ?? undefined
+    return userFilledVideoDuration() ? Number(videoDuration.value) : undefined
   }
 
   function getStoryboardCountForApi() {
-    if (userFilledStoryboardCount()) return Math.round(Number(storyboardCount.value))
-    const sec = getVideoDurationForApi()
-    if (sec == null || !Number.isFinite(sec)) return undefined
-    return shotCountEstimateFromDurationSec(sec).locked
+    return userFilledStoryboardCount() ? Number(storyboardCount.value) : undefined
   }
 
   // ── Mode & Slot Helpers ─────────────────────────────────────────────
@@ -559,8 +557,7 @@ export function useStoryboardState({
   function getSbSelectedCharacters(sbId) {
     const ids = getSbCharacterIds(sbId)
     if (!ids.length) return []
-    const list = store.characters ?? []
-    return ids.map((id) => list.find((c) => Number(c.id) === Number(id))).filter(Boolean)
+    return resolveStoryboardCharacters(ids, store.characters ?? [], store.drama?.characters ?? [])
   }
 
   function getSbSelectedProps(sbId) {

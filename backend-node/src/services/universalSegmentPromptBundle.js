@@ -1,5 +1,5 @@
 /**
- * 全能片段（Omni / Seedance 多图参考）用户消息构建：供「生成」与「润色」共用。
+ * H3 Ref2VA 多图参考用户消息构建：供「生成」与「润色」共用。
  * @param {import('better-sqlite3').Database} db
  * @param {number} sbId
  * @param {object} reqBody 可选 duration、force_without_reference_images（为 true 时不校验场景/角色/道具是否已上图，仍构建提示词）

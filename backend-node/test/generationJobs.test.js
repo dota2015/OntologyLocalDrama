@@ -15,6 +15,8 @@ function setup(t,filename=':memory:') {
     INSERT INTO episodes(id,drama_id,episode_number,script_content) VALUES(7,1,1,'本集剧本'),(8,2,1,'外剧');
     INSERT INTO storyboards(id,episode_id,storyboard_number,duration,description) VALUES(80,7,1,5,'first shot'),(81,7,2,5,'second shot'),(90,8,1,5,'foreign');
     INSERT INTO frame_prompts(storyboard_id,frame_type,prompt) VALUES(80,'first','first prompt'),(80,'last','last prompt'),(81,'first','first prompt'),(81,'last','last prompt');`);
+  const framePlan=JSON.stringify({h3_mode:'fl2va',h3_mode_reason:'精确起幅与落幅',first_frame_policy:'generate_new',first_frame_reason:'锁定开场构图',last_frame_policy:'generate_tail',last_frame_reason:'锁定结尾状态',required_references:[],speech_plan:{audio_references:[]}});
+  db.prepare('UPDATE storyboards SET semantic_slots=? WHERE id IN (80,81)').run(framePlan);
   return db;
 }
 function finishFrame(db,id,slot,taskId) {
@@ -64,6 +66,48 @@ test('only missing tails are submitted and a repeated batch preserves existing f
   assert.deepEqual(calls.map(c=>c.frame_type),['storyboard_last','storyboard_last']);
   jobs.create(db,log,1,{kind:'storyboard_images',episode_id:7,options});await drive(worker);
   assert.equal(calls.length,2);
+});
+
+test('batch reference frames follow the complete Agent H3 plan instead of the project global switch',async t=>{
+  const db=setup(t),calls=[];
+  const refPlan=JSON.stringify({h3_mode:'ref2va',h3_mode_reason:'人物多参考一致性优先',first_frame_policy:'none',first_frame_reason:'人物卡足够',last_frame_policy:'none',last_frame_reason:'自然收束',required_references:[{type:'character',id:10}],speech_plan:{audio_references:[]}});
+  const relayPlan=JSON.stringify({h3_mode:'fl2va',h3_mode_reason:'承接上一镜动作',first_frame_policy:'inherit_tail',first_frame_reason:'使用上一镜真实视频尾帧',last_frame_policy:'none',last_frame_reason:'自然收束',required_references:[],speech_plan:{audio_references:[]}});
+  db.prepare('UPDATE storyboards SET semantic_slots=? WHERE id=80').run(refPlan);
+  db.prepare('UPDATE storyboards SET semantic_slots=? WHERE id=81').run(relayPlan);
+  t.mock.method(require('../src/services/imageService'),'create',()=>{calls.push('unexpected');throw new Error('不应调用图片模型')});
+  const job=jobs.create(db,log,1,{kind:'storyboard_images',episode_id:7,options:{use_first_last:true}});
+  await drive(jobs.createWorker(db,log,createExecutor(db,{},log)),4);
+  assert.equal(jobs.get(db,job.id).status,'completed');
+  assert.deepEqual(calls,[]);
+});
+
+test('manual FL2VA override keeps the Agent proposal but adds the required first-frame job',async t=>{
+  const db=setup(t),calls=[];
+  const refPlan=JSON.stringify({h3_mode:'ref2va',h3_mode_reason:'人物多参考一致性优先',first_frame_policy:'none',first_frame_reason:'人物卡足够',last_frame_policy:'none',last_frame_reason:'自然收束',required_references:[{type:'character',id:10}],speech_plan:{audio_references:[]}});
+  db.prepare('UPDATE storyboards SET semantic_slots=? WHERE id=80').run(refPlan);
+  db.prepare('UPDATE dramas SET metadata=? WHERE id=1').run(JSON.stringify({h3_shots:{80:{engine_mode:'fl2va'}}}));
+  t.mock.method(require('../src/services/imageService'),'create',(database,logger,body)=>{calls.push(body.frame_type);const task=tasks.createTask(database,logger,'image_generation','1');finishFrame(database,80,'first',task.id);return {task_id:task.id}});
+  const job=jobs.create(db,log,1,{kind:'storyboard_images',episode_id:7,options:{storyboard_ids:[80]}});
+  await drive(jobs.createWorker(db,log,createExecutor(db,{},log)),8);
+  assert.equal(jobs.get(db,job.id).status,'completed');
+  assert.deepEqual(calls,['storyboard_first']);
+  const stored=JSON.parse(db.prepare('SELECT semantic_slots FROM storyboards WHERE id=80').get().semantic_slots);
+  assert.equal(stored.h3_mode,'ref2va','人工覆盖不得改写 Agent 原建议');
+});
+
+test('manual first/tail policies compile as one plan without rewriting the Agent proposal',async t=>{
+  const db=setup(t),calls=[];
+  db.prepare('UPDATE dramas SET metadata=? WHERE id=1').run(JSON.stringify({
+    h3_shots:{80:{first_frame_policy:'inherit_tail',last_frame_policy:'none'}},
+  }));
+  t.mock.method(require('../src/services/imageService'),'create',()=>{calls.push('unexpected');throw new Error('不应调用图片模型')});
+  const job=jobs.create(db,log,1,{kind:'storyboard_images',episode_id:7,options:{storyboard_ids:[80]}});
+  await drive(jobs.createWorker(db,log,createExecutor(db,{},log)),4);
+  assert.equal(jobs.get(db,job.id).status,'completed');
+  assert.deepEqual(calls,[],'inherit_tail 与 none 都不调用 Qwen-Image');
+  const stored=JSON.parse(db.prepare('SELECT semantic_slots FROM storyboards WHERE id=80').get().semantic_slots);
+  assert.equal(stored.first_frame_policy,'generate_new');
+  assert.equal(stored.last_frame_policy,'generate_tail');
 });
 
 test('failed firsts block their tails, independent shots still proceed, failures survive refresh',async t=>{

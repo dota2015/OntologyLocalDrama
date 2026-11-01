@@ -15,14 +15,22 @@ function createTask(db, log, taskType, resourceId) {
 function getTask(db, taskId) {
   const row = db.prepare('SELECT * FROM async_tasks WHERE id = ? AND deleted_at IS NULL').get(taskId);
   if (!row) return null;
-  return rowToTask(row);
+  return taskWithCheckpoint(db, row);
 }
 
 function getTasksByResource(db, resourceId) {
   const rows = db.prepare(
     'SELECT * FROM async_tasks WHERE resource_id = ? AND deleted_at IS NULL ORDER BY created_at DESC'
   ).all(resourceId);
-  return rows.map(rowToTask);
+  return rows.map(row => taskWithCheckpoint(db, row));
+}
+
+function taskWithCheckpoint(db, row) {
+  const task = rowToTask(row);
+  if (row.type === 'director_storyboard_generation') {
+    task.checkpoint = require('./directorCheckpoint').summary(db, row.id);
+  }
+  return task;
 }
 
 function updateTaskStatus(db, taskId, status, progress, message) {
@@ -35,13 +43,13 @@ function updateTaskStatus(db, taskId, status, progress, message) {
   ).run(status, progress ?? 0, message || '', now, completedAt, taskId);
 }
 
-function updateTaskError(db, taskId, errMsg) {
+function updateTaskError(db, taskId, errMsg, details = null) {
   const now = new Date().toISOString();
   try {
     db.prepare(
-      `UPDATE async_tasks SET status = 'failed', error = ?, progress = 0, completed_at = ?, updated_at = ?
+      `UPDATE async_tasks SET status = 'failed', error = ?, result = ?, progress = 0, completed_at = ?, updated_at = ?
        WHERE id = ?`
-    ).run(errMsg || '', now, now, taskId);
+    ).run(errMsg || '', details == null ? null : JSON.stringify(details), now, now, taskId);
   } catch (e) {
     if ((e.message || '').includes('error')) {
       updateTaskStatus(db, taskId, 'failed', 0, errMsg || '任务失败');

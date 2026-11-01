@@ -30,7 +30,7 @@ async function extractAllEntitiesFromScript(db, log, cfg, episodeId) {
 
   // 1. 判定时代世界观
   const text = `${drama.title || ''} ${drama.genre || ''} ${drama.style || ''} ${ep.script_content}`.toLowerCase();
-  const isAncient = /古装|古风|武侠|仙侠|大明|大唐|汉服/.test(text);
+  const isAncient = /古装|古风|武侠|仙侠|大明|大唐|汉服|historical|ancient|流放|大靖|朝廷|王爷|皇宫|嫡女|庶女/.test(text);
   const dramaEra = isAncient ? 'ancient' : (/民国/.test(text) ? 'republic_china' : (/赛博|科幻/.test(text) ? 'sci_fi' : 'modern'));
 
   const prompt = `你是一位严谨的影视世界观与本体知识设计师。
@@ -45,7 +45,7 @@ ${ep.script_content}
 1. **角色(characters)**：提取所有有台词或关键动作的具体人物。写出 name, gender(男/女), role(身份如干员/侦察兵/母亲), appearance(具体外貌特征，五官/发型/体型，不少于30字), personality(性格关键词)。
 2. **道具(props)**：提取剧中有物理交互、关键情节作用的物体（如武器、情报箱、药剂包、信件、案几）。
    - **强制要求 physical_scale**：必须给出具体的真实物理尺度（如“长约45cm的手提密码箱”、“高度约75cm的木案”），并标明“次要环境小物件，绝不可夸大夺焦”。
-   - **时代约束**：${isAncient ? '严禁出现任何现代物品！' : '符合时代常理。'}
+   - **时空使用合同**：结合道具实际出现的剧情时空，输出 era_category、era_compatibility 与 era_reason。era_compatibility 只能是 compatible、intentional_cross_era、incompatible、uncertain。穿越、梦境、游戏世界、回忆或刻意反差中的跨时代道具应标记 intentional_cross_era 并说明剧情依据，禁止仅凭全剧题材关键词判定穿帮。
    - **参考图多视图智能规划(reference_image_mode & reason)**：
      - 若为剧情核心主武器、复杂几何结构或需全方位展示的物体，选 "quad_grid"（四视图）；
      - 若为单一视角小件或次要道具，选 "single"（单图，优先保证高清晰度）；
@@ -63,7 +63,7 @@ ${ep.script_content}
     { "name": "...", "gender": "...", "role": "...", "appearance": "...", "personality": "..." }
   ],
   "props": [
-    { "name": "...", "type": "武器/装备/证物/日常", "physical_scale": "长约40cm，次要环境物件", "reference_image_mode": "single或quad_grid", "reference_image_reason": "...", "description": "..." }
+    { "name": "...", "type": "武器/装备/证物/日常", "era_category": "ancient/modern/republic_china/sci_fi/fantasy/universal", "era_compatibility": "compatible/intentional_cross_era/incompatible/uncertain", "era_reason": "结合具体剧情时空说明理由", "physical_scale": "长约40cm，次要环境物件", "reference_image_mode": "single或quad_grid", "reference_image_reason": "...", "description": "..." }
   ],
   "scenes": [
     { "location": "...", "time": "...", "landmarks": ["doorway", "cover"], "lighting_style": "dramatic", "reference_image_mode": "single或quad_grid", "reference_image_reason": "..." }
@@ -78,7 +78,7 @@ ${ep.script_content}
   const rawProps = Array.isArray(parsed?.props) ? parsed.props : [];
   const rawScenes = Array.isArray(parsed?.scenes) ? parsed.scenes : [];
 
-  // 2. 运行道具时代约束硬门禁
+  // 2. 运行道具结构化时空合同门禁；自然语言关键词不参与硬阻断。
   const propViolations = checkPropEraAndScale(rawProps, dramaEra);
   const fatalErrors = propViolations.filter(v => v.severity === 'error');
   if (fatalErrors.length > 0) {
@@ -96,12 +96,16 @@ ${ep.script_content}
     if (!c.name) continue;
     let exist = db.prepare('SELECT * FROM characters WHERE drama_id = ? AND name = ? AND deleted_at IS NULL').get(ep.drama_id, c.name);
     if (!exist) {
+      const desc = [c.gender ? `性别：${c.gender}` : '', c.description || c.appearance || ''].filter(Boolean).join('；');
       const ins = db.prepare(`
-        INSERT INTO characters (drama_id, name, gender, role, appearance, description, personality, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(ep.drama_id, c.name, c.gender || '未知', c.role || '', c.appearance || '', c.appearance || '', c.personality || '', now, now);
+        INSERT INTO characters (drama_id, name, role, appearance, description, personality, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(ep.drama_id, c.name, c.role || '', c.appearance || '', desc, c.personality || '', now, now);
       exist = db.prepare('SELECT * FROM characters WHERE id = ?').get(ins.lastInsertRowid);
     }
+    try {
+      db.prepare('INSERT OR IGNORE INTO episode_characters (episode_id, character_id) VALUES (?, ?)').run(epId, exist.id);
+    } catch (_) {}
     savedCharacters.push(exist);
   }
 
@@ -121,6 +125,10 @@ ${ep.script_content}
     } else {
       db.prepare(`UPDATE scenes SET reference_image_recommendation = ?, reference_image_reason = ? WHERE id = ?`).run(mode, reason, exist.id);
     }
+    try {
+      const episodeSceneService = require('../services/episodeSceneService');
+      episodeSceneService.add(db, ep.drama_id, epId, exist.id);
+    } catch (_) {}
     savedScenes.push(exist);
   }
 
@@ -133,12 +141,12 @@ ${ep.script_content}
     if (!exist) {
       const promptText = `特写单体道具：${p.name}，${p.physical_scale || '正常尺寸'}，纯色无杂乱背景，高清真实摄影`;
       const ins = db.prepare(`
-        INSERT INTO props (drama_id, name, type, description, physical_scale, prompt, image_prompt, reference_image_mode, reference_image_recommendation, reference_image_reason, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(ep.drama_id, p.name, p.type || '日常用品', p.description || '', p.physical_scale || '正常尺寸', promptText, promptText, mode, mode, reason, now, now);
+        INSERT INTO props (drama_id, name, type, description, era_category, era_compatibility, era_reason, physical_scale, prompt, image_prompt, reference_image_mode, reference_image_recommendation, reference_image_reason, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(ep.drama_id, p.name, p.type || '日常用品', p.description || '', p.era_category || 'universal', p.era_compatibility || 'uncertain', p.era_reason || '', p.physical_scale || '正常尺寸', promptText, promptText, mode, mode, reason, now, now);
       exist = db.prepare('SELECT * FROM props WHERE id = ?').get(ins.lastInsertRowid);
     } else {
-      db.prepare(`UPDATE props SET physical_scale = COALESCE(NULLIF(physical_scale, ''), ?), reference_image_recommendation = ?, reference_image_reason = ? WHERE id = ?`).run(p.physical_scale || '正常尺寸', mode, reason, exist.id);
+      db.prepare(`UPDATE props SET physical_scale = COALESCE(NULLIF(physical_scale, ''), ?), era_category = ?, era_compatibility = ?, era_reason = ?, reference_image_recommendation = ?, reference_image_reason = ? WHERE id = ?`).run(p.physical_scale || '正常尺寸', p.era_category || 'universal', p.era_compatibility || 'uncertain', p.era_reason || '', mode, reason, exist.id);
     }
     savedProps.push(exist);
   }
@@ -243,7 +251,7 @@ async function autocompleteEntityFromScript(db, log, cfg, { dramaId, episodeId, 
 
   // 判定世界观时代
   const text = `${drama.title || ''} ${drama.genre || ''} ${drama.style || ''} ${scriptContent}`.toLowerCase();
-  const isAncient = /古装|古风|武侠|仙侠|大明|大唐|汉服/.test(text);
+  const isAncient = /古装|古风|武侠|仙侠|大明|大唐|汉服|historical|ancient|流放|大靖|朝廷|王爷|皇宫|嫡女|庶女/.test(text);
   const dramaEra = isAncient ? 'ancient' : (/民国/.test(text) ? 'republic_china' : (/赛博|科幻/.test(text) ? 'sci_fi' : 'modern'));
 
   let systemPrompt = '';
@@ -255,6 +263,7 @@ async function autocompleteEntityFromScript(db, log, cfg, { dramaId, episodeId, 
 【核心法则】：
 1. 必须强制给出具体的真实物理尺度 physical_scale（如“长约18cm单兵佩戴护目镜，贴合面部轮廓”、“长约45cm手提密码箱”），并注明为次要环境物件，严禁生图时夸大夺焦；
 2. 时代硬性约束：${isAncient ? '古风世界观：严禁出现手机、电脑、现代工业品！' : '符合剧本时代背景与现实物理常识'}；
+   对穿越、梦境、游戏世界、回忆和剧情刻意跨时代元素，不得判为普通穿帮，必须用 intentional_cross_era 标记并说明依据；
 3. 参考图模式 reference_image_mode：若为主武器或复杂结构选 "quad_grid"，单一视角物件选 "single"。`;
 
     userPrompt = `【剧名】：${drama.title || '短剧'}（时代：${dramaEra}，风格：${drama.style || '写实'}）
@@ -268,6 +277,9 @@ ${hint ? `【补充线索/用户备注】：${hint}` : ''}
 {
   "name": "${name}",
   "type": "武器/装备/证物/日常/其他",
+  "era_category": "ancient/modern/republic_china/sci_fi/fantasy/universal",
+  "era_compatibility": "compatible/intentional_cross_era/incompatible/uncertain",
+  "era_reason": "结合该道具实际出现的剧情时空说明理由",
   "physical_scale": "真实物理尺寸描述（如：长约18cm单兵佩戴护目镜，紧密贴合面部，次要战术物件）",
   "description": "材质、细节特征与在剧中的用途描述（不少于40字）",
   "prompt": "特写单体道具：${name}，[材质质感]，[真实光照与物理细节]，纯色干净背景，超高清摄影，8k uhd",

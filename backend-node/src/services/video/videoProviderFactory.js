@@ -3,19 +3,12 @@
  * 遵循工厂模式 (Factory Pattern)，根据 protocol/provider/model 动态解析并返回对应的 Provider Strategy 实例。
  */
 
-const { AgnesVideoProvider } = require('./providers/agnesProvider');
 const { MinimaxH3VideoProvider } = require('./providers/minimaxH3Provider');
-const { VolcengineVideoProvider } = require('./providers/volcengineProvider');
-const BaseVideoProvider = require('./baseProvider');
 
 class VideoProviderFactory {
   static providers = [
-    new AgnesVideoProvider(),
     new MinimaxH3VideoProvider(),
-    new VolcengineVideoProvider(),
   ];
-
-  static defaultProvider = new BaseVideoProvider('generic');
 
   /**
    * 解析匹配的视频提供商策略
@@ -33,7 +26,7 @@ class VideoProviderFactory {
         return p;
       }
     }
-    return this.defaultProvider;
+    return null;
   }
 }
 

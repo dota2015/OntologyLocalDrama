@@ -14,6 +14,9 @@ function listByDramaId(db, dramaId) {
     name: r.name,
     type: r.type,
     description: r.description,
+    era_category: r.era_category || null,
+    era_compatibility: r.era_compatibility || null,
+    era_reason: r.era_reason || null,
     physical_scale: r.physical_scale || null,
     prompt: r.prompt,
     negative_prompt: r.negative_prompt || null,
@@ -30,6 +33,14 @@ function hasPhysicalScaleColumn(db) {
   try {
     const cols = db.prepare('PRAGMA table_info(props)').all();
     return cols.some((c) => c.name === 'physical_scale');
+  } catch (_) {
+    return false;
+  }
+}
+
+function hasPropColumn(db, name) {
+  try {
+    return db.prepare('PRAGMA table_info(props)').all().some((c) => c.name === name);
   } catch (_) {
     return false;
   }
@@ -75,6 +86,14 @@ function create(db, log, req) {
       req.local_path ?? null,
       now,
       now
+    );
+  }
+  if (hasPropColumn(db, 'era_compatibility')) {
+    db.prepare('UPDATE props SET era_category = ?, era_compatibility = ?, era_reason = ? WHERE id = ?').run(
+      req.era_category ?? null,
+      req.era_compatibility ?? null,
+      req.era_reason ?? null,
+      info.lastInsertRowid
     );
   }
   log.info('Prop created', { prop_id: info.lastInsertRowid });
@@ -139,6 +158,9 @@ function getById(db, id) {
     name: r.name,
     type: r.type,
     description: r.description,
+    era_category: r.era_category || null,
+    era_compatibility: r.era_compatibility || null,
+    era_reason: r.era_reason || null,
     physical_scale: r.physical_scale || null,
     prompt: r.prompt,
     negative_prompt: r.negative_prompt || null,
@@ -161,6 +183,9 @@ function update(db, log, id, updates) {
   if (updates.reference_image_mode !== undefined) { set.push('reference_image_mode = ?'); params.push(updates.reference_image_mode); }
   if (updates.name != null) { set.push('name = ?'); params.push(updates.name); }
   if (updates.type != null) { set.push('type = ?'); params.push(updates.type); }
+  if (updates.era_category !== undefined && hasPropColumn(db, 'era_category')) { set.push('era_category = ?'); params.push(updates.era_category); }
+  if (updates.era_compatibility !== undefined && hasPropColumn(db, 'era_compatibility')) { set.push('era_compatibility = ?'); params.push(updates.era_compatibility); }
+  if (updates.era_reason !== undefined && hasPropColumn(db, 'era_reason')) { set.push('era_reason = ?'); params.push(updates.era_reason); }
   if (updates.physical_scale !== undefined && hasPhysicalScaleColumn(db)) { set.push('physical_scale = ?'); params.push(updates.physical_scale); }
   if (updates.description != null) { set.push('description = ?'); params.push(updates.description); }
   if (updates.prompt != null) { set.push('prompt = ?'); params.push(updates.prompt); }

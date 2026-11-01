@@ -3,8 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   canUseUniversalOmniVideoApi,
-  isSeedance2VideoModel,
-  parseAiConfigSettings,
+  isH3VideoAiConfig,
   videoModelNameFromAiConfig,
 } from '../src/utils/videoOmniSupport.js'
 
@@ -15,71 +14,20 @@ test('videoModelNameFromAiConfig prefers default_model then first model', () => 
   assert.equal(videoModelNameFromAiConfig(null), '')
 })
 
-test('parseAiConfigSettings handles object, JSON string and invalid JSON', () => {
-  assert.deepEqual(parseAiConfigSettings({ settings: { supports_universal_omni: true } }), {
-    supports_universal_omni: true,
-  })
-  assert.deepEqual(parseAiConfigSettings({ settings: '{"supports_universal_omni":1}' }), {
-    supports_universal_omni: 1,
-  })
-  assert.deepEqual(parseAiConfigSettings({ settings: 'not-json' }), {})
-  assert.deepEqual(parseAiConfigSettings({}), {})
-})
-
-test('isSeedance2VideoModel recognizes 2.x official names and gateway aliases', () => {
-  assert.equal(isSeedance2VideoModel('Doubao-Seedance-2.5 260628'), true)
-  assert.equal(isSeedance2VideoModel('doubao-seedance-2-0-250528'), true)
-  assert.equal(isSeedance2VideoModel('jimeng-video-seedance-2.0'), true)
-  assert.equal(isSeedance2VideoModel('mingiz-sd2'), true)
-  assert.equal(isSeedance2VideoModel(''), false)
-})
-
-test('isSeedance2VideoModel rejects 1.x models', () => {
-  assert.equal(isSeedance2VideoModel('doubao-seedance-1-5-pro'), false)
-  assert.equal(isSeedance2VideoModel('doubao-seedance-1-0-pro-keep'), false)
-})
-
-test('Seedance 2.x on classic volcengine protocol is omni-capable (issue #49)', () => {
-  const cfg = {
-    provider: 'volcengine',
-    api_protocol: 'volcengine',
-    model: ['doubao-seedance-2.5-260628'],
-    default_model: 'doubao-seedance-2.5-260628',
-  }
-  assert.equal(canUseUniversalOmniVideoApi(cfg), true)
-})
-
-test('kling_omni / volcengine_omni / agnes / cheap_seedance2 stay omni-capable', () => {
-  assert.equal(canUseUniversalOmniVideoApi({ api_protocol: 'kling_omni' }), true)
-  assert.equal(canUseUniversalOmniVideoApi({ api_protocol: 'volcengine_omni' }), true)
-  assert.equal(canUseUniversalOmniVideoApi({ provider: 'agnes', model: 'agnes-video-v2.0' }), true)
-  assert.equal(
-    canUseUniversalOmniVideoApi({ provider: 'cheap_seedance2', model: 'wb-seedance-2-fast' }),
-    true
-  )
-})
-
-test('explicit supports_universal_omni setting still enables omni', () => {
-  const cfg = { provider: 'openai', model: 'sora-2', settings: '{"supports_universal_omni":true}' }
-  assert.equal(canUseUniversalOmniVideoApi(cfg), true)
-})
-
-test('H3 supports universal image references, while Hailuo does not inherit that capability', () => {
+test('H3 is the only universal multi-reference video integration', () => {
   assert.equal(canUseUniversalOmniVideoApi({ api_protocol: 'minimax_h3' }), true)
-  assert.equal(canUseUniversalOmniVideoApi({ model: 'MiniMax-H3', api_protocol: 'openai' }), true)
   assert.equal(canUseUniversalOmniVideoApi({ provider: 'minimax_h3' }), true)
-  assert.equal(canUseUniversalOmniVideoApi({ model: 'MiniMax-Hailuo-2.3' }), false)
+  assert.equal(canUseUniversalOmniVideoApi({ api_protocol: 'openai', model: 'MiniMax-H3' }), true)
+
+  assert.equal(canUseUniversalOmniVideoApi({ api_protocol: 'comfyui_wan22' }), false)
+  assert.equal(canUseUniversalOmniVideoApi({ api_protocol: 'volcengine_omni' }), false)
+  assert.equal(canUseUniversalOmniVideoApi({ provider: 'agnes', model: 'agnes-video-2.5' }), false)
+  assert.equal(canUseUniversalOmniVideoApi(null), false)
 })
 
-test('non omni-capable models without opt-in are rejected', () => {
-  assert.equal(canUseUniversalOmniVideoApi({ provider: 'openai', model: 'sora-2' }), false)
-  assert.equal(
-    canUseUniversalOmniVideoApi({
-      provider: 'volcengine',
-      api_protocol: 'volcengine',
-      model: 'doubao-seedance-1-5-pro',
-    }),
-    false
-  )
-  assert.equal(canUseUniversalOmniVideoApi(null), false)
+test('H3 AI config detection is reusable outside universal creation mode', () => {
+  assert.equal(isH3VideoAiConfig({ api_protocol: 'minimax_h3' }), true)
+  assert.equal(isH3VideoAiConfig({ provider: 'openai', model: ['MiniMax-H3'] }), true)
+  assert.equal(isH3VideoAiConfig(null, 'minimax_h3'), true)
+  assert.equal(isH3VideoAiConfig({ api_protocol: 'comfyui_wan22', model: ['Wan2.2'] }), false)
 })

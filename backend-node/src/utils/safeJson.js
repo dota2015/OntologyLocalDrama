@@ -172,12 +172,30 @@ function fixUnquotedStringValues(str) {
 }
 
 /**
+ * 规范化中文剧本中的对白引号：
+ * AI 在中文剧本中极其常见地输出 `角色名："对白内容"`（全角冒号 + 英文直双引号），
+ * 这会与外层 JSON 字符串的引号边界产生严重冲突。
+ * 全角冒号 `：` 在 JSON 中绝不可能是属性键值分隔符，因此 `：\s*"([^"\r\n]+)"`
+ * 100% 确定是对白内容，将其规范化为符合中文排版习惯的 `：“$1”`，彻底消除语法冲突。
+ */
+function normalizeDialogueQuotes(str) {
+  if (!str || typeof str !== 'string') return str;
+  return str.replace(/：\s*"([^"\r\n]+)"/g, '：“$1”');
+}
+
+/**
  * @param {string} aiResponse
  * @param {object|Array} v - 默认值类型（用于判断期望返回类型）
  * @param {object} [log] - 可选 logger，有 warn/info 方法；不传则用 console.warn
  * @param {object} [outMeta] - 可选输出元数据对象，解析后会写入 { truncated: boolean }
  */
 function safeParseAIJSON(aiResponse, v, log, outMeta) {
+  // 容错：允许调用者以 safeParseAIJSON(aiResponse, log) 形式调用
+  if (v && (typeof v.warn === 'function' || typeof v.info === 'function') && log === undefined) {
+    log = v;
+    v = null;
+  }
+
   const _warn = (msg, extra) => {
     if (log && typeof log.warn === 'function') {
       log.warn(msg, extra);
@@ -198,16 +216,15 @@ function safeParseAIJSON(aiResponse, v, log, outMeta) {
     .replace(/^```\s*/gm, '')
     .replace(/```\s*$/gm, '')
     .trim();
-  // 预处理：转义字符串值内部的原始换行/制表符（中文模型常见，会导致 "Unterminated string"）
-  cleaned = escapeNewlinesInStrings(cleaned);
+  // 注意：不要在初始阶段无条件执行 escapeNewlinesInStrings！
+  // 中文对白中极易出现 ASCII 英文双引号（如 苏砚："姐姐..."），会导致状态机引号状态反转，
+  // 进而将整个 JSON 的结构换行符破坏，使原本完好的 JSON 变成无法修复的语法错误。
   const jsonStr = extractJsonCandidate(cleaned);
   if (!jsonStr) {
     throw new Error('响应中未找到有效的JSON对象或数组');
   }
 
-  // 优先尝试完整解析（正常路径，无破损）
-  try {
-    const parsed = JSON.parse(jsonStr);
+  const _applyReturn = (parsed) => {
     if (Array.isArray(v)) {
       v.length = 0;
       v.push(...(Array.isArray(parsed) ? parsed : []));
@@ -215,8 +232,61 @@ function safeParseAIJSON(aiResponse, v, log, outMeta) {
       Object.assign(v, parsed);
     }
     return parsed;
+  };
+
+  // 1. 优先尝试完整解析（正常路径，无破损）
+  try {
+    const parsed = JSON.parse(jsonStr);
+    return _applyReturn(parsed);
   } catch (err) {
     _warn('AI JSON 破损，尝试修复', { original_error: err.message, text_length: jsonStr.length, text_head: jsonStr.slice(0, 120000) });
+
+    // 判断外层容器是否已闭合（以 ] 或 } 结尾，忽略空白）
+    const isClosed = /[\}\]]\s*$/.test(jsonStr);
+
+    // 2. 如果容器已经闭合（说明并非被 max_tokens 物理截断），优先使用 jsonrepair 完整语法修复
+    // jsonrepair 原生能正确处理对白内的未转义引号、裸换行、尾逗号、Python 布尔值等，且绝不会丢失数据项
+    if (isClosed && _jsonrepair) {
+      try {
+        const fixed = _jsonrepair(jsonStr);
+        const parsed = JSON.parse(fixed);
+        _warn('AI JSON 修复成功（策略：闭合容器 jsonrepair 完整修复）', {
+          rescued_items: Array.isArray(parsed) ? parsed.length : 1,
+          original_len: jsonStr.length,
+          fixed_len: fixed.length,
+        });
+        return _applyReturn(parsed);
+      } catch (_) {}
+
+      // 对白引号规范化 + jsonrepair
+      try {
+        const norm = normalizeDialogueQuotes(jsonStr);
+        if (norm !== jsonStr) {
+          const fixed = _jsonrepair(norm);
+          const parsed = JSON.parse(fixed);
+          _warn('AI JSON 修复成功（策略：规范化对白引号 + jsonrepair）', {
+            rescued_items: Array.isArray(parsed) ? parsed.length : 1,
+            original_len: jsonStr.length,
+            fixed_len: fixed.length,
+          });
+          return _applyReturn(parsed);
+        }
+      } catch (_) {}
+
+      try {
+        const preFixed = fixUnquotedStringValues(jsonStr);
+        if (preFixed !== jsonStr) {
+          const fixed2 = _jsonrepair(preFixed);
+          const parsed = JSON.parse(fixed2);
+          _warn('AI JSON 修复成功（策略：闭合容器预处理裸值 + jsonrepair）', {
+            rescued_items: Array.isArray(parsed) ? parsed.length : 1,
+            original_len: jsonStr.length,
+            fixed_len: fixed2.length,
+          });
+          return _applyReturn(parsed);
+        }
+      } catch (_) {}
+    }
 
     // 策略 0：AI 将数组包进对象（如 {"storyboards":[...]}），且因截断导致外层对象不完整。
     // 提取内部数组候选串，后续所有截断修复策略对它重新执行一遍。
@@ -231,8 +301,7 @@ function safeParseAIJSON(aiResponse, v, log, outMeta) {
           if (items && items.length > 0) {
             _warn('AI JSON 修复成功（策略0a：解包对象+截断修复）', { rescued_items: items.length, original_len: jsonStr.length });
             if (outMeta) outMeta.truncated = true;
-            if (Array.isArray(v)) { v.length = 0; v.push(...items); }
-            return items;
+            return _applyReturn(items);
           }
         } catch (_) {}
         // 0b：解包 + 截断修复 + jsonrepair
@@ -244,8 +313,7 @@ function safeParseAIJSON(aiResponse, v, log, outMeta) {
             if (items && items.length > 0) {
               _warn('AI JSON 修复成功（策略0b：解包对象+截断修复+jsonrepair）', { rescued_items: items.length });
               if (outMeta) outMeta.truncated = true;
-              if (Array.isArray(v)) { v.length = 0; v.push(...items); }
-              return items;
+              return _applyReturn(items);
             }
           } catch (_) {}
         }
@@ -259,8 +327,7 @@ function safeParseAIJSON(aiResponse, v, log, outMeta) {
           if (items && items.length > 0) {
             _warn('AI JSON 修复成功（策略0c：解包对象+激进截断）', { rescued_items: items.length });
             if (outMeta) outMeta.truncated = true;
-            if (Array.isArray(v)) { v.length = 0; v.push(...items); }
-            return items;
+            return _applyReturn(items);
           }
         } catch (_) {}
         // 0d：激进截断 + jsonrepair
@@ -272,8 +339,7 @@ function safeParseAIJSON(aiResponse, v, log, outMeta) {
             if (items && items.length > 0) {
               _warn('AI JSON 修复成功（策略0d：解包对象+激进截断+jsonrepair）', { rescued_items: items.length });
               if (outMeta) outMeta.truncated = true;
-              if (Array.isArray(v)) { v.length = 0; v.push(...items); }
-              return items;
+              return _applyReturn(items);
             }
           } catch (_) {}
         }
@@ -293,13 +359,7 @@ function safeParseAIJSON(aiResponse, v, log, outMeta) {
           repaired_len: repaired.length,
         });
         if (outMeta) outMeta.truncated = true;
-        if (Array.isArray(v)) {
-          v.length = 0;
-          v.push(...(Array.isArray(parsed) ? parsed : []));
-        } else if (v && typeof v === 'object') {
-          Object.assign(v, parsed);
-        }
-        return parsed;
+        return _applyReturn(parsed);
       } catch (_) {}
 
       // 策略 1b：截断结果本身有小问题（如末尾字段含非法字符），再用 jsonrepair 做最终修复
@@ -314,13 +374,7 @@ function safeParseAIJSON(aiResponse, v, log, outMeta) {
             fixed_len: fixed.length,
           });
           if (outMeta) outMeta.truncated = true;
-          if (Array.isArray(v)) {
-            v.length = 0;
-            v.push(...(Array.isArray(parsed) ? parsed : []));
-          } else if (v && typeof v === 'object') {
-            Object.assign(v, parsed);
-          }
-          return parsed;
+          return _applyReturn(parsed);
         } catch (_) {}
       }
     }
@@ -339,13 +393,7 @@ function safeParseAIJSON(aiResponse, v, log, outMeta) {
             roughcut_len: roughCut.length,
           });
           if (outMeta) outMeta.truncated = true;
-          if (Array.isArray(v)) {
-            v.length = 0;
-            v.push(...parsed);
-          } else if (v && typeof v === 'object') {
-            Object.assign(v, parsed);
-          }
-          return parsed;
+          return _applyReturn(parsed);
         }
       } catch (_) {}
 
@@ -362,57 +410,56 @@ function safeParseAIJSON(aiResponse, v, log, outMeta) {
               fixed_len: fixed.length,
             });
             if (outMeta) outMeta.truncated = true;
-            if (Array.isArray(v)) {
-              v.length = 0;
-              v.push(...parsed);
-            } else if (v && typeof v === 'object') {
-              Object.assign(v, parsed);
-            }
-            return parsed;
+            return _applyReturn(parsed);
           }
         } catch (_) {}
       }
     }
 
-    // 修复策略 2：jsonrepair 深度修复（对完整破损字符串全量修复）
+    // 修复策略 2：jsonrepair 深度兜底修复（针对未闭合或其它策略未命中的情况）
     if (_jsonrepair) {
       // 策略 2a：直接 jsonrepair
       try {
         const fixed = _jsonrepair(jsonStr);
         const parsed = JSON.parse(fixed);
-        _warn('AI JSON 修复成功（jsonrepair）', {
+        _warn('AI JSON 修复成功（jsonrepair兜底）', {
           rescued_items: Array.isArray(parsed) ? parsed.length : 1,
           original_len: jsonStr.length,
           fixed_len: fixed.length,
         });
-        if (Array.isArray(v)) {
-          v.length = 0;
-          v.push(...(Array.isArray(parsed) ? parsed : []));
-        } else if (v && typeof v === 'object') {
-          Object.assign(v, parsed);
-        }
-        return parsed;
+        if (!isClosed && outMeta) outMeta.truncated = true;
+        return _applyReturn(parsed);
       } catch (_) {}
 
       // 策略 2b：预处理"有结尾引号但缺开始引号"的裸值，再交给 jsonrepair
-      // 场景：AI 生成 "key": 中文值"  而非  "key": "中文值"
       try {
         const preFixed = fixUnquotedStringValues(jsonStr);
         if (preFixed !== jsonStr) {
           const fixed2 = _jsonrepair(preFixed);
           const parsed = JSON.parse(fixed2);
-          _warn('AI JSON 修复成功（预处理裸值 + jsonrepair）', {
+          _warn('AI JSON 修复成功（预处理裸值 + jsonrepair兜底）', {
             rescued_items: Array.isArray(parsed) ? parsed.length : 1,
             original_len: jsonStr.length,
             fixed_len: fixed2.length,
           });
-          if (Array.isArray(v)) {
-            v.length = 0;
-            v.push(...(Array.isArray(parsed) ? parsed : []));
-          } else if (v && typeof v === 'object') {
-            Object.assign(v, parsed);
-          }
-          return parsed;
+          if (!isClosed && outMeta) outMeta.truncated = true;
+          return _applyReturn(parsed);
+        }
+      } catch (_) {}
+
+      // 策略 2c：若包含原始换行且前面均失败，最后尝试转义换行后再交给 jsonrepair
+      try {
+        const escapedStr = escapeNewlinesInStrings(jsonStr);
+        if (escapedStr !== jsonStr) {
+          const fixed3 = _jsonrepair(escapedStr);
+          const parsed = JSON.parse(fixed3);
+          _warn('AI JSON 修复成功（转义换行 + jsonrepair兜底）', {
+            rescued_items: Array.isArray(parsed) ? parsed.length : 1,
+            original_len: jsonStr.length,
+            fixed_len: fixed3.length,
+          });
+          if (!isClosed && outMeta) outMeta.truncated = true;
+          return _applyReturn(parsed);
         }
       } catch (_) {}
     }
@@ -438,4 +485,4 @@ function extractFirstArray(parsed) {
   return null;
 }
 
-module.exports = { safeParseAIJSON, extractJsonCandidate, repairTruncatedJsonArray, repairByLastBrace, extractFirstArray, escapeNewlinesInStrings, extractWrappedArrayStr, _jsonrepair };
+module.exports = { safeParseAIJSON, extractJsonCandidate, repairTruncatedJsonArray, repairByLastBrace, extractFirstArray, escapeNewlinesInStrings, normalizeDialogueQuotes, extractWrappedArrayStr, _jsonrepair };

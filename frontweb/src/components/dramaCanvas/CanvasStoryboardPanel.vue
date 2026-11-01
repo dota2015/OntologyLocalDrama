@@ -109,15 +109,6 @@
             placeholder="全能模式片段描述"
           />
         </el-form-item>
-        <el-form-item label="视频词">
-          <el-input
-            v-model="form.video_prompt"
-            type="textarea"
-            :rows="2"
-            resize="vertical"
-            placeholder="生视频提示词"
-          />
-        </el-form-item>
       </template>
       <template v-else>
         <div class="text-row-2">
@@ -147,15 +138,6 @@
             :rows="2"
             resize="vertical"
             placeholder="图片提示词"
-          />
-        </el-form-item>
-        <el-form-item label="视频词">
-          <el-input
-            v-model="form.video_prompt"
-            type="textarea"
-            :rows="2"
-            resize="vertical"
-            placeholder="视频提示词"
           />
         </el-form-item>
       </template>
@@ -206,7 +188,6 @@ const form = reactive({
   action: '',
   dialogue: '',
   image_prompt: '',
-  video_prompt: '',
   universal_segment_text: '',
   shot_type: '',
   duration: 5,
@@ -230,7 +211,6 @@ function syncForm(sb) {
   form.action = sb?.action || ''
   form.dialogue = sb?.dialogue || ''
   form.image_prompt = sb?.image_prompt || sb?.polished_prompt || ''
-  form.video_prompt = sb?.video_prompt || ''
   form.universal_segment_text = sb?.universal_segment_text || ''
   form.shot_type = sb?.shot_type || ''
   form.duration = sb?.duration != null ? Number(sb.duration) : 5
@@ -298,7 +278,6 @@ async function persistForm(silent = false) {
     ? {
         title: form.title.trim() || null,
         universal_segment_text: form.universal_segment_text.trim() || null,
-        video_prompt: form.video_prompt.trim() || null,
         shot_type: form.shot_type.trim() || null,
         duration: form.duration ?? 5,
       }
@@ -307,7 +286,6 @@ async function persistForm(silent = false) {
         action: form.action.trim() || null,
         dialogue: form.dialogue.trim() || null,
         image_prompt: form.image_prompt.trim() || null,
-        video_prompt: form.video_prompt.trim() || null,
         shot_type: form.shot_type.trim() || null,
         duration: form.duration ?? 5,
       }

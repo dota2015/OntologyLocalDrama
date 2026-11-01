@@ -4,7 +4,6 @@
  */
 
 const BaseInvariantRule = require('./rules/baseRule');
-const MovementDynamismRule = require('./rules/movementDynamismRule');
 const AudioContractRule = require('./rules/audioContractRule');
 const SpeechTimingRule = require('./rules/speechTimingRule');
 const { VisualSlotCompletenessRule } = require('./rules/visualSlotCompletenessRule');
@@ -15,6 +14,9 @@ const { PhysicalDescriptionRule } = require('./rules/physicalDescriptionRule');
 const SpatialContinuityRule = require('./rules/spatialContinuityRule');
 const { PropEraAndScaleRule } = require('./rules/propEraAndScaleRule');
 const ObsoleteAssetsRule = require('./rules/obsoleteAssetsRule');
+const SceneCoPresenceRule = require('./rules/sceneCoPresenceRule');
+const ShotTransitionContinuityRule = require('./rules/shotTransitionContinuityRule');
+const { CrossSlotInvariantsRule } = require('./rules/crossSlotRules');
 const { CAMERA_MOVEMENTS } = require('./schema');
 
 class InvariantRuleEngine {
@@ -25,7 +27,6 @@ class InvariantRuleEngine {
   }
 
   _registerDefaultRules() {
-    this.registerRule(new MovementDynamismRule());
     this.registerRule(new AudioContractRule());
     this.registerRule(new SpeechTimingRule());
     this.registerRule(new VisualSlotCompletenessRule());
@@ -36,6 +37,9 @@ class InvariantRuleEngine {
     this.registerRule(new SpatialContinuityRule());
     this.registerRule(new PropEraAndScaleRule());
     this.registerRule(new ObsoleteAssetsRule());
+    this.registerRule(new SceneCoPresenceRule());
+    this.registerRule(new ShotTransitionContinuityRule());
+    this.registerRule(new CrossSlotInvariantsRule());
   }
 
   /**

@@ -96,7 +96,7 @@ class VisualSlotCompletenessRule extends BaseInvariantRule {
         try { lastVisuals = JSON.parse(lastVisuals); } catch (_) { lastVisuals = []; }
       }
       if (Array.isArray(lastVisuals) && lastVisuals.length > 0) {
-        const lastViolations = validateCharacterVisualSlots(shot, lastVisuals);
+        const lastViolations = validateCharacterVisualSlots(shot, lastVisuals, 'last_frame_visuals');
         violations.push(...lastViolations);
       }
     });

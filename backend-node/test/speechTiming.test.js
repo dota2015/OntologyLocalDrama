@@ -20,12 +20,37 @@ const pieces = [
 ];
 const h3 = { api_protocol: 'minimax_h3', model: ['MiniMax-H3'], default_model: 'MiniMax-H3' };
 
+test('director drafts and saved video submissions share the natural speech budget', t => {
+  const { checkSpeechTiming } = require('../src/ontology/invariants');
+  const db = videoDb(t);
+  const line = '露娜：“我们不是输在枪法，而是输在你冲进去之前，根本没想过后果。”';
+  db.prepare('UPDATE storyboards SET dialogue=?, duration=6 WHERE id=1').run(line);
+  const draft = { shot_number: 2, duration: 6, dialogue: line };
+  const violation = checkSpeechTiming([draft])[0];
+  assert.equal(violation.rule, 'INVARIANT_SPEECH_OVER_BUDGET');
+  assert.deepEqual(violation.assessment, validateVideoSpeech(db, { storyboard_id: 1 }, h3).assessment);
+  assert.equal(violation.assessment.requiredSeconds, 7.8);
+  assert.equal(checkSpeechTiming([{ ...draft, duration: 8 }]).length, 0);
+  assert.equal(checkSpeechTiming([draft], { deliveryOptions: { speechRate: 1.44 } }).length, 1);
+});
+
+test('director budgets structured-only speech and ignores compiled prompt turns', () => {
+  const { checkSpeechTiming } = require('../src/ontology/invariants');
+  const shot = { duration: 6, semantic_slots: { speech_plan: { text: '字'.repeat(25) } } };
+  assert.equal(checkSpeechTiming([shot])[0].assessment.requiredSeconds, 7.8);
+  assert.equal(checkSpeechTiming({}) .length, 0);
+  const delivery = require('../src/services/speechDeliveryService');
+  const base = { duration: 5, dialogue: '甲：“你好。”' };
+  assert.deepEqual(delivery.resolve({}, base), delivery.resolve({}, { ...base,
+    universal_segment_text: '甲：“旧台词。”\n乙：“旧台词。”\n旁白：“旧台词。”' }));
+});
+
 test('real 34-character dialogue exceeds five seconds; short dialogue fits', () => {
   const result = timing.assessSpeechTiming(source);
   assert.equal(result.han, 34);
   assert.equal(result.ok, false);
-  assert.equal(result.requiredSeconds, 9.5);
-  assert.equal(result.hanBudget, 16);
+  assert.equal(result.requiredSeconds, 10);
+  assert.equal(result.hanBudget, 14);
   assert.equal(timing.assessSpeechTiming({ dialogue: '赵总：“各位，马上开始！”', duration: 5 }).ok, true);
   assert.equal(timing.assessSpeechTiming({ dialogue: '无对白', narration: 'none', duration: 5 }).requiredSeconds, 0);
 });
@@ -37,14 +62,50 @@ test('dialogue and narration share a budget; mixed language, speakers and parent
   assert.equal(timing.assessSpeechTiming({ dialogue: '甲：这是（非常重要）的任务' }, 5).han, 9);
 });
 
-test('classic/universal/manual prompt speech is checked without double-counting stored dialogue', () => {
+test('compiled and manually edited prompts never participate in speech timing', () => {
   const classic = `动作：赵总拍桌。对话：${dialogue}。结果：大家沉默。解说旁白：会议开始。时长：5秒`;
-  assert.equal(timing.assessVideoSpeech(source, classic, 5).han, 38);
+  assert.equal(timing.assessVideoSpeech(source, classic, 5).han, 34);
   assert.equal(timing.assessVideoSpeech(source, `对话：${dialogue}`, 5).han, 34);
-  assert.equal(timing.assessVideoSpeech({}, `主体：@人物1走近。 台词：第1秒 @人物1："${dialogue}" 音效：环境声`, 5).ok, false);
-  assert.equal(timing.assessVideoSpeech({}, `赵总：“${'字'.repeat(20)}”`, 5).ok, false);
-  assert.equal(timing.assessVideoSpeech({}, `赵总说：“${'字'.repeat(20)}”`, 5).ok, false);
+  assert.equal(timing.assessVideoSpeech({}, `主体：@人物1走近。 台词：第1秒 @人物1："${dialogue}" 音效：环境声`, 5).ok, true);
+  assert.equal(timing.assessVideoSpeech({}, `赵总：“${'字'.repeat(20)}”`, 5).han, 0);
+  assert.equal(timing.assessVideoSpeech({}, `赵总说：“${'字'.repeat(20)}”`, 5).han, 0);
   assert.equal(timing.assessVideoSpeech({}, '标题：“' + '字'.repeat(40) + '”', 5).ok, true);
+});
+
+test('structured H3 speech uses authoritative slots and ignores compiled lip-sync prose', () => {
+  const shot = {
+    duration: 4,
+    dialogue: '押差: "自生自灭。"',
+    semantic_slots: JSON.stringify({
+      speech_plan: { text: '自生自灭。', is_narration: false },
+    }),
+    video_slots: JSON.stringify({
+      audio_lip_sync: {
+        mode: 'in_frame_dialogue',
+        dialogue_content: '自生自灭。',
+      },
+    }),
+  };
+  const prompt = '对话：押差: "自生自灭。"（押差自然发音并同步口型，画面其余人物双唇自然闭合并保持倾听）';
+  const result = timing.assessVideoSpeech(shot, prompt, 4, { speechRate: 1.1 });
+  assert.equal(result.ok, true);
+  assert.equal(result.han, 4);
+  assert.equal(result.requiredSeconds, 2.5);
+});
+
+test('object-form slots are authoritative and narration is not double-counted', () => {
+  const shot = {
+    dialogue: '',
+    narration: '夜幕降临。',
+    semantic_slots: { speech_plan: { text: '夜幕降临。', is_narration: true } },
+    video_slots: { audio_lip_sync: { mode: 'narration', dialogue_content: '夜幕降临。' } },
+  };
+  const resolved = timing.authoritativeSpeech(shot);
+  assert.equal(resolved.dialogue, '');
+  assert.equal(resolved.narration, '夜幕降临。');
+  const result = timing.assessVideoSpeech(shot, '对话：这段展示文字绝不能参与计算。', 4);
+  assert.equal(result.han, 4);
+  assert.equal(result.requiredSeconds, 2.5);
 });
 
 test('repair splits without losing dialogue, renumbers shots and rebuilds prompts', async () => {
@@ -80,7 +141,7 @@ for (const [name, repair] of [
 }
 
 test('narration is preserved and empty fragments do not inherit the whole source dialogue', async () => {
-  const shot = { dialogue: '甲：字'.replace('字', '字'.repeat(16)), narration: '夜幕降临', duration: 5 };
+  const shot = { dialogue: '甲：字'.replace('字', '字'.repeat(14)), narration: '夜幕降临', duration: 5 };
   const result = await enforceStoryboardSpeechTiming([shot], {
     targetDuration: 5,
     generate: async () => JSON.stringify([{ dialogue: shot.dialogue }, { narration: shot.narration }]),
@@ -112,16 +173,16 @@ test('video route blocks before creating tasks or generation rows; stored durati
   assert.equal(db.prepare('SELECT count(*) n FROM video_generations').get().n, 0);
 });
 
-test('saved universal edits and H3 maximum duration cannot bypass validation', t => {
+test('H3 ignores display prompts while stored speech and maximum duration remain authoritative', t => {
   const db = videoDb(t);
   db.prepare('UPDATE storyboards SET dialogue = ?, creation_mode = ?, universal_segment_text = ? WHERE id = 1')
     .run('你好', 'universal', '台词：“' + '字'.repeat(25) + '”');
-  assert.match(validateVideoSpeech(db, { storyboard_id: 1 }, h3).error, /超出时长预算/);
+  assert.equal(validateVideoSpeech(db, { storyboard_id: 1, prompt: '台词：“' + '字'.repeat(25) + '”' }, h3).error, null);
   db.prepare('UPDATE storyboards SET dialogue = ?, creation_mode = ?, duration = ? WHERE id = 1')
     .run('甲：' + '字'.repeat(60), 'classic', 120);
   const result = validateVideoSpeech(db, { storyboard_id: 1 }, h3);
-  assert.equal(result.duration, 15);
-  assert.match(result.error, /15 秒/);
+  assert.equal(result.duration, 120);
+  assert.match(result.error, /4～8 秒整数/);
 });
 
 test('queued video submission rechecks manual edits before calling model API', async t => {
@@ -155,7 +216,8 @@ function createTestDb() {
       shot_type TEXT, angle TEXT, angle_h TEXT, angle_v TEXT, angle_s TEXT,
       movement TEXT, lighting_style TEXT, depth_of_field TEXT,
       segment_index INTEGER, segment_title TEXT, creation_mode TEXT,
-      universal_segment_text TEXT, status TEXT, created_at TEXT, updated_at TEXT, deleted_at TEXT
+      universal_segment_text TEXT, status TEXT, created_at TEXT, updated_at TEXT, deleted_at TEXT,
+      semantic_slots TEXT, long_take_group_id TEXT, long_take_role TEXT, long_take_sequence INTEGER
     );
     CREATE TABLE characters (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -226,6 +288,9 @@ test('valid repaired generation publishes complete shots and rebuilds universal 
     assert.equal(timing.assessVideoSpeech(row, row.universal_segment_text, row.duration).ok, true);
     assert.ok(!row.universal_segment_text.includes('原完整提示词'));
   }
+  assert.deepEqual(rows.map((row) => row.long_take_role), ['head', 'continuation', 'tail']);
+  assert.equal(new Set(rows.map((row) => row.long_take_group_id)).size, 1);
+  assert.equal(JSON.parse(rows[1].semantic_slots).first_frame_policy, 'inherit_tail');
 });
 
 test('failed insert rolls back deletion of old storyboards and all replacement inserts', async t => {
@@ -241,7 +306,7 @@ test('failed insert rolls back deletion of old storyboards and all replacement i
 });
 
 test('mixed manual dialogue and stored narration share one budget, and English words cannot be merged', () => {
-  assert.equal(timing.assessVideoSpeech({ narration: '字'.repeat(12) }, '台词：“' + '字'.repeat(12) + '”', 5).ok, false);
+  assert.equal(timing.assessVideoSpeech({ narration: '字'.repeat(12) }, '台词：“' + '字'.repeat(12) + '”', 5).ok, true);
   assert.equal(preservesSpeech({ dialogue: 'ice cream' }, [{ dialogue: 'icecream' }]), false);
   assert.equal(preservesSpeech({ dialogue: 'Hello world' }, [{ dialogue: 'Hello' }, { dialogue: 'world' }]), true);
   assert.equal(preservesSpeech({ dialogue: '甲：你好！乙：再见！' }, [{ dialogue: '乙：你好！甲：再见！' }]), false);
@@ -269,7 +334,8 @@ test('custom prompts, narration mode and requested shot count cannot override ti
   t.mock.method(aiClient, 'generateText', async (_db, _log, _type, user, system) => {
     assert.ok(user.includes('CUSTOM SUFFIX'));
     assert.ok(system.indexOf('强制对白时长预算') > system.indexOf('CUSTOM UNIVERSAL'));
-    assert.match(system, /5秒单人镜约16个中文字/);
+    assert.match(system, /自然语速 1.0x/);
+    assert.match(system, /duration - 1.5秒收尾/);
     assert.match(system, /允许增加镜头数/);
     assert.match(system, /目标分镜数量/);
     return JSON.stringify([{ dialogue: '赵总：现在开始。', duration: 5, narration: '会议开始。' }]);
@@ -280,12 +346,12 @@ test('custom prompts, narration mode and requested shot count cannot override ti
   assert.equal(state.result.total, 1);
 });
 
-test('mixed-language repair preserves token boundaries across clips and normalizes AI duration strings', async () => {
+test('mixed-language repair preserves token boundaries and clamps legacy durations to the H3 eight-second ceiling', async () => {
   assert.equal(preservesSpeech({ dialogue: '这是AI系统' }, [{ dialogue: '这是AI' }, { dialogue: '系统' }]), true);
   const result = await enforceStoryboardSpeechTiming([{ dialogue: '字'.repeat(25), duration: '10s' }], {
-    generate: () => assert.fail('A valid ten-second shot should not need repair'),
+    generate: () => assert.fail('The dialogue fits after normalizing the legacy duration to eight seconds'),
   });
-  assert.equal(result[0].duration, 10);
+  assert.equal(result[0].duration, 8);
 });
 
 test('speechFromPrompt accurately delimits dialogue when followed by quote closing and next section without period', () => {

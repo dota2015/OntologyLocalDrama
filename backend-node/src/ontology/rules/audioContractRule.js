@@ -1,5 +1,5 @@
 /**
- * 门禁 2：音频视听合同检查（无对白必配 BGM，供给 H3/Seedance）
+ * 门禁 2：音频视听合同检查（无对白必配 BGM，供给 H3）
  */
 const BaseInvariantRule = require('./baseRule');
 

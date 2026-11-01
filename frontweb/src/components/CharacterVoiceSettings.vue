@@ -15,7 +15,7 @@
         <el-button :loading="previewing" :disabled="loading || saving || !voice" @click="preview">试听音色</el-button>
       </div>
       <p class="character-voice-tip">{{ config?.name }} · {{ voice }}</p>
-      <p class="character-voice-tip">点击人物窗口的「保存」同步保存音色，与统一配音面板共用；已有配音需重新生成才会变化。</p>
+      <p class="character-voice-tip">点击人物窗口的「保存」同步保存音色，用于后续 H3 参考音频生成；已生成的视频不会随之改变。</p>
     </template>
     <p v-else-if="!loading && !error" class="character-voice-tip">请先在「AI 配置」启用 TTS 服务，启用后重新打开人物编辑。</p>
     <H3VoiceReferenceSettings v-if="!loading && characterId" :drama-id="dramaId" :target="characterId" :voice-id="voice" :before-prepare="save" :disabled="saving || previewing" />
@@ -44,6 +44,7 @@ const options = computed(() => {
   return opts.length ? opts : INDEXTTS_VOICE_OPTIONS
 })
 function endpoint() { return '/audio/dubbing/' + props.dramaId }
+function profileEndpoint() { return endpoint() + '/profile' }
 async function api(url, body, method = 'POST') {
   const response = await fetch('/api/v1' + url, body === undefined ? {} : {
     method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
@@ -71,7 +72,7 @@ async function load() {
   data.value = null
   audio?.pause()
   try {
-    const result = await api(endpoint())
+    const result = await api(profileEndpoint())
     if (version !== requestVersion) return
     data.value = result
     const character = result.characters.find(c => Number(c.id) === Number(props.characterId))
@@ -95,7 +96,7 @@ async function save() {
   error.value = ''
   try {
     // Re-read so editing one character preserves other voices/settings saved elsewhere.
-    const current = await api(endpoint())
+    const current = await api(profileEndpoint())
     if (current.profile.config_id !== data.value.profile.config_id) throw new Error('TTS 服务已变更，请重新打开人物编辑后选择音色')
     if (current.profile.character_voices?.[props.characterId] !== initialVoice.value && voice.value === initialVoice.value) {
       // No local edit: retain an assignment changed in the unified panel.

@@ -1,6 +1,9 @@
 import request from '@/utils/request'
 
 export const videosAPI = {
+  get(id) {
+    return request.get(`/videos/${id}`)
+  },
   createBatch(episodeId, body) {
     return request.post(`/videos/episode/${episodeId}/batch`, body)
   },

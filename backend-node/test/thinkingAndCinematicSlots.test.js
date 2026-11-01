@@ -15,6 +15,27 @@ test('applyGeneralChatOptions injects reasoning_effort for enabled thinking', ()
   assert.equal(res.reasoning_effort, 'high');
 });
 
+test('applyGeneralChatOptions maps Qwen thinking to vLLM chat template kwargs', () => {
+  const disabled = applyGeneralChatOptions({
+    settings: JSON.stringify({ thinking: 'disabled' }),
+  }, {
+    model: 'qwen3_5_122b',
+    messages: [{ role: 'user', content: 'test' }],
+  });
+  assert.deepEqual(disabled.chat_template_kwargs, { enable_thinking: false });
+  assert.equal(disabled.reasoning_effort, undefined);
+
+  const enabled = applyGeneralChatOptions({
+    settings: JSON.stringify({ thinking: 'enabled', reasoning_effort: 'medium' }),
+  }, {
+    model: 'qwen3_5_122b',
+    messages: [{ role: 'user', content: 'test' }],
+    chat_template_kwargs: { custom_flag: 'kept' },
+  });
+  assert.deepEqual(enabled.chat_template_kwargs, { custom_flag: 'kept', enable_thinking: true });
+  assert.equal(enabled.reasoning_effort, 'medium');
+});
+
 test('applyVolcChatOptions enables thinking and sets reasoning_effort on Ark models when configured', () => {
   const arkConfig = {
     provider: 'volcengine',
@@ -27,7 +48,7 @@ test('applyVolcChatOptions enables thinking and sets reasoning_effort on Ark mod
   assert.equal(res.reasoning_effort, 'medium');
 });
 
-test('compileImagePromptFromSlots synthesizes all 5 cinematic layers', () => {
+test('compileImagePromptFromSlots preserves explicitly planned cinematic layers', () => {
   const shot = {
     location: '峡谷信号塔残破控制室',
     time: '任务进行中·阴天白昼',
@@ -53,7 +74,7 @@ test('compileImagePromptFromSlots synthesizes all 5 cinematic layers', () => {
   });
 
   const prompt = compileImagePromptFromSlots(shot, [slot], { style: 'photorealistic, ultra-detailed' });
-  assert.ok(prompt.includes('峡谷信号塔残破控制室（任务进行中·阴天白昼）'));
+  assert.ok(prompt.includes('峡谷信号塔残破控制室；任务进行中·阴天白昼'));
   assert.ok(prompt.includes('前景右侧虚化遮挡'));
   assert.ok(prompt.includes('35mm宽银幕电影镜头'));
   assert.ok(prompt.includes('咬肌紧绷，瞳孔警惕聚焦'));
@@ -135,7 +156,7 @@ test('validateCharacterVisualSlots checks multi-character depth staging (near vs
   assert.ok(autoSlots[0].appearance_details);
 });
 
-test('compileImagePromptFromSlots synthesizes missing layers from context with zero boilerplate', () => {
+test('compileImagePromptFromSlots does not invent missing lens, depth or lighting details', () => {
   const minimalShot = {
     location: '废弃工厂内部战斗区',
     time: '阴天白昼',
@@ -154,10 +175,9 @@ test('compileImagePromptFromSlots synthesizes missing layers from context with z
     hands: '双手紧握战术武器贴腮瞄准',
   });
   const compiled = compileImagePromptFromSlots(minimalShot, [slot]);
-  // 必须包含推导的三层纵深、电影光学镜头参数、侧光照明反差
-  assert.ok(compiled.includes('前景微虚'));
-  assert.ok(compiled.includes('85mm电影定焦镜头抓拍'));
-  assert.ok(compiled.includes('侧光照明'));
+  assert.doesNotMatch(compiled, /前景微虚|85mm|电影定焦/);
+  assert.match(compiled, /side/);
+  assert.ok(compiled.includes(slot.gaze));
   assert.ok(compiled.includes('首帧静止画面'));
 });
 
@@ -240,9 +260,9 @@ test('Video semantic slots timeline mapping and non-hallucinatory generic trajec
   const lunaShot1 = slots.shots_timeline[0].character_trajectories.find((t) => t.name === '露娜');
   const lunaShot2 = slots.shots_timeline[1].character_trajectories.find((t) => t.name === '露娜');
   const wolfShot2 = slots.shots_timeline[1].character_trajectories.find((t) => t.name === '红狼');
-  assert.ok(lunaShot1.mouth_state.includes('双唇紧闭'));
+  assert.ok(lunaShot1.mouth_state.includes('双唇自然闭合'));
   assert.ok(lunaShot2.mouth_state.includes('开口说话并同步口型'));
-  assert.ok(wolfShot2.mouth_state.includes('双唇紧闭'));
+  assert.ok(wolfShot2.mouth_state.includes('双唇自然闭合'));
 
   // 4. H3 专用编译器正确输出
   const h3Compiled = compileH3MultimodalPrompt(slots);

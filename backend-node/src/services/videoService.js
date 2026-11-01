@@ -56,6 +56,18 @@ function hasProviderTaskId(r) {
 }
 
 function rowToItem(r) {
+  let qualityAudit = null;
+  if (r.quality_audit) {
+    try {
+      qualityAudit = typeof r.quality_audit === 'string' ? JSON.parse(r.quality_audit) : r.quality_audit;
+    } catch (_) {}
+  }
+  let resolutionPlan = null;
+  if (r.resolution_plan) {
+    try {
+      resolutionPlan = typeof r.resolution_plan === 'string' ? JSON.parse(r.resolution_plan) : r.resolution_plan;
+    } catch (_) {}
+  }
   return {
     id: r.id,
     storyboard_id: r.storyboard_id,
@@ -63,6 +75,9 @@ function rowToItem(r) {
     provider: r.provider,
     prompt: r.prompt,
     model: r.model,
+    h3_mode: r.h3_mode || null,
+    resolution_plan: resolutionPlan,
+    quality_audit: qualityAudit,
     image_gen_id: r.image_gen_id,
     image_url: r.image_url,
     video_url: r.video_url,
@@ -80,7 +95,7 @@ function rowToItem(r) {
 
 function getById(db, id) {
   const r = db.prepare('SELECT * FROM video_generations WHERE id = ? AND deleted_at IS NULL').get(Number(id));
-  return r ? rowToItem(r) : null;
+  return r ? { ...rowToItem(r), input_snapshot: require('./generationInputSnapshot').read(r) } : null;
 }
 
 const fs = require('fs');
@@ -91,6 +106,7 @@ const videoClient = require('./videoClient');
 const taskService = require('./taskService');
 const storageLayout = require('./storageLayout');
 const { getFfmpegPath, hasLocalFfmpeg } = require('../utils/ffmpegPath');
+const h3SerialQueue = require('./h3SerialQueue');
 
 /** @returns {{ dir: string, relPrefix: string }} 与图片 uploads 一致的工程子目录规则 */
 function resolveVideosDir(storagePath, projectSubdir) {
@@ -104,11 +120,9 @@ function resolveVideosDir(storagePath, projectSubdir) {
 
 /**
  * 将远程 video_url 下载到本地
- * @param {object} [options]
- * @param {string} [options.apiKey] 需要鉴权下载时传入（如 cheap_seedance2）
  * @returns {string|null} 相对 storage 根的路径，如 projects/.../videos/vg_1_xxx.mp4；无工程时为 videos/...
  */
-async function downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, projectSubdir = null, options = null) {
+async function downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, projectSubdir = null) {
   if (!videoUrl || typeof videoUrl !== 'string') return null;
   const { dir, relPrefix } = resolveVideosDir(storagePath, projectSubdir);
   try {
@@ -116,14 +130,9 @@ async function downloadVideoToLocal(storagePath, videoUrl, videoGenId, log, proj
     const ext = (videoUrl.split('?')[0].match(/\.(mp4|webm|mov)$/i) || [])[1] || 'mp4';
     const name = `vg_${videoGenId}_${randomUUID().slice(0, 8)}.${ext}`;
     const filePath = path.join(dir, name);
-    const headers = {};
-    const apiKey = options && options.apiKey != null ? String(options.apiKey).trim() : '';
-    if (apiKey) {
-      headers.Authorization = apiKey.startsWith('Bearer ') ? apiKey : `Bearer ${apiKey}`;
-    }
-    const res = await fetch(videoUrl, { method: 'GET', headers });
+    const res = await fetch(videoUrl, { method: 'GET' });
     if (!res.ok) {
-      log.warn('Download video failed', { status: res.status, videoGenId, auth: !!apiKey });
+      log.warn('Download video failed', { status: res.status, videoGenId });
       return null;
     }
     const buf = Buffer.from(await res.arrayBuffer());
@@ -170,7 +179,7 @@ function targetVideoPixelsForAspect(aspectRatio) {
 }
 
 /**
- * 用 ffmpeg 将视频缩放并加黑边到固定分辨率，避免 Grok 等返回实际像素不一致导致连播时画面跳动。
+ * 用 ffmpeg 将视频缩放并加黑边到固定分辨率，避免不同生成节点的像素差异导致连播时画面跳动。
  */
 function normalizeVideoFileToTargetPixels(absPath, tw, th, log, videoGenId) {
   if (!absPath || !tw || !th || !fs.existsSync(absPath)) return false;
@@ -226,13 +235,26 @@ function resolveStoragePath(cfg) {
     : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
 }
 
+function resolveLocalMediaPath(storagePath, source) {
+  if (!source || typeof source !== 'string' || /^data:/i.test(source)) return null;
+  let value = source.trim();
+  if (/^https?:\/\//i.test(value)) {
+    try {
+      const parsed = new URL(value);
+      if (!parsed.pathname.startsWith('/static/')) return null;
+      value = decodeURIComponent(parsed.pathname.slice('/static/'.length));
+    } catch (_) { return null; }
+  } else {
+    value = value.replace(/^\/static\//, '');
+  }
+  const candidate = path.isAbsolute(value) ? value : path.join(storagePath, value);
+  return fs.existsSync(candidate) ? candidate : null;
+}
+
 async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, videoUrl, logLabel, aiConfig = null) {
   const now = new Date().toISOString();
   let localPath = null;
-  const requireAuthDownload = videoClient.isCheapSeedance2Provider(aiConfig?.provider || row?.provider);
-  const downloadOpts = requireAuthDownload && aiConfig?.api_key
-    ? { apiKey: aiConfig.api_key }
-    : null;
+  let localFinalizationError = null;
   try {
     const cfg = require('../config').loadConfig();
     const storagePath = resolveStoragePath(cfg);
@@ -243,18 +265,12 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
       videoGenId,
       log,
       projectSubdir,
-      downloadOpts
+      null
     );
     maybeNormalizeVideoAfterDownload(storagePath, localPath, rowForAspect, videoGenId, log);
-  } catch (_) {}
-
-  // 低价 Seedance2：成片 URL 需鉴权，本地下载失败则不可标为可播成功
-  if (requireAuthDownload && !localPath) {
-    const errMsg = '成片鉴权下载失败（请检查 API Key，或稍后重试继续查询）';
-    log.warn('cheap_seedance2 auth download failed', { videoGenId, video_url: videoUrl });
-    setVideoGenFailed(db, videoGenId, errMsg, now);
-    if (row.task_id) taskService.updateTaskError(db, row.task_id, errMsg);
-    return { ok: false, error: errMsg };
+  } catch (error) {
+    localFinalizationError = error;
+    log.error('[视频] 下载或本地整理失败', { video_gen_id: videoGenId, error: error.message });
   }
 
   // 关键防复活拦截：若任务已被用户取消或标记失败，严禁写入完成状态，严禁绑定到分镜
@@ -266,17 +282,91 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
     }
   } catch (_) {}
 
+  // 1. 生成后质量硬门禁审查（Quality Gate）：在标记完成与绑定分镜前严格质检
+  let qualityAudit = null;
+  if (localFinalizationError) {
+    qualityAudit = {
+      passed: false,
+      violations: [{
+        check: 'local_video_finalization',
+        severity: 'error',
+        message: localFinalizationError.message,
+        recommendation: '检查视频下载与本地存储后重新查询或生成',
+      }],
+      frames: {},
+      meta: {},
+    };
+  } else if (localPath) {
+    try {
+      const { auditGeneratedVideo } = require('./videoQualityGate');
+      const cfg = require('../config').loadConfig();
+      const storagePath = resolveStoragePath(cfg);
+      const absPath = path.isAbsolute(localPath) ? localPath : path.join(storagePath, localPath);
+      const shotRow = row.storyboard_id ? db.prepare('SELECT * FROM storyboards WHERE id=?').get(row.storyboard_id) : {};
+      const firstFramePath = row.first_frame_url || row.image_url;
+      const firstFrameAbs = resolveLocalMediaPath(storagePath, firstFramePath);
+      qualityAudit = await auditGeneratedVideo(absPath, shotRow, {
+        expectedDuration: row.duration,
+        firstFrameSourcePath: firstFrameAbs,
+        firstFrameRequired: !!firstFramePath,
+      });
+    } catch (qErr) {
+      qualityAudit = {
+        passed: false,
+        violations: [{
+          check: 'quality_gate_execution',
+          severity: 'error',
+          message: `视频质量门禁执行失败：${qErr.message}`,
+          recommendation: '修复质量门禁运行环境后重新审查或重新生成',
+        }],
+        frames: {},
+        meta: {},
+      };
+      log.error('[QualityGate] Post-gen audit execution failed closed', { error: qErr.message });
+    }
+  } else {
+    qualityAudit = {
+      passed: false,
+      violations: [{
+        check: 'local_audit_source',
+        severity: 'error',
+        message: '视频未成功下载到本地，无法执行生成后质量门禁',
+        recommendation: '检查视频下载与存储配置后重新查询或生成',
+      }],
+      frames: {},
+      meta: {},
+    };
+  }
+
+  // 2. 门禁阻断判定：若存在致命质检缺陷，标记失败，严禁落入完成态与绑定分镜！
+  if (qualityAudit && !qualityAudit.passed) {
+    const errorViolations = qualityAudit.violations.filter(v => v.severity === 'error');
+    const errMsg = `视频质量门禁拦截未通过（共 ${errorViolations.length} 处致命缺陷）：${errorViolations.map(v => v.message).join('；')}`;
+    log.error('[QualityGate] Video quality gate rejected output', { videoGenId, violations: qualityAudit.violations });
+    const auditJson = JSON.stringify(qualityAudit);
+    db.prepare(`UPDATE video_generations SET status = 'failed', error_msg = ?, quality_audit = ?, updated_at = ? WHERE id = ?`).run(
+      errMsg,
+      auditJson,
+      now,
+      videoGenId
+    );
+    if (row.task_id) {
+      taskService.updateTaskError(db, row.task_id, errMsg);
+    }
+    return { ok: false, error: errMsg, quality_audit: qualityAudit };
+  }
+
+  // 3. 质量门禁通过：原子写入完成状态、持久化 quality_audit 并绑定至分镜
+  const qualityAuditJson = qualityAudit ? JSON.stringify(qualityAudit) : null;
   let updateRes;
   try {
     updateRes = db.prepare(
-      "UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, completed_at = ?, updated_at = ? WHERE id = ? AND status NOT IN ('failed', 'cancelled')"
-    ).run('completed', videoUrl, localPath, now, now, videoGenId);
+      "UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, quality_audit = ?, completed_at = ?, updated_at = ? WHERE id = ? AND status NOT IN ('failed', 'cancelled')"
+    ).run('completed', videoUrl, localPath, qualityAuditJson, now, now, videoGenId);
   } catch (e) {
-    if ((e.message || '').includes('completed_at')) {
-      updateRes = db.prepare(
-        "UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, updated_at = ? WHERE id = ? AND status NOT IN ('failed', 'cancelled')"
-      ).run('completed', videoUrl, localPath, now, videoGenId);
-    } else throw e;
+    updateRes = db.prepare(
+      "UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, quality_audit = ?, updated_at = ? WHERE id = ? AND status NOT IN ('failed', 'cancelled')"
+    ).run('completed', videoUrl, localPath, qualityAuditJson, now, videoGenId);
   }
   if (!updateRes || updateRes.changes === 0) {
     log.info('Video generation was cancelled/failed concurrently, skip storyboard binding', { id: videoGenId });
@@ -299,14 +389,16 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
       video_generation_id: videoGenId,
       video_url: videoUrl,
       status: 'completed',
+      quality_audit: qualityAudit,
     });
   }
   log.info('Video generation completed' + (logLabel ? ` (${logLabel})` : ''), {
     id: videoGenId,
     video_url: videoUrl,
     local_path: localPath,
+    quality_passed: true,
   });
-  return { ok: true, local_path: localPath };
+  return { ok: true, local_path: localPath, quality_audit: qualityAudit };
 }
 
 async function pollProviderTaskAndFinalize(db, log, videoGenId, row, rowForAspect, providerTaskId, config) {
@@ -350,6 +442,9 @@ async function pollProviderTaskAndFinalize(db, log, videoGenId, row, rowForAspec
  */
 function startVideoHeartbeat(db, taskId) {
   if (!taskId) return () => {};
+  db.prepare(`UPDATE async_tasks SET status='processing', progress=MAX(COALESCE(progress,0),1),
+    message=CASE WHEN COALESCE(message,'')='' THEN '视频任务已开始，正在准备输入或等待模型完成' ELSE message END,
+    updated_at=? WHERE id=? AND status='pending'`).run(new Date().toISOString(), taskId);
   const timer = setInterval(() => {
     try {
       db.prepare("UPDATE async_tasks SET updated_at=? WHERE id=? AND status IN ('pending','processing')")
@@ -360,7 +455,7 @@ function startVideoHeartbeat(db, taskId) {
   return () => clearInterval(timer);
 }
 
-async function resumePollForVideoGeneration(db, log, videoGenId) {
+async function resumePollForVideoGenerationUnlocked(db, log, videoGenId) {
   if (activeVideoPolls.has(videoGenId)) {
     log.info('Video poll already active, skip resume', { videoGenId });
     return;
@@ -401,6 +496,13 @@ async function resumePollForVideoGeneration(db, log, videoGenId) {
     stopHeartbeat();
     activeVideoPolls.delete(videoGenId);
   }
+}
+
+// Restored provider tasks use the same FIFO as newly submitted jobs.  This is
+// primarily a GPU safety rule; polling/finalization stays attached to the
+// queue item until the remote H3 task reaches a terminal state.
+async function resumePollForVideoGeneration(db, log, videoGenId) {
+  return h3SerialQueue.enqueue(`resume_video_generation:${videoGenId}`, () => resumePollForVideoGenerationUnlocked(db, log, videoGenId));
 }
 
 /**
@@ -473,7 +575,8 @@ function resumeProcessingVideoGenerations(db, log) {
     .prepare(
       `SELECT id, task_id FROM video_generations
        WHERE status = 'processing' AND deleted_at IS NULL
-         AND (provider_task_id IS NULL OR TRIM(provider_task_id) = '')`
+         AND (provider_task_id IS NULL OR TRIM(provider_task_id) = '')
+       ORDER BY id`
     )
     .all();
   const stuckMsg = '服务重启后无法恢复轮询（缺少厂商任务 ID），请重新生成';
@@ -488,7 +591,8 @@ function resumeProcessingVideoGenerations(db, log) {
     .prepare(
       `SELECT id, task_id FROM video_generations
        WHERE status = 'processing' AND deleted_at IS NULL
-         AND provider_task_id IS NOT NULL AND TRIM(provider_task_id) != ''`
+         AND provider_task_id IS NOT NULL AND TRIM(provider_task_id) != ''
+       ORDER BY id`
     )
     .all();
   if (resumable.length) {
@@ -508,7 +612,7 @@ function resumeProcessingVideoGenerations(db, log) {
   }
 }
 
-async function processVideoGeneration(db, log, videoGenId) {
+async function processVideoGenerationUnlocked(db, log, videoGenId) {
   if (activeVideoPolls.has(videoGenId)) {
     log.info('Video generation already in progress, skip duplicate', { videoGenId });
     return;
@@ -574,9 +678,8 @@ async function processVideoGeneration(db, log, videoGenId) {
     }
     const rowForAspect = { ...row, aspect_ratio: aspectForVideo || row.aspect_ratio };
     const hasOmniRefs = !!(reference_urls && reference_urls.length > 0);
-    // H3 and local Wan distinguish explicit frame anchors from reference assets.
-    // Classic submissions also carry a duplicate reference list; retain their explicit frame roles.
-    const omitFrameFields = hasOmniRefs && !['minimax_h3', 'comfyui_wan22'].includes(videoClient.resolveVideoProtocol(config, row.model));
+    // H3 distinguishes explicit frame anchors from reference assets.
+    const omitFrameFields = hasOmniRefs && videoClient.resolveVideoProtocol(config, row.model) !== 'minimax_h3';
     if (row.task_id && hasOmniRefs) {
       taskService.updateTaskStatus(
         db,
@@ -587,7 +690,7 @@ async function processVideoGeneration(db, log, videoGenId) {
       );
     }
     const result = await videoClient.callVideoApi(db, log, {
-      prompt: row.prompt+(row.storyboard_id?require('./wardrobeService').promptContext(db,row.storyboard_id):''),
+      prompt: row.prompt,
       model: row.model,
       duration: effectiveDuration,
       aspect_ratio: rowForAspect.aspect_ratio,
@@ -602,6 +705,7 @@ async function processVideoGeneration(db, log, videoGenId) {
       first_frame_url: omitFrameFields ? undefined : row.first_frame_url,
       last_frame_url: omitFrameFields ? undefined : row.last_frame_url,
       reference_urls,
+      h3_mode: row.h3_mode || undefined,
       files_base_url: filesBaseUrl,
       storage_local_path: storageLocalPath,
       video_gen_id: videoGenId,
@@ -659,6 +763,15 @@ async function processVideoGeneration(db, log, videoGenId) {
     stopHeartbeat();
     activeVideoPolls.delete(videoGenId);
   }
+}
+
+/**
+ * Public entry point for new H3 generation.  The lock covers submission and
+ * provider polling/finalization, so a second shot cannot start on another H3
+ * instance while the first one is still using the GPU.
+ */
+async function processVideoGeneration(db, log, videoGenId) {
+  return h3SerialQueue.enqueue(`video_generation:${videoGenId}`, () => processVideoGenerationUnlocked(db, log, videoGenId));
 }
 
 function deleteById(db, log, id) {

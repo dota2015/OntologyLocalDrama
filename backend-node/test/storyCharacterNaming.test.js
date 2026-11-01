@@ -39,7 +39,12 @@ test('actual story generation receives this drama cast and library, without medi
   const calls = [];
   t.mock.method(ai, 'generateText', async (_db, _log, _type, user, system) => {
     calls.push({ user, system });
-    return JSON.stringify([{ episode: 1, title: '草稿', content: '王奕宸："先写作业。"' }]);
+    if (calls.length === 1) return JSON.stringify([
+      { episode: 1, title: '草稿一', content: '王奕宸："先写作业。"' },
+      { episode: 2, title: '草稿二', content: '林教官："先确认路线。"' },
+      { episode: 3, title: '草稿三', content: '王奕宸："这次我准备好了。"' },
+    ]);
+    return JSON.stringify([{ episode: 1, title: '新故事', content: '一个全新的故事。' }]);
   });
   await stories.generateStory(db, log, { drama_id: 1, premise: '少年与妈妈和妹妹的故事', episode_count: 3 });
   assert.match(calls[0].user, /王奕宸/);

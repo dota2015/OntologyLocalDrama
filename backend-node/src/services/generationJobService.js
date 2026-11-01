@@ -18,13 +18,28 @@ function shots(db, job, options = {}) {
   return options.storyboard_ids ? rows.filter(r => options.storyboard_ids.includes(r.id)) : rows;
 }
 function resources(db, job) {
-  episode(db, job.drama_id, job.episode_id);
+  if (job.episode_id) {
+    episode(db, job.drama_id, job.episode_id);
+    let character = db.prepare(`SELECT c.* FROM characters c JOIN episode_characters ec ON ec.character_id=c.id
+      WHERE ec.episode_id=? AND c.drama_id=? AND c.deleted_at IS NULL ORDER BY c.id`).all(job.episode_id, job.drama_id);
+    if (!character.length) {
+      character = db.prepare(`SELECT c.* FROM characters c WHERE c.drama_id=? AND c.deleted_at IS NULL ORDER BY c.id`).all(job.drama_id);
+    }
+    let scene = require('./episodeSceneService').list(db, job.drama_id, job.episode_id);
+    if (!scene.length) {
+      scene = db.prepare(`SELECT s.* FROM scenes s WHERE s.drama_id=? AND s.deleted_at IS NULL ORDER BY s.id`).all(job.drama_id);
+    }
+    let prop = db.prepare(`SELECT p.* FROM props p WHERE p.drama_id=? AND p.deleted_at IS NULL AND
+      (p.episode_id=? OR p.episode_id IS NULL OR p.id IN (SELECT sp.prop_id FROM storyboard_props sp JOIN storyboards s ON s.id=sp.storyboard_id WHERE s.episode_id=? AND s.deleted_at IS NULL)) ORDER BY p.id`).all(job.drama_id, job.episode_id, job.episode_id);
+    if (!prop.length) {
+      prop = db.prepare(`SELECT p.* FROM props p WHERE p.drama_id=? AND p.deleted_at IS NULL ORDER BY p.id`).all(job.drama_id);
+    }
+    return { character, scene, prop };
+  }
   return {
-    character: db.prepare(`SELECT c.* FROM characters c JOIN episode_characters ec ON ec.character_id=c.id
-      WHERE ec.episode_id=? AND c.drama_id=? AND c.deleted_at IS NULL ORDER BY c.id`).all(job.episode_id, job.drama_id),
-    scene: require('./episodeSceneService').list(db, job.drama_id, job.episode_id),
-    prop: db.prepare(`SELECT p.* FROM props p WHERE p.drama_id=? AND p.deleted_at IS NULL AND
-      (p.episode_id=? OR p.id IN (SELECT sp.prop_id FROM storyboard_props sp JOIN storyboards s ON s.id=sp.storyboard_id WHERE s.episode_id=? AND s.deleted_at IS NULL)) ORDER BY p.id`).all(job.drama_id, job.episode_id, job.episode_id),
+    character: db.prepare(`SELECT c.* FROM characters c WHERE c.drama_id=? AND c.deleted_at IS NULL ORDER BY c.id`).all(job.drama_id),
+    scene: db.prepare(`SELECT s.* FROM scenes s WHERE s.drama_id=? AND s.deleted_at IS NULL ORDER BY s.id`).all(job.drama_id),
+    prop: db.prepare(`SELECT p.* FROM props p WHERE p.drama_id=? AND p.deleted_at IS NULL ORDER BY p.id`).all(job.drama_id),
   };
 }
 function insertItems(db, jobId, items, prefix = '') {
@@ -57,7 +72,7 @@ function create(db, log, dramaId, body) {
   if (!drama) throw new Error('项目不存在');
   if (!KINDS.has(body.kind)) throw new Error('不支持的后台任务类型');
   const episodeId = body.episode_id == null ? null : Number(body.episode_id);
-  if (body.kind !== 'canvas_workflow' || episodeId != null) episode(db, drama.id, episodeId);
+  if ((body.kind !== 'canvas_workflow' && body.kind !== 'reference_images') || episodeId != null) episode(db, drama.id, episodeId);
   const options = { ...(body.options || {}) };
   if (JSON.stringify(options).length > 200000) throw new Error('任务参数过大');
   if (options.scope && !['all','character','prop','scene'].includes(options.scope)) throw new Error('无效的参考图范围');

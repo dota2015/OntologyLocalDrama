@@ -1,7 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { resolveArkTextModel, applyVolcChatOptions } = require('../src/services/aiClient');
-const { normalizeVolcModel } = require('../src/services/videoClient');
 const { resolveDashScopeImageModel } = require('../src/services/imageClient');
 
 const ark = { base_url: 'https://ark.cn-beijing.volces.com/api/v3', provider: 'volcengine' };
@@ -35,21 +34,6 @@ test('Ark DeepSeek V4 and Seed 2 chat calls disable thinking unless already set'
   });
   assert.deepEqual(kept.thinking, { type: 'enabled' });
   assert.equal(applyVolcChatOptions(relay, { model: 'deepseek-v4-flash-ga-260731' }).thinking, undefined);
-});
-
-test('official Ark video replaces retired Seedance 1.5, relays keep the stored id', () => {
-  assert.equal(
-    normalizeVolcModel('doubao-seedance-1-5-pro-251215', ark),
-    'doubao-seedance-2-0-fast-260128'
-  );
-  assert.equal(
-    normalizeVolcModel('doubao-seedance-1.5-pro', ark),
-    'doubao-seedance-2-0-fast-260128'
-  );
-  assert.equal(
-    normalizeVolcModel('doubao-seedance-1-5-pro-251215', relay),
-    'doubao-seedance-1-5-pro-251215'
-  );
 });
 
 test('official DashScope replaces retired qwen-image model ids', () => {

@@ -14,47 +14,43 @@ function handlers(component,names,bindings,extra=''){
 const ref=value=>({value})
 function narrativeSetup({id=3,reject=false}={}){
  const props={modelValue:{preset:'balanced',speech_rate:1},dramaId:id,disabled:false},events=[],requests=[]
- const bindings={props,presets:ref([{id:'dialogue_fast',speed:1.25,speech_mode:'auto'},{id:'balanced',speed:1}]),saving:ref(false),
+ const bindings={props,presets:ref([{id:'narration'},{id:'balanced'}]),saving:ref(false),
   emit:(name,value)=>{events.push({name,value});if(name==='update:modelValue')props.modelValue=value},
   dramaAPI:{saveOutline:async(id,body)=>{requests.push({id,body});if(reject)throw new Error('save failed')}},
   ElMessage:{success(){},error(){}}}
- return {props,events,requests,bindings,actions:handlers('NarrativeStyleSettings',['commit','pickPreset','changeSpeed','changeMode'],bindings)}
+ return {props,events,requests,bindings,actions:handlers('NarrativeStyleSettings',['commit','pickPreset'],bindings)}
 }
-test('selecting the fast preset saves a narrow project patch with 1.25x and emits the confirmed settings',async()=>{
+test('selecting a narrative preset saves only the content style and emits the confirmed settings',async()=>{
  const {actions,requests,props,events}=narrativeSetup()
- await actions.pickPreset('dialogue_fast')
- assert.deepEqual(requests,[{id:3,body:{metadata:{narrative_style:{preset:'dialogue_fast',speech_rate:1.25,speech_mode:'auto'}}}}])
- assert.equal(props.modelValue.speech_rate,1.25)
- assert.deepEqual(events.find(e=>e.name==='saved'),{name:'saved',value:{preset:'dialogue_fast',speech_rate:1.25,speech_mode:'auto'}})
+ await actions.pickPreset('narration')
+ assert.deepEqual(requests,[{id:3,body:{metadata:{narrative_style:{preset:'narration'}}}}])
+ assert.deepEqual(props.modelValue,{preset:'narration'})
+ assert.deepEqual(events.find(e=>e.name==='saved'),{name:'saved',value:{preset:'narration'}})
  assert.deepEqual(events.filter(e=>e.name==='saving').map(e=>e.value),[true,false])
- await actions.changeSpeed(1.3)
- assert.equal(requests[1].body.metadata.narrative_style.speech_rate,1.3)
 })
 test('a failed style save restores the old selection and leaves no success event',async()=>{
  const {actions,props,events,bindings}=narrativeSetup({reject:true})
- await actions.pickPreset('dialogue_fast')
+ await actions.pickPreset('narration')
  assert.deepEqual(props.modelValue,{preset:'balanced',speech_rate:1})
  assert.equal(events.filter(e=>e.name==='saved').length,0)
  assert.equal(bindings.saving.value,false)
 })
-test('automatic mode restores the planning baseline, while editing a multiplier explicitly selects fixed mode',async()=>{
- const {actions,props}=narrativeSetup()
- await actions.changeMode('auto')
- assert.equal(props.modelValue.speech_mode,'auto')
- assert.equal(props.modelValue.speech_rate,1.25)
- await actions.changeSpeed(1.4)
- assert.equal(props.modelValue.speech_mode,'fixed')
- assert.equal(props.modelValue.speech_rate,1.4)
+test('choosing a preset drops legacy speech multiplier fields from the saved selection',async()=>{
+ const {actions,props,requests}=narrativeSetup()
+ props.modelValue={preset:'balanced',speech_rate:1.5,speech_mode:'auto'}
+ await actions.pickPreset('narration')
+ assert.deepEqual(props.modelValue,{preset:'narration'})
+ assert.deepEqual(requests[0].body.metadata.narrative_style,{preset:'narration'})
 })
 test('new-project selections stay local and a late save cannot update another project',async()=>{
  const local=narrativeSetup({id:null})
- await local.actions.pickPreset('dialogue_fast')
+ await local.actions.pickPreset('narration')
  assert.equal(local.requests.length,0)
- assert.equal(local.props.modelValue.speech_rate,1.25)
+ assert.deepEqual(local.props.modelValue,{preset:'narration'})
  const old=narrativeSetup()
  let finish
  old.bindings.dramaAPI.saveOutline=()=>new Promise(resolve=>{finish=resolve})
- const pending=old.actions.pickPreset('dialogue_fast')
+ const pending=old.actions.pickPreset('narration')
  old.props.dramaId=9;old.props.modelValue={preset:'atmosphere',speech_rate:1}
  finish();await pending
  assert.equal(old.events.filter(e=>e.name==='saved').length,0)
@@ -108,13 +104,13 @@ test('style controls announce pending saves so script generation and the second 
  const editor=narrativeSetup()
  let finish
  editor.bindings.dramaAPI.saveOutline=()=>new Promise(resolve=>{finish=resolve})
- const pending=editor.actions.pickPreset('dialogue_fast')
+ const pending=editor.actions.pickPreset('narration')
  assert.deepEqual(editor.events.filter(e=>e.name==='saving').map(e=>e.value),[true])
  await editor.actions.pickPreset('balanced')
- assert.equal(editor.props.modelValue.preset,'dialogue_fast','another selection must wait for the pending save')
+ assert.equal(editor.props.modelValue.preset,'narration','another selection must wait for the pending save')
  finish();await pending
  assert.deepEqual(editor.events.filter(e=>e.name==='saving').map(e=>e.value),[true,false])
  const failed=narrativeSetup({reject:true})
- await failed.actions.pickPreset('dialogue_fast')
+ await failed.actions.pickPreset('narration')
  assert.deepEqual(failed.events.filter(e=>e.name==='saving').map(e=>e.value),[true,false])
 });

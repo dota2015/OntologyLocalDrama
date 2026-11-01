@@ -48,7 +48,7 @@ function mockSpeech(t, root, calls, fn) {
   });
 }
 
-test('actual TTS requests follow per-shot automatic pace for dialogue and narration', async t => {
+test('actual TTS requests use natural speed for dialogue and narration despite legacy project pace', async t => {
   const { db, root } = setup(t);
   db.prepare('UPDATE dramas SET metadata=? WHERE id=1').run(JSON.stringify({
     narrative_style: { preset: 'dialogue_fast', speech_mode: 'auto', speech_rate: 1.25 },
@@ -60,7 +60,7 @@ test('actual TTS requests follow per-shot automatic pace for dialogue and narrat
   await service.single(db, log, 1, root, 'dialogue');
   await service.single(db, log, 1, root, 'narration');
   await service.single(db, log, 2, root, 'dialogue');
-  assert.deepEqual(calls.map(c => c.speed), [1.2, 1.2, 1.3]);
+  assert.deepEqual(calls.map(c => c.speed), [1, 1, 1]);
   assert.deepEqual(calls.map(c => c.text), ['你好。', '他笑了。', '好'.repeat(18) + '。']);
 });
 
@@ -71,6 +71,21 @@ test('speaker labels and delivery notes are not read; speaker changes retain all
   assert.deepEqual(service.dialogueSegments('王奕宸："我玩三角洲可熟了！'), [{ speaker: '王奕宸', text: '我玩三角洲可熟了！' }]);
   assert.deepEqual(service.dialogueSegments('无对白'), []);
   assert.deepEqual(service.dialogueSegments('未标注人物的台词。'), [{ speaker: '', text: '未标注人物的台词。' }]);
+});
+
+test('IndexTTS defaults to 1.25 for dialogue and narration even when old profile or delivery says 1', async t => {
+  const {db,root}=setup(t);
+  db.prepare("UPDATE ai_service_configs SET provider='indextts',base_url='http://localhost:7860' WHERE id=4").run();
+  const calls=[];
+  mockSpeech(t,root,calls);
+  const profile=service.normalizedProfile(db,1,{speed:1});
+  assert.equal(profile.speed,1.25);
+  await service.single(db,log,1,root,'dialogue');
+  await service.single(db,log,1,root,'narration');
+  assert.deepEqual(calls.map(c=>c.speed),[1.25,1.25]);
+  assert.equal(tts.defaultSpeed({provider:'indextts',settings:'{}'}),1.25);
+  assert.equal(tts.defaultSpeed({provider:'indextts',settings:{speed:1.3}}),1.3);
+  assert.equal(tts.defaultSpeed({provider:'edge-tts',settings:'{}'}),1);
 });
 
 test('Edge voices are automatically allocated, narration is distinct, and settings survive reload', t => {
@@ -230,11 +245,11 @@ test('inline narrator is routed separately and speaker names never reach the syn
   const post = require('../src/services/mergedEpisodePostProcess');
   const output = await post.runMergedEpisodePostProcess(db, log, {
     mergedAbsPath:video, storageRoot:root, scenes:[{scene_id:1,duration:2}], episodeId:11,
-    mergeOpts:{burn_dialogue_audio:true,burn_narration_subtitles:true},
+    mergeOpts:{burn_dialogue_audio:true,burn_narration_audio:true,burn_subtitles:true},
   });
   assert.equal(output.ok,true,output.error);
   assert.ok(fs.existsSync(path.join(root,output.relativePath)));
-  assert.match(fs.readFileSync(path.join(root,'input_narration.srt'),'utf8'), /他们都很友好/);
+  assert.match(fs.readFileSync(path.join(root,'input_subtitles.srt'),'utf8'), /你好。\n我很好。\n他们都很友好。/);
 });
 
 test('ambiguous prose is extracted by the model, cached, and invalidated when the shot changes', async t => {
@@ -371,7 +386,7 @@ test('cancelled speech batch does not replace source text', async t => {
   assert.equal(db.prepare('SELECT dialogue FROM storyboards WHERE id=1').get().dialogue, original);
 });
 
-test('automatic model routing reads saved shot text and manual overrides survive reloading', t => {
+test('automatic model routing uses H3 and rejects retired video models', t => {
   const { db } = setup(t);
   db.exec('ALTER TABLE storyboards ADD COLUMN video_model TEXT');
   const insert=db.prepare("INSERT INTO ai_service_configs (id,service_type,provider,name,model,default_model,base_url,settings,is_default,is_active) VALUES (?,'video',?,?,?,?,?,'{}',?,1)");
@@ -382,13 +397,13 @@ test('automatic model routing reads saved shot text and manual overrides survive
   assert.equal(models.resolveStoryboardModel(db,{drama_id:1,storyboard_id:1}).model,'minimax_h3');
   db.prepare('UPDATE storyboards SET dialogue=?,narration=? WHERE id=1').run('无对白','无旁白');
   assert.equal(models.resolveStoryboardModel(db,{drama_id:1,storyboard_id:1}).model,'minimax_h3');
-  shotService.updateStoryboard(db,log,1,{video_model:'Wan2.2'});
-  assert.equal(shotService.getStoryboardById(db,1).video_model,'Wan2.2');
-  assert.equal(models.resolveStoryboardModel(db,{drama_id:1,storyboard_id:1}).model,'Wan2.2');
-  shotService.updateStoryboard(db,log,1,{video_model:null});
+  assert.throws(() => shotService.updateStoryboard(db,log,1,{video_model:'Wan2.2'}), /未启用|已删除/);
+  assert.notEqual(shotService.getStoryboardById(db,1).video_model, 'Wan2.2');
+  assert.throws(() => models.resolveStoryboardModel(db,{drama_id:1,storyboard_id:1,model:'Wan2.2'}), /MiniMax H3|未启用|已删除/);
+  shotService.updateStoryboard(db,log,1,{video_model:'minimax_h3'});
   assert.equal(models.resolveStoryboardModel(db,{drama_id:1,storyboard_id:1}).model,'minimax_h3');
   assert.throws(()=>models.resolveStoryboardModel(db,{drama_id:2,storyboard_id:1}),/不属于/);
-  assert.throws(()=>models.resolveStoryboardModel(db,{drama_id:1,storyboard_id:1,model:'deleted-model'}),/未启用/);
+  assert.throws(()=>models.resolveStoryboardModel(db,{drama_id:1,storyboard_id:1,model:'deleted-model'}),/没有可用|未启用/);
 });
 
 test('indextts profile normalizes voices and avoids collisions', t => {
@@ -401,4 +416,21 @@ test('indextts profile normalizes voices and avoids collisions', t => {
   assert.ok(profile.voices['小明']);
   assert.ok(profile.voices['教官']);
   assert.notEqual(profile.voices['小明'], profile.narrator_voice);
+});
+
+test('voice profile endpoint is independent while the dubbing panel keeps strict speech contracts', t => {
+  const { db } = setup(t);
+  db.exec('ALTER TABLE storyboards ADD COLUMN semantic_slots TEXT; ALTER TABLE storyboards ADD COLUMN video_slots TEXT');
+  db.prepare('UPDATE storyboards SET semantic_slots=?, video_slots=? WHERE id=2').run(
+    JSON.stringify({ speech_plan: { speaker_name: '教官', text: '结构化旧文本。', is_narration: false } }),
+    JSON.stringify({ audio_lip_sync: { speaker_name: '教官', dialogue_content: '另一份旧文本。' } }),
+  );
+  const profileData = service.profilePanel(db, 1);
+  assert.ok(profileData.profile.voices['小明']);
+  assert.ok(profileData.profile.voices['教官']);
+  assert.equal(profileData.characters.length, 2);
+  assert.equal(Object.hasOwn(profileData, 'shots'), false);
+  assert.throws(() => service.panel(db, 1), /权威台词冲突/);
+  assert.doesNotThrow(() => service.saveProfile(db, 1, profileData.profile));
+  assert.throws(() => service.planForId(db, 2), /权威台词冲突/);
 });

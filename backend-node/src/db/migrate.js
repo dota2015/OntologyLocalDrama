@@ -166,6 +166,7 @@ function ensureAllColumns(database) {
     { name: 'angle_h',           type: 'TEXT' },               // 水平方向（front/left/back/right...）
     { name: 'angle_v',           type: 'TEXT' },               // 俯仰角度（worm/low/eye_level/high）
     { name: 'angle_s',           type: 'TEXT' },               // 景别（close_up/medium/wide）
+    { name: 'dialogue_framing',  type: 'TEXT' },               // 对话视听构图选择题（two_shot_face_to_face/over_the_shoulder/single_reaction_offscreen/joint_observation/solo_action）
     { name: 'character_visuals', type: 'TEXT' },               // JSON: 画面首帧角色视觉槽位 [{character_id,name,facing,posture,hands,head_gaze,spatial_anchor}]
     { name: 'last_frame_visuals', type: 'TEXT' },              // JSON: 画面尾帧角色视觉槽位 [{character_id,name,facing,posture,hands,head_gaze,spatial_anchor}]
     { name: 'video_slots',       type: 'TEXT' },               // JSON: 视频语义槽位契约 {camera,audio_lip_sync,trajectories,environment_vfx,timing}
@@ -187,6 +188,12 @@ function ensureAllColumns(database) {
     { name: 'long_take_group_id',   type: 'TEXT' },               // 长镜头组唯一标识（如 ltg_1，空表示普通独立镜头）
     { name: 'long_take_role',       type: 'TEXT' },               // 长镜头角色：head（组首，需文生图首帧）| continuation（续镜，接力上一镜尾帧）| tail（收束镜）
     { name: 'long_take_sequence',   type: 'INTEGER' },            // 长镜头组内接力次序（1-based：1, 2, 3...）
+    { name: 'start_framing',         type: 'TEXT' },               // 镜头起幅机位构图与角色初始姿态
+    { name: 'end_framing',           type: 'TEXT' },               // 镜头落幅定格构图与尾帧承接状态
+    { name: 'transition_to_next',    type: 'TEXT' },               // 与下一镜的视听过渡类型与承接说明（eyeline_match/match_cut/rack_focus/ots_reverse 等）
+    { name: 'background_characters', type: 'TEXT' },               // JSON: 背景在场人物列表（空间恒常在场，杜绝突然降临）
+    { name: 'semantic_slots',        type: 'TEXT' },               // JSON: 12项分镜核心语义槽位契约（visible_characters, speech_plan, required_references 等）
+    { name: 'h3_generation_plan',    type: 'TEXT' },               // JSON: 可解释的H3执行模式推导方案与依据（mode, reason, references）
     { name: 'status',            type: 'TEXT DEFAULT \'draft\'' },
     { name: 'created_at',        type: 'TEXT' },
     { name: 'updated_at',        type: 'TEXT' },
@@ -257,6 +264,9 @@ function ensureAllColumns(database) {
     { name: 'name',        type: 'TEXT NOT NULL DEFAULT \'\'' },
     { name: 'type',        type: 'TEXT' },
     { name: 'description', type: 'TEXT' },
+    { name: 'era_category', type: 'TEXT' },
+    { name: 'era_compatibility', type: 'TEXT' },
+    { name: 'era_reason', type: 'TEXT' },
     { name: 'physical_scale', type: 'TEXT' }, // 真实物理尺寸与主次空间锚点约束
     { name: 'prompt',      type: 'TEXT' },
     { name: 'image_prompt', type: 'TEXT' },
@@ -328,10 +338,15 @@ function ensureAllColumns(database) {
     database.prepare("UPDATE ai_service_configs SET is_default = 0, is_active = 0 WHERE service_type = 'tts' AND provider IN ('edge-tts', 'edgetts', 'edge')").run();
   } catch (_) {}
 
-  // 确保 MiniMax-H3 配置作为唯一默认且激活的视频模型，停用其他第三方视频模型
+  // 视频生成仅保留 MiniMax H3；其他历史配置保留数据但停用，便于安全升级。
   try {
-    database.prepare("UPDATE ai_service_configs SET is_default = 1, is_active = 1 WHERE service_type = 'video' AND (provider = 'minimax_h3' OR api_protocol = 'minimax_h3' OR name LIKE '%H3%')").run();
-    database.prepare("UPDATE ai_service_configs SET is_default = 0, is_active = 0 WHERE service_type = 'video' AND NOT (provider = 'minimax_h3' OR api_protocol = 'minimax_h3' OR name LIKE '%H3%')").run();
+    const h3Supported = `((provider = 'minimax_h3' OR api_protocol = 'minimax_h3' OR COALESCE(api_protocol, '') IN ('', 'openai')) AND (LOWER(COALESCE(model, '')) LIKE '%minimax-h3%' OR LOWER(COALESCE(model, '')) LIKE '%minimax_h3%'))`;
+    database.prepare(`UPDATE ai_service_configs SET is_active = 1 WHERE service_type = 'video' AND ${h3Supported}`).run();
+    database.prepare(`UPDATE ai_service_configs SET is_default = 0, is_active = 0 WHERE service_type = 'video' AND NOT ${h3Supported}`).run();
+    const h3 = database.prepare(`SELECT id FROM ai_service_configs WHERE service_type = 'video' AND deleted_at IS NULL AND is_active = 1 AND ${h3Supported} ORDER BY priority DESC, id ASC LIMIT 1`).get();
+    if (h3) {
+      database.prepare("UPDATE ai_service_configs SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE service_type = 'video' AND deleted_at IS NULL").run(h3.id);
+    }
   } catch (_) {}
 
   // --- async_tasks ---
@@ -351,6 +366,7 @@ function ensureAllColumns(database) {
 
   // --- image_generations ---
   ensureColumns(database, 'image_generations', [
+    { name: 'input_snapshot', type: 'TEXT' },
     { name: 'storyboard_id',    type: 'INTEGER' },
     { name: 'drama_id',         type: 'INTEGER' },
     { name: 'episode_id',       type: 'INTEGER' },
@@ -380,6 +396,7 @@ function ensureAllColumns(database) {
 
   // --- video_generations ---
   ensureColumns(database, 'video_generations', [
+    { name: 'input_snapshot', type: 'TEXT' },
     { name: 'drama_id',             type: 'INTEGER' },
     { name: 'storyboard_id',        type: 'INTEGER' },
     { name: 'provider',             type: 'TEXT' },
@@ -402,6 +419,9 @@ function ensureAllColumns(database) {
     { name: 'provider_task_id',     type: 'TEXT' },
     { name: 'scene_id',             type: 'INTEGER' },
     { name: 'completed_at',         type: 'TEXT' },
+    { name: 'h3_mode',              type: 'TEXT' },
+    { name: 'resolution_plan',       type: 'TEXT' },
+    { name: 'quality_audit',        type: 'TEXT' },
     { name: 'error_msg',            type: 'TEXT' },
     { name: 'created_at',           type: 'TEXT' },
     { name: 'updated_at',           type: 'TEXT' },
@@ -577,6 +597,18 @@ function runMigrationsAndEnsure(database) {
       }
       console.log('[migrate] 缺失提示词自动补齐完成。');
     }
+  } catch (_) {}
+
+  // 修复历史版本中 episodes.video_url 缺少 /static/ 前缀导致前端播放器加载为 HTML 404/200 的问题
+  try {
+    database.prepare(`
+      UPDATE episodes
+      SET video_url = '/static/' || LTRIM(video_url, '/')
+      WHERE video_url IS NOT NULL
+        AND video_url != ''
+        AND video_url NOT LIKE '/static/%'
+        AND video_url NOT LIKE 'http%'
+    `).run();
   } catch (_) {}
 }
 

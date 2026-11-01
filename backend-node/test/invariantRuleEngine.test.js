@@ -5,7 +5,6 @@ const {
   InvariantRuleEngine,
   defaultEngine,
   BaseInvariantRule,
-  checkMovementDynamism,
   checkAudioContract,
   validateAllInvariants,
 } = require('../src/ontology/invariants');
@@ -14,7 +13,7 @@ describe('SHACL InvariantRuleEngine (Specification Pattern)', () => {
   it('defaultEngine contains all built-in rules', () => {
     const rules = defaultEngine.getRules();
     assert.ok(rules.length >= 11, `Expected at least 11 rules, got ${rules.length}`);
-    assert.ok(defaultEngine.getRule('RULE_MOVEMENT_DYNAMISM'));
+    assert.ok(!defaultEngine.getRule('RULE_MOVEMENT_DYNAMISM'));
     assert.ok(defaultEngine.getRule('RULE_AUDIO_CONTRACT'));
     assert.ok(defaultEngine.getRule('RULE_SPEECH_TIMING'));
     assert.ok(defaultEngine.getRule('RULE_VISUAL_SLOT_COMPLETENESS'));
@@ -75,15 +74,15 @@ describe('SHACL InvariantRuleEngine (Specification Pattern)', () => {
       { shot_number: 2, movement: 'static' },
     ];
 
-    // 默认执行应报静态运镜违规
+    // 默认执行应报缺少声音设计
     const res1 = validateAllInvariants(badShots);
-    assert.ok(res1.violations.some((v) => v.rule === 'INVARIANT_NO_CONSECUTIVE_STATIC'));
+    assert.ok(res1.violations.some((v) => v.rule === 'INVARIANT_SILENT_SHOT_MISSING_BGM'));
 
-    // 禁用运镜规则后不应报错
+    // 禁用音频规则后不应报错
     const res2 = validateAllInvariants(badShots, {
-      disabledRules: ['RULE_MOVEMENT_DYNAMISM', 'RULE_AUDIO_CONTRACT'],
+      disabledRules: ['RULE_AUDIO_CONTRACT'],
     });
-    assert.ok(!res2.violations.some((v) => v.rule === 'INVARIANT_NO_CONSECUTIVE_STATIC'));
+    assert.ok(!res2.violations.some((v) => v.rule === 'INVARIANT_SILENT_SHOT_MISSING_BGM'));
   });
 
   it('supports options.severityOverrides to customize rule severity dynamically', () => {
@@ -94,14 +93,13 @@ describe('SHACL InvariantRuleEngine (Specification Pattern)', () => {
 
     const res = validateAllInvariants(badShots, {
       severityOverrides: {
-        RULE_MOVEMENT_DYNAMISM: 'warning',
+        RULE_AUDIO_CONTRACT: 'warning',
       },
-      disabledRules: ['RULE_AUDIO_CONTRACT'],
     });
 
-    // 静态运镜原为 error，现在应降级为 warning
-    const movWarn = res.warnings.find((w) => w.rule === 'INVARIANT_NO_CONSECUTIVE_STATIC');
-    assert.ok(movWarn, 'Should find consecutive static as warning');
+    // 音频规则原为 error，现在应降级为 warning
+    const movWarn = res.warnings.find((w) => w.rule === 'INVARIANT_SILENT_SHOT_MISSING_BGM');
+    assert.ok(movWarn, 'Should find missing sound design as warning');
     assert.equal(movWarn.severity, 'warning');
   });
 

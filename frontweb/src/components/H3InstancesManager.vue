@@ -19,11 +19,10 @@
         </div>
       </div>
       <div class="h3-stat-card highlight-card">
-        <div class="stat-label">⚡ 视频流水线并发数</div>
+        <div class="stat-label">⚡ H3 视频流水线</div>
         <div class="stat-value highlight-text">{{ pipelineVideoConcurrency }}</div>
         <div class="stat-sub">
-          <span v-if="pipelineVideoConcurrency === instances.length" class="synced-tag">已与实例数 ({{ instances.length }}) 完美同步</span>
-          <span v-else class="not-synced-tag">当前并发与实例数不一致</span>
+          <span class="synced-tag">严格串行，按分镜顺序生成</span>
         </div>
       </div>
       <div class="h3-stat-card">
@@ -45,20 +44,9 @@
         <el-button plain :loading="testingAll" @click="refreshAndTestAll">
           <el-icon><Refresh /></el-icon>检测连接 / 刷新负载
         </el-button>
-        <el-button
-          v-if="pipelineVideoConcurrency !== instances.length && instances.length > 0"
-          type="warning"
-          plain
-          :loading="saving"
-          @click="syncConcurrencyDirectly"
-        >
-          <el-icon><Lightning /></el-icon>一键同步并发数为 {{ instances.length }}
-        </el-button>
       </div>
       <div class="bar-right">
-        <el-checkbox v-model="autoSyncConcurrency">
-          保存时自动同步视频并发数 (设为实例数)
-        </el-checkbox>
+        <span class="serial-tip">多个 H3 实例仅作为桥接目标，系统不会并行占用显卡。</span>
         <el-button type="success" :loading="saving" @click="saveInstances">
           <el-icon><Check /></el-icon>保存配置
         </el-button>
@@ -143,16 +131,16 @@
 
     <!-- 调度原理解释卡片 -->
     <div class="h3-help-card">
-      <div class="help-title">💡 MiniMax-H3 多实例分布式生成与并发机制</div>
+      <div class="help-title">💡 MiniMax-H3 多实例串行生成</div>
       <ul class="help-list">
         <li>
-          <b>算力集群负载均衡</b>：桥接适配器在收到视频生成请求时，会实时查询所有实例的 <code>/queue</code> 队列长度，自动将生成任务派发给<b>当前负载最轻、排队最少</b>的 ComfyUI 实例。
+          <b>串行调度</b>：批量任务严格按分镜顺序一个接一个提交，前一镜完成后才开始下一镜。
         </li>
         <li>
-          <b>并发与流水线吞吐</b>：分镜批量生成时，独立的镜头会根据<b>视频并发数（pipeline_video_concurrency）</b>同时并行提交生成。如果配置了 3 个 H3 实例并将并发数设为 3，3 个镜头将分别在 3 张显卡上同时启动生成，速度提升 3 倍！
+          <b>连续性优先</b>：H3 生成、恢复轮询和连续镜头接力共用同一条队列，避免显存争用和跨镜头状态错乱。
         </li>
         <li>
-          <b>一键自动同步</b>：添加或删除实例并保存后，系统会自动将全局视频并发数调整为配置的实例总数，无需再去「生成设置」中手动计算与填写。
+          <b>实例池</b>：多个 ComfyUI 地址仍可保留，用于桥接选择和故障切换，但不会改变串行规则。
         </li>
       </ul>
     </div>
@@ -195,9 +183,8 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, Check, Lightning, Loading } from '@element-plus/icons-vue'
+import { Plus, Refresh, Check, Loading } from '@element-plus/icons-vue'
 import { h3InstancesAPI } from '@/api/h3Instances'
-import { generationSettingsAPI } from '@/api/prompts'
 
 const loading = ref(false)
 const saving = ref(false)
@@ -205,8 +192,7 @@ const testingAll = ref(false)
 const instances = ref([])
 const bridgeUrl = ref('http://127.0.0.1:5689')
 const bridgeOnline = ref(true)
-const pipelineVideoConcurrency = ref(3)
-const autoSyncConcurrency = ref(true)
+const pipelineVideoConcurrency = ref(1)
 
 // 对话框表单
 const dialogVisible = ref(false)
@@ -230,7 +216,7 @@ async function loadData() {
     const res = await h3InstancesAPI.get()
     bridgeUrl.value = res?.bridge_url || 'http://127.0.0.1:5689'
     bridgeOnline.value = Boolean(res?.bridge_online)
-    pipelineVideoConcurrency.value = res?.pipeline_video_concurrency || 3
+    pipelineVideoConcurrency.value = 1
     instances.value = (res?.instances || []).map(i => ({
       url: typeof i === 'string' ? i : (i.url || ''),
       online: Boolean(i.online),
@@ -383,9 +369,9 @@ async function saveInstances() {
   try {
     const res = await h3InstancesAPI.update({
       instances: urlList,
-      auto_sync_concurrency: autoSyncConcurrency.value,
+      auto_sync_concurrency: false,
     })
-    pipelineVideoConcurrency.value = res?.pipeline_video_concurrency || urlList.length
+    pipelineVideoConcurrency.value = 1
     if (Array.isArray(res?.instances)) {
       instances.value = res.instances.map(i => ({
         url: i.url,
@@ -397,23 +383,9 @@ async function saveInstances() {
         error: i.error || null,
       }))
     }
-    ElMessage.success(`H3 实例配置已保存！视频并发数已设为 ${pipelineVideoConcurrency.value}`)
+    ElMessage.success('H3 实例配置已保存，视频将严格按分镜顺序串行生成')
   } catch (err) {
     ElMessage.error(err?.message || '保存失败')
-  } finally {
-    saving.value = false
-  }
-}
-
-async function syncConcurrencyDirectly() {
-  saving.value = true
-  try {
-    const count = instances.value.length
-    await generationSettingsAPI.update({ video_concurrency: count })
-    pipelineVideoConcurrency.value = count
-    ElMessage.success(`已将系统视频并发数直接同步为 ${count}`)
-  } catch (err) {
-    ElMessage.error(err?.message || '同步失败')
   } finally {
     saving.value = false
   }

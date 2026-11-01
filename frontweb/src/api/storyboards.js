@@ -66,72 +66,6 @@ function postUniversalSegmentNdjsonStream(url, body, onDelta) {
   })
 }
 
-/**
- * @param {string} url
- * @param {object} body
- * @param {(delta: string) => void} [onDelta]
- * @returns {Promise<{ video_prompt: string }>}
- */
-function postClassicVideoPromptNdjsonStream(url, body, onDelta) {
-  return fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },
-    body: JSON.stringify(body || {}),
-  }).then(async (res) => {
-    if (!res.ok) {
-      let msg = `请求失败 (${res.status})`
-      try {
-        const j = await res.json()
-        if (j?.error?.message) msg = j.error.message
-      } catch (_) {
-        try {
-          const t = await res.text()
-          if (t) msg = t.slice(0, 200)
-        } catch (_) {}
-      }
-      throw new Error(msg)
-    }
-    const reader = res.body && res.body.getReader()
-    if (!reader) throw new Error('浏览器不支持流式读取')
-    const dec = new TextDecoder()
-    let buf = ''
-    let finalText = ''
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buf += dec.decode(value, { stream: true })
-      let nl
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, nl).trim()
-        buf = buf.slice(nl + 1)
-        if (!line) continue
-        let obj
-        try {
-          obj = JSON.parse(line)
-        } catch (_) {
-          continue
-        }
-        if (obj.type === 'delta' && obj.text && typeof onDelta === 'function') onDelta(String(obj.text))
-        if (obj.type === 'error') throw new Error(obj.message || '请求失败')
-        if (obj.type === 'done') {
-          finalText = (obj.video_prompt && String(obj.video_prompt).trim()) || ''
-        }
-      }
-    }
-    const tail = buf.trim()
-    if (tail) {
-      try {
-        const obj = JSON.parse(tail)
-        if (obj.type === 'error') throw new Error(obj.message || '请求失败')
-        if (obj.type === 'done') finalText = (obj.video_prompt && String(obj.video_prompt).trim()) || finalText
-      } catch (e) {
-        if (e instanceof Error && e.message && !e.message.includes('JSON')) throw e
-      }
-    }
-    return { video_prompt: finalText }
-  })
-}
-
 export const storyboardsAPI = {
   get(id) {
     return request.get(`/storyboards/${id}`)
@@ -144,6 +78,9 @@ export const storyboardsAPI = {
   },
   delete(id) {
     return request.delete(`/storyboards/${id}`)
+  },
+  rebuildImagePrompt(id) {
+    return request.post(`/storyboards/${id}/rebuild-image-prompt`)
   },
   generateFramePrompt(id, data) {
     return request.post(`/storyboards/${id}/frame-prompt`, data)
@@ -181,14 +118,6 @@ export const storyboardsAPI = {
       onDelta
     )
   },
-  /** 经典模式生视频提示词二次 AI 润色流式生成 */
-  polishClassicVideoPromptStream(id, body, onDelta) {
-    return postClassicVideoPromptNdjsonStream(
-      `/api/v1/storyboards/${id}/classic-video-prompt-polish-stream`,
-      body,
-      onDelta
-    )
-  },
   insertBefore(id) {
     return request.post(`/storyboards/${id}/insert-before`, {})
   },
@@ -210,10 +139,6 @@ export const storyboardsAPI = {
   regenerateLayoutDescription(id) {
     return request.post(`/storyboards/${id}/regenerate-layout-description`, {})
   },
-  /** 按后端最新规则重建单镜 video_prompt（含音色锚点，不调用 AI） */
-  rebuildVideoPrompt(id) {
-    return request.post(`/storyboards/${id}/rebuild-video-prompt`, {})
-  },
   /** 按对白/旁白拆成多条分镜（每条仅一人说话或仅画外旁白） */
   splitByAudio(id) {
     return request.post(`/storyboards/${id}/split-by-audio`, {})
@@ -221,5 +146,17 @@ export const storyboardsAPI = {
   /** 一键 AI 智能拆分分镜（按单一动作单元拆为多个连续子分镜） */
   aiSplit(id, data = {}) {
     return request.post(`/storyboards/${id}/ai-split`, data)
+  },
+  /** 一键清除当前集分镜参考帧与/或视频 */
+  clearEpisodeMedia(episodeId, options = {}) {
+    return request.post(`/episodes/${episodeId}/clear-media`, options)
+  },
+  /** 清空当前集分镜脚本（软删除脚本并清除关联媒体） */
+  clearEpisodeStoryboards(episodeId) {
+    return request.post(`/episodes/${episodeId}/clear-storyboards`, {})
+  },
+  /** 一键清除单分镜参考帧与/或视频 */
+  clearStoryboardMedia(id, options = {}) {
+    return request.post(`/storyboards/${id}/clear-media`, options)
   },
 }

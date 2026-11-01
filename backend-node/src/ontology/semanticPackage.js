@@ -9,6 +9,25 @@ const crypto = require('crypto');
 const { createCharacterEntity, createSceneSpatialEntity, createPropEntity } = require('./schema');
 
 /**
+ * episodes.duration is persisted in minutes by both storyboard generators.  A
+ * few old/imported rows used seconds, so values above ten are treated as that
+ * legacy representation.  The script estimate prevents a previously
+ * incomplete storyboard run (for example 31 seconds -> stored as 1 minute)
+ * from shrinking the next Director run to the same incomplete duration.
+ */
+function resolveEpisodeDurationSeconds(ep) {
+  const scriptLength = String(ep?.script_content || '').trim().length;
+  const scriptEstimate = scriptLength > 0
+    ? Math.max(30, Math.round(10 + (scriptLength / 600) * 60))
+    : 60;
+  const stored = Number(ep?.duration);
+  const storedSeconds = Number.isFinite(stored) && stored > 0
+    ? (stored <= 10 ? Math.round(stored * 60) : Math.round(stored))
+    : 0;
+  return Math.max(scriptEstimate, storedSeconds || 0);
+}
+
+/**
  * 编译指定剧集的全量本体语义包
  * @param {object} db - SQLite 数据库连接
  * @param {number|string} episodeId - 剧集 ID
@@ -23,6 +42,7 @@ function compileDramaSemanticPackage(db, episodeId) {
 
   // 1. 抽取角色本体目录（含身份锚点、造型阶段、音色）
   const charRows = db.prepare('SELECT * FROM characters WHERE drama_id = ? AND deleted_at IS NULL ORDER BY id ASC').all(ep.drama_id);
+  const episodeCharacterIds = new Set(db.prepare('SELECT character_id FROM episode_characters WHERE episode_id=?').all(epId).map(r => Number(r.character_id)));
   const characters = charRows.map((r) => {
     let anchors = null;
     if (r.identity_anchors) {
@@ -87,7 +107,9 @@ function compileDramaSemanticPackage(db, episodeId) {
         id: r.id,
         name: r.name,
         type: r.type,
-        eraCategory: drama.era || 'modern',
+        eraCategory: r.era_category || 'universal',
+        eraCompatibility: r.era_compatibility || '',
+        eraReason: r.era_reason || '',
         physicalScale: scale,
         description: r.description,
         prompt: r.image_prompt,
@@ -101,7 +123,7 @@ function compileDramaSemanticPackage(db, episodeId) {
   // 4. 解析剧情时代与世界观
   const dramaEra = (() => {
     const text = `${drama.title || ''} ${drama.genre || ''} ${drama.style || ''} ${ep.script_content || ''}`.toLowerCase();
-    if (/古装|古风|武侠|仙侠|修真|大宋|大明|大唐|汉服|朝代/.test(text)) return 'ancient';
+    if (/古装|古风|武侠|仙侠|修真|大宋|大明|大唐|汉服|朝代|historical|ancient|流放|大靖|朝廷|王爷|皇宫|嫡女|庶女/.test(text)) return 'ancient';
     if (/民国|上海滩|军阀|租界/.test(text)) return 'republic_china';
     if (/赛博|科幻|星际|太空|未来|战舰|全息|AI/.test(text)) return 'sci_fi';
     return 'modern';
@@ -113,9 +135,9 @@ function compileDramaSemanticPackage(db, episodeId) {
     episode_id: epId,
     drama_era: dramaEra,
     script_hash: crypto.createHash('sha256').update(ep.script_content || '').digest('hex'),
-    characters: characters.map(c => ({ id: c.id, name: c.name, stage: c.wardrobe_stage_id })),
+    characters: characters.map(c => ({ id: c.id, name: c.name, stage: c.wardrobe_stage_id, in_episode: episodeCharacterIds.has(c.id) })),
     scenes: scenes.map(s => ({ id: s.id, loc: s.location, landmarks: s.landmarks })),
-    props: props.map(p => ({ id: p.id, name: p.name, scale: p.physical_scale })),
+    props: props.map(p => ({ id: p.id, name: p.name, scale: p.physical_scale, era: p.era_category, compatibility: p.era_compatibility })),
   });
   const revisionHash = crypto.createHash('sha256').update(contentDigest).digest('hex').slice(0, 16);
 
@@ -131,7 +153,7 @@ function compileDramaSemanticPackage(db, episodeId) {
       id: epId,
       episode_number: ep.episode_number,
       title: ep.title || '',
-      duration_target: ep.duration || 60,
+      duration_target: resolveEpisodeDurationSeconds(ep),
       script_content: ep.script_content || '',
     },
     catalogs: {
@@ -151,11 +173,11 @@ function compileDramaSemanticPackage(db, episodeId) {
     },
     // 生成供大模型理解的紧凑结构化提示词概要
     getSystemDigest() {
-      const charLines = characters.map(c => `- ID:${c.id} [${c.name}] (${c.gender}/${c.role}) ${c.appearance ? `外貌:${c.appearance.slice(0, 50)}` : ''}`).join('\n');
+      const charLines = characters.map(c => `- ID:${c.id} [${c.name}] ${episodeCharacterIds.has(c.id) ? "【本集已关联】" : "【剧库可复用，未关联本集】"} (${c.gender}/${c.role}) ${c.appearance ? `外貌:${c.appearance.slice(0, 50)}` : ''}`).join('\n');
       const sceneLines = scenes.map(s => `- ID:${s.id} [${s.location}] 地标:[${s.landmarks.join(',')}] 光照:${s.lighting_env || '自然光'}`).join('\n');
-      const propLines = props.map(p => `- ID:${p.id} [${p.name}] 尺度:[${p.physical_scale}]`).join('\n');
+      const propLines = props.map(p => `- ID:${p.id} [${p.name}] 尺度:[${p.physical_scale}] 时代使用:${p.era_compatibility || '未声明'}${p.era_reason ? `(${p.era_reason})` : ''}`).join('\n');
       return `【剧目本体世界观】剧名：${drama.title || '短剧'} | 时代：${dramaEra} | 风格：${drama.style || '写实电影感'}
-【可用角色本体目录】\n${charLines || '(暂无)'}
+【角色身份选择】人物身份以 ID 为准，名字不是唯一键。优先复用本集已关联人物；同名多个 ID 时必须核对本集选择、外貌与剧情身份，不能在不同镜头随机切换 ID，也不能把同名记录当作同一个角色。仅在剧情确实需要时明确选择剧库其他人物，发布时会按所选 ID 建立本集关联。\n【可用角色本体目录】\n${charLines || '(暂无)'}
 【可用场景空间地标】\n${sceneLines || '(暂无)'}
 【可用物理道具目录】\n${propLines || '(暂无)'}`;
     },
@@ -164,4 +186,5 @@ function compileDramaSemanticPackage(db, episodeId) {
 
 module.exports = {
   compileDramaSemanticPackage,
+  resolveEpisodeDurationSeconds,
 };

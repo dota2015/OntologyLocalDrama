@@ -18,7 +18,7 @@ function setupDb(t) {
   return db;
 }
 
-test('H3 instance configuration and automatic concurrency binding', async (t) => {
+test('H3 instance configuration keeps video generation serial across instances', async (t) => {
   const db = setupDb(t);
 
   // Setup temporary config directory
@@ -55,7 +55,7 @@ test('H3 instance configuration and automatic concurrency binding', async (t) =>
   assert.equal(initial.instances[0].url, 'http://10.10.13.7:8188');
   assert.equal(initial.instances[1].url, 'http://10.10.13.7:8189');
 
-  // 2. Update instances to 3 instances: should write to file and auto-sync pipeline_video_concurrency to 3
+  // 2. Update instances to 3 instances: endpoints are retained, but GPU work stays serial.
   const updateResult = await h3InstanceService.updateInstances(db, log, {
     instances: [
       'http://10.10.13.7:8188',
@@ -67,11 +67,11 @@ test('H3 instance configuration and automatic concurrency binding', async (t) =>
 
   assert.equal(updateResult.ok, true);
   assert.equal(updateResult.count, 3);
-  assert.equal(updateResult.pipeline_video_concurrency, 3);
+  assert.equal(updateResult.pipeline_video_concurrency, 1);
 
   // Verify database setting was updated
   const dbConcurrency = settingsService.getGlobalSetting(db, 'pipeline_video_concurrency');
-  assert.equal(Number(dbConcurrency), 3);
+  assert.equal(Number(dbConcurrency), 1);
 
   // Verify file on disk was updated
   const savedFile = JSON.parse(fs.readFileSync(tempConfigFile, 'utf-8'));

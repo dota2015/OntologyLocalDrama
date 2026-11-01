@@ -24,3 +24,13 @@ export function audioUrl(localPath) {
   if (!p) return ''
   return '/static/' + p.replace(/^\//, '')
 }
+
+export function episodeVideoUrl(urlOrEp) {
+  if (!urlOrEp) return ''
+  const raw = typeof urlOrEp === 'string' ? urlOrEp : (urlOrEp.video_url || urlOrEp.local_path || '')
+  if (!raw) return ''
+  if (/^(https?:|blob:|data:)/i.test(raw)) return raw
+  const trimmed = raw.replace(/^\/+/, '')
+  if (trimmed.startsWith('static/')) return '/' + trimmed
+  return '/static/' + trimmed
+}

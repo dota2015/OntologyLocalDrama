@@ -355,6 +355,21 @@ function routes(db, log) {
         response.internalError(res, err.message || '重新生成布局描述失败');
       }
     },
+    rebuildImagePrompt: (req, res) => {
+      try {
+        const id = Number(req.params.id);
+        if (!id) return response.badRequest(res, '缺少分镜 id');
+        const sb = episodeStoryboardService.rebuildPromptsForStoryboard(db, log, id);
+        if (!sb) return response.notFound(res, '分镜不存在');
+        response.success(res, {
+          ...sb,
+          message: '图片提示词与视觉构图槽位已按最新规则重建并保存',
+        });
+      } catch (err) {
+        log.error('storyboards rebuildImagePrompt', { error: err.message, id: req.params.id });
+        response.internalError(res, err.message || '重建图片提示词失败');
+      }
+    },
     rebuildVideoPrompt: (req, res) => {
       try {
         const id = Number(req.params.id);
@@ -1182,6 +1197,36 @@ function routes(db, log) {
         response.success(res, { total: rows.length, updated });
       } catch (err) {
         log.error('storyboards batchInferParams', { error: err.message });
+        response.internalError(res, err.message);
+      }
+    },
+    clearEpisodeMedia: (req, res) => {
+      try {
+        const episodeId = req.params.episode_id;
+        const result = episodeStoryboardService.clearEpisodeMedia(db, log, episodeId, req.body || {});
+        response.success(res, result);
+      } catch (err) {
+        log.error('storyboards clearEpisodeMedia', { error: err.message });
+        response.internalError(res, err.message);
+      }
+    },
+    clearEpisodeStoryboards: (req, res) => {
+      try {
+        const episodeId = req.params.episode_id;
+        const result = episodeStoryboardService.clearEpisodeStoryboards(db, log, episodeId);
+        response.success(res, result);
+      } catch (err) {
+        log.error('storyboards clearEpisodeStoryboards', { error: err.message });
+        response.internalError(res, err.message);
+      }
+    },
+    clearStoryboardMedia: (req, res) => {
+      try {
+        const storyboardId = req.params.id;
+        const result = episodeStoryboardService.clearStoryboardMedia(db, log, storyboardId, req.body || {});
+        response.success(res, result);
+      } catch (err) {
+        log.error('storyboards clearStoryboardMedia', { error: err.message });
         response.internalError(res, err.message);
       }
     },

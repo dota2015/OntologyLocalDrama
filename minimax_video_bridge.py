@@ -162,6 +162,31 @@ def prepare_workflow(body):
     return workflow, prompt_text, output_duration, generation_frames
 
 
+def execution_snapshot(workflow, prompt_id):
+    """Report the executed sampler values, not estimated request defaults."""
+    def inputs(node):
+        return workflow.get(node, {}).get("inputs", {})
+    return {
+        "prompt_id": prompt_id,
+        "model": inputs("1").get("unet_name"),
+        "mode": "ref2va" if workflow.get("5", {}).get("class_type") == "MiniMaxH3ReferenceToVideo" else "fl2va",
+        "text_encoder": inputs("2").get("clip_name"),
+        "video_vae": inputs("3").get("vae_name"),
+        "audio_vae": inputs("4").get("vae_name"),
+        "width": inputs("5").get("width"),
+        "height": inputs("5").get("height"),
+        "generation_frames": inputs("5").get("length"),
+        "output_frames": inputs("15").get("length"),
+        "output_duration": inputs("16").get("duration"),
+        "fps": inputs("13").get("fps"),
+        "steps": inputs("8").get("steps"),
+        "scheduler": inputs("8").get("scheduler"),
+        "sampler": inputs("7").get("sampler_name"),
+        "seed": inputs("9").get("noise_seed"),
+        "seed_source": "executed_workflow",
+    }
+
+
 def image_inputs(body):
     """Preserve explicit frame/reference roles; never silently drop supplied images."""
     content = body.get("content", [])
@@ -447,6 +472,7 @@ async def create_video(request: Request):
     if not prompt_id:
         raise HTTPException(status_code=502, detail="ComfyUI did not return a prompt_id")
 
+    execution = execution_snapshot(workflow, prompt_id) if ENGINE == "minimax_h3" else None
     task_data = {
         "id": prompt_id,
         "status": "processing",
@@ -455,12 +481,13 @@ async def create_video(request: Request):
         "duration": duration,
         "video_url": None,
         "comfy_url": target_comfy,
+        "execution": execution,
     }
     _save_task(prompt_id, task_data)
     log.info("%s task=%s on %s duration=%ss generation_frames=%s fps=%s",
              MODEL_LABEL, prompt_id, target_comfy, duration, generation_frames, FPS)
     return {"id": prompt_id, "object": "video", "created": int(time.time()),
-            "status": "processing", "duration": duration}
+            "status": "processing", "duration": duration, "execution": execution}
 
 
 def completed_response(task_id, video_url):

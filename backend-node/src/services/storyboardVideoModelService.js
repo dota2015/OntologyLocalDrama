@@ -2,6 +2,7 @@ const aiConfigs = require('./aiConfigService');
 const videoClient = require('./videoClient');
 const { meaningful } = require('./speechExtractionService');
 const { speechFromPrompt } = require('../utils/speechTiming');
+const { isSupportedVideoConfig, assertSupportedVideoConfig } = require('./videoModelSupport');
 
 function hasSpeech(shot) {
   if (meaningful(shot?.dialogue) || meaningful(shot?.narration)) return true;
@@ -9,8 +10,8 @@ function hasSpeech(shot) {
   return !!(meaningful(cues.dialogue) || meaningful(cues.narration));
 }
 function automaticModel(configs, speech) {
-  const active = configs.filter(c => c.is_active);
-  // 默认直接使用 minimax_h3，不再根据是否有台词自动切换推荐 wan2.2
+  const active = configs.filter(c => c.is_active && isSupportedVideoConfig(c));
+  // 视频生成只有 MiniMax H3 一条受支持链路。
   const preferred = active.find(c => {
     const proto = videoClient.resolveVideoProtocol(c);
     const m = String(c.default_model || c.model || '');
@@ -37,6 +38,8 @@ function resolveStoryboardModel(db, body) {
   const explicit = body.model || shot?.video_model;
   const selected = explicit || (shot ? automaticModel(aiConfigs.listConfigs(db, 'video'), hasSpeech(shot)) : null);
   const config = videoClient.getDefaultVideoConfig(db, selected);
+  if (!config) throw Object.assign(new Error('没有可用的 MiniMax H3 视频配置'), { status: 400 });
+  assertSupportedVideoConfig(config, selected);
   if (explicit && (!config || !(Array.isArray(config.model) ? config.model : [config.model]).includes(explicit))) throw new Error('所选视频模型未启用或已删除，请重新选择');
   return { model: selected || config?.default_model || null, provider: config?.provider || body.provider || 'chatfire', config, shot };
 }

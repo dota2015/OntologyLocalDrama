@@ -52,16 +52,11 @@ export async function runVideoStep(drama, sb, genOpts) {
   const imagesBySbId = genOpts?.imagesBySbId || {}
   const { first, last } = sbVideoFirstLastUrls(sb, imagesBySbId, useFirstLast)
   const imgPath = first || storyboardImageUrl(sb)
-  if (!imgPath && !sb.video_prompt && !last) {
-    throw new Error(`分镜 #${sb.storyboard_number ?? sb.id} 缺少分镜图，无法生成视频`)
-  }
   const absoluteFirst = toAbsoluteMediaUrl(imgPath)
   const absoluteLast = last ? toAbsoluteMediaUrl(last) : undefined
-  const prompt = sb.video_prompt || sb.polished_prompt || sb.image_prompt || sb.description || ''
   const res = await videosAPI.create({
     drama_id: drama.id,
     storyboard_id: sb.id,
-    prompt,
     image_url: absoluteFirst || undefined,
     first_frame_url: absoluteFirst || undefined,
     last_frame_url: absoluteLast,

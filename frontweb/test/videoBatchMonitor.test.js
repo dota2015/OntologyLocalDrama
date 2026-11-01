@@ -12,6 +12,15 @@ test('video tasks cannot become failures from 10/15/30 minute browser thresholds
   assert.equal(videoAwareMaxAttempts({resourceType:'sb_image'}),450)
 })
 
+test('director storyboard tasks remain visible until the backend reaches a terminal state', () => {
+  const remoteTask = { type: 'director_storyboard_generation', status: 'processing' }
+  const recoveredTask = { taskType: 'director_storyboard_generation', resourceType: 'generate_storyboard' }
+  assert.equal(canExpireLocally(remoteTask), false)
+  assert.equal(canExpireLocally(recoveredTask), false)
+  assert.equal(videoAwareMaxAttempts(remoteTask), Infinity)
+  assert.equal(videoAwareMaxAttempts(recoveredTask), Infinity)
+})
+
 test('refresh attaches to server progress and disposing never sends a stop or creation request', async () => {
   const statuses=[]; const scheduled=[]
   const monitor=createVideoBatchMonitor({getBatch:async id=>({id:'persisted',episode_id:id,current:3,status:'running'}),

@@ -14,6 +14,19 @@ const routes = require('../src/routes/videos');
 const migrate = require('../src/db/migrate');
 const log = { info() {}, warn() {}, error() {} };
 
+function fl2vaAgentPlan() {
+  return JSON.stringify({
+    h3_mode: 'fl2va',
+    h3_mode_reason: '测试镜头使用首帧锁定开场构图',
+    first_frame_policy: 'generate_new',
+    first_frame_reason: '由 Qwen-Image 生成独立首帧',
+    last_frame_policy: 'generate_tail',
+    last_frame_reason: '测试镜头要求锁定结束状态',
+    required_references: [],
+    speech_plan: { audio_references: [] },
+  });
+}
+
 function setup(t, file = ':memory:') {
   const db = new Database(file);
   t.after(() => { if (db.open) db.close(); });
@@ -23,6 +36,8 @@ function setup(t, file = ':memory:') {
   db.exec(`INSERT INTO dramas(id,title) VALUES(1,'测试剧'),(2,'外剧');
     INSERT INTO episodes(id,drama_id,episode_number) VALUES(7,1,2),(8,2,1);
     INSERT INTO storyboards(id,episode_id,storyboard_number,duration,title) VALUES(80,7,7,8,'当前'),(81,7,8,8,'下一镜'),(82,7,9,8,'最后'),(90,8,1,8,'外剧');`);
+  const savePlan = db.prepare('UPDATE storyboards SET semantic_slots=? WHERE id=?');
+  for (const id of [80, 81, 82]) savePlan.run(fl2vaAgentPlan(), id);
   t.mock.method(ai, 'listConfigs', () => [{ id:1, is_active:true, is_default:true, provider:'minimax_h3', api_protocol:'minimax_h3', model:['minimax_h3'], default_model:'minimax_h3' }]);
   const body = { drama_id:1, shots:[82,80,81].map(storyboard_id => ({storyboard_id,model:'minimax_h3',prompt:'A boy walks.',first_frame_url:'http://example/first.png',last_frame_url:'http://example/last.png',duration:8})) };
   return {db,body};
@@ -32,12 +47,34 @@ function finish(db, id, success = true) {
   db.prepare('UPDATE video_generations SET status=?,local_path=?,error_msg=? WHERE id=?').run(success ? 'completed':'failed', success ? `videos/${id}.mp4` : null, success ? null:'模拟上游失败',id);
 }
 
+test('Wan2.2 submissions are rejected before creating generation records', t => {
+  const { db } = setup(t);
+  const wan = 'Wan2.2-I2V-A14B-FP8-4steps';
+  ai.listConfigs.mock.mockImplementation(() => [{
+    id: 2, is_active: true, is_default: true, provider: 'comfyui_wan22',
+    api_protocol: 'comfyui_wan22', model: [wan], default_model: wan,
+  }]);
+  assert.throws(() => submissions.submitVideo(db, log, {
+    drama_id: 1,
+    storyboard_id: 80,
+    model: wan,
+    prompt: 'A boy walks.',
+    first_frame_url: 'http://example/first.png',
+    reference_image_urls: Array.from({ length: 10 }, (_, i) => `http://example/ref-${i}.png`),
+    duration: 5,
+  }), /没有可用的 MiniMax H3|仅支持 MiniMax H3/);
+  assert.equal(db.prepare('SELECT COUNT(*) count FROM video_generations').get().count, 0);
+});
+
 test('batch survives database reopen, attaches an already-running H3, and dispatches each remaining shot exactly once', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(),'lmd-batch-'));
   t.after(() => fs.rmSync(dir,{recursive:true,force:true}));
   const file = path.join(dir,'queue.db');
   let {db,body} = setup(t,file);
   const existing = submissions.submitVideo(db,log,{...body.shots[1],drama_id:1});
+  const planned = db.prepare('SELECT h3_mode,resolution_plan FROM video_generations WHERE id=?').get(existing.id);
+  assert.equal(planned.h3_mode, 'fl2va');
+  assert.equal(JSON.parse(planned.resolution_plan).mode, 'fl2va');
   db.prepare('UPDATE video_generations SET provider_task_id=? WHERE id=?').run('preserve-comfy-prompt-id',existing.id);
   const batch = batches.createBatch(db,log,7,body);
   assert.deepEqual(batch.items.map(i=>i.storyboard_id),[80,81,82]);
@@ -167,6 +204,9 @@ test('video heartbeat refreshes activity during long model calls and stops on co
   t.mock.method(videoClient,'callVideoApi',async()=>new Promise(resolve=>{release=()=>resolve({error:'Test ends call'});}));
   const pending=videos.processVideoGeneration(db,log,row.id);
   await flush();
+  assert.equal(tasks.getTask(db,row.task_id).status,'processing');
+  assert.ok(tasks.getTask(db,row.task_id).progress>0);
+  assert.match(tasks.getTask(db,row.task_id).message,/视频任务已开始/);
   db.prepare("UPDATE async_tasks SET updated_at='2000-01-01T00:00:00Z' WHERE id=?").run(row.task_id);
   heartbeat();
   assert.ok(Date.now()-Date.parse(tasks.getTask(db,row.task_id).updated_at)<1000);
@@ -176,15 +216,17 @@ test('video heartbeat refreshes activity during long model calls and stops on co
   assert.equal(clearCount,1);
 });
 
-test('mixed-model continuity prepares the previous completed tail on the server and retains the selected last frame', async t => {
+test('Agent-planned H3 continuity prepares the previous completed tail and retains the selected last frame', async t => {
   const {db,body}=setup(t);
-  const wan='Wan2.2-I2V-A14B-FP8-4steps';
   t.mock.method(ai,'listConfigs',()=>[
     {is_active:true,is_default:true,provider:'minimax_h3',api_protocol:'minimax_h3',model:['minimax_h3']},
-    {is_active:true,provider:'comfyui_wan22',api_protocol:'comfyui_wan22',model:[wan]},
   ]);
+  const inheritedPlan = JSON.parse(fl2vaAgentPlan());
+  inheritedPlan.first_frame_policy = 'inherit_tail';
+  inheritedPlan.first_frame_reason = '导演 Agent 指定承接上镜真实尾帧';
+  db.prepare('UPDATE storyboards SET semantic_slots=? WHERE id=81').run(JSON.stringify(inheritedPlan));
   body.continuity=true;
-  body.shots=body.shots.filter(s=>s.storyboard_id!==82).map(s=>s.storyboard_id===81?{...s,model:wan}:s);
+  body.shots=body.shots.filter(s=>s.storyboard_id!==82);
   batches.createBatch(db,log,7,body);
   t.mock.method(require('../src/config'),'loadConfig',()=>({storage:{local_path:'/tmp/no-actual-files',base_url:'http://app/static'}}));
   let tailCalls=0;
@@ -203,17 +245,15 @@ test('mixed-model continuity prepares the previous completed tail on the server 
   assert.equal(video.last_frame_url,'http://example/last.png');
   assert.deepEqual(JSON.parse(video.reference_image_urls),['http://app/static/projects/test/tail.png','http://example/last.png']);
 });
-test('a Wan shot with a new outfit retains its own opening frame instead of the previous old outfit', async t => {
+test('an H3 shot with a new outfit retains its own opening frame instead of the previous old outfit', async t => {
   const {db,body}=setup(t);
-  const wan='Wan2.2-I2V-A14B-FP8-4steps';
   db.exec("INSERT INTO characters(id,drama_id,name) VALUES(5,1,'王奕宸'); UPDATE storyboards SET characters='[5]' WHERE id IN (80,81);");
   require('../src/services/wardrobeService').saveShot(db,81,{change:{reason:'进入三角洲',characters:[{character_id:5,description:'白色训练服'}]}});
   t.mock.method(ai,'listConfigs',()=>[
     {is_active:true,is_default:true,provider:'minimax_h3',api_protocol:'minimax_h3',model:['minimax_h3']},
-    {is_active:true,provider:'comfyui_wan22',api_protocol:'comfyui_wan22',model:[wan]},
   ]);
   body.continuity=true;
-  body.shots=body.shots.filter(s=>s.storyboard_id!==82).map(s=>s.storyboard_id===81?{...s,model:wan}:s);
+  body.shots=body.shots.filter(s=>s.storyboard_id!==82);
   batches.createBatch(db,log,7,body);
   t.mock.method(require('../src/services/h3NativeService'),'tailFrame',async()=>assert.fail('Old outfit tail must not be reused'));
   const calls=[];
@@ -239,7 +279,7 @@ test('stopping batch can be force-stopped on second stop invocation', async t =>
 test('clearBatch marks finished batch cleared and latestBatch ignores it', t => {
   const { db } = setup(t);
   const batch = batches.createBatch(db, log, 7, { drama_id: 1, continuity: false, shots: [
-    { storyboard_id: 80, duration: 4, prompt: 'A' },
+    { storyboard_id: 80, duration: 4, prompt: 'A', first_frame_url: 'http://example/first.png' },
   ] });
   batches.stopBatch(db, 7, batch.id);
   batches.stopBatch(db, 7, batch.id);

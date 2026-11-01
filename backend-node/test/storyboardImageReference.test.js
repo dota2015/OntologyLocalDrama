@@ -69,7 +69,9 @@ test('Step 2.3 filters out unmentioned characters from multi-character storyboar
 
   // Exact character count rule was injected
   assert.match(capturedOpts.prompt, /出场人数铁律.*严格且仅有 1 人.*奕辰/);
-  assert.match(capturedOpts.prompt, /STRICT RULE: Exactly 1 person \(奕辰\)/);
+  assert.match(capturedOpts.prompt, /The frame contains exactly 1 person: 奕辰/);
+  assert.doesNotMatch(capturedOpts.prompt, /<image\d+>/i, 'business prompt must not inject pipeline visual tokens');
+  assert.doesNotMatch(capturedOpts.prompt, /ZERO\s+clones|clone|克隆分身/i, 'positive prompt must not contain anti-clone concepts');
 
   // sanitizeFramePrompt normalized appearance in prompt
   assert.match(capturedOpts.prompt, /奕辰（(?:见 Image \d+[^）]*|参考图中的人物形象)）/);
@@ -110,68 +112,38 @@ test('Step 2.1 does not inject offscreen/voiceover character into storyboard ref
   assert.ok(!capturedOpts.reference_image_urls.includes('char_30.png'), 'offscreen 妈妈 was NOT added');
 });
 
-test('getCleanSingleCharacterRef crops 16:9 industrial character sheet to single front view and caches it', async (t) => {
-  const sharp = require('sharp');
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lmd-char-crop-test-'));
+test('getCleanSingleCharacterRef preserves full multi-angle character sheet without destructive cropping', async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lmd-char-sheet-test-'));
   t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
 
-  // 1. Create a 1792x1024 test character sheet (aspect ~ 1.75)
   const sheetPath = path.join(tmpDir, 'char_sheet.png');
-  await sharp({
-    create: {
-      width: 1792,
-      height: 1024,
-      channels: 3,
-      background: { r: 255, g: 255, b: 255 }
-    }
-  }).png().toFile(sheetPath);
+  fs.writeFileSync(sheetPath, 'fake-sheet');
 
-  // 2. Also create a 512x768 portrait photo (aspect ~ 0.67 < 1.45)
   const portraitPath = path.join(tmpDir, 'portrait.png');
-  await sharp({
-    create: {
-      width: 512,
-      height: 768,
-      channels: 3,
-      background: { r: 200, g: 200, b: 200 }
-    }
-  }).png().toFile(portraitPath);
+  fs.writeFileSync(portraitPath, 'fake-portrait');
 
-  // Test wide sheet crop
-  const cropped = await imageService.getCleanSingleCharacterRef(tmpDir, sheetPath, log);
-  assert.equal(cropped, path.join(tmpDir, 'char_sheet_front_crop.png'));
-  assert.ok(fs.existsSync(cropped), 'cropped file created on disk');
-  const cropMeta = await sharp(cropped).metadata();
-  assert.equal(cropMeta.width, 491);
-  assert.equal(cropMeta.height, 980);
+  // Multi-angle sheet preserved without cropping
+  const sheetResult = await imageService.getCleanSingleCharacterRef(tmpDir, sheetPath, log);
+  assert.equal(sheetResult, sheetPath, 'multi-angle character sheet is preserved intact');
 
-  // Test cache reuse (does not throw, returns existing file)
-  const cached = await imageService.getCleanSingleCharacterRef(tmpDir, sheetPath, log);
-  assert.equal(cached, cropped);
-
-  // Test portrait image (aspect < 1.45) -> untouched
+  // Portrait image preserved without cropping
   const portraitResult = await imageService.getCleanSingleCharacterRef(tmpDir, portraitPath, log);
-  assert.equal(portraitResult, portraitPath, 'portrait is not cropped');
+  assert.equal(portraitResult, portraitPath, 'portrait is preserved intact');
+
+  // Legacy _front_crop path is normalized back to original
+  const legacyCrop = path.join(tmpDir, 'char_sheet_front_crop.png');
+  const normalized = await imageService.getCleanSingleCharacterRef(tmpDir, legacyCrop, log);
+  assert.equal(normalized, sheetPath, 'legacy crop is normalized back to original sheet');
 });
 
-test('processImageGeneration automatically provides clean single front-view crop for characters with industrial sheets', async (t) => {
+test('processImageGeneration provides full multi-angle reference for characters without destructive cropping', async (t) => {
   const db = makeDb(t);
-  const sharp = require('sharp');
 
   // Find the temp storage path configured in makeDb
   const storageRoot = config.loadConfig().storage.local_path;
   const sheetRelPath = 'char_yichen_sheet.png';
   const sheetAbsPath = path.join(storageRoot, sheetRelPath);
-
-  // Create a 1792x1024 industrial sheet in storage
-  await sharp({
-    create: {
-      width: 1792,
-      height: 1024,
-      channels: 3,
-      background: { r: 240, g: 240, b: 240 }
-    }
-  }).png().toFile(sheetAbsPath);
+  fs.writeFileSync(sheetAbsPath, 'fake-yichen-sheet');
 
   db.prepare("INSERT INTO dramas (id, title) VALUES (1, '测试剧')").run();
   db.prepare("INSERT INTO episodes (id, drama_id, episode_number, title) VALUES (1, 1, 1, '第1集')").run();
@@ -199,11 +171,9 @@ test('processImageGeneration automatically provides clean single front-view crop
   await imageService.processImageGeneration(db, log, 903);
 
   assert.ok(capturedOpts, 'callImageApi was called');
-  // Must contain the front cropped version instead of raw multi-view sheet!
-  const hasFrontCrop = capturedOpts.reference_image_urls.some(ref => ref.includes('char_yichen_sheet_front_crop.png'));
-  assert.ok(hasFrontCrop, 'reference_image_urls contains the single front view crop: ' + JSON.stringify(capturedOpts.reference_image_urls));
+  // Must preserve the full multi-angle sheet
   const hasRawSheet = capturedOpts.reference_image_urls.some(ref => ref === sheetRelPath);
-  assert.ok(!hasRawSheet, 'raw multi-view sheet was replaced');
+  assert.ok(hasRawSheet, 'reference_image_urls contains the full multi-angle sheet: ' + JSON.stringify(capturedOpts.reference_image_urls));
 });
 
 test('getCleanSingleSceneRef extracts top-left establishing wide shot for 2x2 quad-grid scenes', async (t) => {
@@ -300,4 +270,31 @@ test('processImageGeneration automatically provides clean establishing shot for 
   assert.ok(hasEstablishingCrop, 'reference_image_urls contains establishing wide shot crop: ' + JSON.stringify(capturedOpts.reference_image_urls));
   const hasRawQuad = capturedOpts.reference_image_urls.some(ref => ref === sceneQuadRel);
   assert.ok(!hasRawQuad, 'raw 2x2 quad grid scene was replaced');
+});
+
+test('Director-owned image execution preserves manual text and all cast references without a rewrite', async t => {
+  const db = makeDb(t);
+  db.exec(`INSERT INTO dramas(id,title) VALUES(1,'测试'); INSERT INTO episodes(id,drama_id,episode_number) VALUES(1,1,1);
+    INSERT INTO characters(id,drama_id,name,local_path) VALUES(10,1,'奕辰','boy.png'),(20,1,'丽霞','mother.png');
+    INSERT INTO storyboards(id,episode_id,storyboard_number,characters,semantic_slots) VALUES(501,1,1,'[10,20]','{"visible_characters":[{"id":10},{"id":20}],"background_characters":[]}');
+    INSERT INTO image_generations(id,storyboard_id,drama_id,prompt,status,frame_type) VALUES(901,501,1,'人工编辑：奕辰看向右侧的妈妈，妈妈安静倾听。','pending','first');`);
+  t.mock.method(require('../src/services/aiClient'), 'generateText', async () => { throw new Error('unexpected rewrite'); });
+  let sent;
+  t.mock.method(imageClient, 'callImageApi', async (_db,_log,opts) => { sent = opts; return { error: 'controlled API failure' }; });
+  await imageService.processImageGeneration(db, log, 901);
+  assert.ok(sent);
+  assert.equal(sent.prompt, '人工编辑：奕辰看向右侧的妈妈，妈妈安静倾听。');
+  assert.deepEqual(sent.reference_image_urls, ['boy.png','mother.png']);
+  assert.deepEqual(sent.input_references.map(r=>r.asset_id), [10,20]);
+  assert.equal(db.prepare('SELECT error_msg FROM image_generations WHERE id=901').get().error_msg,'controlled API failure');
+});
+
+test('Director references reject missing people and overflow instead of silently trimming', t => {
+  const db = makeDb(t);
+  db.exec(`INSERT INTO dramas(id,title) VALUES(1,'测试'); INSERT INTO characters(id,drama_id,name,local_path) VALUES(10,1,'甲','a.png'),(20,1,'乙','b.png');`);
+  const plan = require('../src/services/storyboardImagePlan');
+  const shot = { id: 501, semantic_slots: { visible_characters: [{ id:10 },{ id:20 }] } };
+  assert.throws(() => plan.resolveReferences(db,shot,{},[],{ total:1,maxCharacters:1,maxObjects:1 }), /超出/);
+  db.prepare('UPDATE characters SET local_path=NULL WHERE id=20').run();
+  assert.throws(() => plan.resolveReferences(db,shot,{},[],{ total:4,maxCharacters:3,maxObjects:4 }), /缺少图片/);
 });

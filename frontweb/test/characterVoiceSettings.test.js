@@ -54,5 +54,5 @@ test('automatic model choice defaults to minimax_h3 and falls back when unavaila
   assert.equal(automaticVideoModel(configs,{dialogue:true}),'minimax_h3')
   assert.equal(automaticVideoModel(configs,{narration:true}),'minimax_h3')
   assert.equal(automaticVideoModel(configs,{}),'minimax_h3')
-  assert.equal(automaticVideoModel([configs[0]],{}),'Wan2.2')
+  assert.equal(automaticVideoModel([configs[0]],{}),'')
 })

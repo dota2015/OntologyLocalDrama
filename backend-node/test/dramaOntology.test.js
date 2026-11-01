@@ -9,7 +9,6 @@ const {
   CAMERA_MOVEMENTS,
 } = require('../src/ontology/schema');
 const {
-  checkMovementDynamism,
   checkAudioContract,
   checkSpeechTiming,
   checkVisualSlotCompleteness,
@@ -18,6 +17,7 @@ const {
   checkPhysicalVisualDescription,
   checkSpatialContinuity,
   checkPropEraAndScale,
+  checkCrossSlotInvariants,
   checkObsoleteAssets,
   validateAllInvariants,
 } = require('../src/ontology/invariants');
@@ -36,9 +36,10 @@ const {
   synthesizeVideoSlots,
 } = require('../src/ontology/videoSlots');
 const { compileDramaSemanticPackage } = require('../src/ontology/semanticPackage');
-const { refineSingleStoryboard } = require('../src/ontology/directorAgent');
+const { refineSingleStoryboard, applySingleStoryboardPatch } = require('../src/ontology/directorAgent');
 const { autocompleteEntityFromScript } = require('../src/ontology/extractionAgent');
 const aiClient = require('../src/services/aiClient');
+const agentsRuntime = require('../src/services/agentsRuntime');
 
 describe('Audiovisual Drama Ontology & Semantic Invariants', () => {
   let db;
@@ -48,6 +49,7 @@ describe('Audiovisual Drama Ontology & Semantic Invariants', () => {
     db.exec(`
       CREATE TABLE dramas (id INTEGER PRIMARY KEY, title TEXT, genre TEXT, style TEXT, era TEXT, metadata TEXT, deleted_at TEXT);
       CREATE TABLE episodes (id INTEGER PRIMARY KEY, drama_id INTEGER, episode_number INTEGER, title TEXT, duration INTEGER, script_content TEXT, deleted_at TEXT);
+      CREATE TABLE episode_characters (episode_id INTEGER, character_id INTEGER, PRIMARY KEY (episode_id, character_id));
       CREATE TABLE characters (id INTEGER PRIMARY KEY, drama_id INTEGER, name TEXT, gender TEXT, role TEXT, appearance TEXT, description TEXT, current_stage_id INTEGER, identity_anchors TEXT, voice_id TEXT, custom_voice_id TEXT, speed REAL, pitch REAL, deleted_at TEXT);
       CREATE TABLE scenes (id INTEGER PRIMARY KEY, drama_id INTEGER, location TEXT, time TEXT, prompt TEXT, deleted_at TEXT);
       CREATE TABLE props (id INTEGER PRIMARY KEY, drama_id INTEGER, name TEXT, type TEXT, description TEXT, physical_scale TEXT, image_prompt TEXT, deleted_at TEXT);
@@ -85,31 +87,10 @@ describe('Audiovisual Drama Ontology & Semantic Invariants', () => {
     assert.equal(shot.movement, 'push');
   });
 
-  it('Invariant checkMovementDynamism detects static shot ratio > 15% and consecutive statics', () => {
-    const badShots = [
-      { shot_number: 1, movement: 'static' },
-      { shot_number: 2, movement: 'static' },
-      { shot_number: 3, movement: 'push' },
-      { shot_number: 4, movement: 'static' },
-      { shot_number: 5, movement: 'static' },
-      { shot_number: 6, movement: 'static' },
-    ];
-    const violations = checkMovementDynamism(badShots);
-    assert.ok(violations.length >= 2);
-    assert.ok(violations.some((v) => v.rule === 'INVARIANT_NO_CONSECUTIVE_STATIC'));
-    assert.ok(violations.some((v) => v.rule === 'INVARIANT_STATIC_RATIO_EXCEEDED'));
-
-    const goodShots = [
-      { shot_number: 1, movement: 'push' },
-      { shot_number: 2, movement: 'tracking' },
-      { shot_number: 3, movement: 'handheld' },
-      { shot_number: 4, movement: 'pan' },
-      { shot_number: 5, movement: 'pull' },
-      { shot_number: 6, movement: 'static' }, // 1/6 = 16.6%, let's keep <15%
-      { shot_number: 7, movement: 'tracking' },
-    ];
-    const goodViolations = checkMovementDynamism(goodShots);
-    assert.equal(goodViolations.length, 0);
+  it('allows consecutive static shots without a camera movement quota', () => {
+    const { validateAllInvariants } = require('../src/ontology/invariants');
+    const result = validateAllInvariants(Array.from({ length: 8 }, (_, i) => ({ shot_number: i + 1, movement: 'static' })));
+    assert.ok(!result.violations.some(v => /STATIC|MOVEMENT_DYNAMISM/.test(v.rule)));
   });
 
   it('Invariant checkAudioContract flags silent shots with missing BGM prompt', () => {
@@ -157,13 +138,38 @@ describe('Audiovisual Drama Ontology & Semantic Invariants', () => {
     assert.equal(violations[0].rule, 'INVARIANT_SPATIAL_JUMP_CUT');
   });
 
-  it('Invariant checkPropEraAndScale flags modern gadgets in ancient dramas', () => {
+  it('Invariant checkPropEraAndScale uses Agent era contracts and permits intentional time-travel props', () => {
     const props = [
-      { id: 1, name: '青铜长剑', physical_scale: '长约80cm' },
-      { id: 2, name: '智能手机', description: '主角拿出的苹果手机' },
+      { id: 1, name: '青铜长剑', physical_scale: '长约80cm', era_compatibility: 'compatible' },
+      { id: 2, name: '智能手机', description: '穿越者用于查看现代时间', physical_scale: '长15cm', era_compatibility: 'intentional_cross_era', era_reason: '现代人物随身穿越到古代' },
+      { id: 3, name: '液晶电视', physical_scale: '55英寸', era_compatibility: 'incompatible', era_reason: '普通古代宫殿场景没有穿越设定' },
+      { id: 4, name: '押送囚车', description: '不得出现橡胶轮胎等现代结构', physical_scale: '长3米' },
     ];
     const violations = checkPropEraAndScale(props, 'ancient');
-    assert.ok(violations.some((v) => v.rule === 'INVARIANT_PROP_ANACHRONISM'));
+    assert.ok(violations.some((v) => v.rule === 'INVARIANT_PROP_ERA_CONTRACT_CONFLICT' && v.prop_id === 3));
+    assert.ok(!violations.some((v) => v.severity === 'error' && v.prop_id === 2));
+    assert.ok(!violations.some((v) => v.severity === 'error' && v.prop_id === 4));
+    assert.ok(violations.some((v) => v.rule === 'INVARIANT_PROP_ERA_CONTRACT_UNDECLARED' && v.prop_id === 4));
+  });
+
+  it('cross-slot gate rejects divergent persisted and semantic character sets', () => {
+    const violations = checkCrossSlotInvariants([{
+      shot_number: 1,
+      characters: [101],
+      background_characters: [{ character_id: 102 }],
+      character_visuals: [{ character_id: 101 }, { character_id: 102 }],
+      semantic_slots: {
+        visible_characters: [{ id: 102, name: '蜂医' }],
+        background_characters: [],
+        speech_plan: {},
+        sound_plan: {},
+        h3_mode: 'ref2va',
+        first_frame_policy: 'none',
+        last_frame_policy: 'none',
+        required_references: [],
+      },
+    }]);
+    assert.ok(violations.some((v) => v.rule === 'INVARIANT_CHARACTER_SLOT_DIVERGENCE'));
   });
 
   it('compileDramaSemanticPackage packages immutable drama assets with revision hash', () => {
@@ -185,41 +191,64 @@ describe('Audiovisual Drama Ontology & Semantic Invariants', () => {
     assert.match(digest, /废弃仓库/);
   });
 
-  it('refineSingleStoryboard performs targeted micro shot adjustment with ontology & continuity memory', async (t) => {
-    t.mock.method(aiClient, 'generateText', async (database, logger, kind, user, system) => {
-      assert.match(system, /不可变本体世界观契约/);
-      assert.match(user, /用户导演直指定向微调指令/);
+  it('single-shot patch preserves fields that the Agent did not explicitly change', () => {
+    const current = {
+      title: '咳血触泉',
+      duration: 8,
+      dialogue: '父亲：别怕。',
+      character_visuals: [{ character_id: 101, gaze: '看向床边' }],
+      video_slots: { camera: { movement: 'push' }, timing: { duration: 8 } },
+    };
+    const next = applySingleStoryboardPatch(current, {
+      patch: {
+        video_slots: { camera: { movement: 'static' } },
+      },
+    }, 16);
+
+    assert.equal(next.title, current.title);
+    assert.equal(next.dialogue, current.dialogue);
+    assert.deepEqual(next.character_visuals, current.character_visuals);
+    assert.equal(next.video_slots.camera.movement, 'static');
+    assert.equal(next.video_slots.timing.duration, 8);
+  });
+
+  it('single-shot refinement accepts an explicit Agent no-op without changing the candidate', () => {
+    const current = { title: '咳血触泉', duration: 8, dialogue: '' };
+    const next = applySingleStoryboardPatch(current, {
+      noop: true,
+      reason: '苏晚的头部姿态、视线落点和惊慌反应已经满足本次指令',
+    }, 16);
+    assert.deepEqual(next, current);
+    assert.throws(
+      () => applySingleStoryboardPatch(current, { noop: true, patch: {}, reason: '冲突协议' }, 16),
+      /不能同时包含 patch/
+    );
+  });
+
+  it('refineSingleStoryboard carries the patched candidate into the next ReAct round', async (t) => {
+    let calls = 0;
+    t.mock.method(agentsRuntime, 'runAgent', async (database, logger, options) => {
+      calls += 1;
+      const { input: user, instructions: system } = options;
+      assert.match(system, /后端只会校验并编译/);
+      assert.match(user, /【用户指令】/);
+      assert.match(user, /【本集完整剧本（持久导演记忆）】/);
+      assert.match(user, /【本集导演记忆（全部现有分镜摘要）】/);
       assert.match(user, /红狼/);
-      return JSON.stringify({
-        title: '拔枪特写',
-        scene_id: 201,
-        characters: [101],
-        shot_type: '特写',
-        angle_h: 'front_left',
-        angle_v: 'low',
-        angle_s: 'close_up',
-        movement: 'push',
-        lighting_style: 'side',
-        depth_of_field: 'shallow',
-        duration: 4,
-        action: '红狼眼神锐利，迅速拔出手枪指向前方',
-        result: '锁定目标',
-        dialogue: '',
-        bgm_prompt: '急促的心跳脉冲与低音大提琴拉弦音，极度紧绷',
-        sound_effect: '手枪上膛金属咔哒声',
-        layout_description: '红狼位于画面中心偏右，手枪长约20cm位于前景近景特写',
-        emotion: '决绝',
-        polished_prompt: '写实电影感，红狼面部特写，坚毅眼神，黑色战术背心，冷峻侧光，浅景深',
-      });
+      assert.match(user, /只返回一个纯 JSON 对象，并严格二选一/);
+      if (calls === 1) return { patch: { title: '第一轮已修改标题', duration: 0 } };
+      assert.match(user, /第一轮已修改标题/);
+      assert.match(user, /上一轮 ReAct 门禁反馈/);
+      return { patch: { id: 999 } };
     });
 
-    const result = await refineSingleStoryboard(db, { info() {}, warn() {}, error() {} }, {}, 501, '改成拔枪特写，微推运镜，加紧迫BGM');
-    assert.equal(result.storyboard.shot_type, '特写');
-    assert.equal(result.storyboard.movement, 'push');
-    assert.equal(result.storyboard.lighting_style, 'side');
-    assert.equal(result.storyboard.action, '红狼眼神锐利，迅速拔出手枪指向前方');
-    assert.ok(result.storyboard.bgm_prompt.includes('心跳脉冲'));
-    assert.ok(result.storyboard.continuity_snapshot.includes('红狼'));
+    await assert.rejects(
+      () => refineSingleStoryboard(db, { info() {}, warn() {}, error() {} }, {}, 501, '改成拔枪特写，微推运镜，加紧迫BGM', { maxReflectionRounds: 2 }),
+      (err) => err.status === 422 && Array.isArray(err.violations) && err.violations.length > 0
+    );
+    assert.equal(calls, 2);
+    const unchanged = db.prepare('SELECT shot_type, movement, action FROM storyboards WHERE id = 501').get();
+    assert.equal(unchanged.action, '红狼隐蔽在木箱后探头观察');
   });
 
   it('checkObsoleteAssets detects characters, props, scenes no longer in script or storyboards', () => {
@@ -256,7 +285,7 @@ describe('Audiovisual Drama Ontology & Semantic Invariants', () => {
       {
         shot_number: 2,
         duration: 7,
-        dialogue: '露娜: "红狼，别从正面过去！敌人在高台和仓库二层交叉射击，先等我找安全路线！"',
+        dialogue: '露娜: "红狼，别从正面过去！先等我找安全路线！"',
       },
       {
         shot_number: 3,
@@ -287,7 +316,11 @@ describe('Audiovisual Drama Ontology & Semantic Invariants', () => {
     };
     const v1 = checkVisualSlotCompleteness([incompleteSlotShot]);
     assert.ok(v1.some((v) => v.rule === 'INVARIANT_SLOT_MISSING_FACING'));
-    assert.ok(v1.some((v) => v.rule === 'INVARIANT_SLOT_MISSING_HEAD_POSE'));
+    const missingHeadPose = v1.find((v) => v.rule === 'INVARIANT_SLOT_MISSING_HEAD_POSE');
+    assert.ok(missingHeadPose);
+    assert.equal(missingHeadPose.character_id, 101);
+    assert.equal(missingHeadPose.character_name, '红狼');
+    assert.deepEqual(missingHeadPose.conflict_slots, ['character_visuals[0].head_pose']);
 
     // 2. 轨迹位移导致的克隆人风险测试（“从A点跑到了B点”）
     const cloneRiskShot = {
@@ -354,7 +387,7 @@ describe('Audiovisual Drama Ontology & Semantic Invariants', () => {
     assert.ok(slots[0].hands.includes('通讯') || slots[0].hands.includes('手'));
 
     const prompt = compileImagePromptFromSlots(shot, slots, { style: 'photorealistic, ultra-detailed, 8k uhd' });
-    assert.ok(prompt.includes('露娜位于'));
+    assert.ok(prompt.includes('【露娜】'));
     assert.ok(prompt.includes('首帧静止画面'));
     assert.ok(!prompt.includes('从走廊掩体后冲出')); // 无两点动态位移
   });
@@ -399,7 +432,8 @@ describe('Audiovisual Drama Ontology & Semantic Invariants', () => {
 
     const lastPrompt = compileLastFramePromptFromSlots(shot, lastSlots, { style: 'photorealistic, RAW' });
     assert.ok(lastPrompt.includes('尾帧静止画面'));
-    assert.ok(lastPrompt.includes('动作收束瞬间细节'));
+    assert.ok(lastPrompt.includes(wolfLast.posture));
+    assert.ok(lastPrompt.includes(docLast.posture));
     assert.ok(!lastPrompt.includes('连续弹着点')); // 具象化排查
   });
 
@@ -438,7 +472,7 @@ describe('Audiovisual Drama Ontology & Semantic Invariants', () => {
 
     // 画内可见人物全员嘴型闭合审查
     slots.trajectories.forEach((t) => {
-      assert.ok(t.mouth_state.includes('双唇紧闭') || t.mouth_state.includes('严禁张嘴'));
+      assert.ok(t.mouth_state.includes('双唇自然闭合'));
     });
 
     // 物理特效具象化（连续弹着点 -> 碎石与火花）
@@ -457,12 +491,12 @@ describe('Audiovisual Drama Ontology & Semantic Invariants', () => {
 
     // 验证三大核心保障：
     // A. 画外音与全员闭口明确标注
-    assert.ok(videoPrompt.includes('画外无线电呼叫（画内全员闭口无口型）'));
-    assert.ok(videoPrompt.includes('纯画外音传输，画面内所有人物全程紧闭双唇，绝对不开口说话，无任何台词口型动作'));
-    // B. 英文画面与口型约束指令
-    assert.ok(videoPrompt.includes('(off-screen radio voiceover only, all visible characters in frame keep mouth closed, lips sealed, strictly no lip movement, characters do not talk)'));
-    // C. 角色轨迹口型闭口要求
-    assert.ok(videoPrompt.includes('口型状态：双唇紧闭'));
+    assert.match(videoPrompt, /画外无线电呼叫.*画内人物保持双唇自然闭合/);
+    assert.doesNotMatch(videoPrompt, /绝对不开口|严禁张嘴|strictly no lip movement/);
+    // B. 英文画面与口型采用纯正向状态描述
+    assert.ok(videoPrompt.includes('(the voice comes from off screen; every visible character maintains relaxed closed lips and attentive listening expressions)'));
+    // C. 角色轨迹口型使用自然闭合状态
+    assert.ok(videoPrompt.includes('口型状态：双唇自然闭合'));
     // D. 比例标签
     assert.ok(videoPrompt.includes('=VideoRatio: 16:9'));
   });

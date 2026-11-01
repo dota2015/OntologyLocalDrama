@@ -7,7 +7,7 @@
           :model-value="storyboardCount"
           :min="1"
           :max="200"
-          :step="5"
+          :step="1"
           placeholder="自动"
           class="sb-config-input"
           @update:model-value="$emit('update:storyboardCount', $event)"
@@ -32,6 +32,8 @@
           留空由 AI 决定{{ scriptEstimateVideoDurationHint }}
         </span>
       </label>
+      <span class="sb-config-hint">手动值须能容纳完整台词与动作；不足时导演会给出调整建议。</span>
+      <el-alert v-if="planningWarning" :title="planningWarning" type="warning" :closable="false" show-icon />
       <span class="sb-config-divider">｜</span>
       <label class="sb-config-item">
         <span class="sb-config-label">序列图模式</span>
@@ -56,7 +58,7 @@
         @update:model-value="$emit('update:storyboardUniversalOmni', $event)"
         @change="$emit('save-settings', false)"
       >
-        全能分镜模式（每镜输出多子分镜段落式 universal_segment_text，与「生成/润色全能提示词」同版式）
+        全能分镜模式（导演 Agent 按 H3 Ref2VA 多参考方案规划，并输出多子分镜段落）
       </el-checkbox>
       <el-button
         v-if="hasStoryboards"
@@ -119,11 +121,11 @@
             plain
             size="large"
             :loading="batchImageRunning && !singleShotImageInfo"
-            :title="storyboardUseFirstLastFrame ? '仅补齐缺失的首尾帧；每镜先完成首帧，再生成尾帧，已有图片会跳过。' : '仅补齐缺失的分镜图片，已有图片会跳过。'"
+            title="按每镜 Agent 方案补齐所需参考帧：FL2VA 必须有首帧、尾帧按剧情选配；Ref2VA 不生成首尾帧。人工模式覆盖会同步改变本次计划。"
             :disabled="!hasEpisode || batchImageRunning || batchVideoRunning || pipelineRunning || storyboardGenerating || universalOmniPolishRunning"
             @click="$emit('start-batch-image')"
           >
-            {{ storyboardUseFirstLastFrame ? '批量生成首尾帧' : '批量生成分镜图' }}
+            批量生成所需参考帧
           </el-button>
           <el-button
             type="warning"
@@ -136,15 +138,36 @@
             批量生成分镜视频
           </el-button>
           <slot name="batch-speech" />
-          <el-button
-            type="primary"
+          <el-dropdown
+            split-button
+            type="danger"
             size="large"
-            :loading="batchDubbingStarting"
-            :disabled="!hasEpisode || pipelineRunning || storyboardGenerating || universalOmniPolishRunning"
-            title="根据各分镜已整理的台词文本与角色音色，批量调用 TTS 生成语音音频"
-            @click="$emit('start-batch-dubbing')"
+            plain
+            :disabled="!hasEpisode || batchImageRunning || batchVideoRunning || pipelineRunning || storyboardGenerating"
+            title="一键清除当前集分镜的参考帧和分镜视频"
+            @click="$emit('clear-media', 'all')"
+            @command="cmd => $emit('clear-media', cmd)"
           >
-            🎙️ 批量对白与旁白配音(TTS)
+            🗑️ 一键清除参考帧和分镜视频
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="all">
+                  <span style="color: #f56c6c; font-weight: 600;">全部清除（参考帧 + 视频）</span>
+                </el-dropdown-item>
+                <el-dropdown-item command="videos">仅清除分镜视频</el-dropdown-item>
+                <el-dropdown-item command="images">仅清除参考帧（首尾帧图片）</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+          <el-button
+            type="danger"
+            plain
+            size="large"
+            :disabled="!hasEpisode || batchImageRunning || batchVideoRunning || pipelineRunning || storyboardGenerating || universalOmniPolishRunning"
+            title="软删除当前集已有分镜及其媒体；剧本、角色、道具和场景保留，之后可重新运行导演规划"
+            @click="$emit('clear-storyboards')"
+          >
+            🧹 清空当前集分镜脚本
           </el-button>
           <el-button v-if="batchImageRunning" size="large" type="danger" plain @click="$emit('stop-batch-image')">
             停止图片
@@ -164,7 +187,7 @@
           后台生成分镜 {{ singleShotImageInfo.sbNum ? '#' + singleShotImageInfo.sbNum + ' ' : '' }}{{ singleShotImageInfo.slotText }}（可关闭页面）<template v-if="singleShotImageInfo.queuedCount > 0">，还有 {{ singleShotImageInfo.queuedCount }} 个任务排队中</template>
         </span>
         <span v-else>
-          后台{{ storyboardUseFirstLastFrame ? '批量生成首尾帧' : '批量生成分镜图' }}（可关闭页面）：{{ batchImageProgress.current }}/{{ batchImageProgress.total }}
+          后台批量生成所需参考帧（可关闭页面）：{{ batchImageProgress.current }}/{{ batchImageProgress.total }}
         </span>
         <span v-if="batchImageProgress && batchImageProgress.failed > 0" class="batch-failed">
           {{ batchImageProgress.failed }} 条失败
@@ -212,11 +235,13 @@
 import { Loading } from '@element-plus/icons-vue'
 
 defineProps({
+  planningWarning: { type: String, default: '' },
   storyboardCount: { type: [Number, String, null], default: null },
   videoDuration: { type: [Number, String, null], default: null },
   gridMode: { type: String, default: 'single' },
   storyboardUniversalOmni: { type: Boolean, default: false },
   storyboardUseFirstLastFrame: { type: Boolean, default: false },
+  videoFrameContiguity: { type: Boolean, default: false },
   hasStoryboards: { type: Boolean, default: false },
   hasEpisode: { type: Boolean, default: false },
   scriptEstimateStoryboardTitle: { type: String, default: '' },
@@ -232,7 +257,6 @@ defineProps({
   batchVideoRunning: { type: Boolean, default: false },
   batchImageStopping: { type: Boolean, default: false },
   batchVideoStopping: { type: Boolean, default: false },
-  batchDubbingStarting: { type: Boolean, default: false },
   pipelineRunning: { type: Boolean, default: false },
   singleShotImageInfo: { type: Object, default: () => null },
   batchImageProgress: { type: Object, default: () => ({ current: 0, total: 0, failed: 0 }) },
@@ -248,6 +272,7 @@ defineEmits([
   'update:videoDuration',
   'update:gridMode',
   'update:storyboardUniversalOmni',
+  'update:videoFrameContiguity',
   'save-settings',
   'director-generate',
   'add-storyboard',
@@ -255,7 +280,8 @@ defineEmits([
   'audit-invariants',
   'start-batch-image',
   'start-batch-video',
-  'start-batch-dubbing',
+  'clear-media',
+  'clear-storyboards',
   'stop-batch-image',
   'stop-batch-video',
   'export-storyboard-sheet',
@@ -264,6 +290,7 @@ defineEmits([
   'clear-batch-video-errors',
   'retry-failed-batch-videos',
 ])
+
 </script>
 
 <style scoped>

@@ -24,6 +24,7 @@ function createTestDb() {
       image_prompt TEXT, video_prompt TEXT, characters TEXT,
       shot_type TEXT, angle TEXT, angle_h TEXT, angle_v TEXT, angle_s TEXT,
       movement TEXT, lighting_style TEXT, depth_of_field TEXT,
+      video_slots TEXT,
       segment_index INTEGER, segment_title TEXT, creation_mode TEXT,
       universal_segment_text TEXT, status TEXT, created_at TEXT, updated_at TEXT, deleted_at TEXT
     );
@@ -52,47 +53,26 @@ function seedStoryboard(db, { charactersJson = JSON.stringify([{ id: 1, name: '�
   db.prepare('INSERT INTO episodes (id, drama_id, title, script_content) VALUES (1, 1, ?, ?)').run('第1集', '林薇回到老宅。');
   db.prepare('INSERT INTO characters (id, drama_id, name, appearance) VALUES (1, 1, ?, ?)').run('林薇', appearance);
   db.prepare(
-    `INSERT INTO storyboards (id, episode_id, storyboard_number, title, action, characters, created_at, updated_at)
-     VALUES (1, 1, 1, '开场', '林薇走进房间', ?, ?, ?)`
-  ).run(charactersJson, now, now);
+    `INSERT INTO storyboards (id, episode_id, storyboard_number, title, action, characters, video_slots, created_at, updated_at)
+     VALUES (1, 1, 1, '开场', '林薇走进房间', ?, ?, ?, ?)`
+  ).run(charactersJson, JSON.stringify({
+    camera: { shot_type: '中景', angle_h: 'front', angle_v: 'eye_level', angle_s: 'medium', movement: 'tracking' },
+    audio_lip_sync: { mode: 'silent_ambient', speaker_name: '', speaker_in_frame: false, dialogue_content: '', visible_characters_lip_state: 'strictly_sealed' },
+    trajectories: [], environment_vfx: {}, timing: { duration: 5 },
+  }), now, now);
 }
 
-describe('#38 角色造型注入视频提示词', () => {
-  it('rebuildVideoPromptForStoryboard 正常返回且 video_prompt 含角色造型', () => {
+describe('#38 H3 不再持久化派生 video_prompt', () => {
+  it('rebuildVideoPromptForStoryboard 清理历史 video_prompt', () => {
     const db = createTestDb();
     seedStoryboard(db);
+    db.prepare("UPDATE storyboards SET video_prompt='legacy prompt' WHERE id=1").run();
     const sb = svc.rebuildVideoPromptForStoryboard(db, noopLog, 1);
     assert.ok(sb, '应返回更新后的分镜');
-    assert.match(sb.video_prompt, /角色造型：/);
-    assert.match(sb.video_prompt, /「林薇」素色连衣裙，丸子头/);
+    assert.equal(sb.video_prompt, null);
   });
 
-  it('角色无造型信息时不注入角色造型段', () => {
-    const db = createTestDb();
-    seedStoryboard(db, { appearance: '' });
-    const sb = svc.rebuildVideoPromptForStoryboard(db, noopLog, 1);
-    assert.ok(sb);
-    assert.doesNotMatch(sb.video_prompt, /角色造型：/);
-  });
-
-  it('characters JSON 为空时回退 storyboard_characters 关联表', () => {
-    const db = createTestDb();
-    seedStoryboard(db, { charactersJson: '[]' });
-    db.prepare('INSERT INTO storyboard_characters (storyboard_id, character_id) VALUES (1, 1)').run();
-    const sb = svc.rebuildVideoPromptForStoryboard(db, noopLog, 1);
-    assert.match(sb.video_prompt, /「林薇」素色连衣裙，丸子头/);
-  });
-
-  it('composeStoryboardVideoPrompt 有 character_appearances 时输出角色造型段', () => {
-    const prompt = svc.composeStoryboardVideoPrompt(
-      { title: '开场', action: '林薇走进房间', character_appearances: '「林薇」素色连衣裙，丸子头' },
-      '动漫',
-      '16:9'
-    );
-    assert.match(prompt, /角色造型：「林薇」素色连衣裙，丸子头/);
-  });
-
-  it('deriveStoryboardFieldsFromAi 经 characterAppearances 映射注入造型', () => {
+  it('deriveStoryboardFieldsFromAi 不生成 videoPrompt', () => {
     const map = { '1': '「林薇」素色连衣裙，丸子头', 'name:林薇': '「林薇」素色连衣裙，丸子头' };
     const d = svc.deriveStoryboardFieldsFromAi(
       { title: '开场', action: '林薇走进房间', characters: [{ id: 1, name: '林薇' }] },
@@ -100,20 +80,10 @@ describe('#38 角色造型注入视频提示词', () => {
       '16:9',
       { characterAppearances: map }
     );
-    assert.match(d.videoPrompt, /角色造型：「林薇」素色连衣裙，丸子头/);
+    assert.equal(d.videoPrompt, null);
   });
 
-  it('deriveStoryboardFieldsFromAi 无映射时不注入（保持原行为）', () => {
-    const d = svc.deriveStoryboardFieldsFromAi(
-      { title: '开场', action: '林薇走进房间', characters: [{ id: 1, name: '林薇' }] },
-      '动漫',
-      '16:9',
-      {}
-    );
-    assert.doesNotMatch(d.videoPrompt, /角色造型：/);
-  });
-
-  it('saveStoryboards 经 deriveOpts 入库的 video_prompt 含角色造型', () => {
+  it('saveStoryboards 将 video_prompt 入库为 NULL', () => {
     const db = createTestDb();
     seedStoryboard(db, { charactersJson: '[]' });
     svc.saveStoryboards(
@@ -127,6 +97,6 @@ describe('#38 角色造型注入视频提示词', () => {
       { characterAppearances: { '1': '「林薇」素色连衣裙，丸子头', 'name:林薇': '「林薇」素色连衣裙，丸子头' } }
     );
     const row = db.prepare('SELECT video_prompt FROM storyboards WHERE episode_id = 1 AND deleted_at IS NULL').get();
-    assert.match(row.video_prompt, /角色造型：「林薇」素色连衣裙，丸子头/);
+    assert.equal(row.video_prompt, null);
   });
 });

@@ -99,8 +99,6 @@ function setupRouter(cfg, db, log) {
   r.get('/ai-configs', aiConfig.list);
   r.post('/ai-configs', aiConfig.create);
   r.post('/ai-configs/test', aiConfig.testConnection);
-  r.post('/ai-configs/jimeng2-list-assets', aiConfig.listJimeng2MaterialAssets);
-  r.post('/ai-configs/model-ark-asset', aiConfig.modelArkAsset);
   r.get('/ai-configs/vendor-lock', aiConfig.vendorLock);  // 必须在 /:id 之前
   r.put('/ai-configs/bulk-update-key', aiConfig.bulkUpdateKey);  // 必须在 /:id 之前
   r.get('/ai-configs/:id', aiConfig.get);
@@ -177,10 +175,6 @@ function setupRouter(cfg, db, log) {
   r.put('/characters/:id/image-from-library', characters.imageFromLibrary);
   r.post('/characters/:id/add-to-library', characters.addToLibrary);
   r.post('/characters/:id/add-to-material-library', characters.addToMaterialLibrary);
-  r.post('/characters/:id/sd2-certify', characters.sd2Certify);
-  r.post('/characters/:id/sd2-certify/refresh', characters.sd2CertifyRefresh);
-  r.post('/characters/:id/sd2-voice-upload', uploadModule.multerAudioSingle, characters.sd2VoiceUpload);
-  r.post('/characters/:id/sd2-voice-refresh', characters.sd2VoiceRefresh);
   r.post('/characters/:id/extract-from-image', characters.extractFromImage);
   r.post('/characters/:id/extract-anchors', characters.extractAnchors);
 
@@ -250,6 +244,8 @@ function setupRouter(cfg, db, log) {
   });
   r.post('/episodes/:episode_id/characters/extract', stub.episodeCharactersExtract);
   r.get('/episodes/:episode_id/storyboards', storyboards.episodeStoryboardsGet);
+  r.post('/episodes/:episode_id/clear-media', storyboards.clearEpisodeMedia);
+  r.post('/episodes/:episode_id/clear-storyboards', storyboards.clearEpisodeStoryboards);
   r.post('/episodes/:episode_id/finalize', drama.finalizeEpisode);
   r.get('/episodes/:episode_id/download', drama.downloadEpisodeVideo);
 
@@ -340,18 +336,19 @@ function setupRouter(cfg, db, log) {
   r.post('/storyboards/:id/link-first-frame', tailFrameLink.linkFirstFrame);
   r.post('/storyboards/:id/polish-prompt', storyboards.polishPrompt);
   r.post('/storyboards/:id/universal-segment-polish-stream', storyboards.polishUniversalSegmentStream);
-  r.post('/storyboards/:id/classic-video-prompt-polish-stream', storyboards.polishClassicVideoPromptStream);
   r.post('/storyboards/:id/universal-segment-prompt-stream', storyboards.generateUniversalSegmentStream);
   r.post('/storyboards/:id/universal-segment-prompt', storyboards.generateUniversalSegmentPrompt);
   r.post('/storyboards/batch-infer-params', storyboards.batchInferParams);
   r.post('/storyboards/:id/upscale', storyboards.upscale);
   r.post('/storyboards/:id/regenerate-layout-description', storyboards.regenerateLayoutDescription);
-  r.post('/storyboards/:id/rebuild-video-prompt', storyboards.rebuildVideoPrompt);
+  r.post('/storyboards/:id/rebuild-image-prompt', storyboards.rebuildImagePrompt);
   r.post('/storyboards/:id/split-by-audio', storyboards.splitByAudio);
   r.post('/storyboards/:id/ai-split', storyboards.aiSplit);
+  r.post('/storyboards/:id/clear-media', storyboards.clearStoryboardMedia);
 
   // ---------- audio ----------
   r.get('/audio/dubbing/:drama_id', audio.dubbingGet);
+  r.get('/audio/dubbing/:drama_id/profile', audio.dubbingProfileGet);
   r.put('/audio/dubbing/:drama_id', audio.dubbingSave);
   r.post('/audio/dubbing/:drama_id/auto-assign', audio.dubbingAutoAssign);
   r.post('/audio/dubbing/:drama_id/generate', audio.dubbingStart);
@@ -393,6 +390,7 @@ function setupRouter(cfg, db, log) {
   r.get('/agent/history', agent.history);
 
   // ---------- audiovisual ontology & director agent ----------
+  r.get('/ontology/data-dictionary', ontology.getDataDictionary);
   r.get('/episodes/:episode_id/ontology/semantic-package', ontology.getSemanticPackage);
   r.post('/episodes/:episode_id/ontology/validate', ontology.validateEpisodeInvariants);
   r.post('/episodes/:episode_id/ontology/extract-entities', ontology.extractEntities);

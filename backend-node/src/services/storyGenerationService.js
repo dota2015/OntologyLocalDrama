@@ -3,7 +3,7 @@ const aiClient = require('./aiClient');
 const promptI18n = require('./promptI18n');
 const taskService = require('./taskService');
 const dramaService = require('./dramaService');
-const { safeParseAIJSON } = require('../utils/safeJson');
+const { safeParseAIJSON, _jsonrepair } = require('../utils/safeJson');
 const loadConfig = require('../config').loadConfig;
 
 async function generateStory(db, log, body) {
@@ -51,12 +51,26 @@ async function generateStory(db, log, body) {
     text_preview: (rawText || '').slice(0, 200),
   });
 
+  return parseStoryResponse(rawText, episodeCount, log);
+}
+
+function parseStoryResponse(rawText, episodeCount, log) {
   // 解析 JSON，支持多种 AI 返回格式
   let parsed = null;
+  const parseMeta = { truncated: false };
   try {
-    parsed = safeParseAIJSON(rawText, log);
+    parsed = safeParseAIJSON(rawText, null, log, parseMeta);
   } catch (e) {
     log && log.warn && log.warn('Story JSON parse failed', { error: e.message });
+  }
+
+  // 严禁静默丢弃剧集语义：若期望多集但 AI 输出因 token 限制发生物理截断，必须阻断报错
+  if (parseMeta.truncated && episodeCount > 1) {
+    log && log.error && log.error('Story generation was truncated mid-stream by AI token limit', {
+      raw_length: rawText.length,
+      requested_episodes: episodeCount,
+    });
+    throw new Error(`AI 生成剧本被截断未完结，后续剧集丢失！请提高模型 max_tokens 或分批生成（期望 ${episodeCount} 集）`);
   }
 
   // 规范化为集数数组，兼容以下常见 AI 输出格式：
@@ -73,8 +87,13 @@ async function generateStory(db, log, body) {
     if (arrKey) {
       episodeList = parsed[arrKey];
     } else if (parsed.content || parsed.episode) {
-      // 单集对象
-      episodeList = [parsed];
+      // 若只解析出单个对象，但文本中实际包含多个独立剧集对象（AI 未加外层中括号直接输出多个 {...}）
+      const regexEpisodes = extractEpisodesByRegex(rawText);
+      if (regexEpisodes.length > 1) {
+        episodeList = regexEpisodes;
+      } else {
+        episodeList = [parsed];
+      }
     }
   }
 
@@ -86,23 +105,105 @@ async function generateStory(db, log, body) {
     })).filter(ep => ep.content.length > 0);
 
     if (result.length > 0) {
+      assertRequestedEpisodes(result, episodeCount);
       log && log.info && log.info('Story episodes parsed', { count: result.length });
       return { episodes: result };
     }
   }
 
-  // 兜底：JSON 解析失败或返回纯文本，把整段文本当作第 1 集正文
-  log && log.warn && log.warn('Story JSON parse gave no valid episodes, treating as plain text', {
-    text_length: (rawText || '').length,
+  // 兜底策略 1：如果 safeParseAIJSON 无法识别，但文本中存在明显的多集 JSON 结构，尝试正则抢救
+  const salvagedEpisodes = extractEpisodesByRegex(rawText);
+  if (salvagedEpisodes.length > 0) {
+    assertRequestedEpisodes(salvagedEpisodes, episodeCount);
+    log && log.warn && log.warn('Story episodes salvaged by regex extraction', { count: salvagedEpisodes.length });
+    return { episodes: salvagedEpisodes };
+  }
+
+  // 兜底策略 2：仅当文本确属无结构的纯剧本文本时，才当作第 1 集正文
+  // 若文本明明以 [ 或 { 开头或包含 "episode"，说明是损坏的 JSON，绝不可当作正文对白存入数据库
+  const trimmed = (rawText || '').trim();
+  if (trimmed.startsWith('[') || trimmed.startsWith('{') || trimmed.includes('"episode"')) {
+    log && log.error && log.error('Story AI returned broken multi-episode JSON that could not be parsed', {
+      text_head: trimmed.slice(0, 300),
+    });
+    throw new Error('AI 返回的剧本结构异常，无法正确切分多集，请重新生成');
+  }
+
+  log && log.warn && log.warn('Story JSON parse gave no valid episodes, treating plain text as single episode', {
+    text_length: trimmed.length,
   });
-  const fallbackContent = (rawText || '').trim();
-  return {
-    episodes: [{
+  const plainEpisodes = [{
       episode: 1,
       title: '第1集',
-      content: fallbackContent,
-    }],
-  };
+      content: trimmed,
+    }];
+  assertRequestedEpisodes(plainEpisodes, episodeCount);
+  return { episodes: plainEpisodes };
+}
+
+function assertRequestedEpisodes(episodes, episodeCount) {
+  const expected = Math.max(1, Math.floor(Number(episodeCount) || 1));
+  const numbers = episodes.map(ep => Number(ep.episode));
+  const expectedNumbers = Array.from({ length: expected }, (_, i) => i + 1);
+  const exact = episodes.length === expected
+    && numbers.length === new Set(numbers).size
+    && expectedNumbers.every(n => numbers.includes(n));
+  if (!exact) {
+    const err = new Error(`AI 返回剧集数量或编号不完整：期望 ${expected} 集（1-${expected}），实际收到 ${episodes.length} 集（${numbers.join(', ') || '无编号'}）`);
+    err.status = 422;
+    err.code = 'INVARIANT_EPISODE_SET_INCOMPLETE';
+    err.violations = [{
+      rule: 'INVARIANT_EPISODE_SET_INCOMPLETE',
+      severity: 'error',
+      conflict_slots: ['episodes'],
+      expected_episode_count: expected,
+      actual_episode_count: episodes.length,
+      episode_numbers: numbers,
+      message: err.message,
+    }];
+    throw err;
+  }
+}
+
+/**
+ * 结构抢救：通过正则表达式/独立对象解析提取剧集对象，防止 AI 输出损坏导致整个 JSON 丢失
+ */
+function extractEpisodesByRegex(text) {
+  if (!text || typeof text !== 'string') return [];
+  const episodes = [];
+  const objRegex = /\{[^{}]*?"episode"[\s\S]*?\}/g;
+  let match;
+  while ((match = objRegex.exec(text)) !== null) {
+    const rawObj = match[0];
+    let added = false;
+    if (_jsonrepair) {
+      try {
+        const fixed = _jsonrepair(rawObj);
+        const obj = JSON.parse(fixed);
+        if (obj.episode !== undefined && (obj.content || obj.script || obj.text)) {
+          episodes.push({
+            episode: Number(obj.episode),
+            title: (obj.title || `第${obj.episode}集`).trim(),
+            content: (obj.content || obj.script || obj.text || '').trim(),
+          });
+          added = true;
+        }
+      } catch (_) {}
+    }
+    if (!added) {
+      const epNum = rawObj.match(/"episode"\s*:\s*(\d+)/)?.[1];
+      const title = rawObj.match(/"title"\s*:\s*"([^"]+)"/)?.[1];
+      const content = rawObj.match(/"content"\s*:\s*"([\s\S]*?)(?="\s*\})/)?.[1];
+      if (epNum && content) {
+        episodes.push({
+          episode: Number(epNum),
+          title: (title || `第${epNum}集`).trim(),
+          content: content.replace(/\\n/g, '\n').replace(/\\"/g, '"').trim(),
+        });
+      }
+    }
+  }
+  return episodes;
 }
 
 async function processStoryGeneration(db, log, taskId, req) {
@@ -147,7 +248,11 @@ async function processStoryGeneration(db, log, taskId, req) {
     log.info('Story generation completed and saved', { task_id: taskId, drama_id: dramaId, episode_count: episodes.length });
   } catch (err) {
     log.error('processStoryGeneration failed', { task_id: taskId, error: err.message });
-    taskService.updateTaskError(db, taskId, err.message || '故事生成失败');
+    taskService.updateTaskError(db, taskId, err.message || '故事生成失败', {
+      valid: false,
+      violations: err.violations || [],
+      status: err.status || 422,
+    });
   }
 }
 
@@ -182,4 +287,5 @@ function startStoryGeneration(db, log, req) {
 module.exports = {
   generateStory,
   startStoryGeneration,
+  parseStoryResponse,
 };

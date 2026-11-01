@@ -295,20 +295,33 @@ function applyGeneralChatOptions(config, body, options = {}) {
   } catch (_) {}
 
   const next = { ...body };
+  const name = String(next.model || '').toLowerCase();
+  const isQwen = name.includes('qwen');
+  const setQwenThinking = (enabled) => {
+    if (!isQwen) return;
+    const current = next.chat_template_kwargs && typeof next.chat_template_kwargs === 'object'
+      ? next.chat_template_kwargs
+      : {};
+    // vLLM/Qwen chat templates do not consume OpenAI's `thinking` object.
+    // Without this explicit flag Qwen may spend the whole completion budget on
+    // hidden reasoning and return HTTP 200 with an empty message.content.
+    next.chat_template_kwargs = { ...current, enable_thinking: enabled };
+  };
   if (thinking === 'enabled') {
     const effort = reasoningEffort || 'high';
     if (!next.reasoning_effort) {
       next.reasoning_effort = effort;
     }
-    const name = String(next.model || '').toLowerCase();
     if (!next.thinking && (name.includes('deepseek') || name.includes('reason') || name.includes('r1') || name.includes('seed') || name.includes('qwen'))) {
       next.thinking = { type: 'enabled' };
     }
+    setQwenThinking(true);
   } else if (thinking === 'disabled') {
     delete next.reasoning_effort;
     if (next.thinking && typeof next.thinking === 'object' && next.thinking.type === 'enabled') {
       next.thinking = { type: 'disabled' };
     }
+    setQwenThinking(false);
   }
   return next;
 }

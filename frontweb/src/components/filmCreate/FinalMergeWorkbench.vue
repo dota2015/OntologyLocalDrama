@@ -14,13 +14,19 @@
         <el-form-item label="字幕">
           <div class="video-option-row">
             <el-switch v-model="videoSubtitle" />
-            <span v-if="videoSubtitle" class="video-option-hint">开启后，合成整集时会检测解说旁白：若有文案则自动生成 SRT、按分镜时长合成旁白语音（过长加速 / 过短补静音）、与成片对齐后烧录字幕并混音。</span>
+            <span v-if="videoSubtitle" class="video-option-hint">将已有对白和旁白烧录为字幕，按各分镜实际视频时长显示（非逐字语音识别对齐）。仅开启字幕会保留视频原声，无需生成 TTS。</span>
           </div>
         </el-form-item>
-        <el-form-item label="对白烧录">
+        <el-form-item label="替换对白配音">
           <div class="video-option-row">
             <el-switch v-model="videoBurnDialogue" />
-            <span v-if="videoBurnDialogue" class="video-option-hint">开启后，将把各镜对白 TTS 按分镜时长对齐并替换视频原声（有配音的镜头原声会替换；无对白及旁白的镜头保留原有音乐、音效）。可与旁白同时开启。可在上方「批量配音」中重配。</span>
+            <span v-if="videoBurnDialogue" class="video-option-hint">使用已生成的对白 TTS 替换对应镜头原声，包括原有音乐与音效。使用 H3 原声时请关闭；不会重新生成口型。</span>
+          </div>
+        </el-form-item>
+        <el-form-item label="替换旁白配音">
+          <div class="video-option-row">
+            <el-switch v-model="videoBurnNarration" />
+            <span v-if="videoBurnNarration" class="video-option-hint">使用旁白 TTS 替换对应镜头原声，缺失配音时自动生成。与字幕独立；使用 H3 原声时请关闭。</span>
           </div>
         </el-form-item>
         <el-form-item label="水印">
@@ -90,6 +96,7 @@ import { ElMessage } from 'element-plus'
 import { useFilmStore } from '@/stores/film'
 import { useGenerationTaskStore, GEN_RESOURCE } from '@/stores/generationTaskStore'
 import { dramaAPI } from '@/api/drama'
+import { episodeVideoUrl } from '@/utils/mediaUrl'
 import BackgroundMusicSettings from '@/components/BackgroundMusicSettings.vue'
 
 const emit = defineEmits(['openAiConfig'])
@@ -111,6 +118,7 @@ const videoResolution = storeVideoResolution
 // 视频导出配置状态
 const videoSubtitle = ref(false)
 const videoBurnDialogue = ref(false)
+const videoBurnNarration = ref(false)
 const videoWatermark = ref(false)
 const videoWatermarkText = ref('')
 const videoTailBlack = ref(true)
@@ -125,11 +133,11 @@ const videoStatus = computed(() => store.videoStatus)
 const currentEpisodeVideoUrl = computed(() => {
   const ep = store.currentEpisode
   if (!ep) return ''
-  if (ep.video_url) return imageUrl(ep.video_url)
+  if (ep.video_url) return episodeVideoUrl(ep.video_url)
   const vidList = (store.drama?.episodes || []).find((e) => e.id === ep.id)?.videos
   if (Array.isArray(vidList) && vidList.length > 0) {
     const v = vidList[0]
-    return imageUrl(v.video_url || v.local_path || '')
+    return episodeVideoUrl(v.video_url || v.local_path || '')
   }
   return ''
 })
@@ -140,17 +148,12 @@ function setVideoErrorMsg(msg) {
 
 function getFinalizeMergeOptions() {
   return {
-    burn_narration_subtitles: !!videoSubtitle.value,
+    burn_subtitles: !!videoSubtitle.value,
+    burn_narration_audio: !!videoBurnNarration.value,
     burn_dialogue_audio: !!videoBurnDialogue.value,
     watermark_text: videoWatermark.value ? String(videoWatermarkText.value || '').trim().slice(0, 200) : '',
     tail_black_seconds: videoTailBlack.value ? 1.0 : 0,
   }
-}
-
-function onMergeWithDubbing(options) {
-  videoBurnDialogue.value = !!options?.dialogue
-  videoSubtitle.value = !!options?.narration
-  onGenerateVideo()
 }
 
 async function onGenerateVideo() {
@@ -226,13 +229,13 @@ async function flushBackgroundMusic() {
 
 defineExpose({
   getFinalizeMergeOptions,
-  onMergeWithDubbing,
   onGenerateVideo,
   setVideoErrorMsg,
   backgroundMusicPanel,
   flushBackgroundMusic,
   videoSubtitle,
   videoBurnDialogue,
+  videoBurnNarration,
   videoWatermark,
   videoWatermarkText,
   videoTailBlack,

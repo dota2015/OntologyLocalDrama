@@ -180,7 +180,9 @@ async function callImageApi(db, log, opts) {
           return `参考图 ${idx}：提供视觉参考。`;
         });
       const refHeader = `使用 ${refDescriptions.length} 张参考图进行分镜创作：\n${refDescriptions.join('\n')}`;
-      effectivePrompt = `${refHeader}\n\n[GENERATE THIS SCENE — single continuous image, no grid, no split panels / 生成当前单张连续画面，非多格非画中画]:\n${effectivePrompt}`;
+      effectivePrompt = opts.structured_storyboard
+        ? `${refHeader}\n\n当前画面：\n${effectivePrompt}`
+        : `${refHeader}\n\n[GENERATE THIS SCENE — single continuous image, no grid, no split panels / 生成当前单张连续画面，非多格非画中画]:\n${effectivePrompt}`;
     }
   }
 
@@ -201,7 +203,7 @@ async function callImageApi(db, log, opts) {
   const incomingUserNeg = user_negative_prompt || opts.negative_prompt;
   const refCountForNeg = Array.isArray(opts.reference_image_urls) ? opts.reference_image_urls.filter(Boolean).length : 0;
   const isVolcOrSeedream = protocol === 'volcengine' || /seedream|doubao/i.test(model);
-  const autoNegativePrompt = refCountForNeg >= 1 || isVolcOrSeedream || protocol === 'unsloth' ? ANTI_SPLIT_NEGATIVE_PROMPT : '';
+  const autoNegativePrompt = opts.structured_storyboard ? '' : refCountForNeg >= 1 || isVolcOrSeedream || protocol === 'unsloth' ? ANTI_SPLIT_NEGATIVE_PROMPT : '';
   const userNegFragment = (incomingUserNeg && String(incomingUserNeg).trim()) || '';
   const mergedNegativePrompt = mergeNegativePromptFragments(autoNegativePrompt, userNegFragment);
 

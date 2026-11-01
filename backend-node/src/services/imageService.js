@@ -50,7 +50,7 @@ function rowToItem(r) {
 
 function getById(db, id) {
   const r = db.prepare('SELECT * FROM image_generations WHERE id = ? AND deleted_at IS NULL').get(Number(id));
-  return r ? rowToItem(r) : null;
+  return r ? { ...rowToItem(r), input_snapshot: require('./generationInputSnapshot').read(r) } : null;
 }
 
 const path = require('path');
@@ -522,110 +522,24 @@ async function normalizeSavedImageToTargetPixels(absPath, sizeStr, log, ctx) {
  * 若角色参考图是工业四视图/多视图板式（宽屏 16:9，比例 >= 1.45），
  * 扩散模型（如 Qwen-Image / Flux）会因图像包含多姿态（正/背/侧/特写大头/道具特写）而发生注意力串扰，
  * 导致分镜生图中出现多重克隆人、悬浮人头、背向坐姿或重复道具（如双耳机）。
- * 本函数自动将工业参考表的 FRONT VIEW（正面全身立绘）区域精确裁剪为独立的单人正面图并缓存到磁盘。
- * 若图片已经是单人肖像或普通照片（比例 < 1.45），则直接返回原图。
+ * 保留角色完整的多角度参考图（原图）：
+ * 多角度视图（正面、背面、侧面、面部特写）是模型还原人物 360° 立体特征与服装细节的关键。
+ * 不进行破坏性裁切，保证下游视频（MiniMax H3）与图片模型（Qwen-Image-Edit-2511 / FLUX 等）
+ * 能够获取完整的多角度参考信息。若历史路径传入了旧缓存的 _front_crop，自动还原为原始大图。
  *
  * @param {string} storageRoot 存储根目录
  * @param {string} charRef 原始参考图路径（相对路径、/static/、绝对路径或 data: URL）
  * @param {object} [log] 日志器
- * @returns {Promise<string>} 清爽的单人参考图路径（同输入格式）
+ * @returns {Promise<string>} 原始多角度参考图路径
  */
 async function getCleanSingleCharacterRef(storageRoot, charRef, log) {
   if (!charRef || typeof charRef !== 'string') return charRef;
-  let sharpLib;
-  try {
-    sharpLib = require('sharp');
-  } catch (_) {
-    return charRef;
+  // 若传入的是历史旧缓存 _front_crop，自动还原为原始多角度参考图
+  if (charRef.includes('_front_crop') || charRef.includes('_front_clean')) {
+    const orig = charRef.replace(/_front_(?:crop|clean)/g, '');
+    return orig;
   }
-
-  try {
-    // 1. 如果是 base64 / data:image
-    if (charRef.startsWith('data:image/')) {
-      const parts = charRef.split(',');
-      if (parts.length < 2) return charRef;
-      const buf = Buffer.from(parts[1], 'base64');
-      const meta = await sharpLib(buf).metadata();
-      if (!meta.width || !meta.height) return charRef;
-      const aspect = meta.width / meta.height;
-      if (aspect >= 1.45) {
-        const left = Math.round(meta.width * 0.268);
-        const top = Math.round(meta.height * 0.039);
-        const width = Math.min(Math.round(meta.width * 0.274), meta.width - left);
-        const height = Math.min(Math.round(meta.height * 0.957), meta.height - top);
-        const croppedBuf = await sharpLib(buf).extract({ left, top, width, height }).toBuffer();
-        if (log) log.info('[角色参考图] 自动从多视图基板裁剪正面单人图 (data URL)', { aspect: aspect.toFixed(2), width, height });
-        return `data:image/png;base64,${croppedBuf.toString('base64')}`;
-      }
-      return charRef;
-    }
-
-    // 2. 如果是 http(s) URL 且指向本地 /static/ 资源
-    let urlObj = null;
-    let effectiveRef = charRef;
-    if (/^https?:\/\//i.test(charRef)) {
-      try {
-        urlObj = new URL(charRef);
-        if (urlObj.pathname.startsWith('/static/')) {
-          effectiveRef = urlObj.pathname;
-        } else {
-          return charRef;
-        }
-      } catch (_) {
-        return charRef;
-      }
-    }
-
-    const isStatic = effectiveRef.startsWith('/static/');
-    const relOrAbs = isStatic ? effectiveRef.replace(/^\/static\//, '') : effectiveRef;
-    const absPath = path.isAbsolute(relOrAbs) ? relOrAbs : path.join(storageRoot, decodeURIComponent(relOrAbs));
-
-    if (!fs.existsSync(absPath)) return charRef;
-
-    // 避免 Windows 中文路径 libvips 错误，统一 readFileSync 为 buffer
-    const fileBuf = fs.readFileSync(absPath);
-    const meta = await sharpLib(fileBuf).metadata();
-    if (!meta.width || !meta.height) return charRef;
-    const aspect = meta.width / meta.height;
-
-    // 工业多视图通常是 16:9（aspect >= 1.45），单人立绘/照片通常是 3:4, 1:1, 9:16（aspect < 1.45）
-    if (aspect < 1.45) {
-      return charRef;
-    }
-
-    const left = Math.round(meta.width * 0.268);
-    const top = Math.round(meta.height * 0.039);
-    const width = Math.min(Math.round(meta.width * 0.274), meta.width - left);
-    const height = Math.min(Math.round(meta.height * 0.957), meta.height - top);
-
-    const ext = path.extname(absPath) || '.png';
-    const cropFileName = path.basename(absPath, ext) + '_front_crop' + ext;
-    const cropAbsPath = path.join(path.dirname(absPath), cropFileName);
-
-    if (!fs.existsSync(cropAbsPath)) {
-      await sharpLib(fileBuf).extract({ left, top, width, height }).toFile(cropAbsPath);
-      if (log) log.info('[角色参考图] 已从工业四视图精确提取单人正面全身图', {
-        src: path.basename(absPath),
-        crop: cropFileName,
-        orig: `${meta.width}x${meta.height}`,
-        cropSize: `${width}x${height}`,
-      });
-    }
-
-    if (urlObj) {
-      urlObj.pathname = path.posix.join(path.posix.dirname(urlObj.pathname), cropFileName);
-      return urlObj.toString();
-    } else if (isStatic) {
-      return path.posix.join(path.posix.dirname(effectiveRef), cropFileName);
-    } else if (path.isAbsolute(charRef)) {
-      return cropAbsPath;
-    } else {
-      return path.join(path.dirname(charRef), cropFileName);
-    }
-  } catch (err) {
-    if (log) log.warn('[角色参考图] 提取单人正面全身图失败，使用原图', { error: err.message, ref: charRef });
-    return charRef;
-  }
+  return charRef;
 }
 
 /**
@@ -988,6 +902,22 @@ async function processImageGeneration(db, log, imageGenId) {
     /** 分镜 characters 列已显式配置时，不再用 Step2.3「台词是否出现人名」过滤参考图（以勾选为准） */
     let skipStep23PromptCharFilter = false;
     const shotLooks=row.storyboard_id?require('./wardrobeService').getShot(db,row.storyboard_id).characters:[];
+    const imagePlan = require('./storyboardImagePlan');
+    const sourceShot = row.storyboard_id ? db.prepare('SELECT * FROM storyboards WHERE id=? AND deleted_at IS NULL').get(row.storyboard_id) : null;
+    const directorShot = imagePlan.isStructuredShot(sourceShot);
+    let plannedReferences = null;
+    let hasFirstFrameLayoutLock = false;
+    let firstRefUrl = null;
+    if (directorShot) {
+      plannedReferences = imagePlan.resolveReferences(db, sourceShot, row, shotLooks, refLimits);
+      reference_image_urls = plannedReferences.refs.map(r => r.source);
+      reference_context_note = plannedReferences.note;
+      hasFirstFrameLayoutLock = plannedReferences.lock;
+      firstRefUrl = plannedReferences.refs.find(r => r.role === 'first_frame')?.source;
+      reference_source = '导演素材规划';
+      skipStep23PromptCharFilter = true;
+    } else {
+
     if (row.reference_images) {
       try {
         const parsed = JSON.parse(row.reference_images);
@@ -1006,8 +936,6 @@ async function processImageGeneration(db, log, imageGenId) {
     }
 
     // 尾帧始终参考首帧身份和服装；构图锁只控制是否同时保持站位、取景。
-    let hasFirstFrameLayoutLock = false;
-    let firstRefUrl = null;
     if (row.storyboard_id) {
       const isLastFrame = isLastFrameType(row.frame_type);
       const useFirstLayoutLock = rowUseFirstFrameLayoutLock(row);
@@ -1358,6 +1286,7 @@ async function processImageGeneration(db, log, imageGenId) {
         }
       }
     }
+    }
     log.info('[图生] Step2 参考图', {
       id: imageGenId,
       source: reference_source || '无',
@@ -1485,7 +1414,7 @@ async function processImageGeneration(db, log, imageGenId) {
     // ── Step 3.5: 分镜 prompt 文本AI二次优化（单帧分镜；优先用 image_polish 模型，无则 fallback 默认文本模型）──
     let finalPrompt = row.prompt;
     const isSingleStoryboard = row.storyboard_id && row.frame_type !== 'quad_grid' && row.frame_type !== 'nine_grid';
-    if (isSingleStoryboard && row.prompt) {
+    if (isSingleStoryboard && row.prompt && !directorShot) {
       try {
         // 若分镜已有 polished_prompt（手动编辑或上次优化结果），直接使用，不再重复调 AI
         // 但**首帧/尾帧/关键帧专用提示词优先**：这些是用户通过“生成首/尾帧提示词”+“生成图片”流程明确批准的干净 prompt，
@@ -1632,11 +1561,14 @@ async function processImageGeneration(db, log, imageGenId) {
       }
     }
 
-    if (row.storyboard_id) finalPrompt += require('./wardrobeService').promptContext(db, row.storyboard_id, isLastFrameType(row.frame_type) ? 'last' : 'first');
+    if (directorShot) {
+      const outfits = shotLooks.filter(c => c.description).map(c => `${c.name}：${c.description}`);
+      if (outfits.length) finalPrompt += '\n本镜服装：' + outfits.join('；');
+    } else if (row.storyboard_id) finalPrompt += require('./wardrobeService').promptContext(db, row.storyboard_id, isLastFrameType(row.frame_type) ? 'last' : 'first');
 
     // ── Step 3.8: 单帧分镜注入防分割指令 ──────────────────────────────
     // 当有多张参考图时，部分模型（如 Doubao）会生成左右分栏/对比布局，加入负面约束抑制该行为
-    if (isSingleStoryboard && reference_image_urls && reference_image_urls.length > 1) {
+    if (!directorShot && isSingleStoryboard && reference_image_urls && reference_image_urls.length > 1) {
       const antiSplitSuffix = ', single continuous scene, no split panels, no side-by-side layout, no collage';
       if (!finalPrompt.includes('no split')) {
         finalPrompt = finalPrompt.trimEnd() + antiSplitSuffix;
@@ -1646,7 +1578,7 @@ async function processImageGeneration(db, log, imageGenId) {
     // ── Step 3.9: 尾帧站位锁强制文本指令（与视觉参考图双保险）────────────────
     // 无论是否成功注入参考图，都给尾帧 prompt 追加强约束，防止模型脑补新布局或克隆重复人物
     const isLastFrameForLock = isLastFrameType(row.frame_type) && rowUseFirstFrameLayoutLock(row);
-    if (isLastFrameForLock && row.storyboard_id) {
+    if (!directorShot && isLastFrameForLock && row.storyboard_id) {
       let characterNames = [];
       try {
         const framePromptService = require('./framePromptService');
@@ -1672,7 +1604,7 @@ async function processImageGeneration(db, log, imageGenId) {
     }
 
     // ── Step 3.95: 分镜图出场人数严格约束（适用于所有含角色参考的分镜图生成，纯自然语言正面表达）──
-    if (row.storyboard_id && !isLastFrameForLock && reference_image_urls && reference_image_urls.length > 0) {
+    if (!directorShot && row.storyboard_id && !isLastFrameForLock && reference_image_urls && reference_image_urls.length > 0) {
       const charRefNames = [];
       const charMappings = [];
       const noteLines = (reference_context_note || '').split('\n');
@@ -1697,13 +1629,13 @@ async function processImageGeneration(db, log, imageGenId) {
           ? `【出场人数铁律】画面中出场人物严格且仅有 1 人（${charRefNames[0]}）。`
           : `【出场人数铁律】画面中出场人物严格为 ${charCount} 人（出场角色：${charRefNames.join('、')}）。`;
         const countEn = charCount === 1
-          ? ` STRICT RULE: Exactly 1 person (${charRefNames[0]}) in the frame.`
-          : ` STRICT RULE: Exactly ${charCount} people (${charRefNames.join(', ')}) in the frame.`;
+          ? ` The frame contains exactly 1 person: ${charRefNames[0]}.`
+          : ` The frame contains exactly ${charCount} people: ${charRefNames.join(', ')}.`;
 
         let mappingClause = '';
-        if (charMappings.length > 1) {
+        if (charMappings.length > 0) {
           const mapZh = charMappings.map(m => `角色「${m.name}」${m.gender ? `（${m.gender}）` : ''}的外观特征对应参考图 ${m.imgNum}`).join('；');
-          const mapEn = charMappings.map(m => `"${m.name}"${m.gender ? ` (${m.gender})` : ''} corresponds to reference image ${m.imgNum}`).join('; ');
+          const mapEn = charMappings.map(m => `"${m.name}"${m.gender ? ` (${m.gender})` : ''} uses the identity and appearance from reference image ${m.imgNum}`).join('; ');
           mappingClause = `【人物特征与参考图对应】${mapZh}。每张参考图提供对应角色的外观特征，人物姿态与动作符合剧情设定。 CHARACTER CORRESPONDENCE: ${mapEn}.`;
         }
 
@@ -1725,7 +1657,7 @@ async function processImageGeneration(db, log, imageGenId) {
       row.frame_type &&
       ['first', 'last', 'key', 'storyboard_first', 'storyboard_last'].includes(String(row.frame_type).toLowerCase());
     const shouldSanitizePrompt = (isFrameIdentityLock || (row.storyboard_id && reference_image_urls?.length > 0)) && row.storyboard_id && finalPrompt;
-    if (shouldSanitizePrompt) {
+    if (shouldSanitizePrompt && !directorShot) {
       try {
         const framePromptService = require('./framePromptService');
         const { sanitizeFramePrompt, parseNamesFromAnchorLines } = require('../utils/framePromptSanitize');
@@ -1780,6 +1712,10 @@ async function processImageGeneration(db, log, imageGenId) {
     if(row.storyboard_id && JSON.stringify(require('./wardrobeService').getShot(db,row.storyboard_id).characters)!==JSON.stringify(shotLooks))throw new Error('准备图片期间人物造型已变化，请按新造型重新生成');
     const result = await imageClient.callImageApi(db, log, {
       prompt: finalPrompt,
+      storyboard_id: row.storyboard_id,
+      structured_storyboard: directorShot,
+      input_storyboard: sourceShot,
+      input_references: plannedReferences?.refs,
       model: row.model,
       size: imageSize,
       quality: row.quality,

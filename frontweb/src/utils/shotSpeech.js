@@ -13,10 +13,10 @@ export function shotSpeechStatus(shot, recognized) {
 }
 export function automaticVideoModel(configs, status) {
   const active = configs.filter(c => c.is_active !== false && c.is_active !== 0)
-  // 默认直接采用 minimax_h3，不再根据是否有对白自动推荐 Wan2.2
+  // 视频生成只有 MiniMax H3 一条受支持链路。
   const selected = active.find(c => {
     const id = String(c.api_protocol || c.provider || '') + ' ' + String(c.default_model || (Array.isArray(c.model) ? c.model.join(' ') : c.model) || '')
     return /minimax[_-]?h3/i.test(id)
-  }) || active.find(c => c.is_default) || active[0]
+  })
   return selected?.default_model || (Array.isArray(selected?.model) ? selected.model[0] : selected?.model) || ''
 }

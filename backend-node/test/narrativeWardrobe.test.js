@@ -15,15 +15,14 @@ const imageService=require('../src/services/imageService');
 const imageClient=require('../src/services/imageClient');
 const native=require('../src/services/h3NativeService');
 const log={info(){},warn(){},error(){}};
-test('dialogue-driven style requires causal continuity and removes padding without forcing short lines',()=>{
- const prompt=narrative.instructions({narrative_style:{preset:'dialogue_fast',speech_mode:'auto',speech_rate:1.25}});
- assert.match(prompt,/承接上一段的结果并触发下一段/);
- assert.match(prompt,/同一信息只交代一次/);
- assert.match(prompt,/不为填满时长重复动作或拉长停顿/);
- assert.match(prompt,/不要求每句简短/);
- assert.match(prompt,/已有剧本台词仍逐字保留/);
- assert.match(prompt,/compact causal chain/);
- assert.doesNotMatch(narrative.instructions({narrative_style:{preset:'atmosphere',speech_rate:1}}),/compact causal chain/);
+test('all narrative preferences share causal continuity and intentional action without forcing speech or movement',()=>{
+ assert.equal(narrative.PRESETS.some(p=>p.id==='dialogue_fast'),false);
+ assert.equal(narrative.normalize({preset:'dialogue_fast'}).preset,'balanced');
+ for(const preset of narrative.PRESETS.map(p=>p.id)) {
+  const prompt=narrative.instructions({narrative_style:{preset}});
+  for(const text of ['承接上一段的结果并触发下一段','同一信息只交代一次','不为填满时长重复动作或拉长停顿','不要求每句简短','已有剧本台词仍逐字保留','实际 TTS 时长','后端不得静默删字','每个 1～2 秒窗口']) assert.ok(prompt.includes(text),preset+': '+text);
+  assert.doesNotMatch(prompt,/DIALOGUE-DRIVEN FAST|对白驱动/);
+ }
 });
 function setup(t){
  const db=new Database(':memory:');t.after(()=>db.close());
@@ -37,7 +36,7 @@ function setup(t){
  t.mock.method(aiConfig,'listConfigs',(_db,type)=>type==='tts'?[{id:4,is_active:true,is_default:true,provider:'edge-tts',model:[]}]:[]);
  return db;
 }
-test('narrative settings preserve visual style, wardrobe and voices, reject invalid values and synchronize TTS both directions',t=>{
+test('narrative settings preserve visual style, wardrobe and voices while normalizing legacy speed fields',t=>{
  const db=setup(t);
  db.prepare("UPDATE dramas SET tags='[\"现有标签\"]' WHERE id=1").run();
  wardrobe.saveCharacter(db,1,5,{description:'灰色卫衣、深蓝长裤、白鞋'});
@@ -46,17 +45,18 @@ test('narrative settings preserve visual style, wardrobe and voices, reject inva
  assert.equal(metadata.style_prompt_en,'existing visual style');assert.equal(metadata.keep,'preserve');
  assert.equal(db.prepare('SELECT tags FROM dramas WHERE id=1').get().tags,'["现有标签"]');
  assert.equal(metadata.wardrobe.characters[5].description,'灰色卫衣、深蓝长裤、白鞋');
- assert.equal(metadata.tts_dubbing.character_voices[5],'zh-CN-YunxiaNeural');assert.equal(metadata.tts_dubbing.speed,1.5);
- assert.equal(dubbing.getProfile(db,1).speed,1.5);
+ assert.equal(metadata.tts_dubbing.character_voices[5],'zh-CN-YunxiaNeural');assert.equal(metadata.tts_dubbing.speed,1);
+ assert.equal(dubbing.getProfile(db,1).speed,1);
  const profile=dubbing.normalizedProfile(db,1,dubbing.getProfile(db,1));
  dubbing.saveProfile(db,1,{...profile,speed:1.3});
  metadata=JSON.parse(db.prepare('SELECT metadata FROM dramas WHERE id=1').get().metadata);
- assert.equal(metadata.narrative_style.speech_rate,1.3);
+ assert.equal(metadata.narrative_style.speech_rate,1);
+ assert.equal(metadata.narrative_style.speech_mode,'fixed');
  const before=JSON.stringify(metadata);
- for(const value of [{preset:'unknown'},{preset:'dialogue_fast',speech_rate:3},{speech_rate:'bad'}])assert.throws(()=>dramas.saveOutline(db,log,1,{metadata:{narrative_style:value}}));
+ for(const value of [{preset:'unknown'},null,[]])assert.throws(()=>dramas.saveOutline(db,log,1,{metadata:{narrative_style:value}}));
  assert.equal(db.prepare('SELECT metadata FROM dramas WHERE id=1').get().metadata,before);
  const created=dramas.createDrama(db,log,{title:'新项目'});
- assert.deepEqual(narrative.fromMetadata(created.metadata),{preset:'dialogue_fast',speech_rate:1.25,speech_mode:'auto'});
+ assert.deepEqual(narrative.fromMetadata(created.metadata),{preset:'balanced',speech_rate:1,speech_mode:'fixed'});
  assert.equal(narrative.fromMetadata({}).preset,'balanced');
 });
 test('wardrobe persists across scenes and episodes; explicit dream changes inherit until a deliberate return and do not rewrite assets',t=>{
@@ -96,15 +96,15 @@ test('script expansion and current-episode rewrite receive selected narrative ru
  t.mock.method(ai,'generateText',async(_db,_log,_type,user,system)=>{calls.push({user,system});return JSON.stringify([{episode:1,title:'草稿',content:'王奕宸："先做一道题。"'}]);});
  await stories.generateStory(db,log,{drama_id:1,premise:'少年学会自律',episode_count:1});
  await scripts.generateEpisodeDraft(db,log,10);
- for(const call of calls){assert.match(call.system,/DIALOGUE-DRIVEN FAST/);assert.match(call.system,/对白驱动的剧本组织/);assert.match(call.system,/连续动作链/);assert.match(call.system,/多个配角轮流总结/);assert.match(call.system,/人物与游戏身份映射/);assert.match(call.system,/1.5x/);assert.match(call.system,/服装连续性/);assert.match(call.system,/conservative speech budget/);assert.match(call.system,/不要求每句简短/);assert.doesNotMatch(call.system,/台词要短|台词用短句|Keep spoken lines short/);}
+ for(const call of calls){assert.match(call.system,/UNIVERSAL DIRECTING PRINCIPLES/);assert.match(call.system,/通用剧本组织/);assert.match(call.system,/连续动作链/);assert.match(call.system,/多个配角轮流总结/);assert.match(call.system,/人物与游戏身份映射/);assert.match(call.system,/自然语速 1.0x/);assert.doesNotMatch(call.system,/1.5x/);assert.match(call.system,/服装连续性/);assert.match(call.system,/Natural speech budget/);assert.match(call.system,/不要求每句简短/);assert.doesNotMatch(call.system,/台词要短|台词用短句|Keep spoken lines short/);}
  assert.deepEqual(db.prepare('SELECT * FROM episodes ORDER BY id').all(),before);
 });
-test('H3 preserves literal dialogue and prioritizes opening-frame wardrobe over a character card while requesting brisk speech',()=>{
+test('H3 preserves literal dialogue and prioritizes opening-frame wardrobe at natural speech speed',()=>{
  const lines=[{key:'character:5',kind:'dialogue',text:'先做一道题。'}];
  const prompt=native.compilePrompt([{source:'card',character_id:5,kind:'character_sheet'},{source:'start',kind:'first_frame'},{source:'end',kind:'last_frame'}],
  {narrative_style:{preset:'dialogue_fast',speech_rate:1.5},references:[{key:'character:5',kind:'dialogue'}],lines},
  {visual_description:'A boy talks at his desk.',overall_soundscape:'Soft room tone.',non_diegetic_music:'N/A'},{first:'start',last:'end'});
- assert.match(prompt,/approximately 1.5 times/);assert.match(prompt,/opening frame defines the current outfit/);assert.match(prompt,/short natural pauses/);
+ assert.match(prompt,/ordinary 1.0x speech speed/);assert.doesNotMatch(prompt,/approximately 1.5 times/);assert.match(prompt,/opening frame defines the current outfit/);
  assert.match(prompt,/<d>\[Chinese\] 先做一道题。<\/d>/);assert.doesNotMatch(prompt,/measured delivery/);
 });
 test('image generation passes first-frame wardrobe reference even when camera-layout locking is disabled',async t=>{
@@ -157,18 +157,18 @@ test('actual storyboard planner receives the preset and saves evidence-backed ou
   systemPrompt=system;
   return JSON.stringify({storyboards:[{shot_number:1,title:'入梦',characters:[5],duration:8,action:'少年站在梦境入口',dialogue:'王奕宸："出发。"',narration:'',emotion:'急促争吵',speech_rate:1.4,speech_rate_reason:'急促短句',wardrobe_change:{boundary:'before_shot',reason:'梦中换装',evidence:'少年踏入梦境，换上银色训练服。',characters:[{character_id:5,stage_id:'silver'}]}}]});
  });
- const started=storyboard.generateStoryboard(db,log,10,null,null,1,8,'16:9',true,false,{min:4,max:10});
+ const started=storyboard.generateStoryboard(db,log,10,null,null,1,8,'16:9',true,false,{min:4,max:8});
  const id=typeof started==='string'?started:started.task_id;
  await completedTask(db,id);
- assert.match(systemPrompt,/DIALOGUE-DRIVEN FAST/);assert.match(systemPrompt,/wardrobe_change/);assert.match(systemPrompt,/灰色卫衣、深蓝长裤/);
+ assert.match(systemPrompt,/UNIVERSAL DIRECTING PRINCIPLES/);assert.match(systemPrompt,/wardrobe_change/);assert.match(systemPrompt,/灰色卫衣、深蓝长裤/);
  const shot=db.prepare('SELECT id FROM storyboards WHERE episode_id=10 AND deleted_at IS NULL').get();
  assert.equal(wardrobe.getShot(db,shot.id).characters[0].description,'银色训练服');
  assert.equal(wardrobe.getShot(db,shot.id).change.source,'ai');
  assert.equal(wardrobe.getShot(db,shot.id).characters[0].stage_id,'silver');
  assert.match(systemPrompt,/"id":"silver"/);
- assert.equal(require('../src/services/speechDeliveryService').getShot(db,shot.id).speech_rate,1.4);
- assert.match(systemPrompt,/预算系数 r/);
- assert.match(systemPrompt,/speech_rate_reason/);
+ assert.equal(require('../src/services/speechDeliveryService').getShot(db,shot.id).speech_rate,1);
+ assert.match(systemPrompt,/自然语速与台词字数预算/);
+ assert.match(systemPrompt,/禁止输出或使用 speech_rate、speech_rate_reason/);
  assert.match(systemPrompt,/不要求每句简短/);
  assert.doesNotMatch(systemPrompt,/台词要短|台词用短句|Keep spoken lines short/);
 });
@@ -185,7 +185,7 @@ test('the full storyboard pipeline repairs an in-shot change before saving stage
    {characters:[5],duration:5,action:'少年站在训练台前。',dialogue:'王奕宸："开始训练。"',narration:'',wardrobe_change:{...change,boundary:'before_shot'}},
   ]);
  });
- const started=storyboard.generateStoryboard(db,log,10,null,null,1,8,'16:9',true,false,{min:4,max:10});
+ const started=storyboard.generateStoryboard(db,log,10,null,null,1,8,'16:9',true,false,{min:4,max:8});
  await completedTask(db,typeof started==='string'?started:started.task_id);
  const shots=db.prepare('SELECT * FROM storyboards WHERE episode_id=10 AND deleted_at IS NULL ORDER BY storyboard_number').all();
  assert.equal(shots.length,2);assert.equal(calls,2);
@@ -193,7 +193,7 @@ test('the full storyboard pipeline repairs an in-shot change before saving stage
  assert.equal(wardrobe.getShot(db,shots[1].id).characters[0].stage_id,'silver');
  assert.deepEqual(shots.map(s=>s.dialogue),['王奕宸："出发。"','王奕宸："开始训练。"']);
 });
-test('first and last frame prompt tasks pass current outfit to the model and return the same saved continuity rules',async t=>{
+test('frame prompt task keeps its saved text without appending execution-time wardrobe contracts',async t=>{
  const db=setup(t),frames=require('../src/services/framePromptService');
  wardrobe.saveCharacter(db,1,5,{description:'灰色卫衣、深蓝长裤'});
  const calls=[];
@@ -204,37 +204,51 @@ test('first and last frame prompt tasks pass current outfit to the model and ret
   const result=await completedTask(db,frames.generateFramePrompt(db,log,80,kind));
   const saved=frames.getFramePrompts(db,80).find(p=>p.frame_type===kind);
   assert.equal(result.response.single_frame.prompt,saved.prompt);
-  assert.match(saved.prompt,/灰色卫衣、深蓝长裤/);
-  if(kind==='last')assert.match(saved.prompt,/尾帧服装以本镜首帧/);
+  assert.equal(saved.prompt,'王奕宸坐在书桌前，中景。');
  }
  assert.ok(calls.every(call=>call.user.includes('灰色卫衣、深蓝长裤')));
 });
 
 // Exercise the public prompt builders, including user overrides: these rules
 // belong to script composition, not to rewriting approved storyboard dialogue.
-test('dialogue-driven composition rules reach Chinese, English and custom script prompts without imposing them on other styles',()=>{
+test('general composition reaches every narrative style, both languages and custom script prompts',()=>{
  const prompts=require('../src/services/promptI18n');
  const rules=require('../src/services/storytellingPrompts');
  const cfg={app:{language:'zh'},narrative_style:{preset:'dialogue_fast',speech_rate:1.25,speech_mode:'auto'}};
  const zh=prompts.getStoryExpansionSystemPrompt(cfg,3);
- assert.match(zh,/对白驱动的剧本组织/);
+ assert.match(zh,/通用剧本组织/);
  assert.match(zh,/包含 3 个对象/);
  assert.match(zh,/不要求每句简短/);
  assert.match(zh,/不能仅因选择“奇幻”就擅自添加肉身进入游戏/);
  const en=prompts.getStoryExpansionSystemPrompt({...cfg,app:{language:'en'}},3);
- assert.match(en,/DIALOGUE-DRIVEN SCRIPT COMPOSITION/);
+ assert.match(en,/GENERAL SCRIPT COMPOSITION/);
  assert.match(en,/character-to-avatar mappings/);
  assert.match(en,/3 object/);
  prompts.setOverrideInMemory('story_expansion_system','自定义剧本要求');
  try{
   const custom=prompts.getStoryExpansionSystemPrompt(cfg,3);
   assert.match(custom,/自定义剧本要求/);
-  assert.match(custom,/对白驱动的剧本组织/);
+  assert.match(custom,/通用剧本组织/);
  }finally{prompts.clearOverrideInMemory('story_expansion_system')}
  for(const preset of ['balanced','narration','atmosphere']){
-  assert.doesNotMatch(prompts.getStoryExpansionSystemPrompt({...cfg,narrative_style:{preset}},1),/对白驱动的剧本组织/);
+  assert.match(prompts.getStoryExpansionSystemPrompt({...cfg,narrative_style:{preset}},1),/通用剧本组织/);
  }
  const breakdown=rules.storyboardRules(cfg,true);
- assert.doesNotMatch(breakdown,/对白驱动的剧本组织/);
+ assert.doesNotMatch(breakdown,/通用剧本组织/);
  assert.match(breakdown,/逐字保留/);
+});
+
+test('public frame task loads Director slots and never invokes a second text model', async t => {
+ const db=setup(t),frames=require('../src/services/framePromptService');
+ const visual={character_id:5,name:'王奕宸',screen_position:'画面左侧',facing:'侧向右方',head_pose:'头部朝右微低',gaze:'看向桌上课本',posture:'坐在椅子上',hands:'右手翻开书页'};
+ db.prepare('UPDATE storyboards SET semantic_slots=?, character_visuals=?, last_frame_visuals=? WHERE id=80').run(JSON.stringify({visible_characters:[{id:5}]}),JSON.stringify([visual]),JSON.stringify([{...visual,gaze:'看向妈妈双眼'}]));
+ let calls=0;
+ t.mock.method(ai,'generateText',async()=>{calls++;throw new Error('Unexpected text rewrite');});
+ for(const kind of ['first','last']){
+  const result=await completedTask(db,frames.generateFramePrompt(db,log,80,kind));
+  const saved=frames.getFramePrompts(db,80).find(p=>p.frame_type===kind);
+  assert.equal(result.response.single_frame.prompt,saved.prompt);
+  assert.ok(saved.prompt.includes(kind==='first'?'看向桌上课本':'看向妈妈双眼'));
+ }
+ assert.equal(calls,0);
 });

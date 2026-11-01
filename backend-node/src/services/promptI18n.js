@@ -102,7 +102,7 @@ function getUniversalOmniMultiBeatFormatSpec(cfg) {
   if (isEnglish(cfg)) {
     return `
 [UNIVERSAL_SEGMENT_TEXT — MULTI-BEAT BLOCK FORMAT ONLY]
-FORBIDDEN: SoulLens/SEEDANCE single-line rows (主体:/叙事动态:/空间:/[禁BGM]); FORBIDDEN @人物N — use @图片1, @图片2, … only.
+FORBIDDEN: legacy single-line rows (主体:/叙事动态:/空间:/[禁BGM]); FORBIDDEN @人物N — use @图片1, @图片2, … only.
 
 Field "universal_segment_text" is a **multi-line string** (use \\n in JSON). Structure:
 Line 1: 画面风格和类型: 真人写实, 电影风格, 高清画质, <short style from project>
@@ -186,7 +186,7 @@ function formatUserPrompt(cfg, key, ...args) {
       task_label: '【Task】',
       character_list_label: '【Available Character List】',
       scene_list_label: '【Extracted Scene Backgrounds】',
-      task_instruction: 'Break down the novel script into storyboard shots based on **independent action units**.',
+      task_instruction: 'Break down the script into compact causal beats. Keep tightly linked actions in one shot when they share the same space and event; use dialogue or narration for essential motives, choices and consequences.',
       character_constraint: '**Important** — characters field rules:\n1. Only use character IDs (numbers) from the above character list. Do not invent IDs.\n2. Only include characters who **physically appear and act** in this specific shot. Do NOT list characters who are merely mentioned, offscreen, or appear in the overall scene but not in this shot.\n3. The number of characters listed must match who is described in the action/dialogue fields. If the action only describes one person, list only that one character.\n4. **Shot Character Limit**: Focus each shot on 1-2 core characters maximum. Do NOT crowd 3+ characters into a single shot; split group scenes into shot-reverse-shot or coverage angles.',
       scene_constraint: '**Important**: In the scene_id field, select the most matching background ID (number) from the above background list. If no suitable background exists, use null.',
       prop_list_label: '【Available Prop List】',
@@ -214,7 +214,7 @@ function formatUserPrompt(cfg, key, ...args) {
       task_label: '【任务】',
       character_list_label: '【本剧可用角色列表】',
       scene_list_label: '【本剧已提取的场景背景列表】',
-      task_instruction: '将小说剧本按**独立动作单元**拆解为分镜头方案。',
+      task_instruction: '将剧本按紧凑的因果节拍拆解为分镜头方案：同一空间内的连续动作尽量合并，关键动机、选择与后果用对白或必要旁白说清。',
       character_constraint: '**重要** — characters字段填写规则：\n1. 只能使用上述角色列表中的角色ID（数字），不得自创ID。\n2. 只填写在**本镜头中实际出现并有具体行为**的角色。不要把"提到的"、"画面外的"、或整个场景里有但本镜头动作中未描述的角色也列进去。\n3. characters数量必须与action/dialogue中实际描写的人物数量一致。如果action只描述了一个人的动作，characters里就只填那一个人的ID。\n4. 【单镜头角色控制】：每个镜头必须聚焦 1~2 个核心主体角色（严禁单镜头堆砌 3 个以上角色；若遇多人场景，必须按正反打、过肩或反应镜头拆分成多个连续分镜）。',
       scene_constraint: '**重要**：在scene_id字段中，必须从上述背景列表中选择最匹配的背景ID（数字）。如果没有合适的背景，则填null。',
       prop_list_label: '【本集可用道具列表】',
@@ -259,7 +259,7 @@ function getStoryboardUserPromptSuffix(cfg, shotDuration) {
     return `
 
 **Four Core Storyboard Rules**:
-1. Rigid Single Action Unit: 1 shot = 1 primary action unit. Compound action chains must be split into 2-3 shots.
+1. Compact Causal Beat: one shot carries one understandable causal beat, and may contain several tightly linked physical actions, dialogue, and immediate reactions in the same space. Do not split every verb, line, or reaction into its own shot. Split only for a speaker/subject change, scene or time change, major eyeline/axis change, or a real 4-8 second capacity limit. Every split must state the previous shot's end state, this shot's entry state, and the causal link.
 2. Ban On-Screen Text/UI: Strictly forbidden to request countdown timers, UI overlays, or screen text in action/result/layout. Deliver via dialogue/narration.
 3. Vertical Drama Shot-Reverse-Shot Syntax: Prioritize subject action + reactor close-up. Avoid 3+ characters crowded in one shot. Keep characters per shot <= 2.
 4. Pure Physical Description: Strictly ban literary metaphors ("frozen anxiety", "contrast of high and low"). Concrete postures and positions only.
@@ -274,7 +274,7 @@ function getStoryboardUserPromptSuffix(cfg, shotDuration) {
 
 **Output**: JSON with "storyboards" array. Each item: shot_number, segment_index, segment_title, title, shot_type, angle, time, location, scene_id, movement, lighting_style, depth_of_field, action, dialogue, narration, result, atmosphere, emotion, duration, bgm_prompt, sound_effect, characters (array of IDs), props (array of prop IDs), is_primary. Return ONLY valid JSON, no markdown.`;
   }
-  const _sbUserLocked = `\n\n【输出格式】请以JSON格式输出，包含 "storyboards" 数组。每个镜头包含：shot_number, segment_index, segment_title, title, shot_type（大远景/远景/中景/近景/特写）, angle（运镜机位与视角，如 平视/低角仰拍/高角俯拍/斜侧45度/过肩背拍等，视角富有层次）, time, location, scene_id, movement（运镜，从 push/pull/pan/tilt/tracking/crane_up/crane_dn/orbit/handheld/static 选择；【运镜核心铁律：严格少用 static 固定镜头，绝大多数分镜必须根据动作与情绪选用 push/pull/pan/tracking/handheld/orbit 等动态运镜，赋予短剧呼吸流动感】）, lighting_style（灯光风格，从 natural/front/side/backlit/top/under/soft/dramatic/golden_hour/blue_hour/night/neon 选择）, depth_of_field（景深，从 extreme_shallow/shallow/medium/deep 选择）, action, dialogue, narration, result, atmosphere, emotion, duration, bgm_prompt（无对白镜头必填背景音乐描述，供H3等模型合成配乐；有对白填空串""）, sound_effect, characters（角色ID数组）, props（道具ID数组）, is_primary, **layout_description（画面布局与人物站位描述，必填，最高优先级空间合同）**。**必须只返回纯JSON，不要markdown。**`;
+  const _sbUserLocked = `\n\n【输出格式】请以JSON格式输出，包含 "storyboards" 数组。每个镜头包含：shot_number, segment_index, segment_title, title, shot_type（大远景/远景/中景/近景/特写）, angle（运镜机位与视角，如 平视/低角仰拍/高角俯拍/斜侧45度/过肩背拍等，视角富有层次）, dialogue_framing（视听构图参考：字典仅供启发参考非必选死板值，如 two_shot_face_to_face/over_the_shoulder/single_reaction_offscreen/joint_observation/solo_action 等，支持结合剧情自由扩充）, time, location, scene_id, movement（运镜，从 push/pull/pan/tilt/tracking/crane_up/crane_dn/orbit/handheld/static 选择；按剧情需要选择，static固定机位与连续镜头均可使用，不设比例或固定切镜频率）, lighting_style（灯光风格，从 natural/front/side/backlit/top/under/soft/dramatic/golden_hour/blue_hour/night/neon 选择）, depth_of_field（景深，从 extreme_shallow/shallow/medium/deep 选择）, action, dialogue, narration, result, atmosphere, emotion, duration, bgm_prompt（无对白镜头必填背景音乐描述，供H3等模型合成配乐；有对白填空串""）, sound_effect, characters（角色ID数组）, props（道具ID数组）, is_primary, **layout_description（画面布局与人物站位描述，必填，最高优先级空间合同）**。**必须只返回纯JSON，不要markdown。**`;
   const _sbUserOverride = _overrideCache['storyboard_user_suffix'];
   if (_sbUserOverride) {
     return '\n\n' + _sbUserOverride + _sbUserLocked;
@@ -285,12 +285,12 @@ function getStoryboardUserPromptSuffix(cfg, shotDuration) {
   return `
 
 【分镜四大硬性铁律（必须遵守，违反即不合格）】
-1. **刚性单一动作单元**：1个分镜 = 1个主要动作单元。凡含前后复合动作链（如“冲出并投掷、中弹后倒地”、“撑起身体转向呼救”），强制拆分为2~3个连续镜头；单镜只承载单一动作及其即时结果，禁止在单镜内塞入前后多个时序动作。
+1. **紧凑因果节拍**：1个分镜承载1个观众能听懂的因果节拍，同一空间内允许包含多个紧密相连的身体动作（如“冲向掩体、看见爆炸、停下受击”）。关键动机、选择、规则、后果和转折必须放入自然对白或必要旁白，不能只藏在 action/result 里。禁止把每个动词机械拆成独立镜头；只有人物/说话人切换、场景或时间变化、视线轴线重大变化，或动作与对白超过4～8秒时才拆镜。拆镜必须写明上一镜结束状态、本镜进入状态和因果关系。
 2. **禁止画面文字/UI交代剧情，提示词纯正面陈述**：严禁在 action、result、layout_description 或画面提示词中要求渲染倒计时数字（如“倒计时19秒”）、屏幕文字、作业本字迹、浮动UI界面；此类信息 100% 必须由角色对白（dialogue）或旁白（narration）直接说出。提示词中只正向描述真实环境与动作，**绝对禁止将“不出现倒计时/不显示文字”等负向禁令短语写入提示词**。
-3. **推行短剧正反打语法与电影化视听设计（严格少用固定镜头）**：多人交互场景（对话、冲突、救援）必须优先拆解为“主体行动中景/近景 + 反应者面部特写”，严禁超过3人塞入同一大中景导致生图人脸崩溃或画面人数错乱。单镜出场角色原则上不超过3人（推荐1~2人，至多3人），优先聚焦关键单人。**机位角度多样化**：对话/对峙穿插低角仰拍（压迫感）、高角俯拍（弱势/全局）、斜侧45°，拒绝全篇千篇一律正面平视；**运镜生动多变，严格少用固定镜头 (static)**：短剧视频切忌画面呆滞与死板幻灯片感。**严禁大面积默认使用固定镜头 (static)**。固定镜头仅限用于极个别刻意制造死寂定格或监控死角的特殊时刻（全片固定镜头占比严格控制在10%以下）。对白与反应镜头优先采用微推(push)、微拉(pull)或微手持(handheld)营造呼吸感；走位与动作必须配合跟镜(tracking)或横摇(pan)；大场面与环境观察使用横摇(pan)或后拉(pull)；特写配合浅景深(shallow)，全景配合深景深(deep)。
+3. **推行短剧正反打语法与电影化视听设计（根据人物关系规划视线）**：多人交互场景（对话、冲突、救援）必须优先拆解为“主体行动中景/近景 + 反应者面部特写”，严禁超过3人塞入同一大中景导致生图人脸崩溃或画面人数错乱。单镜出场角色原则上不超过3人（推荐1~2人，至多3人），优先聚焦关键单人。**视线轴线铁律（字典仅供参考启发，严禁正脸对空气讲话）**：角色严禁双双正脸面对镜头对空气说话！建议参考电影视听模式填写 dialogue_framing（字典枚举仅供模型参考启发，不是必须填这些固定词，可根据剧情自由给出贴切构图）：① two_shot_face_to_face（双人面对面对视中景，微侧身左看右、右看左，视线交汇形成闭环）；② over_the_shoulder（过肩拍，前景露出肩背，焦点在后景角色）；③ single_reaction_offscreen（单人特写/近景，眼神专注看画外搭档，严禁直视镜头）；④ joint_observation（双人同向警戒/看前方目标）；⑤ solo_action（单人无对话动作）等。**机位角度多样化**：对话/对峙穿插低角仰拍（压迫感）、高角俯拍（弱势/全局）、斜侧45°，拒绝全篇千篇一律正面平视；**机位与节奏由剧情决定**：可以保持固定镜头呈现完整对白、安静倾听与反应，也可以按信息变化切镜。不设固定镜头比例或强制切镜频率。
 4. **纯物理视觉描写**：分镜中严禁使用“高低对照”、“焦急凝结”、“心理落差”、“希望被突发打断”等抽象文学修辞和心理隐喻，只写纯物理姿态、空间相对位置和真实光影。
 
-【分镜要素】每个分镜聚焦一个叙事节拍（单一连续画面，一个主要动作），描述要详尽具体：
+【分镜要素】每个分镜聚焦一个叙事节拍（单一连续画面，可包含多个紧密相连动作），描述要具体、紧凑，避免为填充时长重复动作：
 1. **镜头标题(title)**：用3-5个字概括该镜头的核心内容或情绪
 2. **时间**：[清晨/午后/深夜/具体时分+详细光线描述]
 3. **地点**：[场景完整描述+空间布局+环境细节]
@@ -305,7 +305,7 @@ function getStoryboardUserPromptSuffix(cfg, shotDuration) {
 10. **观众情绪**：[情绪类型]（[强度：↑↑↑/↑↑/↑/→/↓]）
 
 **【最高优先级空间合同 - layout_description（必填，最高优先级铁律）】**
-这是本分镜的**核心空间锚点 + 真实物体尺度 + 运镜呼吸空间**铁律，用于首帧/尾帧图片生成时在保持一致性的同时，为运镜留出必要空间（尤其是 Seedance 1.5 Pro 等依赖首尾帧的模型）：
+这是本分镜的**核心空间锚点 + 真实物体尺度 + 运镜呼吸空间**铁律，用于 H3 FL2VA 的首帧/尾帧图片生成，在保持一致性的同时为运镜留出必要空间：
 
 - 必须明确写出**主要角色在画面中的核心站位**（画面左/中/右三分、朝向、与关键道具的基本空间关系）。这是硬性锁定。
 - **必须同时写出所有主要道具的真实物理尺度与相对比例**（仅描述本分镜/剧本中实际出现的道具，尺度须符合其所属时代与场景；例如古代场景写案几高度、书卷尺寸、铜器体量等，现代场景写对应家具与小物件真实尺寸；所有道具均为次要环境元素）。严禁任何会导致AI把道具做大、立起或当成主导元素的描述；**严禁写入与时代背景不符的道具**（古代/古装分镜不得出现智能手机、遥控器、现代茶几等现代物品）。
@@ -803,7 +803,7 @@ function getDefaultPromptBody(key) {
       return '你是一位专业的剧本道具分析师，擅长从剧本中提取具有视觉特征的关键道具。\n\n你的任务是根据提供的剧本内容，提取并整理所有对剧情有重要作用或有特殊视觉特征的关键道具。\n\n要求：\n1. 只提取对剧情发展有重要作用、或有特殊视觉特征的关键道具。\n2. 普通的生活用品（如普通的杯子、笔）如果无特殊剧情意义不需要提取。\n3. 若道具有明确归属者，**仅**写在 "description" 中（可用中文人名）；**禁止**在 "image_prompt" 中出现任何角色名、昵称、称谓或人际关系用语。\n4. "image_prompt" 按项目语言撰写（中文项目优先用中文），按「产品主图 / 资产白模照」标准撰写：只描述该道具本体（造型、材质、颜色、工艺与磨损），并强制纯色无缝棚拍背景、无场景无杂物。匹配项目中文提示词语音（融入真实尺度、次要元素原则）。\n5. "image_prompt" 须明确排除人物、手、家具、台面、其他物体与环境叙事元素。\n6. "image_prompt" **禁止**出现剧本人名、地名、组织名、台词、剧情专有词；用泛化视觉词替代，且**禁止无依据扩写**（不凭空加配饰、品牌叙事、煽情形容词）。';
 
     case 'storyboard_user_suffix':
-      return '【分镜要素】每个分镜聚焦一个叙事节拍（单一连续画面，一个主要动作），描述要详尽具体：\n1. **镜头标题(title)**：用3-5个字概括该镜头的核心内容或情绪\n2. **时间**：[清晨/午后/深夜/具体时分+详细光线描述]\n3. **地点**：[场景完整描述+空间布局+环境细节]\n4. **镜头设计**：**景别(shot_type)**、**镜头角度(angle)**、**运镜方式(movement)**、**灯光风格(lighting_style)**、**景深(depth_of_field)**\n5. **人物行为**：**详细动作描述**\n6. **对话/独白**：提取该镜头中的完整对话或独白内容（如无对话则为空字符串）\n7. **画面结果**：动作的即时后果+视觉细节+氛围变化\n8. **环境氛围**：光线质感+色调+声音环境+整体氛围\n9. **声音设计**：\n   - **有对白分镜**：bgm_prompt 填空字符串""；sound_effect 只写现场环境声、动作音效、对白/旁白音色与口型同步要求。\n   - **无对白分镜**：**必须填写 bgm_prompt（背景音乐描述）**，给出契合情节情绪的电影配乐风格（如“低沉紧迫的战术电子脉冲与心跳低音”等），供 H3 视频模型生成背景音乐！\n10. **观众情绪**：[情绪类型]（[强度：↑↑↑/↑↑/↑/→/↓]）\n\n**dialogue字段说明**：角色名："台词内容"。无对话时填空字符串""。\n**scene_id**：从上方场景列表中选择最匹配的背景ID，如无合适背景则填null。\n**duration时长**：综合对话、动作、情绪估算每镜时长（具体目标秒数由系统自动注入）。\n**声音一致性**：有对白优先保人声清晰；无对白镜头必须配上精准契合情节的背景音乐描述(bgm_prompt)。';
+      return '【分镜要素】每个分镜聚焦一个叙事节拍（单一连续画面，可包含多个紧密相连动作），描述要具体、紧凑，避免为填充时长重复动作：\n1. **镜头标题(title)**：用3-5个字概括该镜头的核心内容或情绪\n2. **时间**：[清晨/午后/深夜/具体时分+详细光线描述]\n3. **地点**：[场景完整描述+空间布局+环境细节]\n4. **镜头设计**：**景别(shot_type)**、**镜头角度(angle)**、**运镜方式(movement)**、**灯光风格(lighting_style)**、**景深(depth_of_field)**\n5. **人物行为**：**详细但紧凑的动作描述；同一空间内可包含多个连续身体动作**\n6. **对话/独白**：提取该镜头中的完整对话或独白内容；关键动机、选择、规则、后果和转折不能只写在 action/result 中\n7. **画面结果**：动作的即时后果+视觉细节+氛围变化\n8. **环境氛围**：光线质感+色调+声音环境+整体氛围\n9. **声音设计**：\n   - **有对白分镜**：bgm_prompt 填空字符串""；sound_effect 只写现场环境声、动作音效、对白/旁白音色与口型同步要求。\n   - **无对白分镜**：**必须填写 bgm_prompt（背景音乐描述）**，给出契合情节情绪的电影配乐风格（如“低沉紧迫的战术电子脉冲与心跳低音”等），供 H3 视频模型生成背景音乐！\n10. **观众情绪**：[情绪类型]（[强度：↑↑↑/↑↑/↑/→/↓]）\n\n**拆镜条件**：只有人物/说话人切换、场景或时间变化、视线轴线重大变化，或动作与对白超过4～8秒时才拆镜；拆镜必须写明上一镜结束状态、本镜进入状态和因果关系。\n**dialogue字段说明**：角色名："台词内容"。无对话时填空字符串""。\n**scene_id**：从上方场景列表中选择最匹配的背景ID，如无合适背景则填null。\n**duration时长**：综合对话、动作、情绪估算每镜时长（具体目标秒数由系统自动注入）。\n**声音一致性**：有对白优先保人声清晰；无对白镜头必须配上精准契合情节的背景音乐描述(bgm_prompt)。';
 
     case 'first_frame_prompt':
       return '你是一个专业的电影分镜图像生成提示词专家。请根据提供的镜头信息，生成适合AI图像生成的提示词。\n\n重要：这是镜头的首帧 - 一个完全静态的画面，展示动作发生之前的初始状态。\n\n核心规则：\n1. 聚焦初始静态状态 - 动作发生之前的那一瞬间，禁止包含任何动作或运动描述\n2. 描述角色在画面中的位置（画面左/中/右）、朝向（面向/背对/侧面）、初始姿态和表情\n3. 如提供了角色外貌信息，必须将其融入提示词（仅使用固定身份特征：脸型、五官、发型、肤质、标记等，严禁添加或推断任何服装、衣着、服饰描述，服装由参考图决定）\n\n【电影语言规范（必须应用）】\n\n构图规则（根据景别选择）：\n- 三分法：主体置于三分线交点，稳定平衡，适合大多数叙事镜头\n- 框架构图：用门窗/树枝/栏杆形成自然画框，突出主体，增加纵深\n- 中心构图：对称庄重，适合特写和仪式感场景\n- 前景遮挡：前景虚化元素增加层次感\n\n光线设计（必须描述）：\n- 光源方向：左侧光/右侧光/顶光/逆光（轮廓光）/底光\n- 光线质感：硬光（强烈阴影，戏剧张力）/ 柔光（柔和过渡，自然温馨）\n- 色温：暖光（金黄/橙红，温暖怀旧）/ 冷光（蓝调/青白，冷漠疏离）\n\n景深设置：\n- 特写/近景：浅景深，背景虚化，突出人物情绪\n- 中景：中等景深，人物与环境均清晰\n- 远景/全景：深景深，前后均清晰，交代空间关系';
@@ -1167,15 +1167,15 @@ CONTEXT_PREV / CONTEXT_NEXT: 上下文（仅用于情绪参考）
 }
 
 /**
- * 全能模式（可灵 Omni-Video、火山即梦 Seedance 2.0 多图参考等）：模板 + 仅用 @图片1/@图片2…（与参考图顺序一致，不用 @姓名）
+ * H3 Ref2VA 多参考模式：模板 + 仅用 @图片1/@图片2…（与参考图顺序一致，不用 @姓名）
  */
 function getUniversalOmniSegmentPrompt() {
   const specZh = getUniversalOmniMultiBeatFormatSpec({ language: 'zh' });
-  return `You write the main prompt for multi-reference video (e.g. Kling Omni-Video, Volcengine Seedance omnivideo) "片段描述" in Chinese.
+  return `You write the main prompt for MiniMax H3 Ref2VA multi-reference video "片段描述" in Chinese.
 
 The USER message includes MULTI_BEAT_OUTPUT, TOTAL_CLIP_SECONDS, SHOT_PACING_AND_POSITION, EPISODE_SCRIPT, NEIGHBOR_* detail, IMAGE_SLOT_MAP, LINE3_REQUIRED, STYLE_HINT, and storyboard fields.
 
-FORBIDDEN output styles: SoulLens single-line (主体:/叙事动态:/[禁BGM]); @人物N as image tokens. Use ONLY the multi-beat block below — same as「全能分镜模式」batch storyboard output.
+FORBIDDEN output styles: legacy single-line rows (主体:/叙事动态:/[禁BGM]); @人物N as image tokens. Use ONLY the multi-beat block below — same as「全能分镜模式」batch storyboard output.
 ${specZh}
 
 This is **one** API clip whose wall-clock length is TOTAL_CLIP_SECONDS. Split into **M** internal beats (子分镜, M = 1–8 you choose). Each beat = one line「分镜k： Tk秒:」. Sum of all Tk = TOTAL_CLIP_SECONDS exactly.
@@ -1265,7 +1265,7 @@ function getClassicVideoPromptPolishPrompt() {
 5) **事实与时长**：与 STORYBOARD_FIELDS、AUTO_COMPOSED、CURRENT_VIDEO_DRAFT 一致；**时长秒数**不得改动。
 6) **剧本与邻镜**：FULL_EPISODE_SCRIPT、NEIGHBOR_* 用于衔接与语气，勿编造无据情节。
 7) **禁止编造**：无来源的新角色、道具、事件。
-8) **纯正面肯定陈述，严禁在成文里输出负面禁令短语**：视频生成模型（如 MiniMax H3、Wan2.2、Runway 等）对负面否定词非常敏感（写了“不出现文字/倒计时”反而更容易误生成文字）。成稿中**严禁出现任何负面排除短语**（如“不出现任何文字界面或倒计时”、“无文字”、“不要UI”、“避免晃动”等）。若输入的原稿、场景摘要或剧本中出现此类负面禁令短语，润色时必须**直接从成文中彻底剔除**，只保留客观物理环境、人物动作与光影的正面肯定描述！
+8) **纯正面肯定陈述，严禁在成文里输出负面禁令短语**：MiniMax H3 对负面否定词非常敏感（写了“不出现文字/倒计时”反而更容易误生成文字）。成稿中**严禁出现任何负面排除短语**（如“不出现任何文字界面或倒计时”、“无文字”、“不要UI”、“避免晃动”等）。若输入的原稿、场景摘要或剧本中出现此类负面禁令短语，润色时必须**直接从成文中彻底剔除**，只保留客观物理环境、人物动作与光影的正面肯定描述！
 
 ## 成稿内在顺序（仍为一段连续文字）
 在满足「防丢项」前提下，建议：入戏与场景时间 → 动作与对白（「」）→ 结果与氛围 → **配乐与音效层次**（显式写出）→ 景别+运镜+**完整镜头角度（中英）**+光线景深 → 情绪与强度 → 时长 → 风格与画幅（含英文 token）。
@@ -1329,7 +1329,7 @@ Core Requirements (HIGHEST PRIORITY):
 3. **Realistic physical scale awareness (MANDATORY)**: Explicitly state realistic sizes and proportions of major props that actually appear in the shot, matching the story's era/setting (e.g. ancient: writing desk ~75cm, scroll at normal size; modern: side table ~45cm). Never write phrases that would cause scale errors or anachronistic modern props in period settings.
 4. **Cinematic breathing room for movement (MANDATORY)**: Reserve natural evolution space for the shot's declared camera_movement (push/pull/pan/handheld etc.). State that first/last frames must keep core character placement and realistic prop scales, but allow natural framing adjustments that result from the movement (e.g. slight tighter framing on push-in, slight handheld drift, natural entry/exit on pan). Goal: enable real dynamic video instead of near-static locked shots.
 5. **Cross-shot continuity (CRITICAL)**: The new layout MUST form a natural, believable spatial continuation from PREV_LAYOUT (if provided) and must logically lead into NEXT_LAYOUT (if provided). Avoid sudden unexplained left-right flips or major repositioning of characters between adjacent shots unless the ACTION/RESULT of the current shot explicitly requires it.
-6. The description must be directly usable as the highest-priority contract for first-frame and last-frame image generation (for models like Seedance 1.5 Pro), and must embed both realistic scale anchors AND movement breathing room to prevent prop drift and motion suppression in AI image/video generation.
+6. The description must be directly usable as the highest-priority contract for H3 FL2VA first-frame and last-frame image generation, and must embed both realistic scale anchors AND movement breathing room to prevent prop drift and motion suppression in AI image/video generation.
 
 Style: Professional, film-precise, actionable for AI image generators. Use Chinese if the project is Chinese, otherwise English.`;
   }
@@ -1343,7 +1343,7 @@ Style: Professional, film-precise, actionable for AI image generators. Use Chine
 3. **真实物体尺度意识（强制）**：必须明确写出主要道具的真实物理尺度与相对比例，且**必须符合剧本时代背景**（仅写本分镜实际出现的道具；古代场景示例：“木质案几位于右下前景，高度约75cm，书卷平放为正常尺寸，铜灯与茶具均为次要环境小物件，绝不夸大”）。严禁写出任何会导致比例失真的表述，**严禁写入与时代不符的现代道具**。
 4. **运镜呼吸空间（强制）**：必须为本分镜的 movement（推/拉/摇/跟/手持等）预留自然演化空间。说明首尾帧在核心站位和真实尺度一致的前提下，允许根据 movement 进行取景微调（缓推可稍紧、手持可轻微晃动偏移、横摇可有自然进入/退出）。目标是让首尾帧支持真正动态的视频，而不是几乎定格。
 5. **跨镜连贯性（铁律）**：新布局必须与「上一分镜的布局描述」形成自然延续，同时能引向下一分镜。除非 action/result 明确要求，否则严禁突然左右互换或大幅跳跃。
-6. 该描述将作为首帧/尾帧生成的最高优先级合同（尤其适配 Seedance 等模型），必须同时包含真实尺度锚点 + 运镜演化空间，防止AI生图时道具比例漂移或运镜被锁死。
+6. 该描述将作为 H3 FL2VA 首帧/尾帧生成的最高优先级合同，必须同时包含真实尺度锚点 + 运镜演化空间，防止AI生图时道具比例漂移或运镜被锁死。
 
 语气：专业、电影化、精确、可直接喂给图像 AI 使用。必须用中文输出。`;
 }

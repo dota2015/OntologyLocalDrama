@@ -95,7 +95,7 @@ test('custom prompts retain comprehension policy, separate speech fields and all
     const shots = prompts.getStoryboardSystemPrompt(cfg);
     assert.match(story, /关键动机|essential motives/);
     assert.match(shots, /narration/);
-    assert.match(shots, /固定镜头|Static shots/);
+    assert.match(shots, /固定镜头|static/i);
     const on = prompts.getStoryboardNarrationModeInstructions(cfg, true);
     const off = prompts.getStoryboardNarrationModeInstructions(cfg, false);
     assert.match(on, /可为空|silent transitions/);

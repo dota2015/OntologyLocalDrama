@@ -19,6 +19,7 @@ export const GEN_RESOURCE = {
   EXTRACT_PROPS: 'extract_props',
   EXTRACT_SCENES: 'extract_scenes',
   GENERATE_STORYBOARD: 'generate_storyboard',
+  DIRECTOR_REFINE_SHOT: 'director_refine_shot',
   GENERATE_STORY: 'generate_story',
 }
 
@@ -120,11 +121,13 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
   function markRunning(meta) {
     const key = taskKey(meta)
     if (!key || key.includes('undefined') || key.includes('null')) return key
+    const existing = tasks.value.get(key)
     _setTask(key, {
+      ...existing,
       ...meta,
       key,
       status: 'running',
-      startedAt: Date.now(),
+      startedAt: existing?.startedAt || meta.startedAt || Date.now(),
     })
     return key
   }
@@ -288,12 +291,13 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
           const t = await taskAPI.get(taskId)
           if (t && (t.status === 'pending' || t.status === 'processing')) {
             const existing = tasks.value.get(key)
-            if (existing && (existing.serverStatus !== t.status || existing.progress !== t.progress || existing.message !== t.message)) {
+            if (existing && (existing.serverStatus !== t.status || existing.progress !== t.progress || existing.message !== t.message || existing.result !== t.result)) {
               _setTask(key, {
                 ...existing,
                 serverStatus: t.status,
                 progress: t.progress ?? existing.progress,
                 message: t.message || existing.message,
+                result: t.result,
               })
             }
           }
@@ -366,8 +370,10 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
       return pollPromises.value.get(taskId)
     }
 
+    let remoteTask = null
     try {
       const t = await taskAPI.get(taskId)
+      remoteTask = t
       if (isOrphanedProcessingTask(t)) {
         markFailed({ ...meta, taskId }, ORPHAN_TASK_MSG)
         return { status: 'failed', error: ORPHAN_TASK_MSG }
@@ -389,8 +395,20 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
       // 网络异常时仍尝试轮询
     }
 
-    markRunning({ ...meta, taskId })
-    return pollTask(taskId, meta, onDone, { ...options, showErrorToast: false, showTimeoutToast: false })
+    const liveMeta = remoteTask && isActiveTaskStatus(remoteTask.status)
+      ? {
+          ...meta,
+          taskId,
+          taskType: remoteTask.type || meta.taskType,
+          serverStatus: remoteTask.status,
+          progress: remoteTask.progress ?? meta.progress,
+          message: remoteTask.message || meta.message,
+          result: remoteTask.result,
+          startedAt: remoteTask.created_at ? new Date(remoteTask.created_at).getTime() : meta.startedAt,
+        }
+      : { ...meta, taskId }
+    markRunning(liveMeta)
+    return pollTask(taskId, liveMeta, onDone, { ...options, showErrorToast: false, showTimeoutToast: false })
   }
 
   async function _recoverAttachTask(taskId, meta, onDone, pollOpts) {
@@ -572,6 +590,11 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
             resourceId: Number(episodeId),
             label: extractCfg.label,
             taskId: t.id,
+            taskType: t.type,
+            serverStatus: t.status,
+            progress: t.progress,
+            message: t.message,
+            startedAt: t.created_at ? new Date(t.created_at).getTime() : undefined,
           }
           _recoverAttachTask(t.id, meta, () => callbacks.onDramaRefresh?.(), pollOpts)
         }
@@ -637,6 +660,22 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
       }
 
       await Promise.all([
+        ...storyboards.map((sb) => taskAPI.listByResource(String(sb.id)).then((tasks) => {
+          for (const t of tasks || []) {
+            if (t.type !== 'director_storyboard_refinement' || !isActiveTaskStatus(t.status)) continue
+            const meta = {
+              dramaId,
+              episodeId,
+              dramaTitle,
+              episodeNumber,
+              resourceType: GEN_RESOURCE.DIRECTOR_REFINE_SHOT,
+              resourceId: Number(sb.id),
+              label: `${epLabel} 导演微调 #${sb.storyboard_number ?? sb.id}`,
+              taskId: t.id,
+            }
+            _recoverAttachTask(t.id, meta, () => callbacks.onDramaRefresh?.(), pollOpts)
+          }
+        }).catch(() => {})),
         ...[...charIdSet].map((id) => {
           const c = characters.find((x) => Number(x.id) === Number(id))
           return attachResourceTask(id, GEN_RESOURCE.CHAR_IMAGE, `${epLabel} 角色图: ${c?.name || id}`)

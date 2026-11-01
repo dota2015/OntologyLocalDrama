@@ -48,6 +48,17 @@
       </span>
       <span class="sb-ctrl-title">{{ sb.title || '未命名分镜' }}</span>
       <el-tag v-if="sb.movement" size="small" effect="plain" type="info" class="sb-movement-tag">{{ ctx.getMovementLabel(sb.movement) }}</el-tag>
+      <el-tag
+        v-if="sb.transition_to_next"
+        size="small"
+        effect="plain"
+        type="warning"
+        class="sb-movement-tag"
+        :title="'下镜过渡衔接：' + sb.transition_to_next"
+      >
+        ↪ {{ sb.transition_to_next.split(/[:：]/)[0] }}
+      </el-tag>
+      <el-button size="small" plain class="sb-ctrl-btn" @click.stop="showInputHistory = true">生成记录·实际输入</el-button>
       <el-button size="small" plain class="sb-ctrl-btn sb-ctrl-config-btn" @click="ctx.onOpenVideoParamsDialog(sb)">⚙ 分镜配置</el-button>
       <el-button
         size="small"
@@ -63,13 +74,38 @@
         type="primary"
         plain
         class="sb-ctrl-btn"
+        :loading="ctx.isDirectorRefiningShot?.(sb.id)"
+        :disabled="ctx.isDirectorRefiningShot?.(sb.id)"
         title="输入导演意图，定向微调本镜头动作、运镜、光影与配乐"
         @click="ctx.onDirectorRefineSingleShot(sb)"
       >
-        🎬 导演微调
+        {{ ctx.isDirectorRefiningShot?.(sb.id) ? '导演微调中' : '🎬 导演微调' }}
       </el-button>
       <el-button size="small" plain class="sb-ctrl-btn" title="在本镜头前增加一个分镜" @click="ctx.onInsertStoryboardBefore(sb)">＋ 新增</el-button>
       <el-button size="small" plain class="sb-ctrl-btn" title="将当前复杂分镜一键 AI 拆分为多个镜头" @click="ctx.onOpenSplitDialog(sb)">✂ 拆分</el-button>
+      <el-dropdown
+        trigger="click"
+        @command="cmd => ctx.onClearSingleStoryboardMedia(sb, cmd)"
+      >
+        <el-button
+          class="sb-ctrl-btn"
+          type="danger"
+          plain
+          size="small"
+          title="清空本分镜的参考帧与生成视频"
+        >
+          🗑️ 清除媒体
+        </el-button>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item command="all">
+              <span style="color: #f56c6c; font-weight: 500;">全部清除（参考帧 + 视频）</span>
+            </el-dropdown-item>
+            <el-dropdown-item command="videos">仅清除视频</el-dropdown-item>
+            <el-dropdown-item command="images">仅清除参考帧（图片）</el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
       <el-button
         class="sb-ctrl-delete"
         type="danger"
@@ -169,7 +205,7 @@
               </div>
             </div>
           </div>
-          <div v-if="(ctx.characters?.value || ctx.characters || []).length" class="sb-thumb-row">
+          <div v-if="ctx.getSbSelectedCharacters(sb.id).length || (ctx.characters?.value || ctx.characters || []).length" class="sb-thumb-row">
             <span class="sb-thumb-label">角色</span>
             <div class="sb-thumb-list">
               <div
@@ -177,13 +213,14 @@
                 :key="c.id"
                 class="sb-thumb-item sb-thumb-avatar"
                 :class="{ 'sb-thumb-clickable': ctx.hasAssetImage(c) }"
-                :title="c.name"
+                :title="`${c.name}（ID ${c.id}）`"
                 role="button"
                 @click="ctx.hasAssetImage(c) && ctx.openImagePreview(ctx.assetImageUrl(c))"
               >
                 <img v-if="ctx.hasAssetImage(c)" :src="ctx.assetImageUrl(c)" alt="" />
-                <span v-else class="sb-thumb-placeholder">{{ (c.name || '')[0] }}</span>
+                <span v-else class="sb-thumb-placeholder">{{ c.missing ? '⚠' : (c.name || '')[0] }}</span>
               </div>
+              <span v-for="c in ctx.getSbSelectedCharacters(sb.id).filter(c => c.missing)" :key="`missing-${c.id}`" role="alert" style="color: var(--el-color-danger)">{{ c.name }}</span>
               <el-dropdown trigger="click" @command="(cmd) => ctx.onSbAddCharacterCommand(sb.id, cmd)">
                 <div
                   class="sb-thumb-item sb-thumb-avatar sb-thumb-add-char"
@@ -200,7 +237,7 @@
                       :key="c.id"
                       :command="c.id"
                     >
-                      {{ c.name || '未命名' }}
+                      {{ c.name || '未命名' }}（ID {{ c.id }}）
                     </el-dropdown-item>
                     <el-dropdown-item v-if="!ctx.charactersAvailableToAddToSb(sb.id).length" disabled>
                       已全部添加或无角色
@@ -235,7 +272,17 @@
           <span>图片提示词</span>
         </div>
         <div v-if="!ctx.storyboardUseFirstLastFrame?.value && !ctx.storyboardUseFirstLastFrame" class="sb-prompt-row">
-          <span class="sb-prompt-text">{{ sb.image_prompt || '暂无图片提示词' }}</span>
+          <div v-if="hasStructuredImagePrompt(sb.image_prompt)" class="sb-prompt-badges-wrap" :title="sb.image_prompt">
+            <span
+              v-for="(b, bIdx) in parseImagePromptBadges(sb.image_prompt)"
+              :key="bIdx"
+              class="sb-prompt-mini-chip"
+              :class="'chip--' + b.type"
+            >
+              <strong class="chip-tag">[{{ b.shortTitle }}]</strong> {{ b.text }}
+            </span>
+          </div>
+          <span v-else class="sb-prompt-text">{{ sb.image_prompt || '暂无图片提示词' }}</span>
           <el-button size="small" link type="primary" @click="ctx.onOpenSbPromptDialog(sb, 'image')">编辑</el-button>
         </div>
 
@@ -328,13 +375,6 @@
                   </el-dropdown-item>
                   <el-dropdown-item command="polish-force" :disabled="!ctx.sbUniversalSegmentTrimmed(sb)">
                     不查图片强制润色
-                  </el-dropdown-item>
-                  <el-dropdown-item
-                    command="to-grok-video-tags"
-                    divided
-                    :disabled="!ctx.sbUniversalSegmentTrimmed(sb)"
-                  >
-                    改为 grok视频格式
                   </el-dropdown-item>
                 </el-dropdown-menu>
               </template>
@@ -598,7 +638,17 @@
             <div class="sb-prompt-compact-line">
               <span class="sb-dot"></span>
               <span class="sb-prompt-name">图词</span>
-              <span class="sb-prompt-text-preview sb-prompt-preview-clamp" :title="sb.image_prompt">
+              <div v-if="hasStructuredImagePrompt(sb.image_prompt)" class="sb-prompt-badges-wrap" :title="sb.image_prompt">
+                <span
+                  v-for="(b, bIdx) in parseImagePromptBadges(sb.image_prompt)"
+                  :key="bIdx"
+                  class="sb-prompt-mini-chip"
+                  :class="'chip--' + b.type"
+                >
+                  <strong class="chip-tag">[{{ b.shortTitle }}]</strong> {{ b.text }}
+                </span>
+              </div>
+              <span v-else class="sb-prompt-text-preview sb-prompt-preview-clamp" :title="sb.image_prompt">
                 {{ sb.image_prompt || '暂无图片提示词' }}
               </span>
               <el-button size="small" link type="primary" class="sb-prompt-edit-btn" @click="ctx.onOpenSbPromptDialog(sb, 'image')">编辑</el-button>
@@ -732,6 +782,10 @@
         <!-- 下方：视频操作区 -->
         <div class="sb-column-card sb-actions-card sb-video-actions-card">
           <div class="sb-card-title-tag">视频操作区</div>
+          <div class="sb-video-prompt-compact">
+            <span class="sb-prompt-name">视频提示词与槽位</span>
+            <el-button size="small" link type="primary" class="sb-prompt-edit-btn" @click="ctx.onOpenSbPromptDialog(sb, 'video')">编辑提示词</el-button>
+          </div>
           <!-- 视频主动作与参数配置行（单行完整展示，不换行） -->
           <div class="sb-video-action-row">
             <el-button
@@ -755,6 +809,9 @@
 
             <!-- 换装设置 -->
             <WardrobeSettings :key="'wardrobe-shot-' + sb.id" :drama-id="ctx.dramaId?.value || ctx.dramaId" :storyboard-id="sb.id" :disabled="ctx.isSbVideoGenerating(sb.id)" />
+
+            <!-- H3 模式与素材衔接设置 -->
+            <H3ShotSettings :key="'h3-shot-' + sb.id" :drama-id="ctx.dramaId?.value || ctx.dramaId" :storyboard-id="sb.id" :aspect-ratio="ctx.projectAspectRatio?.value || ctx.projectAspectRatio || '16:9'" :disabled="ctx.isSbVideoGenerating(sb.id)" />
 
             <!-- 删除视频（紧随其后无大空位） -->
             <el-button
@@ -797,21 +854,15 @@
             <ShotSpeechDelivery :shot="sb" :narrative-style="ctx.narrativeStyle?.value || ctx.narrativeStyle" />
           </div>
 
-          <!-- 视频提示词 -->
-          <div class="sb-video-prompt-compact">
-            <span class="sb-dot"></span>
-            <span class="sb-prompt-name">视频词</span>
-            <span class="sb-video-prompt-text sb-video-prompt-text--preview" :title="sb.video_prompt">{{ sb.video_prompt || '暂无视频提示词（在「分镜配置」保存后自动生成）' }}</span>
-            <el-button size="small" link type="primary" class="sb-prompt-edit-btn" @click="ctx.onOpenSbPromptDialog(sb, 'video')">编辑</el-button>
-          </div>
         </div>
       </div>
     </div>
   </div>
+  <GenerationInputHistory v-if="showInputHistory" :storyboard-id="sb.id" @close="showInputHistory = false" />
 </template>
 
 <script setup>
-import { computed, inject } from 'vue'
+import { computed, inject, ref } from 'vue'
 import {
   Delete,
   Plus,
@@ -828,6 +879,9 @@ import { useAgentContext } from '@/stores/agentContext'
 import UniversalSegmentOmniAtEditor from '@/components/UniversalSegmentOmniAtEditor.vue'
 import ShotSpeechDelivery from '@/components/ShotSpeechDelivery.vue'
 import WardrobeSettings from '@/components/WardrobeSettings.vue'
+import H3ShotSettings from '@/components/H3ShotSettings.vue'
+import GenerationInputHistory from './GenerationInputHistory.vue'
+const showInputHistory = ref(false)
 
 const props = defineProps({
   sb: { type: Object, required: true },
@@ -856,6 +910,47 @@ const isPortrait = computed(() => {
 const isDualFrame = computed(() => {
   return !ctx.isSbUniversalMode(props.sb.id) && (ctx.storyboardUseFirstLastFrame?.value ?? ctx.storyboardUseFirstLastFrame)
 })
+
+function hasStructuredImagePrompt(text) {
+  return typeof text === 'string' && /【[^】]+】/.test(text)
+}
+
+function parseImagePromptBadges(text) {
+  if (!text || typeof text !== 'string') return []
+  const regex = /【([^】]+)】([^【]*)/g
+  const badges = []
+  let match
+  while ((match = regex.exec(text)) !== null) {
+    const rawTitle = match[1].trim()
+    const content = match[2].trim()
+    let shortTitle = rawTitle
+    let type = 'info'
+    if (rawTitle.includes('场景') || rawTitle.includes('空间') || rawTitle.includes('纵深')) {
+      shortTitle = '场景'
+      type = 'primary'
+    } else if (rawTitle.includes('机位') || rawTitle.includes('景别') || rawTitle.includes('镜头')) {
+      shortTitle = '机位'
+      type = 'warning'
+    } else if (rawTitle.includes('角色') || rawTitle.includes('构图') || rawTitle.includes('姿态')) {
+      shortTitle = '角色'
+      type = 'success'
+    } else if (rawTitle.includes('光') || rawTitle.includes('影调')) {
+      shortTitle = '光影'
+      type = 'warning'
+    } else if (rawTitle.includes('风格') || rawTitle.includes('摄影')) {
+      shortTitle = '风格'
+      type = 'info'
+    }
+    const snippet = content.slice(0, 32) + (content.length > 32 ? '...' : '')
+    badges.push({
+      shortTitle,
+      type,
+      text: snippet,
+      full: content,
+    })
+  }
+  return badges.slice(0, 4)
+}
 
 const shotRangeEnd = computed(() => {
   const list = props.storyboards || []
@@ -909,6 +1004,7 @@ const prevShotNumber = computed(() => {
 <style scoped>
 .storyboard-card-wrapper {
   margin-bottom: 20px;
+  container: storyboard-card / inline-size;
 }
 .storyboard-card-wrapper:first-of-type {
   margin-top: 18px;
@@ -1229,6 +1325,7 @@ const prevShotNumber = computed(() => {
 }
 
 .sb-panel {
+  box-sizing: border-box;
   min-width: 0;
   padding: 12px 14px;
   border-right: 1px solid rgba(255,255,255,0.05);
@@ -1239,9 +1336,9 @@ const prevShotNumber = computed(() => {
 .sb-panel:last-child { border-right: none; }
 
 .sb-script {
-  flex: 0 0 250px;
-  width: 250px;
-  max-width: 250px;
+  flex: 0 0 340px;
+  width: 340px;
+  max-width: 340px;
   padding-top: 10px;
 }
 .sb-image {
@@ -2168,7 +2265,7 @@ const prevShotNumber = computed(() => {
 
 
 
-@media (max-width: 1250px) {
+@container storyboard-card (max-width: 1200px) {
   .storyboard-row {
     flex-wrap: wrap;
   }
@@ -2179,10 +2276,81 @@ const prevShotNumber = computed(() => {
     border-right: none;
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   }
-  .sb-image,
-  .sb-video {
+  .sb-panel.sb-image,
+  .sb-panel.sb-video {
     flex: 1 1 340px;
-    min-width: 300px;
+    width: auto;
+    min-width: min(300px, 100%);
   }
+}
+
+.sb-prompt-badges-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+.sb-prompt-mini-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  line-height: 1.3;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #f1f5f9;
+  color: #334155;
+  border: 1px solid #e2e8f0;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sb-prompt-mini-chip .chip-tag {
+  font-weight: 700;
+  font-size: 10px;
+}
+.sb-prompt-mini-chip.chip--primary {
+  background: #f0f9ff;
+  border-color: #bae6fd;
+  color: #0369a1;
+}
+.sb-prompt-mini-chip.chip--success {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+  color: #15803d;
+}
+.sb-prompt-mini-chip.chip--warning {
+  background: #fffbeb;
+  border-color: #fde68a;
+  color: #b45309;
+}
+.sb-prompt-mini-chip.chip--info {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+  color: #64748b;
+}
+:global(html.dark .sb-prompt-mini-chip) {
+  background: #1e293b;
+  border-color: #334155;
+  color: #94a3b8;
+}
+:global(html.dark .sb-prompt-mini-chip.chip--primary) {
+  background: #082f49;
+  border-color: #0369a1;
+  color: #7dd3fc;
+}
+:global(html.dark .sb-prompt-mini-chip.chip--success) {
+  background: #052e16;
+  border-color: #15803d;
+  color: #86efac;
+}
+:global(html.dark .sb-prompt-mini-chip.chip--warning) {
+  background: #451a03;
+  border-color: #b45309;
+  color: #fde047;
 }
 </style>

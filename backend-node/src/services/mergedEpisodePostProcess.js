@@ -1,5 +1,5 @@
 /**
- * 整集合并后的后处理：对白 TTS 轨、解说旁白轨+SRT、右下角文字水印（可组合）。
+ * 整集合并后的后处理：独立字幕、可选 TTS 替换音轨、右下角文字水印。
  */
 const fs = require('fs');
 const path = require('path');
@@ -16,6 +16,34 @@ function ffprobeDurationSec(filePath) {
   if (r.status !== 0) return null;
   const d = parseFloat(String(r.stdout || '').trim());
   return Number.isFinite(d) && d > 0 ? d : null;
+}
+
+function ffprobeVideoStreamDurationSec(filePath) {
+  const probe = getFfprobePath();
+  if (!probe) return ffprobeDurationSec(filePath);
+  const r = spawnSync(
+    probe,
+    ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=duration,nb_frames,r_frame_rate', '-of', 'json', filePath],
+    { encoding: 'utf8', maxBuffer: 1024 * 1024 }
+  );
+  if (r.status === 0) {
+    try {
+      const data = JSON.parse(r.stdout);
+      const vs = data.streams?.[0];
+      if (vs) {
+        if (vs.nb_frames && vs.r_frame_rate) {
+          const [num, den] = vs.r_frame_rate.split('/').map(Number);
+          if (num > 0 && den > 0) {
+            const d = parseInt(vs.nb_frames, 10) / (num / den);
+            if (d > 0.05) return d;
+          }
+        }
+        const d = parseFloat(vs.duration);
+        if (Number.isFinite(d) && d > 0.05) return d;
+      }
+    } catch (_) {}
+  }
+  return ffprobeDurationSec(filePath);
 }
 
 function formatSrtTimestamp(ms) {
@@ -199,12 +227,13 @@ function getDrawtextFontOption() {
 }
 
 /**
- * @param {object} mergeOpts — burn_dialogue_audio, burn_narration_subtitles, watermark_text
+ * @param {object} mergeOpts — burn_subtitles, burn_dialogue_audio, burn_narration_audio, watermark_text
  */
 async function runMergedEpisodePostProcess(db, log, opts) {
   const { mergedAbsPath, storageRoot, scenes, episodeId, mergeOpts = {} } = opts;
   const wantDial = !!mergeOpts.burn_dialogue_audio;
-  const wantNarr = !!mergeOpts.burn_narration_subtitles;
+  const wantNarr = !!mergeOpts.burn_narration_audio;
+  const wantSubs = !!mergeOpts.burn_subtitles;
   const wantMusic = mergeOpts.background_music?.enabled === true;
   const watermarkText = (mergeOpts.watermark_text && String(mergeOpts.watermark_text).trim())
     ? String(mergeOpts.watermark_text).trim().slice(0, 200)
@@ -215,7 +244,7 @@ async function runMergedEpisodePostProcess(db, log, opts) {
   }
 
   const needAudio = wantDial || wantNarr;
-  if (!needAudio && !watermarkText && !wantMusic) {
+  if (!needAudio && !wantSubs && !watermarkText && !wantMusic) {
     return { ok: false, error: 'NO_POST_OPTS' };
   }
 
@@ -232,7 +261,7 @@ async function runMergedEpisodePostProcess(db, log, opts) {
     let srtPath = null;
     let srtLines = [];
 
-    if (needAudio) {
+    if (needAudio || wantSubs) {
       let tMs = 0;
       let srtIdx = 1;
       const segmentFiles = [];
@@ -243,7 +272,7 @@ async function runMergedEpisodePostProcess(db, log, opts) {
         const actualVideoFile = opts.sceneSourcePaths?.[i];
         let slotSec = Math.max(0.2, Number(sc.duration) || 5);
         if (actualVideoFile && fs.existsSync(actualVideoFile)) {
-          const probedDur = ffprobeDurationSec(actualVideoFile);
+          const probedDur = ffprobeVideoStreamDurationSec(actualVideoFile);
           if (probedDur != null && probedDur > 0.05) {
             slotSec = probedDur;
           }
@@ -251,19 +280,23 @@ async function runMergedEpisodePostProcess(db, log, opts) {
         const row = db.prepare(
           'SELECT dialogue, narration, audio_local_path, narration_audio_local_path FROM storyboards WHERE id = ? AND deleted_at IS NULL'
         ).get(sbId);
+        if (!row) return { ok: false, error: `分镜 ${sbId} 不存在，无法生成字幕或配音` };
 
         const speechPlan = require('./dialogueDubbingService').planForId(db, sbId);
         const narrText = speechPlan ? speechPlan.segments.filter(l => l.kind === 'narration').map(l => l.text).join('\n')
           : ((row?.narration && String(row.narration).trim()) ? String(row.narration).trim() : '');
-        if (wantNarr && narrText) {
+        const subtitleText = (speechPlan?.segments || []).map(line => line.text).filter(Boolean).join('\n');
+        if (wantSubs && subtitleText) {
           const durMs = Math.round(slotSec * 1000);
-          srtLines.push(String(srtIdx++), `${formatSrtTimestamp(tMs)} --> ${formatSrtTimestamp(tMs + durMs)}`, narrText, '');
+          srtLines.push(String(srtIdx++), `${formatSrtTimestamp(tMs)} --> ${formatSrtTimestamp(tMs + durMs)}`, subtitleText, '');
         }
         tMs += Math.round(slotSec * 1000);
+        // Subtitles never require TTS and never replace H3's original audio.
+        if (!needAudio) continue;
 
         const hasDialogue = speechPlan ? speechPlan.segments.some(line => line.kind === 'dialogue') : require('./speechExtractionService').meaningful(row?.dialogue);
         const hasNarration = require('./speechExtractionService').meaningful(narrText);
-        if (!hasDialogue && !hasNarration) {
+        if (!(wantDial && hasDialogue) && !(wantNarr && hasNarration)) {
           // Keep H3 music/effects in shots which do not use speech replacement.
           const original = opts.sceneSourcePaths?.[i] || mergedAbsPath;
           const originalSlot = path.join(tempRoot, `original_${i}.mp3`);
@@ -286,6 +319,8 @@ async function runMergedEpisodePostProcess(db, log, opts) {
             if (!fitAudioToSlot(srcAbs, slotSec, diaFit, log)) {
               return { ok: false, error: `对白配音时长对齐失败 #${i}` };
             }
+          } else if (hasDialogue) {
+            return { ok: false, error: `分镜 ${sbId} 缺少对白配音文件，请先生成配音，或关闭「替换对白配音」保留原声。` };
           } else if (!writeSilenceMp3(slotSec, diaFit, log)) {
             return { ok: false, error: `对白静音片段失败 #${i}` };
           }
@@ -345,19 +380,24 @@ async function runMergedEpisodePostProcess(db, log, opts) {
         segmentFiles.push(segOut);
       }
 
-      const concatOut = path.join(tempRoot, 'full_mix.mp3');
-      if (!concatMp3List(segmentFiles, concatOut, log)) {
-        return { ok: false, error: '音轨拼接失败' };
+      if (needAudio) {
+        const concatOut = path.join(tempRoot, 'full_mix.mp3');
+        if (!concatMp3List(segmentFiles, concatOut, log)) {
+          return { ok: false, error: '音轨拼接失败' };
+        }
+
+        alignedAudioPath = path.join(tempRoot, 'aligned_mix.mp3');
+        if (!alignAudioToVideoDuration(concatOut, videoDur, alignedAudioPath, log)) {
+          return { ok: false, error: '音轨与视频总时长对齐失败' };
+        }
       }
 
-      alignedAudioPath = path.join(tempRoot, 'aligned_mix.mp3');
-      if (!alignAudioToVideoDuration(concatOut, videoDur, alignedAudioPath, log)) {
-        return { ok: false, error: '音轨与视频总时长对齐失败' };
+      if (wantSubs && !srtLines.length) {
+        return { ok: false, error: '已开启字幕，但所选分镜没有可用的对白或旁白文本。请补全台词，或关闭字幕后重新合成。' };
       }
-
-      if (wantNarr && srtLines.length > 0) {
+      if (wantSubs && srtLines.length > 0) {
         const baseName = path.basename(mergedAbsPath, path.extname(mergedAbsPath));
-        srtPath = path.join(path.dirname(mergedAbsPath), `${baseName}_narration.srt`);
+        srtPath = path.join(path.dirname(mergedAbsPath), `${baseName}_subtitles.srt`);
         fs.writeFileSync(srtPath, `\uFEFF${srtLines.join('\n')}\n`, 'utf8');
       }
     }
@@ -406,9 +446,9 @@ async function runMergedEpisodePostProcess(db, log, opts) {
       if (!runFfmpeg(args, log, 'mux_av')) {
         return { ok: false, error: '烧录字幕/水印或混音失败（请确认 ffmpeg 含 libx264）' };
       }
-    } else if (hasWm) {
+    } else if (hasSubs || hasWm) {
       if (!filterComplex) {
-        return { ok: false, error: '内部错误：仅水印但无滤镜链' };
+        return { ok: false, error: '内部错误：字幕/水印缺少滤镜链' };
       }
       const args = ['-y', '-i', mergedAbsPath, '-filter_complex', filterComplex, '-map', '[vout]'];
       if (ffprobeHasAudio(mergedAbsPath)) {
@@ -417,8 +457,8 @@ async function runMergedEpisodePostProcess(db, log, opts) {
         args.push('-an');
       }
       args.push('-c:v', 'libx264', '-preset', 'fast', '-crf', '23', '-movflags', '+faststart', outAbs);
-      if (!runFfmpeg(args, log, 'watermark_only')) {
-        return { ok: false, error: '水印烧录失败' };
+      if (!runFfmpeg(args, log, 'subtitles_watermark')) {
+        return { ok: false, error: '字幕/水印烧录失败，请检查 FFmpeg 的 subtitles、drawtext 滤镜及中文字体' };
       }
     } else {
       outAbs = mergedAbsPath;

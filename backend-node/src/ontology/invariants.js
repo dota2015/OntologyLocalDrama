@@ -7,7 +7,6 @@
  */
 
 const BaseInvariantRule = require('./rules/baseRule');
-const MovementDynamismRule = require('./rules/movementDynamismRule');
 const AudioContractRule = require('./rules/audioContractRule');
 const SpeechTimingRule = require('./rules/speechTimingRule');
 const { VisualSlotCompletenessRule, parseCharacterIds } = require('./rules/visualSlotCompletenessRule');
@@ -18,10 +17,12 @@ const { PhysicalDescriptionRule, FORBIDDEN_METAPHORS, FORBIDDEN_UI_TEXT } = requ
 const SpatialContinuityRule = require('./rules/spatialContinuityRule');
 const { PropEraAndScaleRule, MODERN_ANACHRONISMS } = require('./rules/propEraAndScaleRule');
 const ObsoleteAssetsRule = require('./rules/obsoleteAssetsRule');
+const SceneCoPresenceRule = require('./rules/sceneCoPresenceRule');
+const ShotTransitionContinuityRule = require('./rules/shotTransitionContinuityRule');
+const { CrossSlotInvariantsRule } = require('./rules/crossSlotRules');
 const { InvariantRuleEngine, defaultEngine } = require('./ruleEngine');
 
 // 实例化用于直接独立调用的单例规则
-const movementRule = defaultEngine.getRule('RULE_MOVEMENT_DYNAMISM') || new MovementDynamismRule();
 const audioRule = defaultEngine.getRule('RULE_AUDIO_CONTRACT') || new AudioContractRule();
 const speechTimingRule = defaultEngine.getRule('RULE_SPEECH_TIMING') || new SpeechTimingRule();
 const visualSlotRule = defaultEngine.getRule('RULE_VISUAL_SLOT_COMPLETENESS') || new VisualSlotCompletenessRule();
@@ -32,18 +33,13 @@ const physicalDescRule = defaultEngine.getRule('RULE_PHYSICAL_DESCRIPTION') || n
 const spatialRule = defaultEngine.getRule('RULE_SPATIAL_CONTINUITY') || new SpatialContinuityRule();
 const propRule = defaultEngine.getRule('RULE_PROP_ERA_AND_SCALE') || new PropEraAndScaleRule();
 const obsoleteRule = defaultEngine.getRule('RULE_OBSOLETE_ASSETS') || new ObsoleteAssetsRule();
+const sceneCoPresenceRule = defaultEngine.getRule('RULE_SCENE_CO_PRESENCE') || new SceneCoPresenceRule();
+const shotTransitionRule = defaultEngine.getRule('RULE_SHOT_TRANSITION_CONTINUITY') || new ShotTransitionContinuityRule();
+const crossSlotRule = defaultEngine.getRule('RULE_CROSS_SLOT_INVARIANTS') || new CrossSlotInvariantsRule();
+
 
 /**
- * 门禁 1：运镜动态感与固定镜头比例检查（严格少用固定镜头）
- * @param {Array<object>} shots
- * @returns {Array<object>} 违规列表
- */
-function checkMovementDynamism(shots) {
-  return movementRule.evaluate({ shots });
-}
-
-/**
- * 门禁 2：音频视听合同检查（无对白必配 BGM，供给 H3/Seedance）
+ * 门禁 2：音频视听合同检查（无对白必配 BGM，供给 H3）
  * @param {Array<object>} shots
  * @returns {Array<object>} 违规列表
  */
@@ -165,7 +161,6 @@ module.exports = {
   BaseInvariantRule,
 
   // 具体规则实现
-  MovementDynamismRule,
   AudioContractRule,
   SpeechTimingRule,
   VisualSlotCompletenessRule,
@@ -176,6 +171,9 @@ module.exports = {
   SpatialContinuityRule,
   PropEraAndScaleRule,
   ObsoleteAssetsRule,
+  SceneCoPresenceRule,
+  ShotTransitionContinuityRule,
+  CrossSlotInvariantsRule,
 
   // 词表与辅助函数
   FORBIDDEN_METAPHORS,
@@ -184,7 +182,6 @@ module.exports = {
   parseCharacterIds,
 
   // 向后兼容的标准门禁 API
-  checkMovementDynamism,
   checkAudioContract,
   checkSpeechTiming,
   checkVisualSlotCompleteness,
@@ -195,5 +192,8 @@ module.exports = {
   checkSpatialContinuity,
   checkPropEraAndScale,
   checkObsoleteAssets,
+  checkSceneCoPresence: (shots) => sceneCoPresenceRule.evaluate({ shots }),
+  checkShotTransitionContinuity: (shots) => shotTransitionRule.evaluate({ shots }),
+  checkCrossSlotInvariants: (shots) => crossSlotRule.evaluate({ shots }),
   validateAllInvariants,
 };

@@ -1,6 +1,9 @@
 import request from '@/utils/request'
 
 export const imagesAPI = {
+  get(id) {
+    return request.get(`/images/${id}`)
+  },
   list(params) {
     return request.get('/images', { params: params || {} })
   },

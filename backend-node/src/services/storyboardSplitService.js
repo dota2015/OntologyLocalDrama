@@ -15,15 +15,16 @@ function getStoryboardSplitSystemPrompt() {
 你的任务是将一个内容复杂、包含多个连续动作或多人物交互的复杂分镜镜头，合理拆分为多个连续的子分镜镜头。
 
 【拆镜最高准则】
-1. 单一动作单元（Single Action Unit）：
-   - 每个子镜头只能且必须聚焦一个核心动作或反应（如：红狼撑起上身、蜂医倒地抽搐、露娜焦急呼喊）。
-   - 严禁在单个子镜头的 action 中堆砌多段前后转折动作。
+1. 因果节拍而不是逐动词拆镜（Causal Beat）：
+   - 每个子镜头聚焦一个能被观众理解的因果节拍；同一空间内可以包含多个紧密相连的身体动作与即时结果。
+   - 只有说话人/人物切换、场景或时间变化、视线轴线重大变化，或确实超出4～8秒时才拆镜。禁止为了“一个动作一个镜头”把剧情拆得拖沓。
+   - 关键动机、选择、规则与后果应放入对白或必要旁白，不能只藏在 action 中。
 2. 镜头语言与视听节奏（Cinematic Coverage & Rhythm）：
    - 建立清晰的景别层次：如从全景交代空间 -> 中景聚焦主体行动 -> 特写捕捉情绪与关键道具，形成电影级剪辑节奏。
    - 每个子镜头应指定合理的景别（特写 / 近景 / 中景 / 全景）与运镜方式（推镜 / 拉镜 / 摇镜 / 跟镜 / 固定）。
 3. 纯物理动作与因果衔接：
    - 动作描写必须是纯物理动作（起伏、倒下、伸手、转头），严禁文学化心理隐喻或虚构画面转场。
-   - 子镜头之间按物理时间自然推移，首尾状态紧密咬合。
+   - 子镜头之间按物理时间自然推移，首尾状态紧密咬合；每个子镜头必须说明上一镜结束状态、本镜进入状态和两者的因果关系。
 4. 台词与旁白精确归位：
    - 将原镜头的对白和旁白分配给对应做出动作与表情的子镜头；没有台词的镜头设为 null。
 5. 服装与设定连续性：
@@ -35,7 +36,7 @@ function getStoryboardSplitSystemPrompt() {
 [
   {
     "title": "简短镜头标题（如：红狼挣扎撑起）",
-    "duration": 时长整数（秒，3~10之间）,
+    "duration": 时长整数（秒，4~8之间）,
     "shot_type": "特写|近景|中景|全景",
     "movement": "推镜|拉镜|摇镜|跟镜|手持|环绕|固定（严格少用固定镜头）",
     "action": "当前子镜头的核心物理动作描写",
@@ -157,7 +158,7 @@ async function splitStoryboardWithAi(db, log, storyboardId, options = {}) {
     `原画面描述（Prompt）：${baseRow.image_prompt || '无'}`,
     '',
     `【拆分要求】`,
-    `目标镜头数：拆分为 ${requestedCount} 个子镜头（可依据剧情自然切分，每个镜头时长 3~8 秒）。`,
+    `目标镜头数：拆分为 ${requestedCount} 个子镜头（可依据剧情自然切分，每个镜头时长 4~8 秒整数）。`,
     userInstruction ? `【用户指定拆分方向 / 重点要求】（最高优先级，必须服从）：\n${userInstruction}\n` : null,
     `请将原分镜中的复合动作按因果与时间线拆分为 ${requestedCount} 个连续子镜头，输出严格合法的 JSON 数组。`,
   ].filter(Boolean);
@@ -186,6 +187,13 @@ async function splitStoryboardWithAi(db, log, storyboardId, options = {}) {
     log.error('[分镜AI拆分] AI 返回未成功解析为有效子镜头数组', { raw: (responseText || '').slice(0, 300) });
     throw new Error('AI 生成拆分分镜格式异常，请重试或更换文本模型');
   }
+  const durations = subShots.map((shot, index) => {
+    const duration = Number(shot.duration);
+    if (!Number.isInteger(duration) || duration < 4 || duration > 8) {
+      throw new Error(`AI 拆分结果第 ${index + 1} 镜 duration 必须是 4～8 秒整数，当前为 ${shot.duration ?? '空'}；后端不会静默改写`);
+    }
+    return duration;
+  });
 
   log.info('[分镜AI拆分] 成功获取子镜头列表', {
     count: subShots.length,
@@ -211,7 +219,7 @@ async function splitStoryboardWithAi(db, log, storyboardId, options = {}) {
 
     // 2. 更新原镜头为第 1 个子镜头
     const firstPlan = subShots[0];
-    const dur1 = Math.min(15, Math.max(2, parseInt(firstPlan.duration, 10) || 4));
+    const dur1 = durations[0];
     db.prepare(
       `UPDATE storyboards SET
         title = ?, duration = ?, dialogue = ?, narration = ?, action = ?, result = ?,
@@ -250,7 +258,7 @@ async function splitStoryboardWithAi(db, log, storyboardId, options = {}) {
     for (let i = 1; i < subShots.length; i++) {
       const plan = subShots[i];
       const newNum = baseNumber + i;
-      const dur = Math.min(15, Math.max(2, parseInt(plan.duration, 10) || 4));
+      const dur = durations[i];
       const info = insertStmt.run(
         episodeId,
         baseRow.scene_id ?? null,

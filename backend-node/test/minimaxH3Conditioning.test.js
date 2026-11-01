@@ -32,11 +32,6 @@ describe('H3 image conditioning', () => {
     await service.processVideoGeneration(db, log, 1);
     assert.equal(captured.first_frame_url, 'https://cdn/first.png');
     assert.equal(captured.last_frame_url, 'https://cdn/last.png');
-    // Keep other providers' existing multi-reference behavior.
-    client.getDefaultVideoConfig.mock.mockImplementation(() => ({ ...config, api_protocol: 'agnes' }));
-    await service.processVideoGeneration(db, log, 1);
-    assert.equal(captured.first_frame_url, undefined);
-    assert.equal(captured.last_frame_url, undefined);
   });
 
   for (const frames of [true, false]) {

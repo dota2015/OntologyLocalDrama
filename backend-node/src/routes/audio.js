@@ -36,6 +36,10 @@ function routes(db, log, cfg) {
       try { response.success(res, dubbing.panel(db, req.params.drama_id)); }
       catch (e) { response.badRequest(res, e.message); }
     },
+    dubbingProfileGet: (req, res) => {
+      try { response.success(res, dubbing.profilePanel(db, req.params.drama_id)); }
+      catch (e) { response.badRequest(res, e.message); }
+    },
     dubbingAutoAssign: (req, res) => {
       try { response.success(res, dubbing.normalizedProfile(db, req.params.drama_id, { ...(req.body || {}), voices: {}, character_voices: {} })); }
       catch (e) { response.badRequest(res, e.message); }

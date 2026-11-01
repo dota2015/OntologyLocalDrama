@@ -24,7 +24,7 @@ function getMinimaxApiRoot(baseUrl) {
 function normalizeMinimaxH3Duration(duration) {
   const n = Math.round(Number(duration));
   const safe = Number.isFinite(n) && n > 0 ? n : 5;
-  return Math.min(15, Math.max(4, safe));
+  return Math.min(8, Math.max(4, safe));
 }
 
 function normalizeMinimaxH3Resolution(resolution) {

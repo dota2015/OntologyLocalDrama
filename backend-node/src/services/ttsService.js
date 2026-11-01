@@ -245,6 +245,16 @@ async function synthesizeWithOpenai(text, voice, apiKey, baseUrl, model, speed) 
  * 合成 TTS 并保存到本地文件
  * @returns {{ local_path: string, audio_url: string }}
  */
+function isIndexTts(config) {
+  return /^(indextts|indextts2|indextts25)$/i.test(config?.provider || '') || /7860/i.test(config?.base_url || '');
+}
+function defaultSpeed(config) {
+  let settings = {};
+  try { settings = typeof config?.settings === 'string' ? JSON.parse(config.settings) : (config?.settings || {}); } catch (_) {}
+  const configured = Number(settings.speed);
+  return Number.isFinite(configured) && configured > 0 ? configured : (isIndexTts(config) ? 1.25 : 1);
+}
+
 async function synthesize(db, log, { text, storyboard_id, config, storage_base, voice_id, speed }) {
   if (!text || !text.trim()) throw new Error('text 不能为空');
   const aiConfigService = require('./aiConfigService');
@@ -262,7 +272,7 @@ async function synthesize(db, log, { text, storyboard_id, config, storage_base, 
   const voiceId = voice_id || ttsConfig.voice_id || ttsSettings.voice_id || '';
   const groupId = ttsConfig.group_id || ttsSettings.group_id || '';
   const ttsModel = ttsConfig.default_model || (Array.isArray(ttsConfig.model) ? ttsConfig.model[0] : ttsConfig.model) || '';
-  const finalSpeed = speed || ttsSettings.speed || 1.0;
+  const finalSpeed = speed || defaultSpeed(ttsConfig);
   let audioBuffer;
 
   if (provider === 'indextts' || provider === 'indextts2' || provider === 'indextts25' || (ttsConfig.base_url && /7860/i.test(ttsConfig.base_url))) {
@@ -318,4 +328,4 @@ async function synthesize(db, log, { text, storyboard_id, config, storage_base, 
   return { local_path: localPath };
 }
 
-module.exports = { synthesize };
+module.exports = { synthesize, isIndexTts, defaultSpeed };

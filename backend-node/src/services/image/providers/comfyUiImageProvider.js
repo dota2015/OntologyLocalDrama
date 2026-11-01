@@ -5,6 +5,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const snapshot = require('../../generationInputSnapshot');
 const { BaseImageProvider, resolveImageRef, clampAndAlignSize } = require('../baseProvider');
 
 function fetchBuffer(url) {
@@ -67,6 +68,7 @@ function uploadImageToComfy(comfyUrl, buffer, filename = 'ref.png') {
       res.on('end', () => {
         try {
           const parsed = JSON.parse(raw);
+          if (res.statusCode < 200 || res.statusCode >= 300 || !parsed.name) throw new Error('ComfyUI upload rejected');
           const sub = parsed.subfolder ? `${parsed.subfolder}/` : '';
           resolve(`${sub}${parsed.name}`);
         } catch (e) {
@@ -173,37 +175,26 @@ class ComfyUiImageProvider extends BaseImageProvider {
 
     // 1. 上传参考图（如有）
     const { reference_image_urls, files_base_url, storage_local_path } = opts;
-    const rawRefs = (reference_image_urls || []).filter(Boolean);
+    const rawRefs = reference_image_urls || [];
     const uploadedImages = [];
-
+    const submittedRefs = [];
+    const shotVersion = snapshot.storyboardVersion(opts.input_storyboard);
     for (let i = 0; i < rawRefs.length; i++) {
       const ref = rawRefs[i];
       const resolved = resolveImageRef(ref, files_base_url, storage_local_path);
-      if (!resolved) continue;
-
-      let buffer = null;
+      if (!resolved) throw new Error(`第 ${i + 1} 张参考图无法读取，未提交生成`);
+      let buffer;
       try {
-        if (resolved.startsWith('data:')) {
-          const base64Data = resolved.split(',')[1];
-          buffer = Buffer.from(base64Data, 'base64');
-        } else if (resolved.startsWith('http://') || resolved.startsWith('https://')) {
-          buffer = await fetchBuffer(resolved);
-        } else if (fs.existsSync(resolved)) {
-          buffer = fs.readFileSync(resolved);
-        }
+        if (resolved.startsWith('data:')) buffer = Buffer.from(resolved.split(',')[1], 'base64');
+        else if (/^https?:/.test(resolved)) buffer = await fetchBuffer(resolved);
+        else buffer = fs.readFileSync(resolved);
+        if (!buffer?.length) throw new Error('图片为空');
+        const uploadedName = await uploadImageToComfy(comfyBaseUrl, buffer, `ref_${Date.now()}_${i}.png`);
+        uploadedImages.push(uploadedName);
+        const identity = opts.input_references?.[i] || {};
+        submittedRefs.push({ ...identity, ...snapshot.media(ref, buffer), index: i + 1, uploaded_name: uploadedName });
       } catch (err) {
-        log?.warn?.('[ComfyUI图生] 读取参考图失败，已跳过', { ref, error: err.message });
-      }
-
-      if (buffer) {
-        try {
-          const uploadedName = await uploadImageToComfy(comfyBaseUrl, buffer, `ref_${Date.now()}_${i}.png`);
-          if (uploadedName) {
-            uploadedImages.push(uploadedName);
-          }
-        } catch (err) {
-          log?.warn?.('[ComfyUI图生] 上传参考图到 ComfyUI 失败', { error: err.message });
-        }
+        throw new Error(`第 ${i + 1} 张参考图准备失败，未提交生成：${err.message}`);
       }
     }
 
@@ -216,11 +207,17 @@ class ComfyUiImageProvider extends BaseImageProvider {
       '3': { class_type: 'VAELoader', inputs: { vae_name: 'qwen_image_2.1_vae_bf16.safetensors' } },
     };
 
+    const antiCloneTokens = 'duplicate person, clone, two identical people, extra person, multiple views of same person, duplicate face, duplicate characters, extra people, background bystander, split panels, collage';
+    const finalNegativePrompt = opts.structured_storyboard ? (mergedNegativePrompt || '') : mergedNegativePrompt
+      ? `${mergedNegativePrompt}, ${antiCloneTokens}`
+      : `blurry, ugly, distorted, deformed, extra limbs, ${antiCloneTokens}`;
+
     const textEncodeInputs = {
       clip: ['2', 0],
       vae: ['3', 0],
+      // 视觉占位符由 QwenImageTextEncode 根据 images.image_N 输入注入；业务提示词只描述语义。
       prompt: effectivePrompt || '',
-      negative_prompt: mergedNegativePrompt || 'blurry, ugly, distorted, deformed, extra limbs',
+      negative_prompt: finalNegativePrompt,
       resolution: 512,
     };
 
@@ -276,6 +273,14 @@ class ComfyUiImageProvider extends BaseImageProvider {
 
     // 3. 提交任务并轮询
     try {
+      snapshot.record(db, 'image', opts.image_gen_id, {
+        provider: 'comfyui', model: workflow['1'].inputs.unet_name,
+        configured_model: model, storyboard: shotVersion,
+        prompt: effectivePrompt, negative_prompt: finalNegativePrompt,
+        references: submittedRefs,
+        parameters: { width, height, steps, guidance, seed, sampler: 'euler', scheduler: 'simple' },
+        request: { prompt: workflow },
+      });
       const promptId = await submitComfyPrompt(comfyBaseUrl, workflow);
       log?.info?.('[ComfyUI图生] 任务提交成功，开始轮询', { promptId });
       const imgInfo = await pollComfyResult(comfyBaseUrl, promptId, 300000);

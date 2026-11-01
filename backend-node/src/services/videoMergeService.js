@@ -185,53 +185,160 @@ function runFfmpegConcatOnce(listFile, outputPath, transcode, log) {
   return true;
 }
 
-// Wan is silent; H3 includes audio. Match streams/time bases before concat so
-// a silent first clip cannot cause all subsequent H3 audio to disappear.
-function normalizeMixedAudio(localPaths, directory, log) {
-  const { spawnSync } = require('child_process');
-  const probes = localPaths.map(file => {
-    const result = spawnSync(getFfprobePath(), ['-v', 'error', '-show_entries', 'format=duration:stream=codec_type', '-of', 'json', file], { encoding: 'utf8' });
-    try { const parsed = JSON.parse(result.stdout); return { audio: parsed.streams.some(s => s.codec_type === 'audio'), duration: Number(parsed.format.duration) }; } catch (_) { return null; }
-  });
-  if (probes.some(p => !p || !(p.duration > 0))) return null;
-  if (probes.every(p => p.audio) || probes.every(p => !p.audio)) return localPaths;
-  const files = [];
-  for (let i = 0; i < localPaths.length; i++) {
-    const output = path.join(directory, `mixed_audio_${Date.now()}_${i}.mp4`);
-    const inputs = probes[i].audio ? ['-i', localPaths[i], '-map', '0:v:0', '-map', '0:a:0']
-      : ['-i', localPaths[i], '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo', '-map', '0:v:0', '-map', '1:a:0'];
-    const result = spawnSync(getFfmpegPath(), ['-y', ...inputs, '-c:v', 'copy', '-video_track_timescale', '90000', '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-af', 'apad', '-t', String(probes[i].duration), output], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
-    if (result.status !== 0) {
-      log.warn('Video merge: mixed audio normalization failed', { index: i, stderr: result.stderr?.slice(-500) });
-      for (const file of [...files, output]) { try { fs.unlinkSync(file); } catch (_) {} }
-      return null;
-    }
-    files.push(output);
-  }
-  return files;
-}
-
-/** 使用 ffmpeg concat 合并多个视频文件：先流拷贝，失败再重编码兜底 */
+/**
+ * 使用 ffmpeg 合并多个视频文件：
+ * 采用音视频精确物理对齐方案（Zero-Drift Audio/Video Sync）：
+ * 1. 探针解析每个分镜片段的视频流精确帧数与时长 (vDur)。
+ * 2. 对每个分镜的音频流使用 aresample=44100:async=1,apad,atrim=0:${vDur} 严格对齐至该镜头的视频物理边界；
+ *    若为静音片段，自动补齐该镜头时长对应的标准立体声静音，杜绝后续镜头音画错位。
+ * 3. 音频采用 filter_complex concat 精确拼合，视频优先流拷贝（失败自动重编码兜底），最后合成封装。
+ * 4. 彻底解决多镜头累积容器音频包漂移（如 39 镜累积 1.6 秒错位）的老毛病！
+ */
 function runFfmpegConcat(localPaths, outputPath, log) {
-  const listFile = path.join(path.dirname(outputPath), `concat_list_${Date.now()}.txt`);
-  let normalizedPaths = [];
+  if (!Array.isArray(localPaths) || localPaths.length === 0) return false;
+  for (const p of localPaths) {
+    if (!p || !fs.existsSync(p)) return false;
+  }
+  const ffmpegBin = getFfmpegPath();
+  const ffprobeBin = getFfprobePath();
+  if (!ffmpegBin || !ffprobeBin) return false;
+
+  const { spawnSync } = require('child_process');
+  const dir = path.dirname(outputPath);
+  const now = Date.now();
+  const listFile = path.join(dir, `concat_list_${now}.txt`);
+  const tempVideo = path.join(dir, `temp_sync_v_${now}.mp4`);
+  const tempAudio = path.join(dir, `temp_sync_a_${now}.m4a`);
+
   try {
-    const pathsForConcat = normalizeMixedAudio(localPaths, path.dirname(outputPath), log);
-    if (!pathsForConcat) return false;
-    normalizedPaths = pathsForConcat.filter(p => !localPaths.includes(p));
-    const lines = pathsForConcat.map((p) => {
-      const normalized = p.replace(/\\/g, '/');
+    // 1. 探针分析每个片段
+    const clipMetas = [];
+    for (let i = 0; i < localPaths.length; i++) {
+      const file = localPaths[i];
+      const probeRes = spawnSync(
+        ffprobeBin,
+        ['-v', 'error', '-show_entries', 'stream=codec_type,nb_frames,r_frame_rate,duration:format=duration', '-of', 'json', file],
+        { encoding: 'utf8', maxBuffer: 1024 * 1024 }
+      );
+      if (probeRes.status !== 0) return false;
+      let data;
+      try {
+        data = JSON.parse(probeRes.stdout);
+      } catch (_) {
+        return false;
+      }
+      const vs = data.streams?.find((s) => s.codec_type === 'video');
+      const as = data.streams?.find((s) => s.codec_type === 'audio');
+      let vDur = 0;
+      if (vs?.nb_frames && vs?.r_frame_rate) {
+        const [num, den] = vs.r_frame_rate.split('/').map(Number);
+        if (num > 0 && den > 0) {
+          vDur = parseInt(vs.nb_frames, 10) / (num / den);
+        }
+      }
+      if (!vDur || vDur <= 0.01) {
+        vDur = parseFloat(vs?.duration || data.format?.duration || 0);
+      }
+      if (!vDur || vDur <= 0.01) vDur = 5.0;
+      clipMetas.push({ file, vDur, hasAudio: !!as });
+    }
+
+    const hasAnyAudio = clipMetas.some((c) => c.hasAudio);
+
+    // 2. 视频轨拼合：写入 listFile
+    const lines = localPaths.map((p) => {
+      const normalized = path.resolve(p).replace(/\\/g, '/');
       return `file '${normalized.replace(/'/g, "'\\''")}'`;
     });
     fs.writeFileSync(listFile, lines.join('\n'), 'utf8');
-    if (runFfmpegConcatOnce(listFile, outputPath, false, log)) return true;
-    log.warn('Video merge: stream copy concat failed, retrying with re-encode', {
-      clip_count: localPaths.length,
-    });
+
+    // 若整集没有任何音频流，走纯视频极速流拷贝/重编码
+    if (!hasAnyAudio) {
+      if (runFfmpegConcatOnce(listFile, outputPath, false, log)) return true;
+      return runFfmpegConcatOnce(listFile, outputPath, true, log);
+    }
+
+    // 3. 有音频流时：先提取拼合纯视频轨（优先 stream copy）
+    let vOk = false;
+    const copyArgs = ['-y', '-f', 'concat', '-safe', '0', '-i', listFile, '-c:v', 'copy', '-an', tempVideo];
+    const vCopyRes = spawnSync(ffmpegBin, copyArgs, { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
+    if (vCopyRes.status === 0 && fs.existsSync(tempVideo) && fs.statSync(tempVideo).size > 0) {
+      vOk = true;
+    } else {
+      if (log?.warn) log.warn('Video merge: video stream copy failed, falling back to re-encode', { clip_count: localPaths.length });
+      const reencodeArgs = [
+        '-y', '-f', 'concat', '-safe', '0', '-i', listFile,
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-an',
+        tempVideo,
+      ];
+      const vReencodeRes = spawnSync(ffmpegBin, reencodeArgs, { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
+      if (vReencodeRes.status === 0 && fs.existsSync(tempVideo) && fs.statSync(tempVideo).size > 0) {
+        vOk = true;
+      }
+    }
+    if (!vOk) {
+      // 兜底：直接走原版的全局转码
+      return runFfmpegConcatOnce(listFile, outputPath, true, log);
+    }
+
+    // 4. 音频精确采样对齐：构建 filter_complex 将每镜音频严格 trim/pad 到该镜视频精确时长
+    const filterInputs = [];
+    const filterParts = [];
+    const concatInputs = [];
+    let inputIdx = 0;
+    for (let i = 0; i < clipMetas.length; i++) {
+      const c = clipMetas[i];
+      const durStr = c.vDur.toFixed(4);
+      if (c.hasAudio) {
+        filterInputs.push('-i', c.file);
+        filterParts.push(`[${inputIdx}:a]aresample=44100:async=1,apad,atrim=0:${durStr}[a${i}]`);
+        inputIdx++;
+      } else {
+        filterInputs.push('-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo');
+        filterParts.push(`[${inputIdx}:a]atrim=0:${durStr}[a${i}]`);
+        inputIdx++;
+      }
+      concatInputs.push(`[a${i}]`);
+    }
+    const filterComplex = `${filterParts.join(';')}; ${concatInputs.join('')}concat=n=${clipMetas.length}:v=0:a=1[aout]`;
+    const audioArgs = [
+      '-y',
+      ...filterInputs,
+      '-filter_complex', filterComplex,
+      '-map', '[aout]',
+      '-c:a', 'aac', '-b:a', '192k', '-ar', '44100',
+      tempAudio,
+    ];
+    const aRes = spawnSync(ffmpegBin, audioArgs, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+    if (aRes.status !== 0 || !fs.existsSync(tempAudio) || fs.statSync(tempAudio).size === 0) {
+      if (log?.warn) log.warn('Video merge: audio sync concat failed, falling back to re-encode', { stderr: aRes.stderr?.slice(-500) });
+      return runFfmpegConcatOnce(listFile, outputPath, true, log);
+    }
+
+    // 5. 将无损对齐的视频轨与音频轨封装到 outputPath
+    const muxArgs = [
+      '-y',
+      '-i', tempVideo,
+      '-i', tempAudio,
+      '-c:v', 'copy',
+      '-c:a', 'copy',
+      '-movflags', '+faststart',
+      outputPath,
+    ];
+    const muxRes = spawnSync(ffmpegBin, muxArgs, { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
+    if (muxRes.status === 0 && fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
+      return true;
+    }
+
+    // 兜底
+    return runFfmpegConcatOnce(listFile, outputPath, true, log);
+  } catch (err) {
+    if (log?.warn) log.warn('Video merge: synchronized concat exception', { error: err.message });
     return runFfmpegConcatOnce(listFile, outputPath, true, log);
   } finally {
     try { if (fs.existsSync(listFile)) fs.unlinkSync(listFile); } catch (_) {}
-    for (const file of normalizedPaths) { try { fs.unlinkSync(file); } catch (_) {} }
+    try { if (fs.existsSync(tempVideo)) fs.unlinkSync(tempVideo); } catch (_) {}
+    try { if (fs.existsSync(tempAudio)) fs.unlinkSync(tempAudio); } catch (_) {}
   }
 }
 
@@ -401,10 +508,20 @@ async function processVideoMerge(db, log, mergeId, baseUrl) {
     mergeOpts = {};
   }
   const postNeed =
-    !!mergeOpts.burn_narration_subtitles
+    !!mergeOpts.burn_subtitles
+    || !!mergeOpts.burn_narration_audio
     || !!mergeOpts.burn_dialogue_audio
     || !!mergeOpts.background_music?.enabled
     || !!(mergeOpts.watermark_text && String(mergeOpts.watermark_text).trim());
+  if (postNeed && (!mergedRelativePath || localPaths.length !== scenes.length)) {
+    const error = !ffmpegAvailable
+      ? '字幕/配音后处理需要 FFmpeg，当前不可用，未输出成片。'
+      : '视频片段缺失或拼接失败，无法完成字幕/配音后处理。请检查各分镜视频后重新合成。';
+    db.prepare('UPDATE video_merges SET status = ?, error_msg = ? WHERE id = ?').run('failed', error, mergeId);
+    if (taskId) taskService.updateTaskError(db, taskId, error);
+    for (const file of toCleanup) { try { fs.unlinkSync(file); } catch (_) {} }
+    return;
+  }
   if (mergedRelativePath && ffmpegAvailable && postNeed) {
     const mergedAbsPath = path.join(storageRoot, mergedRelativePath.replace(/\//g, path.sep));
     if (fs.existsSync(mergedAbsPath)) {

@@ -13,7 +13,7 @@
  */
 
 const SCREEN_POSITION_REGEX = /(?:画面左侧|画面右侧|画面中央|画面正中|画面左前|画面右前|画面前景|画面中景|画面后景|左下角|右下角|左上方|右上方|左侧三分线|右侧三分线|居中|偏左|偏右|screen_left|screen_right|screen_center|foreground|midground|background)/i;
-const FACING_REGEX = /(?:正面|正对|背对|背面|背向|朝左|朝右|侧身|侧向|三刻|四分之三|转朝|面对|斜向|前左|前右|后左|后右|左侧|右侧|剪影|front|back|left|right|facing|three_quarter|profile)/i;
+const FACING_REGEX = /(?:正面|正对|背对|背面|背向|朝左|朝右|侧身|侧向|侧面|微侧|三刻|四分之三|3\/4|转朝|面对|斜向|前左|前右|后左|后右|左侧|右侧|剪影|front|back|left|right|facing|three_quarter|profile)/i;
 const HEAD_POSE_REGEX = /(?:头|仰|低头|偏头|转头|正对|回望|俯视|仰视|侧头|head|tilt|turn)/i;
 const GAZE_REGEX = /(?:目光|视线|看|眼|注视|盯|凝视|锁定|瞄准|gaze|look|eye|watch)/i;
 const POSTURE_REGEX = /(?:站|蹲|坐|卧|趴|扑|俯|仰|倾|跪|靠|crouch|stand|kneel|lean|prone|sit|lie|stride|奔|跑|跃|步|斜躺|低姿|姿态|姿势|姿|立|挺)/i;
@@ -75,7 +75,7 @@ function createCharacterVisualSlot(data = {}) {
  * @param {Array<object>} slots
  * @returns {Array<object>} 违规列表
  */
-function validateCharacterVisualSlots(shot, slots = []) {
+function validateCharacterVisualSlots(shot, slots = [], slotField = 'character_visuals') {
   const violations = [];
   const shotNum = shot.shot_number || shot.storyboard_number || 1;
 
@@ -99,6 +99,9 @@ function validateCharacterVisualSlots(shot, slots = []) {
         rule: 'INVARIANT_SLOT_MISSING_SCREEN_POSITION',
         shot_number: shotNum,
         severity: 'error',
+        character_id: slot.character_id != null ? Number(slot.character_id) : null,
+        character_name: cName,
+        conflict_slots: [`character_visuals[${sIdx}].screen_position`],
         message: `分镜 ${shotNum} 角色「${cName}」缺少画面构图位置槽位 (screen_position)，必须明确人物在画面中的具体构图位置（如：画面左侧前景、画面正中央、画面右侧中景等），防止生图模型默认正中呆立或双人重叠穿模！`,
       });
     }
@@ -109,6 +112,9 @@ function validateCharacterVisualSlots(shot, slots = []) {
         rule: 'INVARIANT_SLOT_MISSING_FACING',
         shot_number: shotNum,
         severity: 'error',
+        character_id: slot.character_id != null ? Number(slot.character_id) : null,
+        character_name: cName,
+        conflict_slots: [`character_visuals[${sIdx}].facing`],
         message: `分镜 ${shotNum} 角色「${cName}」缺少明确的人物朝向槽位 (facing)，必须指明朝向（如：正面面对镜头、侧身朝向画面左侧、侧身朝向画面右侧、背向镜头等）。`,
       });
     }
@@ -120,6 +126,9 @@ function validateCharacterVisualSlots(shot, slots = []) {
         rule: 'INVARIANT_SLOT_MISSING_HEAD_POSE',
         shot_number: shotNum,
         severity: 'error',
+        character_id: slot.character_id != null ? Number(slot.character_id) : null,
+        character_name: cName,
+        conflict_slots: [`character_visuals[${sIdx}].head_pose`],
         message: `分镜 ${shotNum} 角色「${cName}」缺少头部姿态槽位 (head_pose)，必须指明头部朝向与姿势（如：头部正对前方、微仰起头、侧头偏向右侧、低头等）。`,
       });
     }
@@ -131,6 +140,9 @@ function validateCharacterVisualSlots(shot, slots = []) {
         rule: 'INVARIANT_SLOT_MISSING_GAZE',
         shot_number: shotNum,
         severity: 'error',
+        character_id: slot.character_id != null ? Number(slot.character_id) : null,
+        character_name: cName,
+        conflict_slots: [`character_visuals[${sIdx}].gaze`],
         message: `分镜 ${shotNum} 角色「${cName}」缺少视线注视槽位 (gaze)，必须指明目光落点（如：双眼紧盯前方冷光屏幕、目光警惕锁定高窗火力点等）。`,
       });
     }
@@ -141,6 +153,9 @@ function validateCharacterVisualSlots(shot, slots = []) {
         rule: 'INVARIANT_SLOT_MISSING_POSTURE',
         shot_number: shotNum,
         severity: 'error',
+        character_id: slot.character_id != null ? Number(slot.character_id) : null,
+        character_name: cName,
+        conflict_slots: [`character_visuals[${sIdx}].posture`],
         message: `分镜 ${shotNum} 角色「${cName}」缺少具体的躯干体态与重心槽位 (posture)，严禁只写名字或身体，必须具体（如：半蹲低伏、单膝跪姿、身体前倾30度坐姿等）。`,
       });
     }
@@ -151,6 +166,9 @@ function validateCharacterVisualSlots(shot, slots = []) {
         rule: 'INVARIANT_SLOT_MISSING_HANDS',
         shot_number: shotNum,
         severity: 'error',
+        character_id: slot.character_id != null ? Number(slot.character_id) : null,
+        character_name: cName,
+        conflict_slots: [`character_visuals[${sIdx}].hands`],
         message: `分镜 ${shotNum} 角色「${cName}」缺少手部动作槽位 (hands)，必须指明双手具体动作（如：双手手指悬在按键上方、右手紧按战术耳机、双手持枪等）。`,
       });
     }
@@ -206,7 +224,12 @@ function validateCharacterVisualSlots(shot, slots = []) {
     }
   }
 
-  return violations;
+  return violations.map(violation => ({
+    ...violation,
+    frame: slotField === 'last_frame_visuals' ? 'last' : 'first',
+    conflict_slots: (violation.conflict_slots || [slotField]).map(field => field.replace(/^character_visuals/, slotField)),
+    message: `${slotField === 'last_frame_visuals' ? '尾帧' : '首帧'}：${violation.message}`,
+  }));
 }
 
 /**
@@ -295,81 +318,32 @@ function synthesizeLightingChiaroscuro(shot) {
  * @param {object} options
  * @returns {string} 编译后的 image_prompt
  */
-function compileImagePromptFromSlots(shot, slots = [], options = {}) {
+function renderFrameSlots(shot, slots, options = {}, last = false) {
   const parts = [];
-
-  // 1. 场景地点与空间三层纵深
-  const loc = shot.location ? shot.location : '';
-  const time = shot.time ? shot.time : '';
-  const envDepth = shot.environment_depth || shot.decisive_moment_detail || synthesizeEnvironmentDepth(shot);
-  if (loc && time) {
-    parts.push(`${loc}（${time}）`);
-  } else if (loc) {
-    parts.push(loc);
-  } else if (time) {
-    parts.push(time);
-  }
-  if (envDepth) parts.push(envDepth);
-
-  // 2. 景别机位与电影镜头参数
-  const angleParts = [];
-  if (shot.shot_type) angleParts.push(shot.shot_type);
-  const vMap = { low: '仰拍', high: '俯拍', eye_level: '平视', worm: '极低仰拍', top_down: '顶拍' };
-  const hMap = {
-    front: '正面', front_left: '前左', front_right: '前右',
-    left: '左侧', right: '右侧', back: '背面',
-    back_left: '后左', back_right: '后右',
+  const append = (label, values) => {
+    const body = [...new Set(values.filter(v => typeof v === 'string' && v.trim()).map(v => v.trim()))].join('；');
+    if (body) parts.push(`【${label}】${body}`);
   };
-  const v = vMap[shot.angle_v] || (shot.angle_v === 'low' ? '仰拍' : shot.angle_v === 'high' ? '俯拍' : '平视');
-  const h = hMap[shot.angle_h] || (shot.angle_h === 'front_left' ? '前左' : shot.angle_h === 'front_right' ? '前右' : '正面');
-  angleParts.push(v);
-  angleParts.push(h);
-  const lens = shot.cinematic_lens || synthesizeCinematicLens(shot);
-  if (lens) angleParts.push(lens);
-  parts.push(angleParts.join('·'));
-
-  // 3. 角色视觉槽位（空间站位 + 朝向 + 微表情 + 身体重心 + 手部/接触态 + 服饰微状态）
-  if (Array.isArray(slots) && slots.length > 0) {
-    const charPhrases = slots.map((s) => {
-      const charName = s.name || '人物';
-      const items = [];
-      if (s.facing) items.push(s.facing);
-      if (s.expression) items.push(s.expression);
-      if (s.posture) items.push(s.posture);
-      if (s.hands) items.push(s.hands);
-      if (s.prop_interaction) items.push(s.prop_interaction);
-      if (s.head_pose) items.push(s.head_pose);
-      if (s.gaze && s.gaze !== s.head_pose) items.push(s.gaze);
-      else if (s.head_gaze && !s.head_pose) items.push(s.head_gaze);
-      if (s.appearance_details) items.push(s.appearance_details);
-
-      let anchor = s.spatial_anchor ? (s.spatial_anchor.startsWith('位于') ? s.spatial_anchor : `位于${s.spatial_anchor}`) : '';
-      if (slots.length >= 2) {
-        if ((s.depth_layer === 'foreground' || /(?:前景|近处|近景|左前|右前|过肩)/i.test(anchor)) && !anchor.includes('前景近处') && !anchor.includes('前景') && !anchor.includes('近处')) {
-          anchor = `${anchor}（处于画面前景近处）`;
-        } else if ((s.depth_layer === 'background' || /(?:后景|远处|深处)/i.test(anchor)) && !anchor.includes('后景纵深') && !anchor.includes('后景') && !anchor.includes('深处')) {
-          anchor = `${anchor}（处于画面后景纵深处）`;
-        }
-      }
-      const prefix = anchor ? `${charName}${anchor}` : charName;
-      return `${prefix}${items.length > 0 ? '，' + items.join('，') : ''}`;
-    });
-    parts.push(charPhrases.join('；'));
-  } else if (shot.action) {
-    const { extractStaticFreezeFramePose } = require('../services/episodeStoryboardService');
-    parts.push(extractStaticFreezeFramePose(shot.action, shot));
+  append('场景空间', [shot.location, shot.time, shot.environment_depth]);
+  append(last ? '落幅构图' : '起幅构图', [last ? shot.end_framing : shot.start_framing, shot.layout_description, shot.dialogue_framing]);
+  const horizontal = { front: '正面机位', front_left: '前左机位', front_right: '前右机位', left: '左侧机位', right: '右侧机位', back: '背面机位', back_left: '后左机位', back_right: '后右机位' };
+  const vertical = { eye_level: '平视', low: '仰拍', high: '俯拍', top_down: '顶拍', worm: '极低仰拍' };
+  append('机位景别', [shot.shot_type, horizontal[shot.angle_h], vertical[shot.angle_v], shot.cinematic_lens]);
+  for (const v of slots) {
+    append(v.name || `角色${v.character_id || v.id}`, [
+      v.screen_position, v.spatial_anchor, v.environmental_anchor, v.depth_layer,
+      v.facing, v.head_pose, v.gaze, v.expression, v.posture, v.hands,
+      v.prop_interaction, v.appearance_details, v.activity, v.mouth_state,
+    ]);
   }
+  append('光影', [shot.lighting_chiaroscuro || shot.lighting_style, shot.atmosphere]);
+  append('画风', [options.style]);
+  parts.push(last ? '尾帧静止画面。' : '首帧静止画面。');
+  return parts.join('\n');
+}
 
-  // 4. 影视级打光与影调氛围 (Lighting & Chiaroscuro)
-  const lighting = shot.lighting_chiaroscuro || synthesizeLightingChiaroscuro(shot);
-  if (lighting) parts.push(lighting);
-
-  // 5. 电影风格与胶片摄影质感
-  const style = options.style || 'photorealistic, ultra-detailed, 8k uhd, sharp focus, natural lighting, real skin texture, hyperrealism, professional photography, RAW photo';
-  parts.push(style);
-  parts.push('首帧静止画面');
-
-  return parts.filter(Boolean).join('，');
+function compileImagePromptFromSlots(shot, slots = [], options = {}) {
+  return renderFrameSlots(shot, slots, options, false);
 }
 
 /**
@@ -417,16 +391,130 @@ function synthesizeCharacterVisualSlots(shot, catalogCharacters = []) {
     .join('；');
   const prompt = sourceText;
 
+  // 智能推断或复用对话视听构图槽位（做选择题，告别自然语言含糊脑补）
+  // 可选值：two_shot_face_to_face (双人面对面对视) / over_the_shoulder (过肩拍) / single_reaction_offscreen (单人视线看画外) / joint_observation (双人同向观察) / solo_action (单人动作)
+  const hasDialogue = Boolean(String(shot.dialogue || '').trim());
+  let framing = shot.dialogue_framing;
+  if (!framing) {
+    if (charIds.length >= 2) {
+      if (hasDialogue || /(?:对视|面对面|交谈|询问|商议|低语|确认|看着对方|商量)/i.test(prompt)) {
+        framing = (shot.shot_type === '近景' || shot.shot_type === '特写' || /(?:过肩|后颈|背影|OTS)/i.test(prompt))
+          ? 'over_the_shoulder'
+          : 'two_shot_face_to_face';
+      } else if (/(?:警戒|搜寻|瞄准|撤离|潜行|看前方|看屏幕|看大屏|看二层|看高台)/i.test(prompt)) {
+        framing = 'joint_observation';
+      } else {
+        framing = 'two_shot_face_to_face';
+      }
+    } else if (charIds.length === 1) {
+      framing = hasDialogue ? 'single_reaction_offscreen' : 'solo_action';
+    } else {
+      framing = 'solo_action';
+    }
+  }
+
   // 对每个出场角色构造结构化槽位
   return charIds.map((cid, idx) => {
     const charObj = charMap.get(cid) || {};
     const name = charObj.name || (charIds.length === 1 ? '主角' : `人物${idx + 1}`);
+    const otherCharNames = charIds
+      .filter((_, i) => i !== idx)
+      .map((id) => charMap.get(id)?.name || '对方')
+      .join('与');
+    const partnerName = otherCharNames || '戏中搭档';
 
     let facing = defaultFacing;
-    if (/(?:背对|背面|背向)/i.test(prompt)) facing = '背向镜头';
-    else if (/(?:侧身|侧向|朝向|偏向).*(?:左)/i.test(prompt) || shot.angle_h === 'front_left' || shot.angle_h === 'left') facing = '侧身朝向画面左侧';
-    else if (/(?:侧身|侧向|朝向|偏向).*(?:右)/i.test(prompt) || shot.angle_h === 'front_right' || shot.angle_h === 'right') facing = '侧身朝向画面右侧';
-    else if (/(?:正面|正对)/i.test(prompt)) facing = '正面面对镜头';
+    let headPose = '头部微侧面向行动方向';
+    let gaze = '目光专注于当前行动目标，镜头捕捉自然的三分之四侧脸';
+
+    if (charIds.length >= 2) {
+      if (framing === 'over_the_shoulder' || /(?:过肩|OTS|背身|肩后)/i.test(framing)) {
+        if (idx === 0) {
+          facing = '侧身背向镜头（露出右肩与侧背轮廓，充当过肩前景）';
+          headPose = `侧头面向后景中的${partnerName}`;
+          gaze = `视线延伸至后景${partnerName}身上，建立纵深视线轴`;
+        } else {
+          facing = `3/4正侧面迎向前景的${charMap.get(charIds[0])?.name || '搭档'}`;
+          headPose = `正视前景中的${charMap.get(charIds[0])?.name || '搭档'}`;
+          gaze = `目光深邃凝视着前景的${charMap.get(charIds[0])?.name || '搭档'}，双方眼神自然交汇`;
+        }
+      } else if (framing === 'joint_observation' || /(?:同向|警戒|观察|大屏|屏幕|搜索|巡视)/i.test(framing)) {
+        if (idx === 0) {
+          facing = '身体微向右前方3/4侧立';
+          headPose = '头部保持战术警戒姿态';
+          gaze = '目光锐利锁定前方共同观察目标';
+        } else {
+          facing = '身体微向左前方3/4侧立';
+          headPose = '头部保持战术警戒姿态';
+          gaze = '目光锐利锁定前方共同观察目标';
+        }
+      } else if (/(?:背靠背|背对背)/i.test(framing)) {
+        if (idx === 0) {
+          facing = '身体朝向画面左前方，背部微靠搭档形成战术掩护';
+          headPose = '侧头警戒左侧视界';
+          gaze = '目光警惕扫视左方通道';
+        } else {
+          facing = '身体朝向画面右后方，背部微靠搭档形成战术掩护';
+          headPose = '侧头警戒右侧死角';
+          gaze = '目光警惕扫视右方死角';
+        }
+      } else if (framing && framing !== 'two_shot_face_to_face' && framing !== 'solo_action') {
+        // 自定义开放式构图描述（尊重模型与用户自由发挥）
+        if (idx === 0) {
+          facing = '3/4侧身朝向画面右侧（偏向戏中搭档）';
+          headPose = `微侧头面向${partnerName}`;
+          gaze = `目光专注与${partnerName}互动（${framing}），视线落在搭档身上`;
+        } else {
+          facing = '3/4侧身朝向画面左侧（偏向戏中搭档）';
+          headPose = `微侧头迎向${partnerName}`;
+          gaze = `神情专注自然交流（${framing}），视线落在搭档身上`;
+        }
+      } else {
+        // two_shot_face_to_face (双人面对面对视闭环，杜绝双正脸直视镜头跟空气说话)
+        if (idx === 0) {
+          facing = '3/4侧身朝向画面右侧（侧身面向戏中搭档）';
+          headPose = `微侧头面向右侧的${partnerName}`;
+          gaze = `目光专注注视着右侧的${partnerName}，眼神对视交流`;
+        } else {
+          facing = '3/4侧身朝向画面左侧（侧身面向戏中搭档）';
+          headPose = `微侧头面向左侧的${partnerName}`;
+          gaze = `眼神迎上左侧的${partnerName}，专注对视倾听`;
+        }
+      }
+    } else {
+      // 单人出场场景
+      if (framing === 'single_reaction_offscreen' || hasDialogue) {
+        facing = '身体微侧30度（3/4侧面视角）';
+        headPose = '侧头微偏向画外侧方';
+        gaze = '目光专注注视着画外的对话搭档，呈自然三分之四侧脸';
+      } else {
+        // 单人无对白动作
+        if (/(?:背对|背面|背向)/i.test(prompt)) facing = '背向镜头';
+        else if (/(?:侧身|侧向|朝向|偏向).*(?:左)/i.test(prompt) || shot.angle_h === 'front_left' || shot.angle_h === 'left') facing = '侧身朝向画面左侧';
+        else if (/(?:侧身|侧向|朝向|偏向).*(?:右)/i.test(prompt) || shot.angle_h === 'front_right' || shot.angle_h === 'right') facing = '侧身朝向画面右侧';
+        else facing = defaultFacing;
+
+        if (/(?:锁定高台|二层窗口)/i.test(prompt)) {
+          headPose = '微仰起头';
+          gaze = '目光警惕锁定二层窗口火力点';
+        } else if (/(?:右侧岔路|岔口)/i.test(prompt)) {
+          headPose = '侧头偏向右侧';
+          gaze = '目光锐利锁定右侧岔路口';
+        } else if (/(?:大屏|拓扑|投影)/i.test(prompt)) {
+          headPose = '头部微仰正对大屏';
+          gaze = '双眼专注凝视前方大屏核心节点';
+        } else if (/(?:屏幕|显示器|冷光)/i.test(prompt)) {
+          headPose = '头部微低正对屏幕';
+          gaze = '双眼固执专注地紧盯前方冷光屏幕';
+        } else if (/(?:作业本|桌面|资料|文件)/i.test(prompt)) {
+          headPose = '低头俯视桌面';
+          gaze = '双眼凝视桌面上铺开的资料目标';
+        } else {
+          headPose = '头部随动作自然倾斜';
+          gaze = '目光专注于当前行动与环境目标，呈自然工作状态';
+        }
+      }
+    }
 
     const isTactical = /(?:断墙|战术装备|战术武器|战术耳机|掩体|火力|持枪|射击|拔枪|冲锋枪|突击步枪|手枪|子弹|废弃工厂|潜行|撤离|废墟)/i.test(prompt) || /(?:断墙|掩体|废弃工厂|废墟)/i.test(shot.location || '');
 
@@ -511,34 +599,6 @@ function synthesizeCharacterVisualSlots(shot, catalogCharacters = []) {
       ? '战术作训服领口紧束，面颊微有尘渍与细汗，装备背心扣件整肃清晰'
       : '衣装整洁挺括，衣料纤维光泽自然，发丝纹理细腻写实';
 
-    let headPose = '头部正对前方';
-    let gaze = '目光专注注视正前方';
-    if (/(?:锁定高台|二层窗口)/i.test(prompt)) {
-      headPose = '微仰起头';
-      gaze = '目光警惕锁定二层窗口火力点';
-    } else if (/(?:右侧岔路|岔口)/i.test(prompt)) {
-      headPose = '侧头偏向右侧';
-      gaze = '目光锐利锁定右侧岔路口';
-    } else if (/(?:大屏|拓扑|投影)/i.test(prompt)) {
-      headPose = '头部微仰正对大屏';
-      gaze = '双眼专注凝视前方大屏核心节点';
-    } else if (/(?:屏幕|显示器|冷光)/i.test(prompt)) {
-      headPose = '头部微低正对屏幕';
-      gaze = '双眼固执专注地紧盯前方冷光屏幕';
-    } else if (/(?:赵总|小林|老张|哥哥|妹妹|对方|众人)/i.test(prompt)) {
-      headPose = '侧头转向对方';
-      gaze = '目光严肃直视对方方向';
-    } else if (/(?:救援|医疗|包扎|医护)/i.test(prompt)) {
-      headPose = '头部扬起';
-      gaze = '目光焦急决绝注视着前方倒地的战友';
-    } else if (/(?:作业本)/i.test(prompt)) {
-      headPose = '低头俯视';
-      gaze = '双眼凝视桌面上未动过的作业本';
-    } else if (/(?:桌面|资料|文件)/i.test(prompt)) {
-      headPose = '低头俯视';
-      gaze = '双眼凝视桌面上铺开的资料文件';
-    }
-
     return createCharacterVisualSlot({
       character_id: cid,
       name,
@@ -566,72 +626,7 @@ function synthesizeCharacterVisualSlots(shot, catalogCharacters = []) {
  * @returns {string} 编译后的 last_frame prompt
  */
 function compileLastFramePromptFromSlots(shot, slots = [], options = {}) {
-  const parts = [];
-
-  // 1. 场景地点与时间光影
-  if (shot.location) parts.push(shot.location);
-  if (shot.time) parts.push(shot.time);
-
-  // 2. 景别机位
-  const angleParts = [];
-  if (shot.shot_type) angleParts.push(shot.shot_type);
-  const vMap = { low: '仰拍', high: '俯拍', eye_level: '平视', worm: '极低仰拍', top_down: '顶拍' };
-  const hMap = {
-    front: '正面', front_left: '前左', front_right: '前右',
-    left: '左侧', right: '右侧', back: '背面',
-    back_left: '后左', back_right: '后右',
-  };
-  const v = vMap[shot.angle_v] || (shot.angle_v === 'low' ? '仰拍' : shot.angle_v === 'high' ? '俯拍' : '平视');
-  const h = hMap[shot.angle_h] || (shot.angle_h === 'front_left' ? '前左' : shot.angle_h === 'front_right' ? '前右' : '正面');
-  angleParts.push(v);
-  angleParts.push(h);
-  parts.push(angleParts.join('·'));
-
-  // 3. 尾帧角色视觉槽位
-  if (Array.isArray(slots) && slots.length > 0) {
-    const charPhrases = slots.map((s) => {
-      const charName = s.name || '人物';
-      const items = [];
-      if (s.facing) items.push(s.facing);
-      if (s.posture) items.push(s.posture);
-      if (s.hands) items.push(s.hands);
-      if (s.head_pose) items.push(s.head_pose);
-      if (s.gaze && s.gaze !== s.head_pose) items.push(s.gaze);
-      else if (s.head_gaze && !s.head_pose) items.push(s.head_gaze);
-
-      let anchor = s.spatial_anchor ? (s.spatial_anchor.startsWith('位于') ? s.spatial_anchor : `位于${s.spatial_anchor}`) : '';
-      if (slots.length >= 2) {
-        if ((s.depth_layer === 'foreground' || /(?:前景|近处|近景|左前|右前|过肩)/i.test(anchor)) && !anchor.includes('前景近处') && !anchor.includes('前景') && !anchor.includes('近处')) {
-          anchor = `${anchor}（处于画面前景近处）`;
-        } else if ((s.depth_layer === 'background' || /(?:后景|远处|深处)/i.test(anchor)) && !anchor.includes('后景纵深') && !anchor.includes('后景') && !anchor.includes('深处')) {
-          anchor = `${anchor}（处于画面后景纵深处）`;
-        }
-      }
-      const prefix = anchor ? `${charName}${anchor}` : charName;
-      return `${prefix}${items.length > 0 ? '，' + items.join('，') : ''}`;
-    });
-    parts.push(charPhrases.join('；'));
-  } else if (shot.result) {
-    const { extractStaticFreezeFramePose } = require('../services/episodeStoryboardService');
-    parts.push(extractStaticFreezeFramePose(shot.result, shot));
-  }
-
-  // 4. 动作收束瞬间的环境物理细节
-  if (shot.result) {
-    const { stripChineseExclusions } = require('../utils/framePromptSanitize');
-    let resClean = stripChineseExclusions(shot.result)
-      .replace(/连续弹着点/g, '密集子弹击地激起的飞溅碎石与火花')
-      .replace(/弹着点/g, '子弹击地激起的飞溅碎石')
-      .replace(/弹着火星/g, '子弹击地迸发的飞溅火花与烟尘');
-    parts.push(`动作收束瞬间细节：${resClean}`);
-  }
-
-  // 5. 画风与尾帧静止标签
-  const style = options.style || 'photorealistic, ultra-detailed, 8k uhd, sharp focus, natural lighting, real skin texture, hyperrealism, professional photography, RAW photo';
-  parts.push(style);
-  parts.push('尾帧静止画面，动作收束定格');
-
-  return parts.filter(Boolean).join('，');
+  return renderFrameSlots(shot, slots, options, true);
 }
 
 /**
@@ -748,6 +743,7 @@ module.exports = {
   DYNAMIC_REGEX,
   createCharacterVisualSlot,
   validateCharacterVisualSlots,
+  synthesizeLightingChiaroscuro,
   compileImagePromptFromSlots,
   compileLastFramePromptFromSlots,
   synthesizeCharacterVisualSlots,

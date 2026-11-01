@@ -8,7 +8,7 @@ const safeJson = require('../utils/safeJson');
 const { safeParseAIJSON, extractJsonCandidate, repairTruncatedJsonArray, extractFirstArray } = safeJson;
 const loadConfig = require('../config').loadConfig;
 const angleService = require('./angleService');
-const { timingInstructions } = require('../utils/speechTiming');
+const { timingInstructions, assessSpeechTiming } = require('../utils/speechTiming');
 const { enforceStoryboardSpeechTiming } = require('./storyboardSpeechService');
 
 /**
@@ -169,8 +169,8 @@ function buildCameraMotionChain(movement, shotType, durationSec) {
   return chain || '缓推轨贴近动作核心';
 }
 
-/** 全能分镜：模型未返回 universal_segment_text 时的灵境式高密度单行（视频时间轴 + 运镜链） */
-function buildFallbackUniversalSeedanceLine(sb, d, styleHint) {
+/** H3 多参考分镜：模型未返回 universal_segment_text 时的高密度单行（视频时间轴 + 运镜链） */
+function buildFallbackUniversalH3Line(sb, d, styleHint) {
   const act = (d.action || '').replace(/\s+/g, ' ').trim().slice(0, 220);
   const res = (d.result || '').replace(/\s+/g, ' ').trim().slice(0, 120);
   const emo = (d.emotion || sb.emotion || '').replace(/\s+/g, ' ').trim().slice(0, 24);
@@ -248,6 +248,7 @@ function getStoryboardsForEpisode(db, episodeId) {
       creation_mode: r.creation_mode === 'universal' ? 'universal' : 'classic',
       universal_segment_text: r.universal_segment_text ?? null,
       layout_description: r.layout_description ?? null,
+      semantic_slots: (() => { try { return r.semantic_slots ? (typeof r.semantic_slots === 'string' ? JSON.parse(r.semantic_slots) : r.semantic_slots) : null; } catch (_) { return null; } })(),
       character_visuals: (() => { try { return r.character_visuals ? (typeof r.character_visuals === 'string' ? JSON.parse(r.character_visuals) : r.character_visuals) : null; } catch (_) { return null; } })(),
       last_frame_visuals: (() => { try { return r.last_frame_visuals ? (typeof r.last_frame_visuals === 'string' ? JSON.parse(r.last_frame_visuals) : r.last_frame_visuals) : null; } catch (_) { return null; } })(),
       video_slots: (() => { try { return r.video_slots ? (typeof r.video_slots === 'string' ? JSON.parse(r.video_slots) : r.video_slots) : null; } catch (_) { return null; } })(),
@@ -442,41 +443,34 @@ function generateImagePrompt(sb, style) {
   // 场景位置与时间
   if (sb.location) {
     let locationDesc = stripChineseExclusions(sb.location);
-    if (sb.time) locationDesc += '，' + stripChineseExclusions(sb.time);
-    parts.push(locationDesc);
+    if (sb.time) locationDesc += '（' + stripChineseExclusions(sb.time) + '）';
+    parts.push(`【场景空间】${locationDesc}`);
   }
   // 镜头视角：优先结构化三元组（中文标签），降级到旧文本
+  let angleLabel = '';
   if (sb.angle_h && sb.angle_v && sb.angle_s) {
-    parts.push(angleService.toChineseLabel(sb.angle_h, sb.angle_v, sb.angle_s));
+    angleLabel = angleService.toChineseLabel(sb.angle_h, sb.angle_v, sb.angle_s);
   } else if (sb.angle || sb.shot_type) {
     const { h, v, s } = angleService.parseFromLegacyText(sb.angle || '', sb.shot_type || '');
-    parts.push(angleService.toChineseLabel(h, v, s));
+    angleLabel = angleService.toChineseLabel(h, v, s);
+  }
+  if (angleLabel) {
+    parts.push(`【机位景别】${angleLabel}`);
   }
   // 画面动作（取定格瞬间的纯静态摄影姿态）
   if (sb.action) {
     const staticPose = extractStaticFreezeFramePose(stripChineseExclusions(sb.action), sb);
-    if (staticPose) parts.push(staticPose);
+    if (staticPose) parts.push(`【角色构图与姿态】${staticPose}`);
   }
-  // 情绪
-  if (sb.emotion) parts.push(sb.emotion);
+  // 情绪与光影
+  if (sb.emotion || sb.atmosphere || sb.lighting_style) {
+    const lparts = [sb.lighting_style, sb.atmosphere, sb.emotion].filter(Boolean);
+    if (lparts.length > 0) parts.push(`【光影影调】${lparts.join('，')}`);
+  }
   // 风格（英文 prompt token，保持英文以兼容图片 AI）
-  const styleText = style && String(style).trim();
-  if (styleText) parts.push(styleText);
-  parts.push('首帧静止画面');
-  return parts.join('，');
-}
-
-function generateVideoPrompt(sb, style, videoRatio) {
-  // 结构化视频语义槽位契约优先：若已持久化 video_slots，直接由确定性编译器编译
-  let slots = sb.video_slots;
-  if (typeof slots === 'string') {
-    try { slots = JSON.parse(slots); } catch (_) { slots = null; }
-  }
-  const { synthesizeVideoSlots, compileVideoPromptFromSlots } = require('../ontology/videoSlots');
-  if (!slots || typeof slots !== 'object' || !slots.camera || !slots.audio_lip_sync) {
-    slots = synthesizeVideoSlots(sb, []);
-  }
-  return compileVideoPromptFromSlots(sb, slots, { style, videoRatio });
+  const styleText = (style && String(style).trim()) || 'photorealistic, ultra-detailed, 8k uhd, sharp focus';
+  parts.push(`【摄影风格】${styleText}，首帧静止画面`);
+  return parts.join('\n');
 }
 
 function generateLastFramePrompt(sb, style) {
@@ -654,7 +648,9 @@ function deriveStoryboardFieldsFromAi(sb, style, videoRatio, opts = {}) {
   };
 
   const imagePrompt = generateImagePrompt(sbWithSlots, style);
-  const videoPrompt = generateVideoPrompt(sbWithSlots, style, videoRatio);
+  // H3 compiles its final prompt directly from the authoritative slots at
+  // submission time. Do not persist a second, editable text representation.
+  const videoPrompt = null;
   const sceneId = sb.scene_id != null ? Number(sb.scene_id) : null;
   const charactersJson = Array.isArray(sb.characters) ? JSON.stringify(sb.characters) : (sb.characters ? JSON.stringify([].concat(sb.characters)) : '[]');
   const propIds = Array.isArray(sb.props) ? sb.props.map(Number).filter(Number.isFinite) : [];
@@ -663,7 +659,7 @@ function deriveStoryboardFieldsFromAi(sb, style, videoRatio, opts = {}) {
     universalSegmentText = String(sb.universal_segment_text).trim().replace(/\r?\n/g, ' ');
   }
   if (universalOmni && !universalSegmentText) {
-    universalSegmentText = buildFallbackUniversalSeedanceLine(
+    universalSegmentText = buildFallbackUniversalH3Line(
       sb,
       {
         shotNumber,
@@ -684,9 +680,11 @@ function deriveStoryboardFieldsFromAi(sb, style, videoRatio, opts = {}) {
   const creationMode = universalOmni ? 'universal' : 'classic';
   if (!universalOmni) universalSegmentText = null;
   const layoutDescription = (sb.layout_description && String(sb.layout_description).trim()) || null;
+  const dialogueFraming = sb.dialogue_framing || (Array.isArray(sb.characters) && sb.characters.length >= 2 ? (dialogue ? 'two_shot_face_to_face' : 'joint_observation') : (dialogue ? 'single_reaction_offscreen' : 'solo_action'));
   return {
     shotNumber,
     title,
+    dialogueFraming,
     shotType,
     movement,
     angle,
@@ -719,6 +717,39 @@ function deriveStoryboardFieldsFromAi(sb, style, videoRatio, opts = {}) {
   };
 }
 
+/**
+ * 持久化执行器真正消费的 Agent 合同。旧测试库可能没有这些增量列，
+ * 因此按 PRAGMA 检测后更新；不推断、不补写任何创意字段。
+ */
+function persistStoryboardExecutionContract(db, storyboardId, sb) {
+  const available = new Set(db.prepare('PRAGMA table_info(storyboards)').all().map((column) => column.name));
+  const updates = [];
+  const values = [];
+  const add = (column, value) => {
+    if (!available.has(column)) return;
+    updates.push(`${column} = ?`);
+    values.push(value);
+  };
+  if (Object.prototype.hasOwnProperty.call(sb || {}, 'semantic_slots')) {
+    const semantic = sb.semantic_slots;
+    add('semantic_slots', semantic == null || semantic === ''
+      ? null
+      : (typeof semantic === 'string' ? semantic : JSON.stringify(semantic)));
+  }
+  if (Object.prototype.hasOwnProperty.call(sb || {}, 'long_take_group_id')) {
+    add('long_take_group_id', sb.long_take_group_id || null);
+  }
+  if (Object.prototype.hasOwnProperty.call(sb || {}, 'long_take_role')) {
+    add('long_take_role', sb.long_take_role || null);
+  }
+  if (Object.prototype.hasOwnProperty.call(sb || {}, 'long_take_sequence')) {
+    const sequence = Number(sb.long_take_sequence);
+    add('long_take_sequence', Number.isInteger(sequence) && sequence > 0 ? sequence : null);
+  }
+  if (!updates.length) return;
+  db.prepare(`UPDATE storyboards SET ${updates.join(', ')} WHERE id = ?`).run(...values, Number(storyboardId));
+}
+
 /** 用最终解析的分镜对象覆盖已存在的行（修正流式增量先入库时缺 narration 等字段的问题） */
 function updateStoryboardRowFromDerived(db, existingId, episodeIdNum, d, sb, now) {
   try {
@@ -728,7 +759,7 @@ function updateStoryboardRowFromDerived(db, existingId, episodeIdNum, d, sb, now
         dialogue = ?, narration = ?, action = ?, result = ?, atmosphere = ?,
         image_prompt = ?, video_prompt = ?, characters = ?,
         character_visuals = ?, last_frame_visuals = ?, video_slots = ?,
-        shot_type = ?, angle = ?, angle_h = ?, angle_v = ?, angle_s = ?, movement = ?,
+        shot_type = ?, angle = ?, angle_h = ?, angle_v = ?, angle_s = ?, movement = ?, dialogue_framing = COALESCE(?, dialogue_framing),
         lighting_style = ?, depth_of_field = ?, bgm_prompt = ?, sound_effect = ?, segment_index = ?, segment_title = ?,
         creation_mode = ?, universal_segment_text = ?,
         layout_description = COALESCE(?, layout_description),
@@ -758,6 +789,7 @@ function updateStoryboardRowFromDerived(db, existingId, episodeIdNum, d, sb, now
       d.angleV,
       d.angleS,
       d.movement || null,
+      d.dialogueFraming || null,
       d.lightingStyle,
       d.depthOfField,
       d.bgmPrompt || null,
@@ -818,6 +850,7 @@ function updateStoryboardRowFromDerived(db, existingId, episodeIdNum, d, sb, now
       throw upErr;
     }
   }
+  persistStoryboardExecutionContract(db, existingId, sb);
   require('./wardrobeService').recordAiChange(db, episodeIdNum, existingId, sb);
   require('./speechDeliveryService').recordAiPlan(db, episodeIdNum, existingId, sb);
   try {
@@ -840,8 +873,8 @@ function insertOneStoryboard(db, episodeIdNum, sb, style, videoRatio, now, deriv
     let newId;
     try {
       const info = db.prepare(
-        `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, duration, dialogue, narration, action, result, atmosphere, image_prompt, video_prompt, characters, character_visuals, last_frame_visuals, video_slots, shot_type, angle, angle_h, angle_v, angle_s, movement, lighting_style, depth_of_field, bgm_prompt, sound_effect, segment_index, segment_title, creation_mode, universal_segment_text, layout_description, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+        `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, duration, dialogue, narration, action, result, atmosphere, image_prompt, video_prompt, characters, character_visuals, last_frame_visuals, video_slots, shot_type, angle, angle_h, angle_v, angle_s, dialogue_framing, movement, lighting_style, depth_of_field, bgm_prompt, sound_effect, segment_index, segment_title, creation_mode, universal_segment_text, layout_description, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
       ).run(
         episodeIdNum, d.sceneId, shotNumber, d.title || null, d.description,
         sb.location ?? null, sb.time ?? null, sb.duration ?? 5,
@@ -851,6 +884,7 @@ function insertOneStoryboard(db, episodeIdNum, sb, style, videoRatio, now, deriv
         d.lastFrameVisuals ? JSON.stringify(d.lastFrameVisuals) : null,
         d.videoSlots ? JSON.stringify(d.videoSlots) : null,
         d.shotType || null, d.angle, d.angleH, d.angleV, d.angleS,
+        d.dialogueFraming || null,
         d.movement || null, d.lightingStyle, d.depthOfField, d.bgmPrompt || null, d.soundEffect || null, d.segmentIndex, d.segmentTitle,
         d.creationMode || 'classic',
         d.universalSegmentText != null ? d.universalSegmentText : null,
@@ -879,6 +913,7 @@ function insertOneStoryboard(db, episodeIdNum, sb, style, videoRatio, now, deriv
         throw colErr;
       }
     }
+    persistStoryboardExecutionContract(db, newId, sb);
     require('./wardrobeService').recordAiChange(db, episodeIdNum, newId, sb);
     require('./speechDeliveryService').recordAiPlan(db, episodeIdNum, newId, sb);
     if (d.propIds.length > 0) {
@@ -1078,6 +1113,7 @@ function saveStoryboards(db, log, episodeId, storyboards, cfg, styleOverride, sk
       }
     }
     const id = db.prepare('SELECT last_insert_rowid() as id').get().id;
+    persistStoryboardExecutionContract(db, id, sb);
     require('./wardrobeService').recordAiChange(db, episodeIdNum, id, sb);
     require('./speechDeliveryService').recordAiPlan(db, episodeIdNum, id, sb);
     if (d.propIds.length > 0) {
@@ -1496,7 +1532,7 @@ function generateStoryboard(db, log, episodeId, model, style, storyboardCount, v
   const imageRatio = aspectRatio || dramaAspectRatio || cfg?.style?.default_video_ratio || '16:9';
 
   // 计算单镜建议时长（秒）：
-  // 项目 metadata 中的 video_clip_duration（如 15 秒/段）优先于「总时长÷镜数」，
+  // 项目 metadata 中的旧 video_clip_duration 先作为范围回退输入，随后统一归一到 H3 4～8 秒；
   // 否则前端同时传总时长+镜数时会把每镜压成过短（与「每段秒数」配置矛盾）。
   // 无项目配置时再使用总时长÷镜数；再否则 null。
   let effectiveShotDuration = null;
@@ -1764,68 +1800,11 @@ function buildCharacterAppearanceText(db, storyboardId) {
 function rebuildVideoPromptForStoryboard(db, log, storyboardId) {
   const sbId = Number(storyboardId);
   if (!Number.isFinite(sbId) || sbId <= 0) return null;
-
-  const row = db.prepare(
-    `SELECT s.*, e.drama_id
-     FROM storyboards s
-     JOIN episodes e ON e.id = s.episode_id AND e.deleted_at IS NULL
-     WHERE s.id = ? AND s.deleted_at IS NULL`
-  ).get(sbId);
+  const row = db.prepare('SELECT id FROM storyboards WHERE id=? AND deleted_at IS NULL').get(sbId);
   if (!row) return null;
-
-  const loadConfig = require('../config').loadConfig;
-  const cfg = loadConfig();
-  const drama = row.drama_id
-    ? db.prepare('SELECT style, metadata FROM dramas WHERE id = ? AND deleted_at IS NULL').get(row.drama_id)
-    : null;
-  const { resolvedStreamStyleFromDrama } = require('../utils/dramaStyleMerge');
-  const finalStyle = resolvedStreamStyleFromDrama('', drama) || cfg?.style?.default_style || '';
-
-  let dramaAspectRatio = null;
-  try {
-    if (drama?.metadata) {
-      const meta = typeof drama.metadata === 'string' ? JSON.parse(drama.metadata) : drama.metadata;
-      if (meta?.aspect_ratio) dramaAspectRatio = meta.aspect_ratio;
-    }
-  } catch (_) {}
-
-  const videoRatio = dramaAspectRatio || cfg?.style?.default_video_ratio || '16:9';
-
-  const characterAppearances = buildCharacterAppearanceText(db, sbId);
-
-  const sbForPrompt = {
-    ...row,
-    character_appearances: characterAppearances,
-  };
-
-  const { synthesizeVideoSlots, compileVideoPromptFromSlots } = require('../ontology/videoSlots');
-  let videoSlots = row.video_slots;
-  if (typeof videoSlots === 'string') {
-    try { videoSlots = JSON.parse(videoSlots); } catch (_) { videoSlots = null; }
-  }
-  const charsForVid = db.prepare('SELECT id, name FROM characters WHERE drama_id = ? AND deleted_at IS NULL').all(row.drama_id || 0);
-  // 按最新分镜参数全新合成视频语义槽位契约（包含 shots_timeline 与 H3 多模态切分）
-  videoSlots = synthesizeVideoSlots(row, charsForVid, { forceRebuild: true });
-
-  const videoPrompt = compileVideoPromptFromSlots(sbForPrompt, videoSlots, { style: finalStyle, videoRatio });
   const now = new Date().toISOString();
-  try {
-    db.prepare('UPDATE storyboards SET video_prompt = ?, video_slots = ?, updated_at = ? WHERE id = ?').run(videoPrompt, JSON.stringify(videoSlots), now, sbId);
-  } catch (err) {
-    if ((err.message || '').includes('video_slots')) {
-      db.prepare('UPDATE storyboards SET video_prompt = ?, updated_at = ? WHERE id = ?').run(videoPrompt, now, sbId);
-    } else {
-      throw err;
-    }
-  }
-
-  if (log?.info) {
-    log.info('[分镜] 已按最新视频语义槽位契约重建 video_prompt 与 video_slots', {
-      id: sbId,
-      len: videoPrompt.length,
-      has_character_appearances: !!characterAppearances,
-    });
-  }
+  db.prepare('UPDATE storyboards SET video_prompt=NULL, updated_at=? WHERE id=?').run(now, sbId);
+  log?.info?.('[分镜] 已清除旧 video_prompt；H3 将直接编译权威槽位', { id: sbId });
 
   const storyboardService = require('./storyboardService');
   return storyboardService.getStoryboardById(db, sbId);
@@ -1851,34 +1830,22 @@ function rebuildPromptsForStoryboard(db, log, storyboardId) {
   const { resolvedStreamStyleFromDrama } = require('../utils/dramaStyleMerge');
   const finalStyle = resolvedStreamStyleFromDrama('', drama) || cfg?.style?.default_style || '';
 
-  // 0. 槽位完整性检查与自动补全：若未持久化 character_visuals 或提示词有缺陷，调用智能槽位合成器更新
-  const chars = db.prepare('SELECT id, name FROM characters WHERE drama_id = ? AND deleted_at IS NULL').all(row.drama_id || 0);
-  const { synthesizeCharacterVisualSlots, synthesizeLastFrameVisualSlots, validateCharacterVisualSlots } = require('../ontology/visualSlots');
+  // 0. 槽位完整性硬门禁：执行器只编译 Agent 已规划的槽位，不补造人物或尾帧语义。
+  const { validateCharacterVisualSlots } = require('../ontology/visualSlots');
 
   let charVisuals = row.character_visuals;
   if (typeof charVisuals === 'string') {
     try { charVisuals = JSON.parse(charVisuals); } catch (_) { charVisuals = null; }
   }
-  const hasInvalidSlots = !Array.isArray(charVisuals) || charVisuals.length === 0 || validateCharacterVisualSlots(row, charVisuals).length > 0;
-  if (hasInvalidSlots || isFlawedImagePrompt(row.image_prompt)) {
-    charVisuals = synthesizeCharacterVisualSlots(row, chars);
-    try {
-      db.prepare('UPDATE storyboards SET character_visuals = ? WHERE id = ?').run(JSON.stringify(charVisuals), sbId);
-      row.character_visuals = charVisuals;
-    } catch (_) {}
-  }
-
-  // 0.1 尾帧槽位补齐
-  let lastFrameVisuals = row.last_frame_visuals;
-  if (typeof lastFrameVisuals === 'string') {
-    try { lastFrameVisuals = JSON.parse(lastFrameVisuals); } catch (_) { lastFrameVisuals = null; }
-  }
-  if (!Array.isArray(lastFrameVisuals) || lastFrameVisuals.length === 0) {
-    lastFrameVisuals = synthesizeLastFrameVisualSlots(row, chars, charVisuals);
-    try {
-      db.prepare('UPDATE storyboards SET last_frame_visuals = ? WHERE id = ?').run(JSON.stringify(lastFrameVisuals), sbId);
-      row.last_frame_visuals = lastFrameVisuals;
-    } catch (_) {}
+  const charViolations = Array.isArray(charVisuals) ? validateCharacterVisualSlots(row, charVisuals) : [{
+    rule: 'INVARIANT_CHARACTER_VISUAL_SLOTS_REQUIRED',
+    severity: 'error',
+    shot_number: row.storyboard_number,
+    message: '缺少 Agent 规划的 character_visuals',
+    conflict_slots: ['character_visuals'],
+  }];
+  if (!Array.isArray(charVisuals) || charVisuals.length === 0 || charViolations.some(v => v.severity === 'error')) {
+    throw Object.assign(new Error(`角色视觉槽位未通过门禁：${charViolations.map(v => v.message).join('；')}`), { status: 422, violations: charViolations });
   }
 
   // 1. 若 image_prompt 为空或存在截断残片/时序动态动词，按静态定格规则自动重构
@@ -1904,7 +1871,7 @@ function rebuildPromptsForStoryboard(db, log, storyboardId) {
      WHERE id = ?`
   ).run(imagePrompt, polishedPrompt, now, sbId);
 
-  // 2. 重建并补齐 video_prompt
+  // 2. 清除旧的派生 video_prompt；H3 在提交时直接编译权威槽位。
   rebuildVideoPromptForStoryboard(db, log, sbId);
 
   const storyboardService = require('./storyboardService');
@@ -1948,9 +1915,12 @@ function copyStoryboardAssetLinks(db, fromSbId, toSbId) {
 }
 
 function durationForSplitSegment(type, text) {
-  const w = charSpeechWeight(text);
-  if (type === 'narration') return Math.min(12, Math.max(6, Math.round(w + 2)));
-  return Math.min(10, Math.max(5, Math.round(w)));
+  const speech = type === 'narration' ? { narration: text } : { dialogue: text };
+  const assessment = assessSpeechTiming(speech, 8);
+  if (!assessment.ok) {
+    throw new Error(`单段${type === 'narration' ? '旁白' : '对白'}约需 ${assessment.requiredSeconds} 秒，超过 H3 单镜 8 秒上限；请让导演 Agent 继续按语义拆分`);
+  }
+  return Math.min(8, Math.max(4, assessment.recommendedDuration));
 }
 
 function buildSplitPlansFromStoryboard(row) {
@@ -2016,10 +1986,10 @@ function persistSplitStoryboardRow(db, episodeId, storyboardNumber, baseRow, pla
     `INSERT INTO storyboards (
       episode_id, scene_id, storyboard_number, title, description, layout_description,
       location, time, duration, dialogue, narration, action, result, atmosphere,
-      image_prompt, characters, shot_type, angle, angle_h, angle_v, angle_s,
+      image_prompt, characters, shot_type, angle, angle_h, angle_v, angle_s, dialogue_framing,
       movement, lighting_style, depth_of_field, segment_index, segment_title,
       creation_mode, universal_segment_text, status, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
   ).run(
     episodeId,
     baseRow.scene_id ?? null,
@@ -2042,6 +2012,7 @@ function persistSplitStoryboardRow(db, episodeId, storyboardNumber, baseRow, pla
     baseRow.angle_h ?? null,
     baseRow.angle_v ?? null,
     baseRow.angle_s ?? null,
+    plan.dialogue_framing ?? baseRow.dialogue_framing ?? null,
     plan.movement ?? baseRow.movement ?? null,
     baseRow.lighting_style ?? null,
     baseRow.depth_of_field ?? null,
@@ -2133,6 +2104,140 @@ function splitStoryboardByAudio(db, log, storyboardId) {
   };
 }
 
+function clearEpisodeMedia(db, log, episodeId, options = {}) {
+  const epId = Number(episodeId);
+  if (!epId) throw new Error('缺少分集 ID');
+  const episode = db.prepare('SELECT id, drama_id FROM episodes WHERE id = ? AND deleted_at IS NULL').get(epId);
+  if (!episode) throw new Error('分集不存在或已删除');
+
+  const clearImages = options.clear_images !== false;
+  const clearVideos = options.clear_videos !== false;
+  const now = new Date().toISOString();
+
+  const storyboards = db.prepare('SELECT id FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL').all(epId);
+  const sbIds = storyboards.map(s => s.id);
+  if (!sbIds.length) {
+    return { cleared_storyboards: 0, cleared_images: 0, cleared_videos: 0 };
+  }
+
+  const placeholders = sbIds.map(() => '?').join(',');
+  let clearedImages = 0;
+  let clearedVideos = 0;
+
+  db.transaction(() => {
+    if (clearVideos) {
+      try {
+        db.prepare("UPDATE video_batches SET status = 'stopped', updated_at = ? WHERE episode_id = ? AND status IN ('running', 'stopping')").run(now, epId);
+        db.prepare(`UPDATE video_batch_items SET status = 'cancelled' WHERE storyboard_id IN (${placeholders}) AND status IN ('pending', 'running')`).run(...sbIds);
+      } catch (_) {}
+
+      const vidRes = db.prepare(`UPDATE video_generations SET deleted_at = ? WHERE storyboard_id IN (${placeholders}) AND deleted_at IS NULL`).run(now, ...sbIds);
+      clearedVideos = vidRes.changes || 0;
+      db.prepare(`UPDATE storyboards SET video_url = NULL, selected_video_id = NULL, updated_at = ? WHERE id IN (${placeholders})`).run(now, ...sbIds);
+    }
+
+    if (clearImages) {
+      const imgRes = db.prepare(`UPDATE image_generations SET deleted_at = ? WHERE storyboard_id IN (${placeholders}) AND deleted_at IS NULL`).run(now, ...sbIds);
+      clearedImages = imgRes.changes || 0;
+      db.prepare(`UPDATE storyboards SET image_url = NULL, local_path = NULL, first_frame_image_id = NULL, last_frame_image_id = NULL, last_frame_image_url = NULL, last_frame_local_path = NULL, composed_image = NULL, continuity_snapshot = NULL, updated_at = ? WHERE id IN (${placeholders})`).run(now, ...sbIds);
+    }
+
+    try {
+      db.prepare(`UPDATE async_tasks SET status = 'cancelled', message = '用户清除了分镜媒体' WHERE resource_id IN (${placeholders}) AND status = 'processing'`).run(...sbIds.map(String));
+    } catch (_) {}
+  })();
+
+  log?.info?.('[分镜] 一键清除参考帧和分镜视频完成', {
+    episode_id: epId,
+    storyboards: sbIds.length,
+    clear_images: clearImages,
+    clear_videos: clearVideos,
+    cleared_images: clearedImages,
+    cleared_videos: clearedVideos,
+  });
+
+  return {
+    cleared_storyboards: sbIds.length,
+    cleared_images: clearedImages,
+    cleared_videos: clearedVideos,
+  };
+}
+
+/**
+ * 清空当前集的分镜脚本（软删除分镜及其媒体），用于重新开始一次全新的导演规划。
+ * 不删除剧本、角色、道具或场景；历史分镜仍可从数据库审计记录中恢复。
+ */
+function clearEpisodeStoryboards(db, log, episodeId) {
+  const epId = Number(episodeId);
+  if (!epId) throw new Error('缺少分集 ID');
+  const episode = db.prepare('SELECT id FROM episodes WHERE id = ? AND deleted_at IS NULL').get(epId);
+  if (!episode) throw new Error('分集不存在或已删除');
+
+  const rows = db.prepare('SELECT id FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL').all(epId);
+  const storyboardIds = rows.map((row) => Number(row.id));
+  if (!storyboardIds.length) return { cleared_storyboards: 0, cleared_images: 0, cleared_videos: 0 };
+
+  // 先按现有媒体清理逻辑撤销图片/视频记录，再软删除脚本行，避免留下可被批量任务重新拾取的媒体。
+  const media = clearEpisodeMedia(db, log, epId, { clear_images: true, clear_videos: true });
+  const now = new Date().toISOString();
+  db.transaction(() => {
+    db.prepare('UPDATE storyboards SET deleted_at = ?, updated_at = ? WHERE episode_id = ? AND deleted_at IS NULL')
+      .run(now, now, epId);
+    db.prepare(`UPDATE async_tasks
+      SET status = 'cancelled', message = '用户清空了当前集分镜脚本'
+      WHERE resource_id = ? AND type = 'director_storyboard_generation'
+        AND status IN ('pending', 'processing')`).run(String(epId));
+  })();
+
+  log?.info?.('[分镜] 已清空当前集分镜脚本', {
+    episode_id: epId,
+    storyboards: storyboardIds.length,
+    cleared_images: media.cleared_images || 0,
+    cleared_videos: media.cleared_videos || 0,
+  });
+  return {
+    cleared_storyboards: storyboardIds.length,
+    cleared_images: media.cleared_images || 0,
+    cleared_videos: media.cleared_videos || 0,
+  };
+}
+
+function clearStoryboardMedia(db, log, storyboardId, options = {}) {
+  const sbId = Number(storyboardId);
+  if (!sbId) throw new Error('缺少分镜 ID');
+  const sb = db.prepare('SELECT id, episode_id FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(sbId);
+  if (!sb) throw new Error('分镜不存在或已删除');
+
+  const clearImages = options.clear_images !== false;
+  const clearVideos = options.clear_videos !== false;
+  const now = new Date().toISOString();
+
+  let clearedImages = 0;
+  let clearedVideos = 0;
+
+  db.transaction(() => {
+    if (clearVideos) {
+      try {
+        db.prepare("UPDATE video_batch_items SET status = 'cancelled' WHERE storyboard_id = ? AND status IN ('pending', 'running')").run(sbId);
+      } catch (_) {}
+      const vidRes = db.prepare('UPDATE video_generations SET deleted_at = ? WHERE storyboard_id = ? AND deleted_at IS NULL').run(now, sbId);
+      clearedVideos = vidRes.changes || 0;
+      db.prepare('UPDATE storyboards SET video_url = NULL, selected_video_id = NULL, updated_at = ? WHERE id = ?').run(now, sbId);
+    }
+    if (clearImages) {
+      const imgRes = db.prepare('UPDATE image_generations SET deleted_at = ? WHERE storyboard_id = ? AND deleted_at IS NULL').run(now, sbId);
+      clearedImages = imgRes.changes || 0;
+      db.prepare('UPDATE storyboards SET image_url = NULL, local_path = NULL, first_frame_image_id = NULL, last_frame_image_id = NULL, last_frame_image_url = NULL, last_frame_local_path = NULL, composed_image = NULL, continuity_snapshot = NULL, updated_at = ? WHERE id = ?').run(now, sbId);
+    }
+    try {
+      db.prepare("UPDATE async_tasks SET status = 'cancelled', message = '用户清除了分镜媒体' WHERE resource_id = ? AND status = 'processing'").run(String(sbId));
+    } catch (_) {}
+  })();
+
+  log?.info?.('[分镜] 单镜清除媒体完成', { storyboard_id: sbId, clear_images: clearImages, clear_videos: clearVideos });
+  return { cleared_images: clearedImages, cleared_videos: clearedVideos };
+}
+
 module.exports = {
   processStoryboardGeneration,
   normalizeStoryboardShotNumber,
@@ -2147,8 +2252,6 @@ module.exports = {
   composeStoryboardImagePrompt: generateImagePrompt,
   /** 尾帧确定性提示词拼装（首尾帧模式） */
   generateLastFramePrompt,
-  /** 与分镜入库时一致的「视频提示词」拼装（供经典模式润色等复用） */
-  composeStoryboardVideoPrompt: generateVideoPrompt,
   /** AI 分镜对象的入库字段计算（含角色造型注入，供测试与复用） */
   deriveStoryboardFieldsFromAi,
   /** 批量入库（与后台任务同一 deriveOpts 通道，供测试与复用） */
@@ -2158,4 +2261,7 @@ module.exports = {
   rebuildPromptsForEpisode,
   splitStoryboardByAudio,
   copyStoryboardAssetLinks,
+  clearEpisodeMedia,
+  clearEpisodeStoryboards,
+  clearStoryboardMedia,
 };

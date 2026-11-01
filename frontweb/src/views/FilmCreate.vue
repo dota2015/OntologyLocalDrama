@@ -189,13 +189,9 @@
       <!-- 5. 分镜生成工作台 -->
       <StoryboardWorkbench ref="storyboardWorkbenchRef" />
 
-      <DialogueDubbingPanel
-        ref="dubbingPanel"
+      <NarratorVoiceSettings
         @profile="onDubbingProfile"
         :drama-id="dramaId"
-        :episode-id="currentEpisodeId"
-        @updated="onDubbingUpdated"
-        @merge="(options) => finalMergeRef?.onMergeWithDubbing(options)"
       />
 
       <!-- 视频配置与合成工作台 -->
@@ -243,9 +239,8 @@ import { useGenerationTaskStore, GEN_RESOURCE } from '@/stores/generationTaskSto
 import { syncGeneratingSetsFromStore, buildEpisodeContext, isEpisodeExtractRunning } from '@/composables/useGenerationTaskSync'
 import { dramaAPI } from '@/api/drama'
 import AIConfigContent from '@/components/AIConfigContent.vue'
-import DialogueDubbingPanel from '@/components/DialogueDubbingPanel.vue'
+import NarratorVoiceSettings from '@/components/NarratorVoiceSettings.vue'
 import FinalMergeWorkbench from '@/components/filmCreate/FinalMergeWorkbench.vue'
-import { meaningfulSpeech } from '@/utils/shotSpeech'
 import SidebarActiveTasks from '@/components/filmCreate/SidebarActiveTasks.vue'
 import StoryboardWorkbench from '@/components/filmCreate/StoryboardWorkbench.vue'
 import ScriptWorkbench from '@/components/filmCreate/ScriptWorkbench.vue'
@@ -306,7 +301,7 @@ const isStoryGenRunning = computed(() => {
 })
 const generationStyle = ref('')
 const narrativeStyleSaving = ref(false)
-const narrativeStyle = ref({ preset: 'dialogue_fast', speech_rate: 1.25, speech_mode: 'auto' })
+const narrativeStyle = ref({ preset: 'balanced', speech_rate: 1, speech_mode: 'fixed' })
 const customStylePrompt = ref('')
 const projectAspectRatio = ref('16:9')
 const shotDurationMin = ref(4)
@@ -453,7 +448,7 @@ const batchVideoProgress = ref({ current: 0, total: 0, failed: 0 })
 const batchVideoErrors = ref([])
 const serverVideoBatch = ref(null)
 const batchVideoSubmitting = ref(false)
-const videoFrameContiguity = ref(false)
+const videoFrameContiguity = ref(localStorage.getItem('videoFrameContiguity') !== 'false')
 
 // ── Composable: Storyboard State & Media Cache ────────────────────────
 const {
@@ -660,7 +655,7 @@ async function loadDrama() {
     storyStyle.value = (d.metadata && d.metadata.story_style) ? d.metadata.story_style : ''
     storyType.value = d.genre || ''
     generationStyle.value = d.style || ''
-    narrativeStyle.value = d.metadata?.narrative_style ? { ...d.metadata.narrative_style } : { preset: 'balanced', speech_rate: d.metadata?.tts_dubbing?.speed || 1 }
+    narrativeStyle.value = d.metadata?.narrative_style ? { ...d.metadata.narrative_style, preset: d.metadata.narrative_style.preset === 'dialogue_fast' ? 'balanced' : d.metadata.narrative_style.preset, speech_rate: 1, speech_mode: 'fixed' } : { preset: 'balanced', speech_rate: 1, speech_mode: 'fixed' }
     if ((d.style || '') === CUSTOM_STYLE_VALUE) {
       customStylePrompt.value = (d.metadata?.style_prompt_zh || d.metadata?.style_prompt_en || '').toString()
     } else {
@@ -669,13 +664,16 @@ async function loadDrama() {
     projectAspectRatio.value = (d.metadata && d.metadata.aspect_ratio) ? d.metadata.aspect_ratio : '16:9'
     videoClipDuration.value = (d.metadata && d.metadata.video_clip_duration) ? Number(d.metadata.video_clip_duration) : 5
     const savedRange = d.metadata?.shot_duration_range
-    shotDurationMin.value = Math.max(4, Math.min(15, Number(savedRange?.min) || 4))
-    shotDurationMax.value = Math.max(shotDurationMin.value, Math.min(15, Number(savedRange?.max) || videoClipDuration.value || 5))
+    shotDurationMin.value = Math.max(4, Math.min(8, Number(savedRange?.min) || 4))
+    shotDurationMax.value = Math.max(shotDurationMin.value, Math.min(8, Number(savedRange?.max) || videoClipDuration.value || 5))
     videoClipDuration.value = Math.round((shotDurationMin.value + shotDurationMax.value) / 2)
     storyboardIncludeNarration.value = !!(d.metadata && d.metadata.storyboard_include_narration)
     storyboardUniversalOmni.value = !!(d.metadata && d.metadata.storyboard_universal_omni)
     storyboardUseFirstLastFrame.value = !!(d.metadata && d.metadata.storyboard_use_first_last_frame)
     lastFrameUseFirstLayoutLock.value = d.metadata?.last_frame_use_first_layout_lock !== false
+    if (d.metadata && d.metadata.video_frame_contiguity !== undefined) {
+      videoFrameContiguity.value = !!d.metadata.video_frame_contiguity
+    }
     if (storyboardUseFirstLastFrame.value && gridMode.value !== 'single') {
       gridMode.value = 'single'
     }
@@ -725,6 +723,8 @@ async function saveProjectSettings(includeGenerationStyle = false) {
     storyboard_universal_omni: !!storyboardUniversalOmni.value,
     storyboard_use_first_last_frame: !!storyboardUseFirstLastFrame.value,
     last_frame_use_first_layout_lock: !!lastFrameUseFirstLayoutLock.value,
+    video_frame_contiguity: !!videoFrameContiguity.value,
+    h3_default_continuity: videoFrameContiguity.value ? 'auto' : 'off',
   }
   if (includeGenerationStyle) {
     Object.assign(metadata, projectStylePromptMetadata())
@@ -739,14 +739,21 @@ async function saveProjectSettings(includeGenerationStyle = false) {
   dramaAPI.saveOutline(store.dramaId, payload).catch(e => console.error('Settings auto-save failed', e))
 }
 
+watch(videoFrameContiguity, (val) => {
+  try {
+    localStorage.setItem('videoFrameContiguity', String(val))
+  } catch (_) {}
+  saveProjectSettings(false)
+})
+
 function onNarrativeStyleSaved(settings) {
   narrativeStyle.value = { ...settings }
-  if (store.drama) store.drama.metadata = { ...store.drama.metadata, narrative_style: { ...settings }, tts_dubbing: { ...store.drama.metadata?.tts_dubbing, speed: settings.speech_rate } }
-  if (dubbingVoiceProfile.value) dubbingVoiceProfile.value = { ...dubbingVoiceProfile.value, speed: settings.speech_rate }
+  if (store.drama) store.drama.metadata = { ...store.drama.metadata, narrative_style: { ...settings, speech_rate: 1, speech_mode: 'fixed' }, tts_dubbing: { ...store.drama.metadata?.tts_dubbing, speed: 1 } }
+  if (dubbingVoiceProfile.value) dubbingVoiceProfile.value = { ...dubbingVoiceProfile.value, speed: 1 }
 }
 function onDubbingProfile(profile) {
   dubbingVoiceProfile.value = profile
-  if (profile?.speed && store.drama?.metadata?.narrative_style) onNarrativeStyleSaved({ ...narrativeStyle.value, speech_rate: profile.speed, speech_mode: profile.speed !== narrativeStyle.value.speech_rate ? 'fixed' : narrativeStyle.value.speech_mode })
+  if (profile && store.drama?.metadata?.narrative_style) onNarrativeStyleSaved({ ...narrativeStyle.value, speech_rate: 1, speech_mode: 'fixed' })
 }
 
 /** 生成期间轻量刷新分镜列表（只更新指定集 storyboards，不重载整个 drama） */
@@ -771,33 +778,10 @@ async function refreshStoryboardsOnly() {
   return refreshStoryboardsForEpisode(currentEpisodeId.value)
 }
 
-const dubbingPanel = ref(null)
 const dubbingVoiceProfile = ref({})
 const speechSummaries = ref({})
 
-function rememberSpeechSummary(shot) {
-  speechSummaries.value[shot.id || shot.storyboard_id] = {
-    dialogue: shot.segments.some(s => s.kind === 'dialogue'),
-    narration: shot.segments.some(s => s.kind === 'narration') || meaningfulSpeech(shot.narration),
-    pending: !!shot.extraction_pending,
-    sourceDialogue: shot.dialogue || '', sourceNarration: shot.narration || '', sourceUniversal: shot.universal_segment_text || '',
-  }
-}
-
 watch(dramaId, () => { speechSummaries.value = {} }, { immediate: true })
-
-function onDubbingUpdated(shots) {
-  const paths = {}
-  for (const shot of shots || []) {
-    rememberSpeechSummary(shot)
-    if (shot.audio_local_path) paths[shot.id] = shot.audio_local_path
-    if (shot.narration_audio_local_path) sbNarrationAudioPaths.value[shot.id] = shot.narration_audio_local_path
-  }
-  sbDialogueAudioPaths.value = { ...sbDialogueAudioPaths.value, ...paths }
-  for (const sb of storyboards.value) {
-    if (paths[sb.id]) sb.audio_local_path = paths[sb.id]
-  }
-}
 
 function resolvePollMeta(meta = {}) {
   return {
@@ -993,7 +977,7 @@ function applyRouteToStore() {
     scriptLanguage.value = 'zh'
     scriptStoryboardStyle.value = ''
     generationStyle.value = ''
-    narrativeStyle.value = { preset: 'dialogue_fast', speech_rate: 1.25, speech_mode: 'auto' }
+    narrativeStyle.value = { preset: 'balanced', speech_rate: 1, speech_mode: 'fixed' }
     customStylePrompt.value = ''
   }
 }
@@ -1089,7 +1073,6 @@ provide('filmCreateContext', {
   videoClipDuration,
   shotDurationMin,
   shotDurationMax,
-  dubbingPanel,
   sbImages,
   sbVideos,
   sbVideoErrors,

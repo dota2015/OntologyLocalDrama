@@ -3,7 +3,61 @@ const { assessSpeechTiming, assessVideoSpeech, timingError, timingInstructions, 
 const { safeParseAIJSON, extractFirstArray } = require('../utils/safeJson');
 
 function durationForShot(shot, target) {
-  return Number(target) > 0 ? Math.round(Number(target)) : Math.min(120, Math.max(1, Math.round(Number(String(shot.duration ?? '').trim().replace(/s$/i, '')) || 5)));
+  const requested = Number(target) > 0
+    ? Math.round(Number(target))
+    : Math.round(Number(String(shot.duration ?? '').trim().replace(/s$/i, '')) || 5);
+  return Math.min(8, Math.max(4, requested));
+}
+
+function parseObject(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return structuredClone(value);
+  if (typeof value !== 'string' || !value.trim()) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+/**
+ * Speech overflow is a technical continuation, not a new creative scene.  Make
+ * that dependency explicit so the video worker must finish the previous clip,
+ * extract its real tail frame, and only then submit the continuation to FL2VA.
+ */
+function wireContinuousSpeechSplit(source, fragments, groupOrdinal = 1) {
+  if (!Array.isArray(fragments) || fragments.length < 2) return fragments;
+  const sourceNumber = source?.storyboard_number ?? source?.shot_number ?? groupOrdinal;
+  const groupId = `speech_split_${sourceNumber}_${groupOrdinal}`;
+  return fragments.map((fragment, index) => {
+    const semantic = parseObject(fragment.semantic_slots ?? source?.semantic_slots);
+    const speechPlan = semantic.speech_plan && typeof semantic.speech_plan === 'object'
+      ? { ...semantic.speech_plan }
+      : semantic.speech_plan;
+    const isContinuation = index > 0;
+    if (isContinuation) {
+      semantic.h3_mode = 'fl2va';
+      semantic.h3_mode_reason = '长台词超过 H3 八秒上限，本镜承接上一段真实视频尾帧继续表演';
+      semantic.first_frame_policy = 'inherit_tail';
+      semantic.first_frame_reason = '使用上一拆分镜头生成视频的真实尾帧作为本镜首帧';
+      semantic.last_frame_policy = 'none';
+      semantic.last_frame_reason = '连续台词自然收束，不额外生成目标尾帧';
+      semantic.continuity_type = 'long_take_continuation';
+      semantic.required_references = [];
+      if (speechPlan && typeof speechPlan === 'object') {
+        speechPlan.audio_references = [];
+        semantic.speech_plan = speechPlan;
+      }
+    }
+    return {
+      ...fragment,
+      semantic_slots: semantic,
+      long_take_group_id: groupId,
+      long_take_role: index === 0 ? 'head' : (index === fragments.length - 1 ? 'tail' : 'continuation'),
+      long_take_sequence: index + 1,
+      ...(isContinuation ? { last_frame_visuals: [] } : {}),
+    };
+  });
 }
 
 function speakerTracks(value, defaultSpeaker = '') {
@@ -48,7 +102,9 @@ async function enforceStoryboardSpeechTiming(storyboards, { targetDuration, dura
     const chosen=delivery.resolve(narrativeStyle,current);
     const options=delivery.budgetOptions(chosen);
     current.duration=durationRange ? planShotDuration(current,durationRange,options) : current.duration;
-    return {shot:{...current,speech_rate:chosen.speech_rate,speech_rate_reason:chosen.reason},options};
+    delete current.speech_rate;
+    delete current.speech_rate_reason;
+    return {shot:current,options};
   };
   const result = [];
   for (const source of storyboards) {
@@ -63,11 +119,8 @@ async function enforceStoryboardSpeechTiming(storyboards, { targetDuration, dura
     let fragments;
     let lastError = timingError(source, assessment);
     for (let attempt = 0; attempt < 2; attempt++) {
-      const minCount = Math.max(2, Math.ceil(assessment.requiredSeconds / Math.max(1, (durationRange?.max || duration) - 0.5)));
-      const baseRate = Number(narrativeStyle?.speech_rate) > 0 ? Number(narrativeStyle.speech_rate) : 1.5;
-      const creditRatio = baseRate >= 1.4 ? 0.8 : 0.5;
-      const effectiveRate = baseRate > 1 ? 1 + (baseRate - 1) * creditRatio : baseRate;
-      const maxBudgetPerShot = Math.floor(Math.max(1, (durationRange?.max || duration) - 1) * 4 * effectiveRate);
+      const minCount = Math.max(2, Math.ceil(assessment.requiredSeconds / Math.max(1, (durationRange?.max || duration) - 1.5)));
+      const maxBudgetPerShot = Math.floor(Math.max(0, (durationRange?.max || duration) - 1.5) * 4);
       const userPrompt = `将此超出对白预算的分镜按语义拆分为至少 ${minCount} 个连续分镜（当前台词/旁白约需 ${assessment.requiredSeconds} 秒，单镜上限 ${durationRange?.max || duration} 秒）。
 【必须拆镜】严禁只返回 1 个分镜！拆分后每个新分镜的台词/旁白字数绝不能超过 ${maxBudgetPerShot} 个中文字！只返回 JSON 数组，每项保留原分镜的字段结构。
 对白和旁白必须逐字完整、按句号/逗号原顺序分配切分到各个分镜中，保留说话人，禁止增删改写；不得重复整段台词。保持人物、场景、道具及动作连续，合理分配动作与停顿。
@@ -94,6 +147,7 @@ ${durationRange ? `每镜 duration 在 ${durationRange.min}–${durationRange.ma
           delete fragment.image_prompt;
           return fragment;
         });
+        fragments = wireContinuousSpeechSplit(source, fragments, result.length + 1);
         const assessmentFor=s=>assessSpeechTiming(s,s.duration,narrativeStyle?delivery.budgetOptions(delivery.resolve(narrativeStyle,s)):{});
         const bad = fragments.find(s => !assessmentFor(s).ok);
         if (bad) throw new Error(timingError(bad, assessmentFor(bad)));
@@ -109,4 +163,4 @@ ${durationRange ? `每镜 duration 在 ${durationRange.min}–${durationRange.ma
   return result.map((shot, index) => ({ ...shot, shot_number: index + 1, storyboard_number: index + 1 }));
 }
 
-module.exports = { enforceStoryboardSpeechTiming, preservesSpeech };
+module.exports = { enforceStoryboardSpeechTiming, preservesSpeech, wireContinuousSpeechSplit };
