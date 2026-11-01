@@ -709,20 +709,43 @@ function directorPatchRepairOutputType(shotNumber, patchSchema = null) {
 }
 
 function directorStructuralRepairOutputType(shotNumber) {
-  const replacementSchema = storyboardItemSchema();
-  // Unlike an initial draft, split repairs must partition the already assigned
-  // source excerpt themselves. The gate checks their concatenation verbatim.
-  const semanticSchema = replacementSchema.properties.semantic_slots;
-  semanticSchema.properties.source_script_excerpt = { type: 'string' };
-  semanticSchema.properties.source_script_unit_ids = { type: 'array', items: { type: 'string' } };
-  semanticSchema.required.push('source_script_excerpt');
-  // Semantic decisions live only in semantic_slots. Offering the same keys at
-  // the root encourages split responses that omit the authoritative object.
-  for (const key of Object.keys(semanticSchema.properties)) {
-    if (key !== 'background_characters') delete replacementSchema.properties[key];
-  }
-  replacementSchema.required.push('duration', 'creation_mode', 'universal_segment_text',
-    'long_take_group_id', 'long_take_role', 'long_take_sequence');
+  // A split is still a complete semantic repair, but asking the model to
+  // repeat every unchanged visual slot for both new shots routinely exhausts
+  // the completion budget before JSON closes. Each item is therefore an
+  // explicit patch over the original shot; applyDirectorRepairPlan merges it
+  // onto that original and the final gate validates the materialized shots.
+  const replacementSchema = {
+    type: 'object', additionalProperties: false,
+    required: ['duration', 'dialogue', 'narration', 'semantic_slots', 'video_slots'],
+    properties: {
+      shot_number: { type: 'integer', minimum: 1 },
+      title: { type: 'string', maxLength: 80 },
+      duration: { type: 'integer', minimum: 4, maximum: 8 },
+      action: { type: 'string', maxLength: 500 },
+      result: { type: 'string', maxLength: 400 },
+      dialogue: { type: 'string', maxLength: 500 },
+      narration: { type: 'string', maxLength: 500 },
+      start_framing: { type: 'string', maxLength: 500 },
+      end_framing: { type: 'string', maxLength: 500 },
+      transition_to_next: { type: 'string', maxLength: 400 },
+      semantic_slots: {
+        type: 'object', additionalProperties: true,
+        required: ['source_script_excerpt'],
+        properties: {
+          source_script_excerpt: { type: 'string' },
+          source_script_unit_ids: { type: 'array', items: { type: 'string' } },
+        },
+      },
+      video_slots: { type: 'object', additionalProperties: true },
+      character_visuals: { type: 'array', maxItems: 3, items: { type: 'object', additionalProperties: true } },
+      last_frame_visuals: { type: 'array', maxItems: 3, items: { type: 'object', additionalProperties: true } },
+      creation_mode: { type: 'string', maxLength: 80 },
+      universal_segment_text: { type: 'string', maxLength: 1200 },
+      long_take_group_id: { type: 'null' },
+      long_take_role: { type: 'null' },
+      long_take_sequence: { type: 'null' },
+    },
+  };
   return {
     type: 'json_schema',
     name: 'director_single_shot_structural_repair',

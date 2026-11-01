@@ -47,22 +47,17 @@ test('missing timeline action feedback names the exact field without silently re
   assert.equal(slots.validateVideoSlots(shot, video).filter(v => v.rule === 'INVARIANT_SHORT_DRAMA_CHARACTER_REACTION_MISSING').length, 0);
 });
 
-test('structural director repairs use the same typed timeline schema as initial generation', () => {
+test('structural director repairs use compact patches over the original shot', () => {
   const runtime = require('../src/services/agentsRuntime');
   const item = runtime.directorStructuralRepairOutputType(29).schema.properties.structural_repairs.prefixItems[0].properties.storyboards.items;
-  const trajectory = item.properties.video_slots.properties.shots_timeline.items.properties.character_trajectories.items;
-  assert.ok(trajectory.required.includes('trajectory'));
-  assert.equal(trajectory.additionalProperties, false);
-  assert.equal(trajectory.properties.visible_action, undefined);
   const semantic = item.properties.semantic_slots;
   assert.equal(semantic.properties.source_script_excerpt.type, 'string');
   assert.ok(semantic.required.includes('source_script_excerpt'));
   assert.equal(semantic.properties.source_script_unit_ids.type, 'array');
-  for (const key of ['speech_plan', 'h3_mode', 'required_references']) {
-    assert.equal(item.properties[key], undefined);
-    assert.ok(semantic.properties[key]);
-  }
-  for (const key of ['creation_mode', 'long_take_group_id', 'long_take_sequence']) assert.ok(item.required.includes(key));
+  assert.ok(item.required.includes('video_slots'));
+  assert.ok(item.required.includes('duration'));
+  assert.ok(item.properties.video_slots.additionalProperties);
+  assert.ok(item.properties.character_visuals);
 });
 
 test('legacy Agent trajectory aliases survive deterministic compilation', () => {

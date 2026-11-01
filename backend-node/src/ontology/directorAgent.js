@@ -967,7 +967,12 @@ function applyDirectorRepairPlan(currentShots, plan) {
           throw new Error(`镜头 #${target} 拆镜后的 source_script_excerpt 拼接结果必须与原镜完全一致`);
         }
       }
-      next.splice(index, 1, ...replacements.map((shot) => mergeDirectorAgentPatch({}, shot)));
+      // Structural split responses are compact patches over the original shot,
+      // so unchanged identity, wardrobe, references and visual contracts are
+      // retained explicitly rather than regenerated and duplicated in JSON.
+      // The resulting materialized shots still go through the complete gate.
+      const baseShot = next[index];
+      next.splice(index, 1, ...replacements.map((shot) => mergeDirectorAgentPatch(baseShot, shot)));
       changedCount += replacements.length;
     }
     next = next.map((shot, index) => ({ ...shot, shot_number: index + 1 }));
@@ -1844,10 +1849,11 @@ ${batch.script_segment}
     const requiresStructuralRepair = repairTarget.violations.some(requiresDirectorStructuralRepair);
     const repairOutputProtocol = requiresStructuralRepair
       ? `【本轮只允许拆镜修复】
-只返回 {"structural_repairs":[{"replace_shot_number":${repairTarget.shot_number},"storyboards":[完整的新镜头对象1,完整的新镜头对象2]}]}。
+只返回 {"structural_repairs":[{"replace_shot_number":${repairTarget.shot_number},"storyboards":[新镜头变更字段1,新镜头变更字段2]}]}。
 - replace_shot_number 必须为 ${repairTarget.shot_number}。
-- storyboards 至少包含2个完整新镜头；逐字保留原台词和 source_script_excerpt，并按原顺序无损分配。
-- 每个新镜头必须包含完整 semantic_slots 对象，原文分配写入 semantic_slots.source_script_excerpt；speech_plan、h3_mode、required_references 等语义决策只写在 semantic_slots 内，禁止用顶层同名字段代替。creation_mode、universal_segment_text、long_take_group_id、long_take_role、long_take_sequence 必须显式保留或规划，禁止省略、占位、写“同上”。
+- storyboards 至少包含2个新镜头变更对象；系统会以当前镜头为基底合并每个对象，未列出的不变字段自动保持原值。你必须显式提交每个新镜头的 duration、dialogue、narration、semantic_slots、video_slots，以及需要改变的 action、result、构图或视觉字段。
+- 每个 semantic_slots 必须包含 source_script_excerpt，并将原镜 source_script_excerpt 按原顺序逐字无损分配；需要改变的 speech_plan、h3_mode、required_references 等语义决策写在 semantic_slots 内，禁止用顶层同名字段代替。每个 video_slots 至少提交拆分后的 timing 与 shots_timeline；不要复制未改变的 character_visuals、场景和参考字段来凑输出长度。
+- 省略字段表示沿用原镜，不表示后端替你创作；合并后的每个新镜头仍会经过完整视听本体门禁，失败会把具体字段退回 Agent。
 - 所有替换镜头都必须是独立的 Ref2VA 镜头：semantic_slots.h3_mode="ref2va"、first_frame_policy="none"、last_frame_policy="none"，并重新列出本镜所需的 required_references。long_take_group_id、long_take_role、long_take_sequence 必须为 null；不得自动继承上一镜尾帧。用户如需 FL2VA，须在生成后手动修改单镜执行设置。
 - 禁止返回 repairs、完整整集 storyboards、markdown或解释。`
       : `【本轮只允许字段 Patch】
