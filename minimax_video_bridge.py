@@ -204,19 +204,53 @@ def prepare_continuum_workflow(body, duration):
     for item in body.get("content", []) if isinstance(body.get("content"), list) else []:
         if isinstance(item, dict) and item.get("type") == "text":
             prompt_text = item.get("text", prompt_text)
+    # V3.9 keeps fixed reference slots as @R1…@R9 and resolves them to the
+    # chunk-local <Picture N> order internally.  Business prompts use H3's
+    # normal <Picture N> syntax, so adapt only the tag spelling here.
+    prompt_text = re.sub(r"<Picture\s+([1-9])>", lambda match: f"@R{match.group(1)}", str(prompt_text or ""), flags=re.IGNORECASE)
     prompt_node = _continuum_node(workflow, "prompt")
-    duration_node = _continuum_node(workflow, "duration")
-    if not prompt_node or not duration_node:
-        raise HTTPException(status_code=503, detail="H3 Continuum workflow 缺少 bridge continuum_nodes.prompt/duration 映射")
+    sampler_node = _continuum_node(workflow, "sampler")
+    if not prompt_node or not sampler_node:
+        raise HTTPException(status_code=503, detail="H3 Continuum workflow 缺少 bridge continuum_nodes.prompt/sampler 映射")
     prompt_node.setdefault("inputs", {})[CONTINUUM_NODES.get("prompt_input", "prompt")] = str(prompt_text or "Cinematic continuous shot")
-    duration_node.setdefault("inputs", {})[CONTINUUM_NODES.get("duration_input", "duration")] = int(duration)
     chunk_plan = body.get("continuum_plan") or {}
-    chunk_node = _continuum_node(workflow, "chunks")
-    if chunk_node:
-        chunk_node.setdefault("inputs", {})[CONTINUUM_NODES.get("chunks_input", "chunks")] = int(chunk_plan.get("chunks") or 1)
-    chunk_seconds_node = _continuum_node(workflow, "chunk_seconds")
-    if chunk_seconds_node:
-        chunk_seconds_node.setdefault("inputs", {})[CONTINUUM_NODES.get("chunk_seconds_input", "chunk_seconds")] = int(chunk_plan.get("chunk_seconds") or duration)
+    chunks = chunk_plan.get("chunks")
+    chunk_seconds = chunk_plan.get("chunk_seconds")
+    if chunks is None and chunk_seconds is None:
+        chunks = max(2, math.ceil(duration / 10))
+        chunk_seconds = duration / chunks
+    try:
+        if isinstance(chunks, bool) or isinstance(chunk_seconds, bool):
+            raise ValueError
+        chunks = int(chunks)
+        chunk_seconds = float(chunk_seconds)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="Continuum chunks/chunk_seconds 必须是数字")
+    if not 1 <= chunks <= 16 or not 4 <= chunk_seconds <= 15:
+        raise HTTPException(status_code=422, detail="Continuum 物理片段必须为 1～16 段，每段 4～15 秒")
+    if not math.isclose(chunks * chunk_seconds, duration, abs_tol=1e-6):
+        raise HTTPException(status_code=422, detail=f"Continuum 物理片段合计 {chunks * chunk_seconds:g} 秒，与逻辑分镜 {duration:g} 秒不一致")
+    sampler_inputs = sampler_node.setdefault("inputs", {})
+    sampler_inputs[CONTINUUM_NODES.get("chunks_input", "chunks")] = chunks
+    sampler_inputs[CONTINUUM_NODES.get("chunk_seconds_input", "chunk_seconds")] = chunk_seconds
+    sampler_inputs[CONTINUUM_NODES.get("seed_input", "base_seed")] = int(time.time() * 1000) % 1000000000
+
+    native = body.get("h3_native")
+    scheduler_node = _continuum_node(workflow, "scheduler")
+    if native is not None:
+        if not isinstance(native, dict):
+            raise HTTPException(422, "h3_native must be an object")
+        width, height, steps = native.get("width"), native.get("height"), native.get("steps", DEFAULT_H3_STEPS)
+        if (type(width) is not int or type(height) is not int or type(steps) is not int
+                or min(width, height) < 32 or max(width, height) > 4096
+                or width % 32 or height % 32 or width * height > 1344 * 768
+                or not 20 <= steps <= 50):
+            raise HTTPException(422, "Invalid H3 native canvas or step count")
+        sampler_inputs[CONTINUUM_NODES.get("width_input", "width")] = width
+        sampler_inputs[CONTINUUM_NODES.get("height_input", "height")] = height
+        sampler_inputs[CONTINUUM_NODES.get("size_source_input", "size_source")] = "Manual"
+        if scheduler_node:
+            scheduler_node.setdefault("inputs", {})[CONTINUUM_NODES.get("steps_input", "steps")] = steps
     return workflow, str(prompt_text or "Cinematic continuous shot"), float(duration), None
 
 
@@ -322,28 +356,30 @@ async def condition_continuum_workflow(client, body, workflow, comfy_url):
     """Bind media to the explicitly mapped Continuum API graph."""
     images = image_inputs(body)
     audios = audio_inputs(body)
-    image_nodes = CONTINUUM_NODES.get("reference_image_nodes") or []
-    audio_nodes = CONTINUUM_NODES.get("audio_nodes") or []
-    if images and len(images) > len(image_nodes):
-        raise HTTPException(422, "Continuum workflow 的 reference_image_nodes 不足以承载本镜参考图")
-    if audios and len(audios) > len(audio_nodes):
-        raise HTTPException(422, "Continuum workflow 的 audio_nodes 不足以承载本镜参考音频")
+    if any(role != "reference_image" for role, _ in images):
+        raise HTTPException(422, "Continuum 使用 Ref2VA，只接收 reference_image；请勿提交首帧或尾帧")
+    image_bundle = _continuum_node(workflow, "reference_images")
+    audio_bundle = _continuum_node(workflow, "reference_audios")
+    if images and not image_bundle:
+        raise HTTPException(503, "Continuum workflow 缺少 reference_images 映射")
+    if audios and not audio_bundle:
+        raise HTTPException(503, "Continuum workflow 缺少 reference_audios 映射")
     uploaded_images = {}
     for index, (role, url) in enumerate(images):
         if url not in uploaded_images:
             uploaded_images[url] = await upload_image(client, url, comfy_url)
-        node_id = str(image_nodes[index])
-        node = workflow.get(node_id) or workflow.get(image_nodes[index])
-        if not isinstance(node, dict):
-            raise HTTPException(503, f"Continuum workflow 缺少参考图节点 {node_id}")
-        node.setdefault("inputs", {})[CONTINUUM_NODES.get("image_input", "image")] = uploaded_images[url][0]
+        node_id = str(200 + index)
+        workflow[node_id] = {"class_type": "LoadImage", "inputs": {
+            CONTINUUM_NODES.get("image_input", "image"): uploaded_images[url][0],
+        }}
+        image_bundle.setdefault("inputs", {})[f"{CONTINUUM_NODES.get('reference_image_prefix', 'reference_image_')}{index + 1}"] = [node_id, 0]
     for index, url in enumerate(audios):
         uploaded = await upload_audio(client, comfy_url, url)
-        node_id = str(audio_nodes[index])
-        node = workflow.get(node_id) or workflow.get(audio_nodes[index])
-        if not isinstance(node, dict):
-            raise HTTPException(503, f"Continuum workflow 缺少音频节点 {node_id}")
-        node.setdefault("inputs", {})[CONTINUUM_NODES.get("audio_input", "audio")] = uploaded
+        node_id = str(300 + index)
+        workflow[node_id] = {"class_type": "LoadAudio", "inputs": {
+            CONTINUUM_NODES.get("audio_input", "audio"): uploaded,
+        }}
+        audio_bundle.setdefault("inputs", {})[f"{CONTINUUM_NODES.get('reference_audio_prefix', 'reference_audio_')}{index + 1}"] = [node_id, 0]
     return workflow
 
 

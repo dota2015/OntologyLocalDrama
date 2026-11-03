@@ -10,29 +10,32 @@ storyboard is routed as follows:
   Agent for a semantic split.
 
 Continuum is not enabled by changing the ordinary H3 `length` or `duration`
-input. Install the `ComfyUI-H3-Continuum` custom node and export an **API
-format** workflow that contains the Continuum Join/Finish/Assemble path. Put
-the workflow outside source control or configure it locally with:
+input. The production ComfyUI instances load `ComfyUI-H3-Continuum` 3.10.2
+and the bridge submits the checked-in V3.9 API graph. Its sampler, decode
+cache, seam assembly and video save path are separate from the ordinary H3
+graph. Configure it with:
 
 ```json
 {
   "continuum_workflow_path": "workflows/selfhost/video_minimax_h3_continuum_api.json",
   "continuum_nodes": {
-    "prompt": "<text-conditioning-node-id>",
-    "duration": "<initial-join-or-duration-node-id>",
-    "chunks": "<chunk-controller-node-id>",
-    "chunk_seconds": "<chunk-duration-node-id>",
-    "reference_image_nodes": ["<load-image-node-id>"],
-    "audio_nodes": ["<load-audio-node-id>"],
-    "prompt_input": "prompt",
-    "duration_input": "duration",
+    "prompt": "6",
+    "prompt_input": "value",
+    "sampler": "10",
+    "scheduler": "5",
     "chunks_input": "chunks",
     "chunk_seconds_input": "chunk_seconds",
-    "image_input": "image",
-    "audio_input": "audio"
+    "reference_images": "9",
+    "reference_audios": "11"
   }
 }
 ```
+
+V3.9 accepts one shared `chunk_seconds` value. LocalMiniDrama therefore divides
+every 9–30 second logical shot into two or more equal 4–15 second physical
+chunks. The bridge rejects a plan whose chunk product differs from the logical
+duration. Reference images are routed through fixed `@R1`–`@R9` slots for all
+chunks; the bridge converts business-level `<Picture N>` tags at submission.
 
 The bridge refuses a 9–30 second request when this workflow is missing. It
 never silently submits a long request to the ordinary H3 graph. The bridge

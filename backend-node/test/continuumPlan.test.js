@@ -9,6 +9,10 @@ test('H3 execution backend follows the 4–8 / 9–30 contract', () => {
   assert.equal(long.execution_backend, 'h3_continuum');
   assert.equal(long.continuum_plan.total_duration, 20);
   assert.deepEqual(long.continuum_plan.slices.map(s => s.duration_seconds), [10, 10]);
+  const odd = plan.normalizeExecutionPlan(11);
+  assert.equal(odd.continuum_plan.chunks, 2);
+  assert.equal(odd.continuum_plan.chunk_seconds, 5.5);
+  assert.deepEqual(odd.continuum_plan.slices.map(s => s.duration_seconds), [5.5, 5.5]);
   assert.throws(() => plan.normalizeExecutionPlan(31), /4～30/);
   assert.throws(() => plan.normalizeExecutionPlan(8.5), /4～30/);
   assert.throws(() => plan.normalizeExecutionPlan(10, { execution_backend: 'h3_single' }), /Continuum/);

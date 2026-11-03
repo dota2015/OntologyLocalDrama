@@ -70,24 +70,40 @@ class DurationTests(unittest.TestCase):
             path = Path(directory) / "continuum.json"
             path.write_text(json.dumps({
                 "1": {"class_type": "Text", "inputs": {}},
-                "2": {"class_type": "Duration", "inputs": {}},
-                "3": {"class_type": "Chunks", "inputs": {}},
+                "2": {"class_type": "H3ContinuumSamplerV39", "inputs": {}},
             }), encoding="utf-8")
             with patch.object(bridge, "CONTINUUM_WORKFLOW_PATH", path), patch.object(bridge, "CONTINUUM_NODES", {
-                "prompt": "1", "duration": "2", "chunks": "3",
-                "prompt_input": "prompt", "duration_input": "duration", "chunks_input": "chunks",
+                "prompt": "1", "sampler": "2",
+                "prompt_input": "prompt", "chunks_input": "chunks", "chunk_seconds_input": "chunk_seconds",
             }):
                 workflow, prompt, duration, generation_frames = bridge.prepare_workflow({
                     "duration": 10, "execution_backend": "h3_continuum",
-                    "prompt": "[0-10s] continuous action",
+                    "prompt": "[0-10s] <Picture 1> performs a continuous action",
                     "continuum_plan": {"chunks": 1, "chunk_seconds": 10},
                 })
-            self.assertEqual(prompt, "[0-10s] continuous action")
+            self.assertEqual(prompt, "[0-10s] @R1 performs a continuous action")
             self.assertEqual(duration, 10)
             self.assertIsNone(generation_frames)
             self.assertEqual(workflow["1"]["inputs"]["prompt"], prompt)
-            self.assertEqual(workflow["2"]["inputs"]["duration"], 10)
-            self.assertEqual(workflow["3"]["inputs"]["chunks"], 1)
+            self.assertEqual(workflow["2"]["inputs"]["chunks"], 1)
+            self.assertEqual(workflow["2"]["inputs"]["chunk_seconds"], 10)
+
+    def test_continuum_rejects_a_chunk_plan_that_does_not_cover_duration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "continuum.json"
+            path.write_text(json.dumps({
+                "1": {"class_type": "Text", "inputs": {}},
+                "2": {"class_type": "H3ContinuumSamplerV39", "inputs": {}},
+            }), encoding="utf-8")
+            with patch.object(bridge, "CONTINUUM_WORKFLOW_PATH", path), patch.object(bridge, "CONTINUUM_NODES", {
+                "prompt": "1", "sampler": "2",
+            }), self.assertRaises(HTTPException) as error:
+                bridge.prepare_workflow({
+                    "duration": 11, "execution_backend": "h3_continuum",
+                    "continuum_plan": {"chunks": 2, "chunk_seconds": 10},
+                })
+        self.assertEqual(error.exception.status_code, 422)
+        self.assertIn("合计", error.exception.detail)
 
 
 class ApiTests(unittest.TestCase):

@@ -35,12 +35,21 @@ function chunkPlan(duration, options = {}) {
   if (!Number.isInteger(preferred)) {
     throw new Error(`Continuum chunk_seconds 必须是整数，当前为 ${preferred}`);
   }
-  const chunkSeconds = Math.max(4, Math.min(30, preferred));
-  const chunks = Math.ceil(total / chunkSeconds);
+  const preferredSeconds = Math.max(4, Math.min(15, preferred));
+  // V3.9 uses one shared chunk_seconds value.  The physical chunks must
+  // therefore divide the logical shot exactly; a short final remainder is
+  // not representable by the sampler.  Keep each chunk in the validated
+  // 4–15 second range and allow fractional physical chunks while the public
+  // logical shot duration remains an integer.
+  const chunks = Math.max(2, Math.ceil(total / preferredSeconds));
+  const chunkSeconds = total / chunks;
+  if (chunkSeconds < 4 || chunkSeconds > 15) {
+    throw new Error(`Continuum 无法把 ${total} 秒均分为 4～15 秒的物理片段`);
+  }
   const slices = [];
   let start = 0;
   for (let i = 0; i < chunks; i += 1) {
-    const seconds = i === chunks - 1 ? total - start : Math.min(chunkSeconds, total - start);
+    const seconds = chunkSeconds;
     slices.push({ chunk_index: i, start_seconds: start, duration_seconds: seconds, end_seconds: start + seconds });
     start += seconds;
   }
