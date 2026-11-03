@@ -149,6 +149,9 @@ def prepare_workflow(body):
         raise HTTPException(status_code=422, detail="普通 H3 只支持 4–8 秒；9–30 秒必须使用已配置的 Continuum workflow")
     if backend == "h3_continuum" and duration < CONTINUUM_MIN_DURATION:
         raise HTTPException(status_code=422, detail="Continuum 只支持 9–30 秒逻辑分镜")
+    # Persist the normalized routing decision for conditioning and task
+    # metadata even when a direct API caller omitted execution_backend.
+    body["execution_backend"] = backend
 
     if backend == "h3_continuum":
         if not CONTINUUM_WORKFLOW_PATH or not CONTINUUM_WORKFLOW_PATH.is_file():
@@ -258,6 +261,29 @@ def execution_snapshot(workflow, prompt_id):
     """Report the executed sampler values, not estimated request defaults."""
     def inputs(node):
         return workflow.get(node, {}).get("inputs", {})
+    if workflow.get("10", {}).get("class_type") == "H3ContinuumSamplerV39":
+        sampler = inputs("10")
+        return {
+            "prompt_id": prompt_id,
+            "model": inputs("1").get("unet_name"),
+            "mode": "ref2va_continuum",
+            "text_encoder": inputs("2").get("clip_name"),
+            "video_vae": inputs("3").get("vae_name"),
+            "audio_vae": inputs("4").get("vae_name"),
+            "width": sampler.get("width"),
+            "height": sampler.get("height"),
+            "generation_frames": None,
+            "output_frames": None,
+            "output_duration": sampler.get("chunks", 0) * sampler.get("chunk_seconds", 0),
+            "fps": FPS,
+            "steps": inputs("5").get("steps"),
+            "scheduler": inputs("5").get("scheduler"),
+            "sampler": inputs("7").get("sampler_name"),
+            "seed": sampler.get("base_seed"),
+            "seed_source": "executed_workflow",
+            "chunks": sampler.get("chunks"),
+            "chunk_seconds": sampler.get("chunk_seconds"),
+        }
     return {
         "prompt_id": prompt_id,
         "model": inputs("1").get("unet_name"),

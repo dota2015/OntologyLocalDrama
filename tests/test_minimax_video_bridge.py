@@ -105,6 +105,17 @@ class DurationTests(unittest.TestCase):
         self.assertEqual(error.exception.status_code, 422)
         self.assertIn("合计", error.exception.detail)
 
+    def test_continuum_snapshot_reports_the_real_sampler_contract(self):
+        workflow = json.loads((bridge.PROJECT_DIR / "workflows/selfhost/video_minimax_h3_continuum_api.json").read_text())
+        snapshot = bridge.execution_snapshot(workflow, TASK_ID)
+        self.assertEqual(snapshot["mode"], "ref2va_continuum")
+        self.assertEqual(snapshot["output_duration"], 10)
+        self.assertEqual(snapshot["chunks"], 2)
+        self.assertEqual(snapshot["chunk_seconds"], 5)
+        self.assertEqual(snapshot["steps"], 23)
+        self.assertEqual(snapshot["width"], 1344)
+        self.assertEqual(snapshot["height"], 768)
+
 
 class ApiTests(unittest.TestCase):
     def setUp(self):
