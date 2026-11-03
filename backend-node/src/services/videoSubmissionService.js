@@ -72,6 +72,12 @@ function submitVideo(db, log, requested) {
       if (!shotRow) throw Object.assign(new Error('分镜不存在或已删除'), { status: 400 });
       const { resolveH3SubmissionPlan } = require('./h3ModeResolver');
       const plan = resolveH3SubmissionPlan(db, dramaId, shotRow, body);
+      // Keep the execution backend alongside the resolved H3 mode so queued
+      // jobs survive a page refresh and can be inspected without re-planning.
+      if (timing.execution_backend) {
+        plan.execution_backend = timing.execution_backend;
+        plan.continuum_plan = timing.continuum_plan || null;
+      }
       h3Mode = plan.mode;
       resolutionPlanJson = JSON.stringify(plan);
       try {

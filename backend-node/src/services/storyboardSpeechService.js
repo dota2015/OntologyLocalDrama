@@ -6,7 +6,7 @@ function durationForShot(shot, target) {
   const requested = Number(target) > 0
     ? Math.round(Number(target))
     : Math.round(Number(String(shot.duration ?? '').trim().replace(/s$/i, '')) || 5);
-  return Math.min(8, Math.max(4, requested));
+  return Math.min(30, Math.max(4, requested));
 }
 
 function parseObject(value) {

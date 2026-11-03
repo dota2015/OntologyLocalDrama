@@ -15,6 +15,7 @@ const {
 } = require('./video/providers/minimaxH3Provider');
 
 const SUPPORTED_ASPECT_RATIOS = new Set(['9:16', '16:9', '1:1', '4:3', '3:4', '3:2', '2:3']);
+const { normalizeExecutionPlan } = require('./continuumPlan');
 
 function modelCandidate(config = {}, modelHint = '') {
   return modelHint
@@ -208,12 +209,24 @@ async function callContentVideoApi(config, log, opts = {}) {
     files_base_url,
     storage_local_path,
     video_gen_id,
+    execution_backend,
+    continuum_plan,
   } = opts;
   const label = 'MiniMax H3';
   const url = buildMinimaxH3CreateUrl(config);
 
   const finalModel = isMinimaxH3Model(model) ? 'MiniMax-H3' : model || 'MiniMax-H3';
+  // Do not let the provider helper's legacy safety clamp turn an invalid
+  // 31-second request into a valid 30-second request. Long-shot limits are a
+  // planning contract and must be rejected before any upstream submission.
+  if (duration != null && String(duration).trim() !== '') {
+    const requestedDuration = Number(duration);
+    if (!Number.isInteger(requestedDuration) || requestedDuration < 4 || requestedDuration > 30) {
+      return { error: `H3 单个逻辑分镜时长必须是 4～30 秒整数，当前为 ${duration}；超过30秒请让导演 Agent 按语义拆镜` };
+    }
+  }
   const finalDuration = normalizeMinimaxH3Duration(duration);
+  const execution = normalizeExecutionPlan(finalDuration, { execution_backend, continuum_plan });
   const finalResolution = normalizeMinimaxH3Resolution(resolution);
   const ratio = normalizeAspectRatioForApi(aspect_ratio) || '16:9';
   const content = [{ type: 'text', text: String(prompt || '').trim() || 'cinematic scene' }];
@@ -277,6 +290,8 @@ async function callContentVideoApi(config, log, opts = {}) {
     content,
     duration: finalDuration,
     resolution: finalResolution,
+    execution_backend: execution.execution_backend,
+    ...(execution.continuum_plan ? { continuum_plan: execution.continuum_plan } : {}),
     ...(opts.h3_native ? { h3_native: opts.h3_native } : {}),
   };
   body.ratio = usesGuides ? 'adaptive' : ratio;
@@ -302,7 +317,16 @@ async function callContentVideoApi(config, log, opts = {}) {
     storyboard: inputSnapshot.storyboardVersion(opts.input_storyboard),
     input_fingerprint: opts.input_fingerprint || null,
     prompt: body.content[0].text, references: submittedReferences,
-    parameters: { duration: finalDuration, resolution: finalResolution, ratio: body.ratio, ...opts.h3_native, seed: null, seed_source: 'upstream_selected' },
+    parameters: {
+      duration: finalDuration,
+      execution_backend: execution.execution_backend,
+      ...(execution.continuum_plan ? { continuum_plan: execution.continuum_plan } : {}),
+      resolution: finalResolution,
+      ratio: body.ratio,
+      ...opts.h3_native,
+      seed: null,
+      seed_source: 'upstream_selected',
+    },
     request: body,
   });
   const response = await fetch(url, {

@@ -22,7 +22,8 @@ async function generateEpisodeDraft(db, log, episodeId, body = {}) {
   let metadata = {};
   try { metadata = JSON.parse(episode.drama_metadata || '{}'); } catch { /* legacy metadata */ }
   cfg = require('./narrativeStyleService').withConfig(cfg, metadata);
-  const durationRange = normalizeDurationRange(metadata.shot_duration_range, metadata.video_clip_duration);
+  // Do not derive the planning range from the legacy fixed clip duration.
+  const durationRange = normalizeDurationRange(metadata.shot_duration_range, null);
   const characters = db.prepare(`SELECT name, description FROM characters
     WHERE drama_id = ? AND deleted_at IS NULL ORDER BY id`).all(episode.drama_id);
   const previous = db.prepare(`SELECT episode_number, title, script_content FROM episodes

@@ -9,6 +9,7 @@ const narrative = require('./narrativeStyleService');
 const wardrobe = require('./wardrobeService');
 const angleService = require('./angleService');
 const { getFfmpegPath } = require('../utils/ffmpegPath');
+const { normalizeExecutionPlan, timelinePrompt } = require('./continuumPlan');
 
 const MODES = ['auto', 'off', 'previous_tail'];
 const H3_STEPS = 23;
@@ -1135,6 +1136,10 @@ async function prepare(db, log, opts) {
   const relative = layout.getProjectStorageSubdir(db, dramaId) + '/h3-prompts/' + shotId + '-' + cacheKey + '.json';
   const destination = path.join(root, relative);
   const targetMode = executionPlan.mode;
+  const execution = normalizeExecutionPlan(opts.duration, parse(initial.shot.semantic_slots, {}) || {});
+  if (execution.execution_backend === 'h3_continuum' && targetMode !== 'ref2va') {
+    throw new Error('H3 Continuum 当前只支持 Ref2VA 多参考执行；请恢复 Ref2VA 或让导演按语义拆镜');
+  }
   if (targetMode === 'fl2va' && !anchors.first) {
     throw new Error('FL2VA 执行方案缺少首帧输入，禁止静默降级为 Ref2VA');
   }
@@ -1170,6 +1175,13 @@ async function prepare(db, log, opts) {
     audioReferences = speech.references;
   }
 
+  if (execution.execution_backend === 'h3_continuum') {
+    const continuumTimeline = timelinePrompt(videoTimeline, opts.duration);
+    if (continuumTimeline) {
+      prompt += `\n\nContinuum timeline (the chunks must preserve this causal progression):\n${continuumTimeline}`;
+    }
+  }
+
   assertFingerprintUnchanged('编译 H3 提示词');
   const [width, height] = nativeCanvas(opts.aspect_ratio);
   const result = {
@@ -1184,7 +1196,9 @@ async function prepare(db, log, opts) {
     h3_audio_references: audioReferences,
     h3_native: { width, height, steps: H3_STEPS },
     h3_mixed_references: mixedReferences,
-    h3_mode: isFl2va ? 'fl2va' : 'ref2va'
+    h3_mode: isFl2va ? 'fl2va' : 'ref2va',
+    execution_backend: execution.execution_backend,
+    continuum_plan: execution.continuum_plan,
   };
   fs.mkdirSync(path.dirname(destination), { recursive: true });
   fs.writeFileSync(destination, JSON.stringify({ prompt, translation: translated, references: refs, previous_storyboard_id: usePrevious ? prev.id : null,

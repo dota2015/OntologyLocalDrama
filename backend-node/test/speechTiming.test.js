@@ -347,12 +347,12 @@ test('custom prompts, narration mode and requested shot count cannot override ti
   assert.equal(state.result.total, 1);
 });
 
-test('mixed-language repair preserves token boundaries and clamps legacy durations to the H3 eight-second ceiling', async () => {
+test('mixed-language repair preserves token boundaries and keeps a valid Continuum duration', async () => {
   assert.equal(preservesSpeech({ dialogue: '这是AI系统' }, [{ dialogue: '这是AI' }, { dialogue: '系统' }]), true);
   const result = await enforceStoryboardSpeechTiming([{ dialogue: '字'.repeat(25), duration: '10s' }], {
-    generate: () => assert.fail('The dialogue fits after normalizing the legacy duration to eight seconds'),
+    generate: () => assert.fail('The dialogue fits in the configured 10-second Continuum logical shot'),
   });
-  assert.equal(result[0].duration, 8);
+  assert.equal(result[0].duration, 10);
 });
 
 test('speechFromPrompt accurately delimits dialogue when followed by quote closing and next section without period', () => {

@@ -28,9 +28,9 @@ class DurationTests(unittest.TestCase):
         self.assertTrue(bridge.WORKFLOW_PATH.is_file())
 
     def test_requested_durations_generate_enough_frames_and_trim_both_streams(self):
-        for seconds, generation_frames in ((4, 107), (5, 124), (6, 158), (8, 192), (10, 243), (15, 362)):
+        for seconds, generation_frames in ((4, 107), (5, 124), (6, 158), (8, 192)):
             with self.subTest(seconds=seconds):
-                workflow, _, duration, frames = bridge.prepare_workflow({"duration": seconds})
+                workflow, _, duration, frames = bridge.prepare_workflow({"duration": seconds, "execution_backend": "h3_single"})
                 self.assertEqual(frames, generation_frames)
                 self.assertEqual(workflow["5"]["inputs"]["length"], generation_frames)
                 self.assertEqual(frames % 17, 5)
@@ -44,9 +44,9 @@ class DurationTests(unittest.TestCase):
 
     def test_accepts_seconds_alias_and_content_prompt(self):
         workflow, prompt, duration, _ = bridge.prepare_workflow({
-            "seconds": "10", "content": [{"type": "text", "text": "A forest in the wind"}],
+            "seconds": "8", "execution_backend": "h3_single", "content": [{"type": "text", "text": "A forest in the wind"}],
         })
-        self.assertEqual(duration, 10)
+        self.assertEqual(duration, 8)
         self.assertEqual(prompt, "A forest in the wind")
         self.assertEqual(workflow["5"]["inputs"]["prompt"], prompt)
 
@@ -54,10 +54,40 @@ class DurationTests(unittest.TestCase):
         self.assertEqual(bridge.prepare_workflow({})[2], 5)
 
     def test_invalid_durations_are_rejected(self):
-        for value in (None, True, "bad", "nan", "inf", 0, -1, 16):
+        for value in (None, True, "bad", "nan", "inf", 0, -1, 8.5, 31):
             with self.subTest(value=value), self.assertRaises(HTTPException) as error:
                 bridge.prepare_workflow({"seconds": value})
             self.assertEqual(error.exception.status_code, 422)
+
+    def test_long_duration_never_silently_falls_back_to_single_h3(self):
+        with self.assertRaises(HTTPException) as error:
+            bridge.prepare_workflow({"duration": 10})
+        self.assertEqual(error.exception.status_code, 503)
+        self.assertIn("Continuum", error.exception.detail)
+
+    def test_configured_continuum_graph_receives_plan_inputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "continuum.json"
+            path.write_text(json.dumps({
+                "1": {"class_type": "Text", "inputs": {}},
+                "2": {"class_type": "Duration", "inputs": {}},
+                "3": {"class_type": "Chunks", "inputs": {}},
+            }), encoding="utf-8")
+            with patch.object(bridge, "CONTINUUM_WORKFLOW_PATH", path), patch.object(bridge, "CONTINUUM_NODES", {
+                "prompt": "1", "duration": "2", "chunks": "3",
+                "prompt_input": "prompt", "duration_input": "duration", "chunks_input": "chunks",
+            }):
+                workflow, prompt, duration, generation_frames = bridge.prepare_workflow({
+                    "duration": 10, "execution_backend": "h3_continuum",
+                    "prompt": "[0-10s] continuous action",
+                    "continuum_plan": {"chunks": 1, "chunk_seconds": 10},
+                })
+            self.assertEqual(prompt, "[0-10s] continuous action")
+            self.assertEqual(duration, 10)
+            self.assertIsNone(generation_frames)
+            self.assertEqual(workflow["1"]["inputs"]["prompt"], prompt)
+            self.assertEqual(workflow["2"]["inputs"]["duration"], 10)
+            self.assertEqual(workflow["3"]["inputs"]["chunks"], 1)
 
 
 class ApiTests(unittest.TestCase):

@@ -17,7 +17,7 @@ function getStoryboardSplitSystemPrompt() {
 【拆镜最高准则】
 1. 因果节拍而不是逐动词拆镜（Causal Beat）：
    - 每个子镜头聚焦一个能被观众理解的因果节拍；同一空间内可以包含多个紧密相连的身体动作与即时结果。
-   - 只有说话人/人物切换、场景或时间变化、视线轴线重大变化，或确实超出4～8秒时才拆镜。禁止为了“一个动作一个镜头”把剧情拆得拖沓。
+   - 只有说话人/人物切换、场景或时间变化、视线轴线重大变化，或确实超出30秒时才拆镜。4～8秒走普通H3，9～30秒由Continuum承载，不要因为普通H3的旧上限机械拆镜。
    - 关键动机、选择、规则与后果应放入对白或必要旁白，不能只藏在 action 中。
 2. 镜头语言与视听节奏（Cinematic Coverage & Rhythm）：
    - 建立清晰的景别层次：如从全景交代空间 -> 中景聚焦主体行动 -> 特写捕捉情绪与关键道具，形成电影级剪辑节奏。
@@ -36,7 +36,7 @@ function getStoryboardSplitSystemPrompt() {
 [
   {
     "title": "简短镜头标题（如：红狼挣扎撑起）",
-    "duration": 时长整数（秒，4~8之间）,
+    "duration": 时长整数（秒，4~30之间）,
     "shot_type": "特写|近景|中景|全景",
     "movement": "推镜|拉镜|摇镜|跟镜|手持|环绕|固定（严格少用固定镜头）",
     "action": "当前子镜头的核心物理动作描写",
@@ -158,7 +158,7 @@ async function splitStoryboardWithAi(db, log, storyboardId, options = {}) {
     `原画面描述（Prompt）：${baseRow.image_prompt || '无'}`,
     '',
     `【拆分要求】`,
-    `目标镜头数：拆分为 ${requestedCount} 个子镜头（可依据剧情自然切分，每个镜头时长 4~8 秒整数）。`,
+    `目标镜头数：拆分为 ${requestedCount} 个子镜头（可依据剧情自然切分，每个镜头时长 4~30 秒整数；超过8秒的逻辑镜头使用Continuum）。`,
     userInstruction ? `【用户指定拆分方向 / 重点要求】（最高优先级，必须服从）：\n${userInstruction}\n` : null,
     `请将原分镜中的复合动作按因果与时间线拆分为 ${requestedCount} 个连续子镜头，输出严格合法的 JSON 数组。`,
   ].filter(Boolean);
@@ -189,8 +189,8 @@ async function splitStoryboardWithAi(db, log, storyboardId, options = {}) {
   }
   const durations = subShots.map((shot, index) => {
     const duration = Number(shot.duration);
-    if (!Number.isInteger(duration) || duration < 4 || duration > 8) {
-      throw new Error(`AI 拆分结果第 ${index + 1} 镜 duration 必须是 4～8 秒整数，当前为 ${shot.duration ?? '空'}；后端不会静默改写`);
+    if (!Number.isInteger(duration) || duration < 4 || duration > 30) {
+      throw new Error(`AI 拆分结果第 ${index + 1} 镜 duration 必须是 4～30 秒整数，当前为 ${shot.duration ?? '空'}；后端不会静默改写`);
     }
     return duration;
   });

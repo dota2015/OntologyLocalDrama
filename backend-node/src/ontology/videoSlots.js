@@ -12,6 +12,7 @@
 const angleService = require('../services/angleService');
 const { stripChineseExclusions } = require('../utils/framePromptSanitize');
 const { synthesizeLightingChiaroscuro } = require('./visualSlots');
+const { CONTINUUM_MAX_SECONDS, SINGLE_MAX_SECONDS, CONTINUUM_MIN_SECONDS } = require('../services/continuumPlan');
 
 // 物理现象与军事术语具象化字典
 const PHYSICAL_TRANSLATION_MAP = [
@@ -21,7 +22,7 @@ const PHYSICAL_TRANSLATION_MAP = [
   { regex: /弹着/g, visual: '子弹击地' },
 ];
 
-// H3 的外层片段仍保持 4～8 秒，但镜内执行时间线必须足够细，
+// H3 的逻辑分镜为 4～30 秒；4～8 秒由普通 H3 执行，9～30 秒由 Continuum 执行。
 // 让每个角色在 0–1、1–2 这类窗口里都有可验证的动作合同。
 // 不能让一个 5～8 秒的大段把对白后的空白交给模型自由发挥。
 const MAX_SHORT_DRAMA_TIMELINE_SEGMENT_SECONDS = 2;
@@ -80,6 +81,8 @@ function createVideoSemanticSlots(data = {}) {
     // overlap between speech, the speaker's action, and listener reactions
     // explicit instead of leaving the model to infer temporal order.
     performance_contract: String(data.performance_contract || '').trim(),
+    execution_backend: String(data.execution_backend || (Number(timing.duration || 0) >= CONTINUUM_MIN_SECONDS ? 'h3_continuum' : 'h3_single')).trim(),
+    continuum_plan: data.continuum_plan && typeof data.continuum_plan === 'object' ? data.continuum_plan : null,
     camera: {
       shot_type: String(camera.shot_type || '中景').trim(),
       angle_h: String(camera.angle_h || 'front').trim(),
@@ -349,8 +352,18 @@ function validateVideoSlots(shot, slots) {
     // sync_v1，才启用 1～2 秒动作窗口与逐角色动作门禁。
     const hasTimedPerformanceContract = slots.performance_contract === 'sync_v1';
     const duration = Number(slots.timing?.duration || semantic.shot_duration || shot.duration || 0);
-    if (!Number.isInteger(duration) || duration < 4 || duration > 8) {
-      violations.push({ rule: 'INVARIANT_SHORT_DRAMA_TIMELINE_DURATION', shot_number: shotNum, severity: 'error', message: `分镜 ${shotNum} 总时长必须为4～8整数秒，当前为 ${duration} 秒。` });
+    if (!Number.isInteger(duration) || duration < 4 || duration > CONTINUUM_MAX_SECONDS) {
+      violations.push({ rule: 'INVARIANT_SHORT_DRAMA_TIMELINE_DURATION', shot_number: shotNum, severity: 'error', message: `分镜 ${shotNum} 总时长必须为4～${CONTINUUM_MAX_SECONDS}整数秒，当前为 ${duration} 秒。` });
+    }
+    const executionBackend = String(slots.execution_backend || slots.executionBackend || '').toLowerCase();
+    if (duration > SINGLE_MAX_SECONDS && executionBackend !== 'h3_continuum') {
+      violations.push({ rule: 'INVARIANT_CONTINUUM_BACKEND_REQUIRED', shot_number: shotNum, severity: 'error', message: `分镜 ${shotNum} 为 ${duration} 秒，必须使用 execution_backend="h3_continuum"。普通 H3 仅支持4～8秒。` });
+    }
+    if (duration <= SINGLE_MAX_SECONDS && executionBackend === 'h3_continuum') {
+      violations.push({ rule: 'INVARIANT_SINGLE_BACKEND_REQUIRED', shot_number: shotNum, severity: 'error', message: `分镜 ${shotNum} 为 ${duration} 秒，应使用 execution_backend="h3_single"。Continuum 从9秒开始。` });
+    }
+    if (duration >= CONTINUUM_MIN_SECONDS && executionBackend === 'h3_continuum' && slots.continuum_plan?.total_duration != null && Number(slots.continuum_plan.total_duration) !== duration) {
+      violations.push({ rule: 'INVARIANT_CONTINUUM_DURATION_MISMATCH', shot_number: shotNum, severity: 'error', message: `分镜 ${shotNum} 的 continuum_plan.total_duration 必须等于 ${duration} 秒。` });
     }
     const timeline = Array.isArray(slots.shots_timeline) ? slots.shots_timeline : [];
     const visibleIds = (Array.isArray(semantic.visible_characters) ? semantic.visible_characters : [])
@@ -367,7 +380,7 @@ function validateVideoSlots(shot, slots) {
         shot_number: shotNum,
         severity: 'error',
         message: hasTimedPerformanceContract
-          ? `分镜 ${shotNum} 为 ${duration || '未知'} 秒短剧片段，必须由导演 Agent 拆成至少 ${minSegments} 个连续的 1～2 秒动作段（如 0–1、1–2 秒），禁止用一个完整大段留出未约束时长，禁止执行层自动均分。`
+          ? `分镜 ${shotNum} 为 ${duration || '未知'} 秒片段，必须由导演 Agent 拆成至少 ${minSegments} 个连续动作段；每段使用整数秒并覆盖完整时长，禁止留出未约束时长或由执行层自动均分。`
           : `分镜 ${shotNum} 缺少导演 Agent 规划的镜内时间线，必须至少提供一个时间段。`,
       });
     } else {
@@ -392,7 +405,7 @@ function validateVideoSlots(shot, slots) {
             shot_number: shotNum,
             severity: 'error',
             message: hasTimedPerformanceContract
-              ? `分镜 ${shotNum} 的镜内剪辑段 ${index + 1} 时长为 ${segmentDuration} 秒，必须是 1～2 个整数秒；请按 0–1、1–2 这样的连续窗口规划。`
+              ? `分镜 ${shotNum} 的镜内剪辑段 ${index + 1} 时长为 ${segmentDuration} 秒，必须是 1～2 个整数秒；请按连续窗口规划。`
               : `分镜 ${shotNum} 的镜内剪辑段 ${index + 1} 时长为 ${segmentDuration} 秒，必须是正整数秒且不超过本镜总时长。`,
           });
         }
@@ -410,7 +423,7 @@ function validateVideoSlots(shot, slots) {
               conflict_slots: [`video_slots.shots_timeline[${index}].timestamp`],
               message: index === 0
                 ? `分镜 ${shotNum} 的第 1 段必须从 0 秒开始（timestamp 可为 null 或 00:00.000）。`
-                : `分镜 ${shotNum} 的第 ${index + 1} 段 timestamp 必须为 ${formatH3Timestamp(expectedStart)}，与前面 1～2 秒段连续，不能留空或跳时。`,
+                : `分镜 ${shotNum} 的第 ${index + 1} 段 timestamp 必须为 ${formatH3Timestamp(expectedStart)}，与前面动作段连续，不能留空或跳时。`,
             });
           }
         }
@@ -490,7 +503,7 @@ function validateVideoSlots(shot, slots) {
             severity: 'error',
             segment_index: index,
             conflict_slots: [`video_slots.shots_timeline[${index}].action`, `video_slots.shots_timeline[${index}].result`, `video_slots.shots_timeline[${index}].character_trajectories`],
-            message: `分镜 ${shotNum} 的第 ${index + 1} 段只有“互相看着/对视/等待”等静态描述，缺少可执行的剧情动作或反应。请把本段改成 1～2 秒内实际发生的物理动作、互动、移动或事件结果；没有后续事件就让该镜在事件结束处收束，不得用注视填时长。`,
+            message: `分镜 ${shotNum} 的第 ${index + 1} 段只有“互相看着/对视/等待”等静态描述，缺少可执行的剧情动作或反应。请把本段改成实际发生的物理动作、互动、移动或事件结果；没有后续事件就让该镜在事件结束处收束，不得用注视填时长。`,
           });
         }
         for (const id of expectedSegmentIds) {
@@ -528,7 +541,7 @@ function validateVideoSlots(shot, slots) {
               character_id: id,
               segment_index: index,
               conflict_slots: [`video_slots.shots_timeline[${index}].character_trajectories[character_id=${id}].trajectory`],
-              message: `分镜 ${shotNum} 的第 ${index + 1} 段中角色 ID ${id} 只有凝视、等待或静止描述，没有本段 1～2 秒内可执行的动作/反应；请写明与对白或事件同步的身体、表情或互动变化。`,
+              message: `分镜 ${shotNum} 的第 ${index + 1} 段中角色 ID ${id} 只有凝视、等待或静止描述，没有本段可执行的动作/反应；请写明与对白或事件同步的身体、表情或互动变化。`,
             });
           }
         }

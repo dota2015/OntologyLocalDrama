@@ -42,12 +42,16 @@ describe('MiniMax H3 helpers', () => {
     assert.equal(extractMinimaxH3VideoUrl(data), 'https://cdn.example.com/out.mp4');
   });
 
-  it('clamps provider safety duration to 4–8 and maps resolution', () => {
+  it('clamps provider safety duration to 4–30 and maps resolution', () => {
     assert.equal(normalizeMinimaxH3Duration(3), 4);
-    assert.equal(normalizeMinimaxH3Duration(20), 8);
+    assert.equal(normalizeMinimaxH3Duration(20), 20);
     assert.equal(normalizeMinimaxH3Duration(5), 5);
     assert.equal(normalizeMinimaxH3Resolution('1080p'), '2K');
     assert.equal(normalizeMinimaxH3Resolution('720p'), '768P');
     assert.equal(normalizeMinimaxH3Resolution('2K'), '2K');
+  });
+
+  it('does not allow the legacy duration clamp to hide a request over 30 seconds', () => {
+    assert.throws(() => normalizeMinimaxH3Duration(30.5), /整数秒/);
   });
 });

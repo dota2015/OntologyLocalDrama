@@ -79,6 +79,6 @@ function planningInstructions(settings = {}, maxDuration, options = {}) {
   const capacity = maxDuration ? timing.hanCapacity(maxDuration, rate) : null;
   return `\n【实际 TTS 速度与台词预算 / TTS-aware speech budget】
 完整保留对白与旁白，按中文约 ${timing.HAN_PER_SECOND} 字/秒、英文约 ${timing.WORDS_PER_SECOND} 词/秒的自然基准估算，再乘以实际 TTS speed=${rate}x。IndexTTS 未配置速度时默认 1.25x，其他引擎按其配置读取；不要把 Agent 自己输出的 speed 当成可自由调整的语速。
-对白与旁白共用本镜可用时间，不预留固定收尾静音；${capacity ? `在 ${maxDuration} 秒上限和当前速度下约可容纳 ${capacity} 个中文字，` : ''}超出时延长到配置范围或按语义拆镜，逐字保留原文，不删字、不截断、不通过提示词伪造更快语速。动作与台词按显式时间轴同步安排。 Use the measured/configured TTS speed for every shot rather than a fixed characters-per-second limit.`;
+对白与旁白共用本镜可用时间，不预留固定收尾静音；${capacity ? `在 ${maxDuration} 秒上限和当前速度下约可容纳 ${capacity} 个中文字，` : ''}超出时延长到配置范围或按语义拆镜，允许增加镜头数，逐字保留原文，不删字、不截断、不通过提示词伪造更快语速。动作与台词按显式时间轴同步安排。 Use the measured/configured TTS speed for every shot rather than a fixed characters-per-second limit.`;
 }
 module.exports={resolve,budgetOptions,forShot,getShot,recordAiPlan,planningInstructions,configuredTtsSpeed,sourceHash};

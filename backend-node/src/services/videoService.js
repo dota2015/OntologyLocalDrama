@@ -706,6 +706,8 @@ async function processVideoGenerationUnlocked(db, log, videoGenId) {
       last_frame_url: omitFrameFields ? undefined : row.last_frame_url,
       reference_urls,
       h3_mode: row.h3_mode || undefined,
+      execution_backend: row.execution_backend || undefined,
+      continuum_plan: row.continuum_plan || undefined,
       files_base_url: filesBaseUrl,
       storage_local_path: storageLocalPath,
       video_gen_id: videoGenId,

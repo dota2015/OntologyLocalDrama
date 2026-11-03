@@ -32,7 +32,7 @@ ${require('../services/narrativeStyleService').directorPrinciples()}
 - 结合原剧本与上下镜，区分当场执行的意图、未来承诺、回忆、假设、拒绝和被打断的动作。不得仅凭台词动词强行安排动作，也不得改写台词来回避冲突。
 - 对当前镜头应执行的事件，在现有 action/result、trajectory/terminal_pose 槽位中给出起始状态、动作过程、互动对象的配合或反应、实际结束状态；轨迹与终态必须能接续。保持安静可以是剧情选择，不能成为所有人的默认动作。
 - 例如当场说“爹，我扶您起来”，应规划女儿托肩背、父亲撑床配合、从半躺到坐稳；若剧情要求扶起失败，则明确尝试、受阻及实际终态。说“明天我扶您出去”不代表本镜就要起身。
-- 说话与动作可以同时进行；按实际台词时间和动作时间轴完成本镜事件。不要预留固定的无台词收尾，也不要在台词结束后凭空等待；为剩余时间规划有剧情作用的动作或反应，不要用无关手势、运镜、重复动作填时长，也不必强行用满8秒。
+- 说话与动作可以同时进行；按实际台词时间和动作时间轴完成本镜事件。不要预留固定的无台词收尾，也不要在台词结束后凭空等待；为剩余时间规划有剧情作用的动作或反应，不要用无关手势、运镜、重复动作填时长，也不必强行用满30秒。
 - character_visuals 只描述起幅瞬间，last_frame_visuals（需要尾帧时）、end_framing、result 与最终 terminal_pose 描述同一结束状态；全局 trajectories、shots_timeline 和全能分镜文本必须一致。连续动作可以在一个镜头内叙述先后阶段，不要为了分阶段而强制切镜。
 - 若上下文提供实际 TTS 时长，以实测复核台词与动作时间线；超出配置时长上限时反馈给可调整剧情分镜的导演节点处理，不能删字、加速或在只读槽位节点擅自改总时长。
 - 输出前逐人核对：台词意图是否与剧情事件一致、动作是否足以到达终态、互动对象是否有必要的反应、说完后的时间是否有用途。发现矛盾先在本节点允许修改的范围内修正，保留用户锁定的内容；后端不替你推测或补写语义。只输出本节点约定字段，不增加自检报告或另一套动作槽位。
@@ -277,22 +277,30 @@ function reportDirectorLayerRetry(context, layer, attempt, detail = '') {
 
 function validTimelineDurationPlans(duration) {
   const seconds = Number(duration);
-  if (!Number.isInteger(seconds) || seconds < 1 || seconds > 8) return [];
-  const plans = [];
-  function visit(remaining, current) {
-    if (!remaining) { plans.push(current); return; }
-    // 镜内时间线只能使用 1～2 秒段。每段都必须成为一个可执行动作窗口，
-    // 禁止把 4～8 秒整段交给模型自由填充。
-    for (let n = Math.min(2, remaining); n >= 1; n--) visit(remaining - n, [...current, n]);
+  if (!Number.isInteger(seconds) || seconds < 1 || seconds > 30) return [];
+  if (seconds <= 8) {
+    const plans = [];
+    function visit(remaining, current) {
+      if (!remaining) { plans.push(current); return; }
+      for (let n = Math.min(2, remaining); n >= 1; n--) visit(remaining - n, [...current, n]);
+    }
+    visit(seconds, []);
+    return plans;
   }
-  visit(seconds, []);
-  return plans;
+  const plan = [];
+  let remaining = seconds;
+  while (remaining > 0) {
+    const part = remaining >= 2 ? 2 : 1;
+    plan.push(part);
+    remaining -= part;
+  }
+  return [plan];
 }
 
 function timelineDurationPlanContract(duration) {
   const plans = validTimelineDurationPlans(duration);
   if (!plans.length) throw new Error(`无法为 ${duration} 秒镜头建立合法的镜内剪辑时长组合`);
-  return `shots_timeline.duration 必须全部使用 1 或 2 个整数秒，并严格逐项采用下列任一完整数组：${JSON.stringify(plans)}。每一项对应连续时间窗口（例如 0–1、1–2 秒），不得用单个 4～8 秒大段填充。`;
+  return `shots_timeline.duration 必须全部使用 1 或 2 个整数秒，并严格采用下列连续数组：${JSON.stringify(plans[0])}。每一项对应连续时间窗口，不得用一个完整大段填充。`;
 }
 
 async function planDirectorSourceAssignments(db, log, batch, retryOptions = {}) {
@@ -1201,7 +1209,7 @@ async function ensureDirectorShotTimeline(db, log, shot, retryOptions = {}) {
     try {
       planned = await agentsRuntime.runAgent(db, log, {
         name: 'director-shot-timeline-planner',
-        instructions: `你是短剧导演的镜内剪辑规划节点。只规划当前一个外层分镜的 video_slots.shots_timeline，不得改写剧情、台词、人物、场景、总时长或 H3 模式。每段必须是 1 或 2 个整数秒的连续动作窗口，所有段时长之和必须精确等于总时长；禁止输出一个完整 4～8 秒大段。${durationPlanContract}。由你根据剧情节拍选择其中一个合法数组，并按原顺序逐项写入各段 duration，把段序号对应为 0–1、1–2 这样的连续时间窗口。每段先决定 camera，再填写 visible_characters（本段实际入画的人物；特写、过肩或画外音可以只列当前可见人物），character_trajectories 只能覆盖这个列表。每个时间段是可执行的动作合同：action、result 和每个可见人物的 character_trajectories 都要写该时间窗口内真实发生的动作、互动或因果反应；不能要求没有入画的人物做动作。两人对白必须给当前画面中的说话者与听者分别填写动作窗口；正反打只在信息或反应发生时切换。安静倾听不能单独占满一个时间段，必须与抬眼、转头、接物、退让等可见反应同时发生并有剧情依据。每个文字槽位用不超过 120 个汉字的具体描述，禁止解释、重复和扩写剧情。只使用 shot_number、timestamp、duration、camera、visible_characters、action、result、character_trajectories、audio_lip_sync、speech_action_alignment 字段。\n${DIRECTOR_ACTION_COMPLETION_CONTRACT}`,
+        instructions: `你是短剧导演的镜内剪辑规划节点。只规划当前一个外层分镜的 video_slots.shots_timeline，不得改写剧情、台词、人物、场景、总时长或 H3 模式。每段必须是 1 或 2 个整数秒的连续动作窗口，所有段时长之和必须精确等于总时长；禁止输出一个完整 4～30 秒大段。${durationPlanContract}。由你根据剧情节拍选择其中一个合法数组，并按原顺序逐项写入各段 duration，把段序号对应为 0–1、1–2 这样的连续时间窗口。每段先决定 camera，再填写 visible_characters（本段实际入画的人物；特写、过肩或画外音可以只列当前可见人物），character_trajectories 只能覆盖这个列表。每个时间段是可执行的动作合同：action、result 和每个可见人物的 character_trajectories 都要写该时间窗口内真实发生的动作、互动或因果反应；不能要求没有入画的人物做动作。两人对白必须给当前画面中的说话者与听者分别填写动作窗口；正反打只在信息或反应发生时切换。安静倾听不能单独占满一个时间段，必须与抬眼、转头、接物、退让等可见反应同时发生并有剧情依据。每个文字槽位用不超过 120 个汉字的具体描述，禁止解释、重复和扩写剧情。只使用 shot_number、timestamp、duration、camera、visible_characters、action、result、character_trajectories、audio_lip_sync、speech_action_alignment 字段。\n${DIRECTOR_ACTION_COMPLETION_CONTRACT}`,
         input: `【当前分镜总时长】${duration} 秒\n【合法时长组合】${JSON.stringify(validTimelineDurationPlans(duration))}\n【画内角色】${JSON.stringify(visibleCharacters)}\n【权威台词】${JSON.stringify(semantic.speech_plan || {})}\n【当前完整分镜，只读】${JSON.stringify(shot)}${feedback}`,
         outputType: agentsRuntime.directorTimelineOutputType(duration),
         maxTokens: 24576,
@@ -1565,8 +1573,8 @@ ${DIRECTOR_ACTION_COMPLETION_CONTRACT}
    - **模型物理上限为 9 张参考图**：MiniMax H3 单镜头输入包含：首尾帧锚点（至多2张）+ 场景图（1张）+ 角色人设图（每人1张）+ 道具图（每件1张）。一旦超出 9 张或单镜要素过多，模型将严重变形、崩溃或报错！
    - **单镜出场角色严格限制在 1～2 人**：绝不可把 3 个及以上角色塞入同一个分镜！遇多人交互场景，**必须主动拆镜**为正反打镜头序列（如：镜1「角色A动作中景」➔ 镜2「角色B反应特写/反打」➔ 镜3「角色C介入动作」）。
    - **单镜核心交互道具严格限制在 1 件**（至多不超过 2 件）：每个分镜只能聚焦 1 个核心交互道具（如拔枪、递药、看屏幕）。无实质物理交互的静态背景物件不作为道具挂载，**严禁在一个镜头中挂载 3 件以上道具**！
-   - **按连贯事件规划，不按动作个数拆镜**：单个 4~8 秒分镜可以包含多个连续或同时发生的动作、对白和人物反应。例如边说话边走近、伸手搀扶、对方借力坐起，可在同镜完成。不得把一句对白、一个动作、一个反应机械拆成独立分镜。仅当实际台词和事件超出时长、场景或造型变化、或剧情确需独立视角时拆镜；保持动作因果与空间关系清晰，不添加停顿来凑时长。
-   - **短剧镜内剪辑节奏**：每个外层分镜在 video_slots.shots_timeline 中必须规划连续的 1 或 2 个整数秒动作段，总和精确等于本镜4～8秒时长（例如 0–1、1–2、2–4 秒）。每段先声明本段 camera 和 visible_characters，再约束每个实际入画角色在该窗口内的动作、表情或因果反应；特写、过肩和画外音可以只列当前可见人物，未入画人物不写视觉轨迹。不得用一个完整大段、静态机位、无意义特写或安静互看填时长。正反打只在信息、反应或权力变化发生时切换。
+   - **按连贯事件规划，不按动作个数拆镜**：单个 4~30 秒分镜可以包含多个连续或同时发生的动作、对白和人物反应；9秒以上由 Continuum 承载。不得把一句对白、一个动作、一个反应机械拆成独立分镜。仅当实际台词或事件超过30秒、场景或造型变化、或剧情确需独立视角时拆镜。
+   - **镜内剪辑节奏**：每个外层分镜在 video_slots.shots_timeline 中必须规划连续的 1 或 2 个整数秒动作段，总和精确等于本镜4～30秒时长。4～8秒使用普通H3，9～30秒使用Continuum；每段先声明本段 camera 和 visible_characters，再约束每个实际入画角色在该窗口内的动作、表情或因果反应。不得用一个完整大段、静态机位、无意义特写或安静互看填时长。
    - **同步视听事件（必须）**：video_slots.performance_contract 必须为 "sync_v1"。每个含对白的 shots_timeline 段必须填写 speech_action_alignment：mode="concurrent"、speech_window、speaker_action_window、speaker_action，以及每个其他画内角色的 listener_reactions。动作时间必须与发声时间重叠；不要把动作默认写成“台词说完后再做”。说话者边说边转身、抬手、操作或改变视线，听者在同一时间段边听边看、回应或操作。刻意停顿才使用 deliberate_pause，并填写 pause_reason。无对白段使用 mode="none"。
    - **正反打是镜内语言，不是机械拆镜规则**：两人对话可在同一外层分镜的 shots_timeline 中使用正反打/过肩反打段落；只有信息交接、权力变化、关键反应或空间轴线确实改变时才新建外层分镜。禁止把“说一句话—两人互相看着—结束”当作剧情动作。台词结束后的每一秒都必须有剧本依据（扶起、递物、阻拦、受伤反应、移动、环境突发等）；没有依据就缩短到本镜实际事件结束，不要虚构相互凝视、无意义特写或等待来填满时长。
 4. **场面调度与 Z 轴纵深站位法则（Cinematic Blocking & Z-Axis Depth）**：
@@ -1613,8 +1621,8 @@ ${DIRECTOR_ACTION_COMPLETION_CONTRACT}
        - appearance_details: 服装质感与生理状态（如：额角渗出的细密冷汗与被汗浸湿贴在前额的凌乱碎发、粗糙抗撕裂战术背心上的泥渍刮擦）
    - 槽位中严禁出现“从A到B”、“跑向”、“走到”、“随后”、“看了一眼”等动态时序过程词，文生图模型会将两地各画一人产生克隆分身！必须是首帧决定性瞬间的纯静态摄影描写！
 9. **连贯长镜头结构化拆解与接力规范（Long Take Relaying & Sequential Splitting）**：
-   - **适用情境**：影视短剧中，连续动作追逐、长走廊/房间连续漫游、连贯推移跟拍等大段无切机位的视听情境。因 AI 视频模型单镜仅能生成 4~8 秒，必须将长镜头拆分为多个连续子镜头（如镜头2~5）。
-   - **长镜头拆分**：长动作或长台词需要拆分时，每个新分镜都是独立 Ref2VA 镜头，必须重新列出 required_references，first_frame_policy 与 last_frame_policy 均为 "none"。long_take_group_id、long_take_role、long_take_sequence 全部填 null；不得由 Agent 规划 FL2VA、inherit_tail 或自动尾帧接力。
+   - **Continuum 长分镜**：同场景、同造型、同一组核心人物且连续因果动作或长对白需要超过8秒时，优先保留为一个9～30秒逻辑分镜，设置 execution_backend="h3_continuum"，并填写 continuum_plan（total_duration 等于本镜 duration、chunks、chunk_seconds、prompt_mode="timeline"、audio_continuity=true、motion_continuity=true）。Continuum 内部 chunk 对用户隐藏，由执行层串行接续状态。
+   - **Continuum 拆分边界**：超过30秒必须按语义拆成多个分镜；发生场景、时间、换装、核心人物集合或重大视线轴线变化也必须拆镜。拆出的每个分镜独立使用 Ref2VA；不得使用旧 long_take_group_id/long_take_role/long_take_sequence 或 FL2VA 长镜头合同。
    - **拆分镜头的动线合同**：每个独立 Ref2VA 镜头必须在 continuity_from_previous、start_framing 和 action 中明确写出上一镜落幅如何触发本镜开幅；这只描述剧情与空间承接，不代表自动继承上一镜视频尾帧。
 
 10. **视听语言视线轴线铁律（字典仅供参考启发，严禁面向镜头直视空气说话）**：
@@ -1682,7 +1690,9 @@ ${scriptContent}
 - last_frame_reason: 说明动作在本镜内自然收束，无需额外尾帧
 - required_references: 本镜头生成所必需依赖的核心参考图清单。第 1 项必须是场景，随后是画内主体、背景角色和核心道具，严格最多9张
 - audio_lip_sync: 口型控制模式 (in_frame_dialogue/offscreen_voiceover/narration/silent_ambient/bgm_only；silent_ambient 表示无语言但保留环境/动作音，bgm_only 表示无语言且只有纯器乐；画外音、旁白及全部无语言模式都要求画内全员双唇紧闭)
-- shot_duration: 镜头秒数 (4~8之间，必须匹配台词字数预算)
+- shot_duration: 镜头秒数 (4~30之间；4~8走普通H3，9~30走Continuum，必须匹配台词字数预算)
+- execution_backend: 执行后端；4~8秒填 "h3_single"，9~30秒填 "h3_continuum"
+- continuum_plan: 仅 execution_backend="h3_continuum" 时填写 {"enabled":true,"total_duration":与本镜duration相同,"chunks":整数,"chunk_seconds":4~30,"prompt_mode":"timeline","audio_continuity":true,"motion_continuity":true}；4~8秒填 null
 - start_framing: 镜头起幅机位构图与角色初始姿态 (开端机位与画内人物初始定格状态)
 - end_framing: 镜头落幅定格构图与尾帧承接状态 (落幅定格状态，为下一镜头提供视觉承接锚点)
 - transition_to_next: 与下一镜过渡类型及承接说明 (如 "eyeline_match: 顺接奕宸向右侧偏头的视线，本镜头切至右侧书桌前的妹妹" / "match_cut" / "rack_focus" / "ots_reverse" / "continuous_tracking" / "cut")
@@ -1698,7 +1708,7 @@ ${scriptContent}
 - environment_depth: 空间三层纵深 (前景虚化遮挡、中景主体物理接触地表/构件、背景纵深透视与材质细节)
 - cinematic_lens: 电影镜头光学参数 (如 35mm宽银幕变形镜头/85mm定焦大光圈浅景深焦外散景)
 - depth_of_field: 景深 (shallow/medium/deep)
-- duration: 本镜秒数 (整数，4~8之间，必须匹配台词字数预算)
+- duration: 本镜秒数 (整数，4~30之间；不得超过30秒，必须匹配台词字数预算)
 - action: 核心物理动作 (严禁单镜头出现中途换装、变身等无法维持单镜一致性的动作)
 - result: 动作收束结果
 - dialogue: 台词 ("角色名: \"台词\""，无对话填 "")
@@ -1928,7 +1938,7 @@ ${[...new Set(repairTarget.violations.map(directorAtomicRepairHint).filter(Boole
 ${JSON.stringify(repairTarget.violations)}
 【本镜其他待处理问题，仅作上下文，不得越过本轮 Schema 修改】
 ${JSON.stringify(shotViolations)}
-【本任务镜头时长范围】${requestedPacing.range.min}～${requestedPacing.range.max} 秒；H3 的 8 秒能力上限不覆盖本任务设置。
+【本任务镜头时长范围】${requestedPacing.range.min}～${requestedPacing.range.max} 秒；4～8 秒使用普通 H3，9～30 秒使用 Continuum，任何单镜不得超过30秒。
 ${lastRejectedRepair?.shot_number === repairTarget.shot_number ? `【上轮修复被拒绝的完整反馈】\n${JSON.stringify(lastRejectedRepair)}\n上轮补丁没有写入当前镜头。请根据被拒绝的补丁与复检路径调整本轮方案，不得把相同的无效补丁再次提交。` : ''}
 
 ${hasSpeechDivergence ? '【台词槽位优先级】本镜同时出现台词槽位冲突与时长违规时，本轮只统一数据库对白/旁白、semantic_slots.speech_plan 与 video_slots.audio_lip_sync 的实际朗读文本；不要拆镜、不要延长时长、不要把相邻镜头台词并入本镜。统一后系统会重新计算时长，只有仍然超限时下一轮才允许拆镜。' : ''}

@@ -206,7 +206,7 @@ function timelineSegmentSchema() {
     properties: {
       shot_number: { type: 'integer', minimum: 1 },
       timestamp: { anyOf: [{ type: 'string' }, { type: 'null' }] },
-      // 外层 H3 片段为 4～8 秒，但镜内时间线每段只允许 1～2 秒，
+      // 外层逻辑分镜为 4～30 秒，但镜内时间线每段只允许 1～2 秒，
       // 这样每个人物的动作和反应都有明确的时间窗口。
       duration: { type: 'integer', minimum: 1, maximum: 2 },
       camera: {
@@ -316,14 +316,16 @@ function videoSlotsSchema() {
         additionalProperties: true,
         required: ['duration', 'pacing'],
         properties: {
-          duration: { type: 'integer', minimum: 4, maximum: 8 },
+          duration: { type: 'integer', minimum: 4, maximum: 30 },
           pacing: nonEmptyStringSchema(),
         },
       },
       shots_timeline: {
         type: 'array',
         minItems: 1,
-        maxItems: 8,
+        // A 30-second Continuum shot is still one logical shot, but its
+        // executable timeline can contain up to thirty one-second windows.
+        maxItems: 30,
         items: timelineSegmentSchema(),
       },
     },
@@ -335,7 +337,7 @@ function semanticSlotsSchema(assignedIds = null) {
     'visible_characters', 'background_characters', 'identity_visibility', 'speech_plan',
     'sound_plan', 'continuity_type', 'continuity_from_previous', 'h3_mode', 'h3_mode_reason', 'first_frame_policy',
     'first_frame_reason', 'last_frame_policy', 'last_frame_reason', 'required_references',
-    'audio_lip_sync', 'shot_duration',
+    'audio_lip_sync', 'shot_duration', 'execution_backend', 'continuum_plan',
   ];
   if (assignedIds) required.push('source_script_unit_ids');
   return {
@@ -402,7 +404,17 @@ function semanticSlotsSchema(assignedIds = null) {
         },
       },
       audio_lip_sync: nonEmptyStringSchema(),
-      shot_duration: { type: 'integer', minimum: 4, maximum: 8 },
+      shot_duration: { type: 'integer', minimum: 4, maximum: 30 },
+      execution_backend: { enum: ['h3_single', 'h3_continuum'] },
+      continuum_plan: {
+        anyOf: [
+          { type: 'null' },
+          { type: 'object', additionalProperties: true, required: ['enabled', 'total_duration', 'chunks', 'chunk_seconds'], properties: {
+            enabled: { const: true }, total_duration: { type: 'integer', minimum: 9, maximum: 30 },
+            chunks: { type: 'integer', minimum: 1, maximum: 8 }, chunk_seconds: { type: 'integer', minimum: 4, maximum: 30 },
+          } },
+        ],
+      },
       ...(assignedIds ? { source_script_unit_ids: exactStringArraySchema(assignedIds) } : {}),
     },
   };
@@ -425,13 +437,15 @@ function storyboardItemSchema(assignedIds = null) {
     first_frame_policy: stringSchema(80), first_frame_reason: stringSchema(300),
     last_frame_policy: stringSchema(80), last_frame_reason: stringSchema(300),
     required_references: { type: 'array', maxItems: 9 }, audio_lip_sync: stringSchema(80),
-    shot_duration: { type: 'integer', minimum: 4, maximum: 8 },
+    shot_duration: { type: 'integer', minimum: 4, maximum: 30 },
+    execution_backend: { enum: ['h3_single', 'h3_continuum'] },
+    continuum_plan: { anyOf: [{ type: 'null' }, { type: 'object', additionalProperties: true }] },
     start_framing: stringSchema(500), end_framing: stringSchema(500), transition_to_next: stringSchema(400),
     props: { type: 'array', maxItems: 2, items: { type: 'integer', minimum: 1 } },
     shot_type: stringSchema(80), angle_h: stringSchema(80), angle_v: stringSchema(80), angle_s: stringSchema(80),
     movement: stringSchema(80), lighting_style: stringSchema(80), lighting_chiaroscuro: stringSchema(400),
     environment_depth: stringSchema(400), cinematic_lens: stringSchema(240), depth_of_field: stringSchema(80),
-    duration: { type: 'integer', minimum: 4, maximum: 8 }, action: stringSchema(500), result: stringSchema(400),
+    duration: { type: 'integer', minimum: 4, maximum: 30 }, action: stringSchema(500), result: stringSchema(400),
     dialogue: stringSchema(500), narration: stringSchema(500), bgm_prompt: stringSchema(300), sound_effect: stringSchema(300),
     layout_description: stringSchema(500), emotion: stringSchema(120),
     character_visuals: { type: 'array', maxItems: 3, items: characterVisualSchema() },
@@ -467,7 +481,7 @@ function storyboardDraftItemSchema(assignedIds = null) {
       props: { type: 'array', maxItems: 2, items: { type: 'integer', minimum: 1 } },
       shot_type: stringSchema(80), angle_h: stringSchema(80), angle_v: stringSchema(80), angle_s: stringSchema(80),
       movement: stringSchema(80), lighting_style: stringSchema(80), depth_of_field: stringSchema(80),
-      duration: { type: 'integer', minimum: 4, maximum: 8 },
+      duration: { type: 'integer', minimum: 4, maximum: 30 },
       action: stringSchema(500), result: stringSchema(400), dialogue: stringSchema(500), narration: stringSchema(500),
       bgm_prompt: stringSchema(300), sound_effect: stringSchema(300), layout_description: stringSchema(500), emotion: stringSchema(120),
       start_framing: stringSchema(500), end_framing: stringSchema(500), transition_to_next: stringSchema(400), dialogue_framing: stringSchema(240),
@@ -481,7 +495,7 @@ function storyboardDraftItemSchema(assignedIds = null) {
 }
 
 function directorTimelineOutputType(duration = 5) {
-  const seconds = Math.max(4, Math.min(8, Number(duration) || 5));
+  const seconds = Math.max(4, Math.min(30, Number(duration) || 5));
   return {
     type: 'json_schema',
     name: 'director_shot_timeline',
@@ -503,9 +517,9 @@ function directorTimelineOutputType(duration = 5) {
 }
 
 function directorVideoSlotsOutputType(duration = 5) {
-  const seconds = Math.max(4, Math.min(8, Number(duration) || 5));
+  const seconds = Math.max(4, Math.min(30, Number(duration) || 5));
   const schema = videoSlotsSchema();
-  // 每个段最多 2 秒，因此 4～8 秒镜头至少需要 ceil(duration / 2) 段。
+  // 每个段最多 2 秒，因此逻辑分镜至少需要 ceil(duration / 2) 段。
   schema.properties.shots_timeline.minItems = Math.ceil(seconds / 2);
   schema.properties.shots_timeline.maxItems = Math.floor(seconds);
   return {
@@ -536,7 +550,7 @@ function directorCharacterVisualsOutputType() {
 }
 
 function directorExecutionSlotsOutputType(duration = 5) {
-  const seconds = Math.max(4, Math.min(8, Number(duration) || 5));
+  const seconds = Math.max(4, Math.min(30, Number(duration) || 5));
   const timeline = videoSlotsSchema();
   timeline.properties.shots_timeline.minItems = Math.ceil(seconds / 2);
   timeline.properties.shots_timeline.maxItems = Math.floor(seconds);
@@ -720,7 +734,7 @@ function directorStructuralRepairOutputType(shotNumber) {
     properties: {
       shot_number: { type: 'integer', minimum: 1 },
       title: { type: 'string', maxLength: 80 },
-      duration: { type: 'integer', minimum: 4, maximum: 8 },
+      duration: { type: 'integer', minimum: 4, maximum: 30 },
       action: { type: 'string', maxLength: 500 },
       result: { type: 'string', maxLength: 400 },
       dialogue: { type: 'string', maxLength: 500 },
@@ -736,7 +750,7 @@ function directorStructuralRepairOutputType(shotNumber) {
           source_script_unit_ids: { type: 'array', items: { type: 'string' } },
           speech_plan: { type: 'object', additionalProperties: true },
           audio_lip_sync: { type: 'string', maxLength: 80 },
-          shot_duration: { type: 'integer', minimum: 4, maximum: 8 },
+          shot_duration: { type: 'integer', minimum: 4, maximum: 30 },
           continuity_from_previous: { type: 'object', additionalProperties: true },
         },
       },

@@ -305,7 +305,9 @@ const narrativeStyle = ref({ preset: 'balanced', speech_rate: 1, speech_mode: 'f
 const customStylePrompt = ref('')
 const projectAspectRatio = ref('16:9')
 const shotDurationMin = ref(4)
-const shotDurationMax = ref(5)
+// A new project may use ordinary H3 for 4–8s or Continuum for 9–30s.
+// Keep the full range available unless the user explicitly saved a narrower range.
+const shotDurationMax = ref(30)
 const videoClipDuration = ref(5)
 
 /** 根据 value 查找样式选项对象 */
@@ -664,8 +666,8 @@ async function loadDrama() {
     projectAspectRatio.value = (d.metadata && d.metadata.aspect_ratio) ? d.metadata.aspect_ratio : '16:9'
     videoClipDuration.value = (d.metadata && d.metadata.video_clip_duration) ? Number(d.metadata.video_clip_duration) : 5
     const savedRange = d.metadata?.shot_duration_range
-    shotDurationMin.value = Math.max(4, Math.min(8, Number(savedRange?.min) || 4))
-    shotDurationMax.value = Math.max(shotDurationMin.value, Math.min(8, Number(savedRange?.max) || videoClipDuration.value || 5))
+    shotDurationMin.value = Math.max(4, Math.min(30, Number(savedRange?.min) || 4))
+    shotDurationMax.value = Math.max(shotDurationMin.value, Math.min(30, Number(savedRange?.max) || 30))
     videoClipDuration.value = Math.round((shotDurationMin.value + shotDurationMax.value) / 2)
     storyboardIncludeNarration.value = !!(d.metadata && d.metadata.storyboard_include_narration)
     // 全能分镜不再提供项目级开关，始终默认启用；单镜 FL2VA 由分镜配置覆盖。

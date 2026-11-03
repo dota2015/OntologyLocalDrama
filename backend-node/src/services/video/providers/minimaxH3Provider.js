@@ -22,9 +22,12 @@ function getMinimaxApiRoot(baseUrl) {
 }
 
 function normalizeMinimaxH3Duration(duration) {
-  const n = Math.round(Number(duration));
+  const n = Number(duration);
+  if (Number.isFinite(n) && !Number.isInteger(n)) {
+    throw new Error(`MiniMax-H3 duration 必须是整数秒，当前为 ${duration}`);
+  }
   const safe = Number.isFinite(n) && n > 0 ? n : 5;
-  return Math.min(8, Math.max(4, safe));
+  return Math.min(30, Math.max(4, safe));
 }
 
 function normalizeMinimaxH3Resolution(resolution) {

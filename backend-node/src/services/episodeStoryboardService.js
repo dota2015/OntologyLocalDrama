@@ -1530,11 +1530,15 @@ function generateStoryboard(db, log, episodeId, model, style, storyboardCount, v
       if (meta && meta.video_clip_duration) videoClipDuration = Number(meta.video_clip_duration) || null;
     }
   } catch (_) {}
-  const durationRange = normalizeDurationRange(requestedDurationRange || savedDurationRange, videoClipDuration);
+  // Legacy project video_clip_duration is only a display hint.  It must not
+  // cap new director plans at 5 seconds now that Continuum supports 9–30s.
+  const durationRange = (requestedDurationRange || savedDurationRange)
+    ? normalizeDurationRange(requestedDurationRange || savedDurationRange, null)
+    : null;
   const imageRatio = aspectRatio || dramaAspectRatio || cfg?.style?.default_video_ratio || '16:9';
 
   // 计算单镜建议时长（秒）：
-  // 项目 metadata 中的旧 video_clip_duration 先作为范围回退输入，随后统一归一到 H3 4～8 秒；
+  // 项目 metadata 中的旧 video_clip_duration 先作为范围回退输入，随后统一归一到 H3 4～30 秒；
   // 否则前端同时传总时长+镜数时会把每镜压成过短（与「每段秒数」配置矛盾）。
   // 无项目配置时再使用总时长÷镜数；再否则 null。
   let effectiveShotDuration = null;
@@ -1680,7 +1684,7 @@ If words cannot fit, increase the shot count rather than omit words, rush speech
   systemPrompt += promptI18n.getStoryboardNarrationModeInstructions(cfg, wantNarration);
 
   // Append after custom/mode/count prompts so timing and full dialogue take precedence.
-  systemPrompt += rangeTimingInstructions(durationRange || {min:effectiveShotDuration,max:effectiveShotDuration},cfg.narrative_style);
+  systemPrompt += rangeTimingInstructions(durationRange || { min: 4, max: 30 }, cfg.narrative_style);
 
   const task = taskService.createTask(db, log, 'storyboard_generation', String(episodeId));
   log.info('Generating storyboard asynchronously', {
@@ -1714,7 +1718,7 @@ If words cannot fit, increase the shot count rather than omit words, rush speech
       systemPrompt,
       wantNarration,
       wantUniversalOmni,
-      durationRange ? null : clipSec,
+      null,
       durationRange
     );
   });
@@ -1918,11 +1922,11 @@ function copyStoryboardAssetLinks(db, fromSbId, toSbId) {
 
 function durationForSplitSegment(type, text) {
   const speech = type === 'narration' ? { narration: text } : { dialogue: text };
-  const assessment = assessSpeechTiming(speech, 8);
+  const assessment = assessSpeechTiming(speech, 30);
   if (!assessment.ok) {
-    throw new Error(`单段${type === 'narration' ? '旁白' : '对白'}约需 ${assessment.requiredSeconds} 秒，超过 H3 单镜 8 秒上限；请让导演 Agent 继续按语义拆分`);
+    throw new Error(`单段${type === 'narration' ? '旁白' : '对白'}约需 ${assessment.requiredSeconds} 秒，超过单个逻辑分镜 30 秒上限；请让导演 Agent 继续按语义拆分`);
   }
-  return Math.min(8, Math.max(4, assessment.recommendedDuration));
+  return Math.min(30, Math.max(4, assessment.recommendedDuration));
 }
 
 function buildSplitPlansFromStoryboard(row) {

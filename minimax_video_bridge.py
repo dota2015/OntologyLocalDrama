@@ -49,6 +49,8 @@ if not COMFY_URLS:
 if not COMFY_URL:
     COMFY_URL = COMFY_URLS[0]
 WORKFLOW_PATH = project_path(CONFIG["workflow_path"])
+CONTINUUM_WORKFLOW_PATH = project_path(CONFIG["continuum_workflow_path"]) if CONFIG.get("continuum_workflow_path") else None
+CONTINUUM_NODES = CONFIG.get("continuum_nodes") or {}
 STORAGE_DIR = project_path(CONFIG["storage_dir"])
 PUBLIC_BASE_URL = CONFIG["public_base_url"].rstrip("/")
 ENGINE = CONFIG.get("engine", "minimax_h3")
@@ -56,7 +58,9 @@ MODEL_LABEL = "Wan2.2" if ENGINE == "wan22" else "MiniMax-H3"
 FPS = 16 if ENGINE == "wan22" else 24
 DEFAULT_DURATION = 5
 DEFAULT_H3_STEPS = 23
-MAX_DURATION = 15
+MAX_DURATION = 30
+SINGLE_MAX_DURATION = 8
+CONTINUUM_MIN_DURATION = 9
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 TASKS_DB_FILE = STORAGE_DIR / "bridge_tasks.json"
@@ -136,8 +140,20 @@ def prepare_workflow(body):
         duration = float(raw_duration)
     except (TypeError, ValueError):
         raise HTTPException(status_code=422, detail="duration/seconds must be a number")
-    if not math.isfinite(duration) or not 1 <= duration <= MAX_DURATION:
-        raise HTTPException(status_code=422, detail=f"duration/seconds must be between 1 and {MAX_DURATION}")
+    backend = str(body.get("execution_backend") or ("h3_continuum" if duration >= CONTINUUM_MIN_DURATION else "h3_single")).strip().lower()
+    if not math.isfinite(duration) or not 4 <= duration <= MAX_DURATION or duration != round(duration):
+        raise HTTPException(status_code=422, detail=f"duration/seconds must be an integer between 4 and {MAX_DURATION}")
+    if backend not in ("h3_single", "h3_continuum"):
+        raise HTTPException(status_code=422, detail="execution_backend must be h3_single or h3_continuum")
+    if backend == "h3_single" and duration > SINGLE_MAX_DURATION:
+        raise HTTPException(status_code=422, detail="普通 H3 只支持 4–8 秒；9–30 秒必须使用已配置的 Continuum workflow")
+    if backend == "h3_continuum" and duration < CONTINUUM_MIN_DURATION:
+        raise HTTPException(status_code=422, detail="Continuum 只支持 9–30 秒逻辑分镜")
+
+    if backend == "h3_continuum":
+        if not CONTINUUM_WORKFLOW_PATH or not CONTINUUM_WORKFLOW_PATH.is_file():
+            raise HTTPException(status_code=503, detail="H3 Continuum workflow 尚未配置；请在 bridge 配置中设置 continuum_workflow_path，禁止降级为普通 H3")
+        return prepare_continuum_workflow(body, duration)
 
     output_frames = math.ceil(duration * FPS)
     generation_frames = output_frames + (5 - output_frames) % 17
@@ -160,6 +176,48 @@ def prepare_workflow(body):
     workflow["15"]["inputs"]["length"] = output_frames
     workflow["16"]["inputs"]["duration"] = output_duration
     return workflow, prompt_text, output_duration, generation_frames
+
+
+def _continuum_node(workflow, key):
+    node_id = CONTINUUM_NODES.get(key)
+    if node_id is None:
+        return None
+    node = workflow.get(str(node_id)) or workflow.get(node_id)
+    return node if isinstance(node, dict) else None
+
+
+def prepare_continuum_workflow(body, duration):
+    """Load the separately exported Continuum API graph.
+
+    The custom node package exposes a graph rather than a REST duration knob.
+    Node IDs are deliberately configured instead of guessed from a graph, so a
+    mismatched workflow fails before it reaches ComfyUI.
+    """
+    try:
+        with CONTINUUM_WORKFLOW_PATH.open(encoding="utf-8") as workflow_file:
+            workflow = json.load(workflow_file)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail=f"无法读取 H3 Continuum workflow: {exc}")
+    if not isinstance(workflow, dict) or not workflow:
+        raise HTTPException(status_code=503, detail="H3 Continuum workflow 为空或不是 API 格式")
+    prompt_text = body.get("prompt", "")
+    for item in body.get("content", []) if isinstance(body.get("content"), list) else []:
+        if isinstance(item, dict) and item.get("type") == "text":
+            prompt_text = item.get("text", prompt_text)
+    prompt_node = _continuum_node(workflow, "prompt")
+    duration_node = _continuum_node(workflow, "duration")
+    if not prompt_node or not duration_node:
+        raise HTTPException(status_code=503, detail="H3 Continuum workflow 缺少 bridge continuum_nodes.prompt/duration 映射")
+    prompt_node.setdefault("inputs", {})[CONTINUUM_NODES.get("prompt_input", "prompt")] = str(prompt_text or "Cinematic continuous shot")
+    duration_node.setdefault("inputs", {})[CONTINUUM_NODES.get("duration_input", "duration")] = int(duration)
+    chunk_plan = body.get("continuum_plan") or {}
+    chunk_node = _continuum_node(workflow, "chunks")
+    if chunk_node:
+        chunk_node.setdefault("inputs", {})[CONTINUUM_NODES.get("chunks_input", "chunks")] = int(chunk_plan.get("chunks") or 1)
+    chunk_seconds_node = _continuum_node(workflow, "chunk_seconds")
+    if chunk_seconds_node:
+        chunk_seconds_node.setdefault("inputs", {})[CONTINUUM_NODES.get("chunk_seconds_input", "chunk_seconds")] = int(chunk_plan.get("chunk_seconds") or duration)
+    return workflow, str(prompt_text or "Cinematic continuous shot"), float(duration), None
 
 
 def execution_snapshot(workflow, prompt_id):
@@ -260,8 +318,39 @@ async def upload_image(client, url, comfy_url=None):
     return (f"{folder}/{name}" if folder else name) + " [input]", size
 
 
+async def condition_continuum_workflow(client, body, workflow, comfy_url):
+    """Bind media to the explicitly mapped Continuum API graph."""
+    images = image_inputs(body)
+    audios = audio_inputs(body)
+    image_nodes = CONTINUUM_NODES.get("reference_image_nodes") or []
+    audio_nodes = CONTINUUM_NODES.get("audio_nodes") or []
+    if images and len(images) > len(image_nodes):
+        raise HTTPException(422, "Continuum workflow 的 reference_image_nodes 不足以承载本镜参考图")
+    if audios and len(audios) > len(audio_nodes):
+        raise HTTPException(422, "Continuum workflow 的 audio_nodes 不足以承载本镜参考音频")
+    uploaded_images = {}
+    for index, (role, url) in enumerate(images):
+        if url not in uploaded_images:
+            uploaded_images[url] = await upload_image(client, url, comfy_url)
+        node_id = str(image_nodes[index])
+        node = workflow.get(node_id) or workflow.get(image_nodes[index])
+        if not isinstance(node, dict):
+            raise HTTPException(503, f"Continuum workflow 缺少参考图节点 {node_id}")
+        node.setdefault("inputs", {})[CONTINUUM_NODES.get("image_input", "image")] = uploaded_images[url][0]
+    for index, url in enumerate(audios):
+        uploaded = await upload_audio(client, comfy_url, url)
+        node_id = str(audio_nodes[index])
+        node = workflow.get(node_id) or workflow.get(audio_nodes[index])
+        if not isinstance(node, dict):
+            raise HTTPException(503, f"Continuum workflow 缺少音频节点 {node_id}")
+        node.setdefault("inputs", {})[CONTINUUM_NODES.get("audio_input", "audio")] = uploaded
+    return workflow
+
+
 async def condition_workflow(client, body, workflow, comfy_url=None):
     target_comfy = (comfy_url or COMFY_URL).rstrip("/")
+    if str(body.get("execution_backend") or "").lower() == "h3_continuum":
+        return await condition_continuum_workflow(client, body, workflow, target_comfy)
     audios = audio_inputs(body)
     if ENGINE == "wan22" and audios:
         raise HTTPException(422, "Wan2.2 does not support reference audio")
@@ -364,6 +453,7 @@ async def condition_workflow(client, body, workflow, comfy_url=None):
 async def health():
     return {"status": "ok", "engine": ENGINE, "workflow": str(WORKFLOW_PATH), "fps": FPS,
             "instances": COMFY_URLS,
+            "continuum": bool(CONTINUUM_WORKFLOW_PATH and CONTINUUM_WORKFLOW_PATH.is_file()),
             "audio": ENGINE != "wan22",
             "conditioning": ["first_frame", "last_frame"] if ENGINE == "wan22" else ["first_frame", "last_frame", "reference_image", "reference_audio"],
             "max_voice_references": 0 if ENGINE == "wan22" else 3}
@@ -479,6 +569,10 @@ async def create_video(request: Request):
         "prompt": prompt_text,
         "created_at": time.time(),
         "duration": duration,
+        "execution_backend": body.get("execution_backend", "h3_single"),
+        "continuum_plan": body.get("continuum_plan") if body.get("execution_backend") == "h3_continuum" else None,
+        "chunk_status": ([{"chunk_index": item.get("chunk_index"), "status": "submitted", "start_seconds": item.get("start_seconds"), "duration_seconds": item.get("duration_seconds")} for item in (body.get("continuum_plan") or {}).get("slices", [])]
+                         if body.get("execution_backend") == "h3_continuum" else []),
         "video_url": None,
         "comfy_url": target_comfy,
         "execution": execution,
@@ -487,7 +581,10 @@ async def create_video(request: Request):
     log.info("%s task=%s on %s duration=%ss generation_frames=%s fps=%s",
              MODEL_LABEL, prompt_id, target_comfy, duration, generation_frames, FPS)
     return {"id": prompt_id, "object": "video", "created": int(time.time()),
-            "status": "processing", "duration": duration, "execution": execution}
+            "status": "processing", "duration": duration,
+            "execution_backend": body.get("execution_backend", "h3_single"),
+            "continuum_plan": body.get("continuum_plan") if body.get("execution_backend") == "h3_continuum" else None,
+            "execution": execution}
 
 
 def completed_response(task_id, video_url):
@@ -566,7 +663,9 @@ async def get_video(task_id: str):
                         continue
 
                 if found_in_queue:
-                    return {"id": task_id, "status": "processing"}
+                    meta = tasks_db.get(task_id, {})
+                    return {"id": task_id, "status": "processing", "execution_backend": meta.get("execution_backend", "h3_single"),
+                            "continuum_plan": meta.get("continuum_plan"), "chunk_status": meta.get("chunk_status", [])}
 
                 task_meta = tasks_db.get(task_id)
                 if task_meta and (time.time() - task_meta.get("created_at", 0) < 30):
@@ -580,14 +679,22 @@ async def get_video(task_id: str):
                 messages = status.get("messages", [])
                 error = next((m[1].get("exception_message") for m in messages
                               if len(m) > 1 and m[0] == "execution_error" and isinstance(m[1], dict)), None)
-                return {"id": task_id, "status": "failed",
-                        "error": str(error or "ComfyUI execution error")[:2000]}
+                message = str(error or "ComfyUI execution error")[:2000]
+                if task_id in tasks_db:
+                    tasks_db[task_id]["status"] = "failed"
+                    for chunk in tasks_db[task_id].get("chunk_status", []):
+                        if chunk.get("status") == "submitted": chunk["status"] = "failed"
+                    tasks_db[task_id]["error"] = message
+                    _save_task(task_id, tasks_db[task_id])
+                return {"id": task_id, "status": "failed", "error": message}
 
             # Only consume SaveVideo's result, not previews from other nodes.
             output = history.get("outputs", {}).get("14", {})
             files = output.get("images") or output.get("videos") or output.get("gifs") or []
             if not files:
-                return {"id": task_id, "status": "processing"}
+                meta = tasks_db.get(task_id, {})
+                return {"id": task_id, "status": "processing", "execution_backend": meta.get("execution_backend", "h3_single"),
+                        "continuum_plan": meta.get("continuum_plan"), "chunk_status": meta.get("chunk_status", [])}
             file_info = files[0]
             lock = download_locks.setdefault(task_id, asyncio.Lock())
             async with lock:
@@ -613,6 +720,9 @@ async def get_video(task_id: str):
             if task_id not in tasks_db:
                 tasks_db[task_id] = {"id": task_id}
             tasks_db[task_id].update(status="completed", video_url=video_url, comfy_url=resolved_comfy)
+            if tasks_db[task_id].get("chunk_status"):
+                for chunk in tasks_db[task_id]["chunk_status"]:
+                    chunk["status"] = "completed"
             _save_task(task_id, tasks_db[task_id])
             return completed_response(task_id, video_url)
     except (httpx.HTTPError, ValueError, OSError) as exc:

@@ -90,7 +90,7 @@
                       <span class="inline-sublabel">单镜时长</span>
                       <el-input-number v-model="shotDurationMin" :min="4" :max="shotDurationMax" :step="1" size="small" style="width:75px" @change="saveShotDurationRange" />
                       <span class="inline-sublabel">至</span>
-                      <el-input-number v-model="shotDurationMax" :min="shotDurationMin" :max="8" :step="1" size="small" style="width:75px" @change="saveShotDurationRange" />
+                      <el-input-number v-model="shotDurationMax" :min="shotDurationMin" :max="30" :step="1" size="small" style="width:75px" @change="saveShotDurationRange" />
                       <span class="inline-sublabel">秒</span>
                     </div>
                   </div>
