@@ -564,8 +564,10 @@ function directorExecutionSlotsOutputType(duration = 5, options = {}) {
     strict: false,
     schema: {
       type: 'object', additionalProperties: false,
-      required: ['character_visuals', 'last_frame_visuals', 'video_slots'],
+      required: ['semantic_slots', 'character_visuals', 'last_frame_visuals', 'video_slots'],
       properties: {
+        // 语义槽位由导演 Agent 明确规划；本地编译器不得根据对白或动作自行猜测。
+        semantic_slots: { type: 'object', additionalProperties: true },
         character_visuals: { type: 'array', maxItems: 3, items: characterVisualSchema() },
         last_frame_visuals: tailVisualsSchema,
         video_slots: timeline,

@@ -190,13 +190,44 @@ function ontologyRoutes(db, log) {
       }
     },
 
-    // 独立执行阶段二：为现有基础分镜批量装配视听本体槽位
+    // 独立执行阶段二：为现有基础分镜批量装配视听本体槽位（后台任务，可刷新恢复）
     enrichSlots: async (req, res) => {
       try {
         const episodeId = Number(req.params.episode_id);
         const cfg = loadConfig();
-        const result = await enrichEpisodeOntologySlots(db, log, cfg, episodeId, req.body || {});
-        response.success(res, result);
+        const active = db.prepare(`SELECT id FROM async_tasks WHERE resource_id=? AND type='director_ontology_enrichment'
+          AND status IN ('pending','processing') AND deleted_at IS NULL`).get(String(episodeId));
+        if (active) return response.error(res, 409, 'ONTOLOGY_ENRICH_ACTIVE', '当前集已有视听槽位任务运行，请等待完成或停止后再操作', { task_id: active.id });
+        const task = taskService.createTask(db, log, 'director_ontology_enrichment', String(episodeId));
+        const taskId = task.id;
+        (async () => {
+          taskService.updateTaskStatus(db, taskId, 'processing', 5, '正在读取基础分镜与本体资产...');
+          try {
+            const result = await runDirectorTask(db, taskId, () => enrichEpisodeOntologySlots(db, log, cfg, episodeId, {
+              ...(req.body || {}),
+              taskId,
+              onProgress: (pct, message) => {
+                const current = taskService.getTask(db, taskId);
+                if (!current || !['pending', 'processing'].includes(current.status)) throw new Error('视听槽位任务已停止');
+                taskService.updateTaskStatus(db, taskId, 'processing', pct, message);
+              },
+            }));
+            taskService.updateTaskResult(db, taskId, result);
+          } catch (err) {
+            log.error('ontology enrichSlots task failed', { error: err.message, task_id: taskId });
+            taskService.updateTaskError(db, taskId, err.message || '视听槽位 Agent 规划失败', {
+              valid: false,
+              violations: err.violations || [],
+              audit: err.audit || null,
+              status: err.status || 422,
+            });
+          }
+        })();
+        response.success(res, {
+          task_id: taskId,
+          status: 'pending',
+          message: '视听槽位 Agent 后台任务已启动，页面刷新不会丢失进度。',
+        });
       } catch (err) {
         log.error('ontology enrichSlots', { error: err.message });
         response.badRequest(res, err.message);

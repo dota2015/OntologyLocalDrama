@@ -20,6 +20,7 @@ export const GEN_RESOURCE = {
   EXTRACT_SCENES: 'extract_scenes',
   GENERATE_STORYBOARD: 'generate_storyboard',
   DIRECTOR_REFINE_SHOT: 'director_refine_shot',
+  DIRECTOR_ENRICHMENT: 'director_ontology_enrichment',
   GENERATE_STORY: 'generate_story',
 }
 
@@ -578,6 +579,7 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
           background_extraction: { resourceType: GEN_RESOURCE.EXTRACT_SCENES, label: `${epLabel} 提取场景` },
           storyboard_generation: { resourceType: GEN_RESOURCE.GENERATE_STORYBOARD, label: `${epLabel} AI生成分镜` },
           director_storyboard_generation: { resourceType: GEN_RESOURCE.GENERATE_STORYBOARD, label: `${epLabel} 导演生成分镜` },
+          director_ontology_enrichment: { resourceType: GEN_RESOURCE.DIRECTOR_ENRICHMENT, label: `${epLabel} 视听槽位规划` },
         }
         const extractCfg = extractTypeMap[t.type]
         if (extractCfg) {

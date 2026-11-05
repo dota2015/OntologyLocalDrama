@@ -3414,8 +3414,29 @@ async function onEnrichOntologySlots() {
   try {
     const res = await ontologyAPI.enrichSlots(currentEpisodeId.value)
     const data = res?.data ?? res
-    ElMessage.success(`视听本体槽位装配完成（共 ${data?.total_shots || 0} 镜）`)
-    await loadDrama()
+    const taskId = data?.task_id
+    if (!taskId) throw new Error(data?.message || '未能创建视听槽位任务')
+    const meta = {
+      dramaId: dramaId.value,
+      episodeId: currentEpisodeId.value,
+      dramaTitle: store.drama?.title,
+      episodeNumber: store.currentEpisode?.episode_number,
+      resourceType: GEN_RESOURCE.DIRECTOR_ENRICHMENT,
+      resourceId: Number(currentEpisodeId.value),
+      label: `${store.currentEpisode?.title || '当前集'} 视听槽位规划`,
+      taskId,
+    }
+    genStore?.markRunning(meta)
+    ElMessage.success('视听槽位 Agent 已在后台规划，刷新页面不会中断')
+    genStore?.pollTask(taskId, meta, async () => {
+      await loadDrama()
+      ElNotification({
+        title: '视听槽位规划完成',
+        message: '导演 Agent 已输出完整执行合同并通过本体门禁。',
+        type: 'success',
+        duration: 5000,
+      })
+    }, { ElMessage, maxAttempts: 21600, interval: 2000 })
   } catch (e) {
     ElMessage.error(e.message || '装配视听本体槽位失败')
   } finally {

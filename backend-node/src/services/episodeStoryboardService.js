@@ -613,35 +613,23 @@ function deriveStoryboardFieldsFromAi(sb, style, videoRatio, opts = {}) {
   if (typeof characterVisuals === 'string') {
     try { characterVisuals = JSON.parse(characterVisuals); } catch (_) { characterVisuals = null; }
   }
-  const { synthesizeCharacterVisualSlots, synthesizeLastFrameVisualSlots } = require('../ontology/visualSlots');
-  if (!Array.isArray(characterVisuals) || characterVisuals.length === 0) {
-    characterVisuals = synthesizeCharacterVisualSlots(sbWithAngles, []);
-  }
+  // 执行层视觉槽位必须由导演 Agent 规划；基础分镜阶段不再用本地模板猜测姿态、视线或站位。
+  if (!Array.isArray(characterVisuals)) characterVisuals = null;
 
   let lastFrameVisuals = sb.last_frame_visuals;
   if (typeof lastFrameVisuals === 'string') {
     try { lastFrameVisuals = JSON.parse(lastFrameVisuals); } catch (_) { lastFrameVisuals = null; }
   }
-  if (!Array.isArray(lastFrameVisuals) || lastFrameVisuals.length === 0) {
-    lastFrameVisuals = synthesizeLastFrameVisualSlots(sbWithAngles, [], characterVisuals);
-  }
+  if (!Array.isArray(lastFrameVisuals)) lastFrameVisuals = null;
 
   // 角色造型注入（#38）：视频提示词须携带角色外貌，否则视频模型每次随机生成人物形象
   const characterAppearances = buildCharacterAppearancesFromAiCharacters(sb.characters, opts.characterAppearances);
 
-  const { synthesizeVideoSlots } = require('../ontology/videoSlots');
   let videoSlots = sb.video_slots;
   if (typeof videoSlots === 'string') {
     try { videoSlots = JSON.parse(videoSlots); } catch (_) { videoSlots = null; }
   }
-  if (!videoSlots || typeof videoSlots !== 'object' || !videoSlots.camera || !videoSlots.audio_lip_sync) {
-    videoSlots = synthesizeVideoSlots({
-      ...sbWithAngles,
-      character_visuals: characterVisuals,
-      last_frame_visuals: lastFrameVisuals,
-      character_appearances: characterAppearances,
-    }, []);
-  }
+  if (!videoSlots || typeof videoSlots !== 'object' || !videoSlots.camera || !videoSlots.audio_lip_sync) videoSlots = null;
 
   const sbWithSlots = {
     ...sbWithAngles,
