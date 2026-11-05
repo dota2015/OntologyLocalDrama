@@ -395,6 +395,7 @@ function setupRouter(cfg, db, log) {
   r.post('/episodes/:episode_id/ontology/validate', ontology.validateEpisodeInvariants);
   r.post('/episodes/:episode_id/ontology/extract-entities', ontology.extractEntities);
   r.post('/episodes/:episode_id/ontology/director-generate', ontology.directorGenerate);
+  r.post('/episodes/:episode_id/ontology/enrich-slots', ontology.enrichSlots);
   r.post('/dramas/:drama_id/ontology/director-full-pipeline', ontology.directorFullPipeline);
   r.post('/dramas/:drama_id/ontology/reconcile-assets', ontology.reconcileDramaAssets);
   r.post('/dramas/:drama_id/ontology/autocomplete-entity', ontology.autocompleteEntity);

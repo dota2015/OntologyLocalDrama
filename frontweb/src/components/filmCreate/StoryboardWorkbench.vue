@@ -34,6 +34,7 @@
         :storyboard-generating="storyboardGenerating"
         :universal-omni-polish-running="universalOmniPolishRunning"
         :inferring-params="inferringParams"
+        :enriching-slots="enrichingSlots"
         :auditing-invariants="auditingInvariants"
         :batch-image-running="batchImageRunning"
         :batch-video-running="batchVideoRunning"
@@ -51,6 +52,7 @@
         @director-generate="onDirectorAgentGenerate()"
         @add-storyboard="onAddSingleStoryboard"
         @batch-infer-params="onBatchInferParams"
+        @enrich-slots="onEnrichOntologySlots"
         @audit-invariants="onAuditInvariants"
         @start-batch-image="startBatchImageGeneration"
         @start-batch-video="startBatchVideoGeneration"
@@ -3404,6 +3406,23 @@ async function onBatchInferParams() {
   }
 }
 
+const enrichingSlots = ref(false)
+
+async function onEnrichOntologySlots() {
+  if (!currentEpisodeId.value) return
+  enrichingSlots.value = true
+  try {
+    const res = await ontologyAPI.enrichSlots(currentEpisodeId.value)
+    const data = res?.data ?? res
+    ElMessage.success(`视听本体槽位装配完成（共 ${data?.total_shots || 0} 镜）`)
+    await loadDrama()
+  } catch (e) {
+    ElMessage.error(e.message || '装配视听本体槽位失败')
+  } finally {
+    enrichingSlots.value = false
+  }
+}
+
 async function onAuditInvariants() {
   if (!currentEpisodeId.value) return
   auditingInvariants.value = true
@@ -3547,7 +3566,7 @@ async function onDirectorAgentGenerate(resumeTaskId = null) {
   if (storyboards.value.length > 0) {
     try {
       await ElMessageBox.confirm(
-        '导演智能体（Director Agent）将根据剧本及视听本体库（角色/道具/场景空间地标）执行【多步规划 ➔ 场面调度推演 ➔ SHACL运镜与BGM门禁自纠 ➔ 视听契约入库】闭环。当前已有分镜将被覆盖更新，是否继续？',
+        '导演智能体将执行【两阶段极速编排：阶段 1 快速生成全集分镜 ➔ 阶段 2 视听本体槽位装配与门禁闭环】。当前已有分镜将被覆盖更新，是否继续？',
         '启动导演智能体',
         {
           confirmButtonText: '立即启动导演 Agent',

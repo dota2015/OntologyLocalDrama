@@ -67,17 +67,17 @@ function storyboardRules(cfg, includeNarration) {
 4. Pure Physical Visual Description (ban literary metaphors): strictly ban abstract literary metaphors or psychological prose ("contrast of high and low", "frozen anxiety", "abruptly interrupted hope"). Describe ONLY concrete physical postures, spatial positions, and lighting.
 5. Spatial Continuity & Anti-Jump-Cut (ban character teleportation and abrupt vanishing): in consecutive shots within the same physical space, strictly forbid abruptly replacing a character standing at a key landmark (e.g. doorframe, desk side) with a new character without spatial/movement justification (e.g. mom standing at doorway in shot 1, then younger sister suddenly standing at the exact same doorway in shot 2). Changing interaction partners must use: (a) angle cut (switch to protagonist's close-up/reverse angle before introducing new character), or (b) physical movement (previous character steps aside/exits, new character peeks in or enters). Never create jarring jump cuts.
 6. Preserve source dialogue/narration verbatim. Where essential meaning is only implicit, add natural, sufficiently informative speech consistent with the story without changing facts, adding spoilers or inventing new characters.
-7. Keep character speech in dialogue as Character: "words"; keep narrator speech ONLY in narration as plain spoken text, without the Narrator label. Both fields are required strings; use "" when absent. Never hide needed speech only in action, emotion, sound_effect or universal_segment_text. Copy exactly the same speech into the universal text when that mode is enabled.
+7. Keep character speech in dialogue as Character: "words" (single speaker per shot; split across shots on speaker turns); keep narrator speech ONLY in narration as plain spoken text, without the Narrator label. Both fields are required strings; use "" when absent. Never hide needed speech only in action, emotion, sound_effect or universal_segment_text. Copy exactly the same speech into the universal text when that mode is enabled.
 8. Plan durations within the configured shot range. Dialogue and narration share a sequential speech budget, not parallel full budgets: a natural-language reference rate of 4 Chinese characters/second or 2.5 English words/second, multiplied by the actual TTS speed (IndexTTS defaults to 1.25x when unset; other engines use their configured speed), with no fixed ending reserve. Split long lines at semantic boundaries without dropping words; do not use forced 5-second clips, accelerated speech or truncated endings.
 9. For image prompts, describe a single visible state; speech belongs in the speech fields, not rendered text.` : `
 【可生成的分镜五大铁律与语音规范】
-1. 动作与节奏、剧情信息：每个分镜聚焦一个能被观众听懂的因果节拍；同一空间内可以承载多个紧密相连的身体动作和即时结果。关键动机、选择、规则、后果和转折必须放入自然对白或必要旁白，不能只藏在 action/result 里。只有说话人、场景/时间、视线轴线重大变化或超过30秒时才拆镜。按叙事需要选择固定或运动机位，不设固定镜头比例或切镜频率。
+1. 动作与节奏、剧情信息：每个分镜聚焦一个能被观众听懂的因果节拍；同一空间内可以承载多个紧密相连的身体动作和即时结果。关键动机、选择、规则、后果和转折必须放入自然对白或必要旁白，不能只藏在 action/result 里。说话人切换、场景/时间变化、视线轴线重大变化或台词时长超过镜头预算时必须拆镜。按叙事需要选择固定或运动机位，不设固定镜头比例或切镜频率。
 2. 禁止画面文字/UI交代剧情（严禁画面小字与UI依赖，纯正面描写）：严禁在 action、result、layout_description 或画面提示词中要求渲染倒计时数字（如“倒计时19秒”）、屏幕文字、作业本字迹、浮动UI界面；此类剧情关键信息 100% 必须由角色对白（dialogue）或旁白（narration）直接说出或念出。提示词中只做纯写实物理正面陈述，绝对禁止在提示词中书写“不出现倒计时/不显示UI”等负向禁令词句。
 3. 推行短剧正反打语法（避免全员同框群戏）：多人交互场景（对话、冲突、救援）必须优先拆解为短剧正反打语法：“主体行动中景/近景 + 反应者面部特写”，严禁超过3人塞入同一大中景导致生图人脸崩溃或画面人数错乱失真。单镜出场角色原则上不超过3人（推荐1~2人，至多3人），优先聚焦关键单人。
 4. 纯物理视觉描写（严禁文学修辞与心理隐喻）：分镜中的 action、result、layout_description 严禁使用“高低对照”、“焦急凝结”、“心理落差”、“希望被突发打断”、“时间压力凝结”等抽象文学修辞和心理隐喻，只写纯物理姿态、空间相对位置、动作轨迹和真实光影。
 5. 镜头间空间连续性与防跳切铁律（严禁角色瞬移与同机位大变活人）：在同一场景中连续切换镜头时，严禁在同一机位/相同取景角度下让上一镜的角色凭空消失并在同位置瞬间变成新角色（如门口上一秒站妈妈、下一秒同机位突然换成妹妹）。更换交互角色时必须：① 切换机位（切主角面部特写/反打，再切新角色进场）；或 ② 动作交代（前一角色侧身让出门口/转身出画，新角色从门后探头或走入）；绝不允许同视角死切硬换人物造成视觉跳切穿帮。
 6. 原剧本已有对白和旁白逐字保留；只有画面暗示、却影响理解的关键信息，应补成符合剧情且意思完整的自然对白或必要旁白，不改变事实、不剧透、不凭空增加人物。
-7. 每镜必须分别输出 dialogue 与 narration 字符串，无内容填 ""。dialogue 格式为 角色全名："实际台词"，多人物分别标名；narration 只放实际解说正文，不带 "旁白：" 标签。禁止把旁白混入 dialogue，禁止把关键台词仅藏在 action、emotion、sound_effect 或 universal_segment_text；全能片段内的台词须与这两个字段逐字一致。
+7. 每镜必须分别输出 dialogue 与 narration 字符串，无内容填 ""。dialogue 格式为 角色全名："实际台词"【单镜单一说话人铁律：单镜仅限一位角色发言，绝对禁止将多位角色的多轮对话合并在同一分镜；说话人切换必须切镜拆为正反打新分镜】；narration 只放实际解说正文，不带 "旁白：" 标签。禁止把旁白混入 dialogue，禁止把关键台词仅藏在 action、emotion、sound_effect 或 universal_segment_text；全能片段内的台词须与这两个字段逐字一致。
 8. 时长按配置范围按需规划。对白和旁白按顺序共用本镜实际时间，不各占一整段：先按中文约4字/秒、英文约2.5词/秒的自然基准乘以实际 TTS 速度（IndexTTS 未配置时默认1.25x，其他引擎按配置），不预留固定收尾静音。长句在语义边界拆镜并保留全部文字，不固定5秒、不加速硬塞、不截断结尾；动作与台词按时间轴同步。
 9. 画面只描述可见的简单状态；不要要求把台词、心理或精确文字绘制在图片上。
 10. 视听语言视线轴线铁律（参考选择题基准，严禁面向镜头跟空气说话）：对话场景中角色绝对禁止双双正面直视摄影机对着空气说话！建议按电影视听语法设定 dialogue_framing（字典枚举优先作为标准基准参考，支持结合剧情微调）：双人对话优先参考 two_shot_face_to_face（双人面对面对视，视线交汇）或 over_the_shoulder（过肩拍摄，一前一后有纵深）；单人说话镜头优先参考 single_reaction_offscreen（单人身体微侧，眼神专注看向画外搭档，严禁直视镜头）；双人同向看前方威胁参考 joint_observation；单人动作参考 solo_action。允许根据具体剧情进行更精细的镜头设计与扩展。`) + mode;
@@ -87,7 +87,7 @@ const storyboardBodyZh = `【角色】你是为本地 AI 视频制作短剧的�
 【任务】将剧本按叙事节拍拆分为清楚、可生成、能听懂的分镜。
 每镜聚焦一个能被观众听懂的因果节拍，可在同一空间内承载多个紧密相连的动作与明确结果。关键动机、选择、规则、后果和转折必须由对白或必要旁白表达，画面动作负责支撑；不能让观众只靠镜头猜剧情。运镜与切镜由叙事需要决定，固定镜头与安静倾听均有效，不设运镜配额。
 【五大分镜铁律】
-1. 紧凑因果节拍：1个分镜承载1个观众能听懂的因果节拍，同一空间内允许包含多个紧密相连的身体动作（如“冲向掩体、看见爆炸、停下受击”）。禁止把每个动词机械拆成独立镜头；只有人物/说话人切换、场景或时间变化、视线轴线重大变化，或动作与对白超过30秒时才拆镜。拆镜必须写明上一镜结束状态、本镜进入状态和因果关系。
+1. 紧凑因果节拍与单镜单一说话人：1个分镜承载1个因果节拍与至多一位角色的单次发言（或纯旁白），禁止把两人或多人的对话交替合并在同镜。同一空间内允许包含紧密相连的动作。说话人切换、场景或时间变化、视线轴线重大变化，或台词超过镜头时长预算时必须拆镜。拆镜必须写明上一镜结束状态、本镜进入状态和因果关系。
 2. 禁止画面文字/UI交代剧情：严禁画面倒计时数字、屏幕文字或UI小字，关键信息100%由角色对白或旁白说出；提示词中做纯正面写实描写，禁止写入“不出现倒计时/文字”等负向禁令词句。
 3. 推行短剧正反打：多人交互拆为“主体行动中景 + 反应者特写”，单镜出场角色原则上不超过3人，严禁超过3人塞入同框导致人脸崩溃或画面人数错乱。
 4. 纯物理视觉描写：严禁“高低对照”、“焦急凝结”等抽象文学修辞，只写纯物理姿态、空间位置和真实光影。

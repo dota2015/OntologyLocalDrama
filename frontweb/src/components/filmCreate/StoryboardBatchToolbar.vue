@@ -88,6 +88,17 @@
         </el-button>
         <el-button
           v-if="hasStoryboards"
+          type="primary"
+          plain
+          size="large"
+          :loading="enrichingSlots"
+          title="为现有分镜装配/刷新视听本体槽位（角色站位、手势、镜内动作时间线与口型）"
+          @click="$emit('enrich-slots')"
+        >
+          🎨 补充视听槽位
+        </el-button>
+        <el-button
+          v-if="hasStoryboards"
           type="success"
           plain
           size="large"
@@ -237,6 +248,7 @@ defineProps({
   universalOmniPolishRunning: { type: Boolean, default: false },
   inferringParams: { type: Boolean, default: false },
   auditingInvariants: { type: Boolean, default: false },
+  enrichingSlots: { type: Boolean, default: false },
   batchImageRunning: { type: Boolean, default: false },
   batchVideoRunning: { type: Boolean, default: false },
   batchImageStopping: { type: Boolean, default: false },
@@ -260,6 +272,7 @@ defineEmits([
   'director-generate',
   'add-storyboard',
   'batch-infer-params',
+  'enrich-slots',
   'audit-invariants',
   'start-batch-image',
   'start-batch-video',

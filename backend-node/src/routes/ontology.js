@@ -12,6 +12,7 @@ const { compileDramaSemanticPackage } = require('../ontology/semanticPackage');
 const { validateAllInvariants } = require('../ontology/invariants');
 const { extractAllEntitiesFromScript, autocompleteEntityFromScript } = require('../ontology/extractionAgent');
 const { runDirectorAgent, runFullDramaDirectorAgent, refineSingleStoryboard } = require('../ontology/directorAgent');
+const { enrichEpisodeOntologySlots, runTwoStageDirectorPipeline } = require('../ontology/directorEnrichmentService');
 const taskService = require('../services/taskService');
 const directorCheckpoint = require('../services/directorCheckpoint');
 const { withTaskTokenUsage } = require('../services/agentTokenUsage');
@@ -159,7 +160,10 @@ function ontologyRoutes(db, log) {
                 taskService.updateTaskStatus(db, taskId, 'processing', pct, msg);
               },
             };
-            const result = await runDirectorTask(db, taskId, () => runDirectorAgent(db, log, cfg, episodeId, options));
+            const runner = options.mode === 'deep_react'
+              ? () => runDirectorAgent(db, log, cfg, episodeId, options)
+              : () => runTwoStageDirectorPipeline(db, log, cfg, episodeId, options);
+            const result = await runDirectorTask(db, taskId, runner);
             taskService.updateTaskStatus(db, taskId, 'completed', 100, '视听本体硬门禁审查与自纠完毕，分镜已入库。');
             taskService.updateTaskResult(db, taskId, result);
           } catch (agentErr) {
@@ -182,6 +186,19 @@ function ontologyRoutes(db, log) {
         });
       } catch (err) {
         log.error('ontology directorGenerate', { error: err.message });
+        response.badRequest(res, err.message);
+      }
+    },
+
+    // 独立执行阶段二：为现有基础分镜批量装配视听本体槽位
+    enrichSlots: async (req, res) => {
+      try {
+        const episodeId = Number(req.params.episode_id);
+        const cfg = loadConfig();
+        const result = await enrichEpisodeOntologySlots(db, log, cfg, episodeId, req.body || {});
+        response.success(res, result);
+      } catch (err) {
+        log.error('ontology enrichSlots', { error: err.message });
         response.badRequest(res, err.message);
       }
     },

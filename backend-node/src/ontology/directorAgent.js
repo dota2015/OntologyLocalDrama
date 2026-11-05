@@ -1500,6 +1500,22 @@ function autoPatchDirectorExecutionSlots(shot, targetDuration) {
   const bgChars = Array.isArray(semantic.background_characters) ? semantic.background_characters : [];
   const allChars = [...visibleChars, ...bgChars];
 
+  const speechPlan = semantic.speech_plan || {};
+  const isOffscreen = speechPlan.is_offscreen === true || shot.dialogue_delivery === 'voiceover';
+  const isNarration = speechPlan.is_narration === true || Boolean(shot.narration && !shot.dialogue);
+  const speakerName = isNarration ? '旁白' : String(speechPlan.speaker_name || '').trim();
+  const rawSpkId = Number(speechPlan.speaker_id || 0);
+  const speakerId = isNarration ? null : (rawSpkId || visibleChars.find(c => c.name === speakerName)?.id || null);
+
+  // 若存在画内说话人但尚未在 requiredCharIds 中，自动加入并同步到 visibleChars
+  if (!isNarration && !isOffscreen && speakerId && !requiredCharIds.includes(speakerId)) {
+    requiredCharIds.unshift(speakerId);
+    if (!visibleChars.some(c => Number(c?.id ?? c?.character_id) === speakerId)) {
+      visibleChars.unshift({ id: speakerId, name: speakerName || `角色${speakerId}` });
+      semantic.visible_characters = visibleChars;
+    }
+  }
+
   // Helper to sanitize dynamic temporal movements from static visual slot fields
   const sanitizeStaticSlotText = (txt, fallbackText = '') => {
     let s = String(txt || '').trim();
@@ -1689,21 +1705,23 @@ function autoPatchDirectorExecutionSlots(shot, targetDuration) {
   // 3. Ensure video_slots
   let videoSlots = shot.video_slots && typeof shot.video_slots === 'object' ? { ...shot.video_slots } : {};
   videoSlots.performance_contract = 'sync_v1';
+  videoSlots.execution_backend = duration > 8 ? 'h3_continuum' : 'h3_single';
+  if (duration > 8) {
+    videoSlots.continuum_plan = { total_duration: duration };
+  } else {
+    delete videoSlots.continuum_plan;
+  }
   videoSlots.timing = { duration };
   videoSlots.camera = videoSlots.camera || { shot_type: shot.shot_type || '中景', movement: shot.movement || 'push' };
   videoSlots.environment_vfx = videoSlots.environment_vfx || {};
 
-  const speechPlan = semantic.speech_plan || {};
-  const isOffscreen = speechPlan.is_offscreen === true || shot.dialogue_delivery === 'voiceover';
-  const isNarration = speechPlan.is_narration === true || Boolean(shot.narration);
   const speechText = String(speechPlan.text || shot.dialogue || shot.narration || '').trim();
   const hasSpeech = Boolean(speechText);
-  const speakerName = String(speechPlan.speaker_name || '').trim();
-  const speakerId = Number(speechPlan.speaker_id || 0) || visibleChars.find(c => c.name === speakerName)?.id || 0;
 
   videoSlots.audio_lip_sync = {
     mode: hasSpeech ? (isOffscreen ? 'offscreen_voiceover' : (isNarration ? 'narration' : 'in_frame_dialogue')) : 'silent_ambient',
-    speaker_name: speakerName,
+    speaker_name: isNarration ? '旁白' : speakerName,
+    speaker_id: isNarration ? null : (speakerId || null),
     speaker_in_frame: hasSpeech && !isOffscreen && !isNarration,
     delivery_medium: isOffscreen ? 'voiceover' : (isNarration ? 'narration' : 'direct_speech'),
     dialogue_content: speechText,
@@ -1757,9 +1775,12 @@ function autoPatchDirectorExecutionSlots(shot, targetDuration) {
           return { character_id: cid, name: v ? v.name : (c.name || `角色${cid}`) };
         })
       : null;
-    const segVisChars = (validExistingVisChars && validExistingVisChars.length > 0)
+    let segVisChars = (validExistingVisChars && validExistingVisChars.length > 0)
       ? validExistingVisChars
       : visuals.map(v => ({ character_id: v.character_id, name: v.name }));
+    if (segVisChars.length === 0 && visuals.length > 0) {
+      segVisChars = visuals.map(v => ({ character_id: v.character_id, name: v.name }));
+    }
 
     let rawTrajs = Array.isArray(seg.character_trajectories) ? seg.character_trajectories : [];
     let segTrajs = segVisChars.map(v => {
@@ -1816,26 +1837,39 @@ function autoPatchDirectorExecutionSlots(shot, targetDuration) {
     if (hasSpeech && segIdx === 0) {
       segAudio = {
         mode: isOffscreen ? 'offscreen_voiceover' : (isNarration ? 'narration' : 'in_frame_dialogue'),
-        speaker_name: speakerName,
+        speaker_name: isNarration ? '旁白' : speakerName,
+        speaker_id: isNarration ? null : (speakerId || null),
         speaker_in_frame: !isOffscreen && !isNarration,
+        delivery_medium: isOffscreen ? 'voiceover' : (isNarration ? 'narration' : 'direct_speech'),
         dialogue_content: speechText,
         visible_characters_lip_state: (!isOffscreen && !isNarration) ? 'synchronized_lip' : 'strictly_sealed',
         lip_sync_rule: (!isOffscreen && !isNarration) ? `${speakerName}口型与台词同步，其他人闭口` : '所有画内角色双唇紧闭无口型',
       };
-      const listeners = segVisChars.filter(v => v.character_id !== speakerId);
-      segAlignment = {
-        mode: 'concurrent',
-        speech_window: { start: segStart, end: segEnd },
-        speaker_action_window: { start: segStart, end: segEnd },
-        speaker_action: `${speakerName || visuals[0]?.name || '人物'}迈步前行并开口说话`,
-        listener_reactions: listeners.map(l => ({
-          character_id: l.character_id,
-          name: l.name,
-          action_window: { start: segStart, end: segEnd },
-          action: `${l.name}转头注视${speakerName}并认真倾听`,
-        })),
-        pause_reason: '',
-      };
+      if (isNarration) {
+        segAlignment = {
+          mode: 'concurrent',
+          speech_window: { start: segStart, end: segEnd },
+          speaker_action_window: { start: segStart, end: segEnd },
+          speaker_action: `旁白解说推进剧情，${visuals[0]?.name || '人物'}保持场景动作`,
+          listener_reactions: [],
+          pause_reason: '',
+        };
+      } else {
+        const listeners = segVisChars.filter(v => v.character_id !== speakerId);
+        segAlignment = {
+          mode: 'concurrent',
+          speech_window: { start: segStart, end: segEnd },
+          speaker_action_window: { start: segStart, end: segEnd },
+          speaker_action: `${speakerName || visuals[0]?.name || '人物'}迈步前行并开口说话`,
+          listener_reactions: listeners.map(l => ({
+            character_id: l.character_id,
+            name: l.name,
+            action_window: { start: segStart, end: segEnd },
+            action: `${l.name}转头注视${speakerName}并认真倾听`,
+          })),
+          pause_reason: '',
+        };
+      }
     } else if (hasSpeech && String(segAudio.dialogue_content || '').trim()) {
       const segSpkName = String(segAudio.speaker_name || speakerName).trim();
       const segSpkId = visuals.find(v => v.name === segSpkName)?.character_id || speakerId;
@@ -1920,7 +1954,7 @@ function autoPatchSingleShot(shot, violations = [], options = {}) {
       const dur = Math.min(8, Math.max(duration || 4, Math.ceil(text.length / 5) + (text.length > 25 ? 1 : 0)));
       duration = dur;
       const charObj = dramaCharacters.find(c => c.name === speaker);
-      const spkId = charObj ? charObj.id : (next.characters?.[0] || 1);
+      const spkId = isNarration ? null : (charObj ? charObj.id : (next.characters?.[0] || 1));
 
       let visChars = Array.isArray(next.semantic_slots?.visible_characters) ? [...next.semantic_slots.visible_characters] : [];
       if (!isNarration && !visChars.some(c => c.name === speaker || Number(c.id || c.character_id) === Number(spkId))) {
@@ -1933,7 +1967,7 @@ function autoPatchSingleShot(shot, violations = [], options = {}) {
       next.duration = dur;
       next.characters = charIds;
       next.dialogue_framing = framing;
-      next.dialogue = speaker ? `${speaker}: "${text}"` : text;
+      next.dialogue = isNarration ? '' : (speaker ? `${speaker}: "${text}"` : text);
       next.narration = isNarration ? text : '';
       if (actLines[0] && (!next.action || isGazeOnlyHold([next.action]))) next.action = actLines[0];
 
@@ -1944,25 +1978,29 @@ function autoPatchSingleShot(shot, violations = [], options = {}) {
         audio_lip_sync: isNarration ? 'narration' : 'in_frame_dialogue',
         speech_plan: {
           ...(next.semantic_slots?.speech_plan || {}),
-          speaker_id: spkId,
-          speaker_name: speaker,
+          speaker_id: isNarration ? null : spkId,
+          speaker_name: isNarration ? '旁白' : speaker,
           is_narration: isNarration,
           is_offscreen: false,
+          speaker_in_frame: !isNarration,
           text: text,
         }
       };
       next.video_slots = {
         ...(next.video_slots || {}),
+        performance_contract: 'sync_v1',
+        execution_backend: dur > 8 ? 'h3_continuum' : 'h3_single',
+        ...(dur > 8 ? { continuum_plan: { total_duration: dur } } : {}),
         timing: { duration: dur },
         audio_lip_sync: {
           ...(next.video_slots?.audio_lip_sync || {}),
           mode: isNarration ? 'narration' : 'in_frame_dialogue',
-          speaker_name: speaker,
-          speaker_id: spkId,
+          speaker_name: isNarration ? '旁白' : speaker,
+          speaker_id: isNarration ? null : spkId,
           speaker_in_frame: !isNarration,
           dialogue_content: text,
           visible_characters_lip_state: isNarration ? 'strictly_sealed' : 'synchronized_lip',
-          lip_sync_rule: `${speaker}口型与台词同步，其他人闭口`,
+          lip_sync_rule: isNarration ? '所有画内角色双唇紧闭无口型' : `${speaker}口型与台词同步，其他人闭口`,
         }
       };
       if (next.video_slots?.shots_timeline) delete next.video_slots.shots_timeline;
@@ -2068,12 +2106,24 @@ function autoPatchSingleShot(shot, violations = [], options = {}) {
             seg.speech_action_alignment.speaker_action = `${spk}迈步前行并开口说话`;
           }
           const segChars = Array.isArray(seg.visible_characters) ? seg.visible_characters : [];
-          if (segAudio.speaker_in_frame) {
+          if (segAudio.speaker_in_frame && !next.semantic_slots?.speech_plan?.is_narration) {
             const hasSpk = segChars.some(c => c.name === spk || Number(c.character_id ?? c.id) === Number(segAudio.speaker_id));
             if (!hasSpk && next.characters?.length) {
               const spkId = Number(segAudio.speaker_id || next.semantic_slots?.speech_plan?.speaker_id || next.characters[0]);
-              segChars.unshift({ character_id: spkId, name: spk });
-              seg.visible_characters = segChars;
+              if (spkId > 0) {
+                if (!segChars.some(c => Number(c.character_id ?? c.id) === spkId)) {
+                  segChars.unshift({ character_id: spkId, name: spk });
+                  seg.visible_characters = segChars;
+                }
+                if (Array.isArray(next.characters) && !next.characters.includes(spkId)) {
+                  next.characters.unshift(spkId);
+                }
+                if (Array.isArray(next.semantic_slots?.visible_characters)) {
+                  if (!next.semantic_slots.visible_characters.some(c => Number(c?.id ?? c?.character_id) === spkId)) {
+                    next.semantic_slots.visible_characters.unshift({ id: spkId, name: spk });
+                  }
+                }
+              }
             }
           }
           const listeners = segChars.filter(c => c.name !== spk && Number(c.character_id ?? c.id) !== Number(segAudio.speaker_id));
@@ -2159,9 +2209,10 @@ function autoPatchSingleShot(shot, violations = [], options = {}) {
 
   // 9. Speech over budget
   if (vRules.has('INVARIANT_SPEECH_OVER_BUDGET')) {
-    const text = String(next.semantic_slots?.speech_plan?.text || next.dialogue || '').trim();
+    const text = String(next.semantic_slots?.speech_plan?.text || next.dialogue || next.narration || '').trim();
     const curDur = Number(next.duration || 5);
-    const targetDur = Math.min(8, Math.max(curDur, Math.ceil(text.length / 5) + (text.length > 25 ? 1 : 0)));
+    const maxAllowed = options.maxDuration || options.requestedPacing?.range?.max || 16;
+    const targetDur = Math.min(maxAllowed, Math.max(curDur, Math.ceil(text.length / 5) + (text.length > 25 ? 1 : 0)));
     if (curDur < targetDur) {
       next.duration = targetDur;
       if (next.semantic_slots) next.semantic_slots.shot_duration = targetDur;
@@ -2190,7 +2241,8 @@ function autoPatchSingleShot(shot, violations = [], options = {}) {
     const sanitizeForbiddenPromptText = (val) => {
       if (!val) return val;
       let s = String(val);
-      s = s.replace(/倒计时\s*\d+\s*秒[^\n，。；！!]*[，。；！!]?/g, '')
+      s = s.replace(/悬浮(?:着)?[^，。；\n]*?倒计时/g, '电子战术警报界面')
+           .replace(/倒计时\s*\d+\s*秒[^\n，。；！!]*[，。；！!]?/g, '')
            .replace(/倒计时(?:继续)?(?:跳动|显示|归零|滴答)[^\n，。；！!]*[，。；！!]?/g, '')
            .replace(/倒计时滴答声[、，]?/g, '')
            .replace(/屏幕小字|浮动UI|血条/g, '')
@@ -2200,7 +2252,9 @@ function autoPatchSingleShot(shot, violations = [], options = {}) {
            .replace(/悬浮的?虚拟屏幕/g, '战术终端屏幕')
            .replace(/悬浮的?屏幕/g, '终端屏幕')
            .replace(/悬浮的?界面/g, '控制台界面')
-           .replace(/悬浮/g, '电子');
+           .replace(/悬浮/g, '电子')
+           .replace(/与倒计时/g, '与战术警报')
+           .replace(/倒计时/g, '战术时效');
       s = s.replace(/高低对照|焦急凝结|心理落差|希望被突发打断|时间压力凝结|气氛僵持在空气中|眼神中流露出复杂的沧桑|无声的默契在蔓延/g, '');
       return s.replace(/，，+/g, '，').replace(/、、+/g, '、').replace(/^[，,\s、]+|[，,\s、]+$/g, '').trim();
     };
@@ -2214,6 +2268,62 @@ function autoPatchSingleShot(shot, violations = [], options = {}) {
     if (next.transition_to_next) next.transition_to_next = sanitizeForbiddenPromptText(next.transition_to_next);
     if (next.universal_segment_text) next.universal_segment_text = sanitizeForbiddenPromptText(next.universal_segment_text);
     if (next.sound_effect) next.sound_effect = sanitizeForbiddenPromptText(next.sound_effect);
+  }
+
+  // 12. Narration speaker conflict
+  if (vRules.has('INVARIANT_NARRATION_SPEAKER_CONFLICT') || (next.narration && !next.dialogue)) {
+    next.dialogue = '';
+    const narrText = String(next.narration || next.semantic_slots?.speech_plan?.text || '').trim();
+    if (next.semantic_slots?.speech_plan) {
+      next.semantic_slots.speech_plan.speaker_id = null;
+      next.semantic_slots.speech_plan.speaker_name = '旁白';
+      next.semantic_slots.speech_plan.is_narration = true;
+      next.semantic_slots.speech_plan.is_offscreen = false;
+      next.semantic_slots.speech_plan.speaker_in_frame = false;
+      next.semantic_slots.speech_plan.text = narrText;
+    }
+    if (next.video_slots?.audio_lip_sync) {
+      next.video_slots.audio_lip_sync.mode = 'narration';
+      next.video_slots.audio_lip_sync.speaker_name = '旁白';
+      next.video_slots.audio_lip_sync.speaker_id = null;
+      next.video_slots.audio_lip_sync.speaker_in_frame = false;
+      next.video_slots.audio_lip_sync.dialogue_content = narrText;
+      next.video_slots.audio_lip_sync.visible_characters_lip_state = 'strictly_sealed';
+      next.video_slots.audio_lip_sync.lip_sync_rule = '所有画内角色双唇紧闭无口型';
+    }
+    if (Array.isArray(next.video_slots?.trajectories)) {
+      next.video_slots.trajectories.forEach(t => {
+        t.mouth_state = '双唇紧闭无口型';
+      });
+    }
+    if (Array.isArray(next.video_slots?.shots_timeline)) {
+      next.video_slots.shots_timeline.forEach((seg) => {
+        if (seg.audio_lip_sync) {
+          seg.audio_lip_sync.mode = 'narration';
+          seg.audio_lip_sync.speaker_name = '旁白';
+          seg.audio_lip_sync.speaker_id = null;
+          seg.audio_lip_sync.speaker_in_frame = false;
+          seg.audio_lip_sync.dialogue_content = narrText;
+          seg.audio_lip_sync.visible_characters_lip_state = 'strictly_sealed';
+          seg.audio_lip_sync.lip_sync_rule = '所有画内角色双唇紧闭无口型';
+        }
+        if (seg.speech_action_alignment) {
+          seg.speech_action_alignment.speaker_action = '旁白播报剧情，画面保持现场动作';
+          seg.speech_action_alignment.listener_reactions = [];
+        }
+        if (Array.isArray(seg.character_trajectories)) {
+          seg.character_trajectories.forEach(t => {
+            t.mouth_state = '双唇紧闭无口型';
+          });
+        }
+      });
+    }
+  }
+
+  // 13. Unknown timeline character or missing reaction trajectories
+  if (vRules.has('INVARIANT_SHORT_DRAMA_VISIBLE_CHARACTER_UNKNOWN')
+      || vRules.has('INVARIANT_SHORT_DRAMA_CHARACTER_REACTION_MISSING')) {
+    next = autoPatchDirectorExecutionSlots(next, duration);
   }
 
   return { shot: next, structural: false };
@@ -2262,8 +2372,8 @@ function autoSplitMultiSpeakerShot(targetShot, dramaCharacters = []) {
     const speakerName = String(seg.speaker || '').trim();
     const text = String(seg.text || '').trim();
     const char = dramaCharacters.find(c => c.name === speakerName);
-    const speakerId = char ? char.id : (targetShot.characters?.[0] || 0);
     const isNarration = speakerName === '旁白';
+    const speakerId = isNarration ? null : (char ? char.id : (targetShot.characters?.[0] || 0));
     const hasSpeaker = Boolean(speakerName && text);
 
     let estDuration;
@@ -2273,17 +2383,19 @@ function autoSplitMultiSpeakerShot(targetShot, dramaCharacters = []) {
       estDuration = text.length > 30 ? 8 : (Math.ceil(text.length / 5) > 4 ? 6 : 4);
     }
 
-    const visChars = hasSpeaker
-      ? [{ id: speakerId, name: speakerName }]
-      : (targetShot.semantic_slots?.visible_characters?.slice(0, 2) || [{ id: targetShot.characters?.[0] || 1, name: '人物' }]);
-    if (hasSpeaker) {
+    const visChars = isNarration
+      ? (targetShot.semantic_slots?.visible_characters?.slice(0, 2) || [{ id: targetShot.characters?.[0] || 1, name: '人物' }])
+      : (hasSpeaker
+          ? [{ id: speakerId, name: speakerName }]
+          : (targetShot.semantic_slots?.visible_characters?.slice(0, 2) || [{ id: targetShot.characters?.[0] || 1, name: '人物' }]));
+    if (hasSpeaker && !isNarration) {
       const other = (targetShot.semantic_slots?.visible_characters || []).find(c => c.name !== speakerName);
       if (other) visChars.push({ id: other.id || other.character_id, name: other.name });
     }
     const charIds = visChars.map(c => c.id || c.character_id);
 
     const framing = visChars.length === 1
-      ? (hasSpeaker ? 'single_reaction_offscreen' : 'solo_action')
+      ? ((hasSpeaker && !isNarration) ? 'single_reaction_offscreen' : 'solo_action')
       : 'two_shot_face_to_face';
 
     const isFirstShotOfEpisode = idx === 0 && Number(targetShot.shot_number) === 1;
@@ -2304,10 +2416,10 @@ function autoSplitMultiSpeakerShot(targetShot, dramaCharacters = []) {
       duration: estDuration,
       characters: charIds,
       dialogue_framing: framing,
-      dialogue: hasSpeaker ? `${speakerName}: "${text}"` : '',
+      dialogue: isNarration ? '' : (hasSpeaker ? `${speakerName}: "${text}"` : ''),
       narration: isNarration ? text : '',
-      action: hasSpeaker ? `${speakerName}面向现场，表达态度并采取行动` : (text || `${visChars[0]?.name || '人物'}推进场景行动`),
-      result: hasSpeaker ? `${speakerName}完成动作与表态` : `${visChars[0]?.name || '人物'}完成场景调度`,
+      action: (hasSpeaker && !isNarration) ? `${speakerName}面向现场，表达态度并采取行动` : (text || `${visChars[0]?.name || '人物'}推进场景行动`),
+      result: (hasSpeaker && !isNarration) ? `${speakerName}完成动作与表态` : `${visChars[0]?.name || '人物'}完成场景调度`,
       continuity_from_previous: contFromPrev,
       semantic_slots: {
         ...(targetShot.semantic_slots || {}),
@@ -2319,10 +2431,11 @@ function autoSplitMultiSpeakerShot(targetShot, dramaCharacters = []) {
         continuity_from_previous: contFromPrev,
         audio_lip_sync: !hasSpeaker ? 'silent_ambient' : (isNarration ? 'narration' : 'in_frame_dialogue'),
         speech_plan: {
-          speaker_id: hasSpeaker ? speakerId : 0,
+          speaker_id: isNarration ? null : (hasSpeaker ? speakerId : 0),
           speaker_name: hasSpeaker ? speakerName : '',
           is_offscreen: false,
           is_narration: isNarration,
+          speaker_in_frame: isNarration ? false : hasSpeaker,
           text: hasSpeaker ? text : '',
           speed: 1.25,
           emotion: targetShot.semantic_slots?.speech_plan?.emotion || '坚定认真',
@@ -2344,12 +2457,12 @@ function autoSplitMultiSpeakerShot(targetShot, dramaCharacters = []) {
         } : {
           mode: isNarration ? 'narration' : 'in_frame_dialogue',
           speaker_name: speakerName,
-          speaker_id: speakerId,
+          speaker_id: isNarration ? null : speakerId,
           speaker_in_frame: !isNarration,
           delivery_medium: isNarration ? 'narration' : 'direct_speech',
-          dialogue_content: text,
+          dialogue_content: isNarration ? '' : text,
           visible_characters_lip_state: isNarration ? 'strictly_sealed' : 'synchronized_lip',
-          lip_sync_rule: `${speakerName}口型与台词同步，其他人闭口`,
+          lip_sync_rule: isNarration ? '所有画内角色双唇紧闭无口型' : `${speakerName}口型与台词同步，其他人闭口`,
         },
       },
       character_visuals: visChars.map(c => ({

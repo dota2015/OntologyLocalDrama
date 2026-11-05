@@ -21,6 +21,11 @@ export const ontologyAPI = {
     return request.post(`/episodes/${episodeId}/ontology/director-generate`, data)
   },
 
+  // 独立执行阶段二：为现有基础分镜装配视听本体槽位
+  enrichSlots(episodeId, data = {}) {
+    return request.post(`/episodes/${episodeId}/ontology/enrich-slots`, data)
+  },
+
   // 启动全生命周期全剧导演智能体（故事梗概 ➔ 多集剧本 ➔ 角色/道具尺寸/场景地标抽取 ➔ 逐集动态分镜 ➔ 门禁自纠）
   directorFullPipeline(dramaId, data = {}) {
     return request.post(`/dramas/${dramaId}/ontology/director-full-pipeline`, data)

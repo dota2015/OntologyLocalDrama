@@ -252,6 +252,10 @@ function getStoryboardsForEpisode(db, episodeId) {
       character_visuals: (() => { try { return r.character_visuals ? (typeof r.character_visuals === 'string' ? JSON.parse(r.character_visuals) : r.character_visuals) : null; } catch (_) { return null; } })(),
       last_frame_visuals: (() => { try { return r.last_frame_visuals ? (typeof r.last_frame_visuals === 'string' ? JSON.parse(r.last_frame_visuals) : r.last_frame_visuals) : null; } catch (_) { return null; } })(),
       video_slots: (() => { try { return r.video_slots ? (typeof r.video_slots === 'string' ? JSON.parse(r.video_slots) : r.video_slots) : null; } catch (_) { return null; } })(),
+      dialogue_framing: r.dialogue_framing ?? null,
+      start_framing: r.start_framing ?? null,
+      end_framing: r.end_framing ?? null,
+      transition_to_next: r.transition_to_next ?? null,
       characters: (() => {
         if (!r.characters) return [];
         if (typeof r.characters !== 'string') return Array.isArray(r.characters) ? r.characters : [];
@@ -1211,7 +1215,7 @@ ${lastCtx}
 ${originalUserPrompt}`;
 }
 
-async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, model, style, userPrompt, systemPrompt, includeNarration, universalOmni, targetClipDurationSec = null, durationRange = null) {
+async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, model, style, userPrompt, systemPrompt, includeNarration, universalOmni, targetClipDurationSec = null, durationRange = null, pipelineOptions = {}) {
   // 增量保存状态放在 try 外，catch 里可用于部分恢复
   const episodeIdNum = Number(episodeId);
   const streamSavedNums = new Set();
@@ -1418,16 +1422,27 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
       onRepair:(shot,reason)=>log.info('Splitting costume transition',{task_id:taskId,shot_number:normalizeStoryboardShotNumber(shot),reason}),
     });
     taskService.updateTaskStatus(db, taskId, 'processing', 65, '正在校验对白时长，必要时按语义拆镜...');
-    storyboards = await enforceStoryboardSpeechTiming(storyboards, {
-      targetDuration: deriveOpts.targetClipDuration,
-      durationRange: deriveOpts.durationRange,
-      narrativeStyle: cfg.narrative_style,
-      generate: (user, system) => generateTextForStoryboard(db, log, user, system, { model: model || undefined, temperature: 0.2 }),
-      onRepair: (shot, assessment) => log.info('Splitting over-budget storyboard', {
-        task_id: taskId, shot_number: normalizeStoryboardShotNumber(shot),
-        duration: assessment.duration, estimated_seconds: assessment.requiredSeconds,
-      }),
-    });
+    try {
+      storyboards = await enforceStoryboardSpeechTiming(storyboards, {
+        targetDuration: deriveOpts.targetClipDuration,
+        durationRange: deriveOpts.durationRange,
+        narrativeStyle: cfg.narrative_style,
+        generate: (user, system) => generateTextForStoryboard(db, log, user, system, { model: model || undefined, temperature: 0.2 }),
+        onRepair: (shot, assessment) => log.info('Splitting over-budget storyboard', {
+          task_id: taskId, shot_number: normalizeStoryboardShotNumber(shot),
+          duration: assessment.duration, estimated_seconds: assessment.requiredSeconds,
+        }),
+      });
+    } catch (splitErr) {
+      if (pipelineOptions?.chainEnrichment) {
+        log.warn('Storyboard speech timing split failed, preserving base shots for stage 2 auto-patching', {
+          task_id: taskId,
+          error: splitErr.message,
+        });
+      } else {
+        throw splitErr;
+      }
+    }
 
     storyboards.forEach(shot=>{wardrobePlanner.assertSingleOutfit(shot);wardrobePlanner.validateChoices(db,streamEpisode.drama_id,shot,episodeIdNum);});
     const totalDuration = storyboards.reduce((sum, sb) => sum + (Number(sb.duration) || 0), 0);
@@ -1470,8 +1485,14 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
       duration_minutes: durationMinutes,
       truncated: parseMeta.truncated || false,
     };
+    if (pipelineOptions?.chainEnrichment) {
+      taskService.updateTaskStatus(db, taskId, 'processing', 55, '【阶段 1/2】基础分镜已生成，正在准备装配视听本体槽位...');
+      log.info('Storyboard stage 1 base generation done, chaining stage 2 enrichment', { task_id: taskId, episode_id: episodeId });
+      return resultData;
+    }
     taskService.updateTaskResult(db, taskId, resultData);
     log.info('Storyboard generation completed', { task_id: taskId, episode_id: episodeId });
+    return resultData;
   } catch (err) {
     log.error('Storyboard generation failed', { error: err.message, task_id: taskId });
 
@@ -1501,7 +1522,32 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
   }
 }
 
-function generateStoryboard(db, log, episodeId, model, style, storyboardCount, videoDuration, aspectRatio, includeNarration, universalOmni, requestedDurationRange) {
+function prepareStoryboardGenerationContext(db, episodeId, options = {}) {
+  const {
+    model,
+    style,
+    storyboardCount,
+    storyboard_count,
+    videoDuration,
+    video_duration,
+    aspectRatio,
+    aspect_ratio,
+    includeNarration,
+    include_narration,
+    universalOmni,
+    universal_omni,
+    universal_omni_storyboard,
+    requestedDurationRange,
+    shot_duration_range,
+  } = options;
+
+  const count = storyboardCount ?? storyboard_count;
+  const duration = videoDuration ?? video_duration;
+  const ratio = aspectRatio ?? aspect_ratio;
+  const narration = includeNarration ?? include_narration;
+  const omni = universalOmni ?? universal_omni ?? universal_omni_storyboard;
+  const range = requestedDurationRange ?? shot_duration_range;
+
   let cfg = loadConfig();
   const episode = db.prepare(
     'SELECT id, script_content, description, drama_id FROM episodes WHERE id = ? AND deleted_at IS NULL'
@@ -1532,10 +1578,10 @@ function generateStoryboard(db, log, episodeId, model, style, storyboardCount, v
   } catch (_) {}
   // Legacy project video_clip_duration is only a display hint.  It must not
   // cap new director plans at 5 seconds now that Continuum supports 9–30s.
-  const durationRange = (requestedDurationRange || savedDurationRange)
-    ? normalizeDurationRange(requestedDurationRange || savedDurationRange, null)
+  const durationRange = (range || savedDurationRange)
+    ? normalizeDurationRange(range || savedDurationRange, null)
     : null;
-  const imageRatio = aspectRatio || dramaAspectRatio || cfg?.style?.default_video_ratio || '16:9';
+  const imageRatio = ratio || dramaAspectRatio || cfg?.style?.default_video_ratio || '16:9';
 
   // 计算单镜建议时长（秒）：
   // 项目 metadata 中的旧 video_clip_duration 先作为范围回退输入，随后统一归一到 H3 4～30 秒；
@@ -1543,8 +1589,8 @@ function generateStoryboard(db, log, episodeId, model, style, storyboardCount, v
   // 无项目配置时再使用总时长÷镜数；再否则 null。
   let effectiveShotDuration = null;
   const impliedFromTotal =
-    videoDuration && storyboardCount
-      ? Math.round(Number(videoDuration) / Number(storyboardCount))
+    duration && count
+      ? Math.round(Number(duration) / Number(count))
       : null;
   if (videoClipDuration && Number(videoClipDuration) > 0) {
     effectiveShotDuration = Number(videoClipDuration);
@@ -1594,46 +1640,39 @@ function generateStoryboard(db, log, episodeId, model, style, storyboardCount, v
   // 处理分镜数量和时长约束
   let extraConstraint = '';
   // 宽松判断：只要有值（包括字符串形式的数字），就尝试转换并添加约束
-  if (storyboardCount) {
-    const countVal = Number(storyboardCount);
+  if (count) {
+    const countVal = Number(count);
     if (Number.isFinite(countVal) && countVal > 0) {
       const countLabel = promptI18n.formatUserPrompt(cfg, 'storyboard_count_constraint', countVal);
       if (countLabel) extraConstraint += `\n${countLabel}`;
     }
   }
-  if (videoDuration) {
-    const durationVal = Number(videoDuration);
+  if (duration) {
+    const durationVal = Number(duration);
     if (Number.isFinite(durationVal) && durationVal > 0) {
       const durationLabel = promptI18n.formatUserPrompt(cfg, 'video_duration_constraint', durationVal);
       if (durationLabel) extraConstraint += `\n${durationLabel}`;
     }
   }
   // 当同时指定总时长和数量时，补充单镜 duration 说明（与项目「每段秒数」一致时勿用总÷镜压短）
-  if (!durationRange && storyboardCount && videoDuration && effectiveShotDuration) {
+  if (!durationRange && count && duration && effectiveShotDuration) {
     const isEn = promptI18n.isEnglish(cfg);
     const clipFromProject = videoClipDuration && Number(videoClipDuration) > 0;
     const implied =
-      impliedFromTotal && impliedFromTotal > 0 ? impliedFromTotal : Math.round(Number(videoDuration) / Number(storyboardCount));
+      impliedFromTotal && impliedFromTotal > 0 ? impliedFromTotal : Math.round(Number(duration) / Number(count));
     if (clipFromProject) {
       const clip = Number(videoClipDuration);
       if (isEn) {
-        extraConstraint += `\nEach shot "duration" field: prioritize **~${clip}s per shot** (project clip-length setting); ±1s OK. Total ~${Number(videoDuration)}s and ~${Number(storyboardCount)} shots are overall planning hints—do NOT force every shot to ~${implied}s (total÷count) when it conflicts with the project clip length.`;
+        extraConstraint += `\nEach shot "duration" field: prioritize **~${clip}s per shot** (project clip-length setting); ±1s OK. Total ~${Number(duration)}s and ~${Number(count)} shots are overall planning hints—do NOT force every shot to ~${implied}s (total÷count) when it conflicts with the project clip length.`;
       } else {
-        extraConstraint += `\n每个镜头的 **duration** 请优先按项目「每段约 **${clip} 秒**」填写（可 ±1 秒微调）。全片总时长约 ${Number(videoDuration)} 秒、镜头数约 ${Number(storyboardCount)} 为整体规划参考，**禁止**为机械凑「总时长÷镜数」（约 ${implied}s）而把每镜普遍写成过短镜头；除非该镜对白与动作为实需的极短镜头。`;
+        extraConstraint += `\n每个镜头的 **duration** 请优先按项目「每段约 **${clip} 秒**」填写（可 ±1 秒微调）。全片总时长约 ${Number(duration)} 秒、镜头数约 ${Number(count)} 为整体规划参考，**禁止**为机械凑「总时长÷镜数」（约 ${implied}s）而把每镜普遍写成过短镜头；除非该镜对白与动作为实需的极短镜头。`;
       }
     } else if (isEn) {
-      extraConstraint += `\nEach shot target duration: approximately ${effectiveShotDuration}s (= total ${Number(videoDuration)}s ÷ ${Number(storyboardCount)} shots). Set each shot's duration field to this value, adjusting ±1s for dialogue/action length.`;
+      extraConstraint += `\nEach shot target duration: approximately ${effectiveShotDuration}s (= total ${Number(duration)}s ÷ ${Number(count)} shots). Set each shot's duration field to this value, adjusting ±1s for dialogue/action length.`;
     } else {
-      extraConstraint += `\n每镜头目标时长：约 ${effectiveShotDuration} 秒（= 总时长 ${Number(videoDuration)}s ÷ ${Number(storyboardCount)} 个镜头）。每个镜头的 duration 字段请设为此值，可根据对话/动作长短适当调整 ±1 秒。`;
+      extraConstraint += `\n每镜头目标时长：约 ${effectiveShotDuration} 秒（= 总时长 ${Number(duration)}s ÷ ${Number(count)} 个镜头）。每个镜头的 duration 字段请设为此值，可根据对话/动作长短适当调整 ±1 秒。`;
     }
   }
-
-  log.info('Storyboard generation params', {
-    storyboard_count: storyboardCount,
-    video_duration: videoDuration,
-    video_clip_duration: videoClipDuration,
-    effective_shot_duration: effectiveShotDuration,
-  });
 
   const charListLabel = promptI18n.formatUserPrompt(cfg, 'character_list_label');
   const charConstraint = promptI18n.formatUserPrompt(cfg, 'character_constraint');
@@ -1646,7 +1685,7 @@ function generateStoryboard(db, log, episodeId, model, style, storyboardCount, v
   let userPrompt =
     `${scriptLabel}\n${scriptContent}\n\n${taskLabel}\n${taskInstruction}${extraConstraint}\n\n${charListLabel}\n${characterList}\n\n${charConstraint}\n\n${sceneListLabel}\n${sceneList}\n\n${sceneConstraint}\n\n${propListLabel}\n${propList}\n\n${propConstraint}\n\n${suffix}`;
 
-  const wantNarration = includeNarration === true || includeNarration === 1 || String(includeNarration).toLowerCase() === 'true';
+  const wantNarration = narration === true || narration === 1 || String(narration).toLowerCase() === 'true';
   if (wantNarration) {
     userPrompt += promptI18n.getStoryboardNarrationExtraInstructions(cfg);
   }
@@ -1657,8 +1696,8 @@ function generateStoryboard(db, log, episodeId, model, style, storyboardCount, v
   systemPrompt += require('./wardrobeService').planningContext(db,episode.drama_id);
 
   // Shot count is a planning target; speech completeness and timing take precedence.
-  if (storyboardCount && Number(storyboardCount) > 0) {
-    const targetCount = Number(storyboardCount);
+  if (count && Number(count) > 0) {
+    const targetCount = Number(count);
     const isEn = systemPrompt.includes('[Role]');
     if (isEn) {
       systemPrompt += `\n\n[USER REQUESTED SHOT COUNT]
@@ -1673,9 +1712,9 @@ If words cannot fit, increase the shot count rather than omit words, rush speech
   }
 
   const wantUniversalOmni =
-    universalOmni === true ||
-    universalOmni === 1 ||
-    String(universalOmni || '').toLowerCase() === 'true';
+    omni === true ||
+    omni === 1 ||
+    String(omni || '').toLowerCase() === 'true';
   if (wantUniversalOmni) {
     systemPrompt += promptI18n.getStoryboardUniversalOmniModeSuffix(cfg);
   }
@@ -1686,40 +1725,98 @@ If words cannot fit, increase the shot count rather than omit words, rush speech
   // Append after custom/mode/count prompts so timing and full dialogue take precedence.
   systemPrompt += rangeTimingInstructions(durationRange || { min: 4, max: 30 }, cfg.narrative_style);
 
+  const runCfg = { ...cfg, style: { ...(cfg?.style || {}), default_video_ratio: imageRatio, default_image_ratio: imageRatio } };
+
+  return {
+    cfg,
+    runCfg,
+    episode,
+    drama,
+    finalStyle,
+    imageRatio,
+    durationRange,
+    effectiveShotDuration,
+    storyboardCount: count,
+    videoDuration: duration,
+    scriptContent,
+    characters,
+    scenes,
+    props,
+    userPrompt,
+    systemPrompt,
+    wantNarration,
+    wantUniversalOmni,
+    model,
+  };
+}
+
+async function runStageOneBaseGeneration(db, log, episodeId, taskId, options = {}) {
+  const ctx = prepareStoryboardGenerationContext(db, episodeId, options);
+  log.info('Running Stage 1 Base Storyboard Generation', {
+    task_id: taskId,
+    episode_id: episodeId,
+    storyboard_count: ctx.storyboardCount,
+    video_duration: ctx.videoDuration,
+  });
+
+  return await processStoryboardGeneration(
+    db,
+    log,
+    ctx.runCfg,
+    taskId,
+    String(episodeId),
+    ctx.model || undefined,
+    ctx.finalStyle,
+    ctx.userPrompt,
+    ctx.systemPrompt,
+    ctx.wantNarration,
+    ctx.wantUniversalOmni,
+    null,
+    ctx.durationRange,
+    { chainEnrichment: true }
+  );
+}
+
+function generateStoryboard(db, log, episodeId, model, style, storyboardCount, videoDuration, aspectRatio, includeNarration, universalOmni, requestedDurationRange) {
+  const ctx = prepareStoryboardGenerationContext(db, episodeId, {
+    model,
+    style,
+    storyboardCount,
+    videoDuration,
+    aspectRatio,
+    includeNarration,
+    universalOmni,
+    requestedDurationRange,
+  });
+
   const task = taskService.createTask(db, log, 'storyboard_generation', String(episodeId));
   log.info('Generating storyboard asynchronously', {
     task_id: task.id,
     episode_id: episodeId,
-    drama_id: episode.drama_id,
-    script_length: scriptContent.length,
-    character_count: characters.length,
-    scene_count: scenes.length,
-    storyboard_count: storyboardCount,
-    video_duration: videoDuration,
-    universal_omni_storyboard: wantUniversalOmni,
+    drama_id: ctx.episode.drama_id,
+    script_length: ctx.scriptContent.length,
+    character_count: ctx.characters.length,
+    scene_count: ctx.scenes.length,
+    storyboard_count: ctx.storyboardCount,
+    video_duration: ctx.videoDuration,
+    universal_omni_storyboard: ctx.wantUniversalOmni,
   });
 
   setImmediate(() => {
-    // 传入 imageRatio 同时覆盖 default_video_ratio 和 default_image_ratio，
-    // 确保分镜图/视频提示词、场景提取提示词都使用项目设定的比例
-    const runCfg = { ...cfg, style: { ...(cfg?.style || {}), default_video_ratio: imageRatio, default_image_ratio: imageRatio } };
-    // 如果 model 为 null，则传 undefined，让 generateText 内部去兜底找默认配置
-    const clipSec =
-      videoClipDuration && Number(videoClipDuration) > 0 ? Number(videoClipDuration) : null;
     processStoryboardGeneration(
       db,
       log,
-      runCfg,
+      ctx.runCfg,
       task.id,
       String(episodeId),
-      model || undefined,
-      finalStyle,
-      userPrompt,
-      systemPrompt,
-      wantNarration,
-      wantUniversalOmni,
+      ctx.model || undefined,
+      ctx.finalStyle,
+      ctx.userPrompt,
+      ctx.systemPrompt,
+      ctx.wantNarration,
+      ctx.wantUniversalOmni,
       null,
-      durationRange
+      ctx.durationRange
     );
   });
 
@@ -2270,4 +2367,6 @@ module.exports = {
   clearEpisodeMedia,
   clearEpisodeStoryboards,
   clearStoryboardMedia,
+  prepareStoryboardGenerationContext,
+  runStageOneBaseGeneration,
 };
