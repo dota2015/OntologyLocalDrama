@@ -6,6 +6,7 @@
 
 const BaseInvariantRule = require('./baseRule');
 const { dialogueSegments } = require('../../services/dialogueDubbingService');
+const { mouthIsSealed } = require('../videoSlots');
 
 function parseJsonValue(value) {
   if (typeof value !== 'string' || !value.trim()) return value;
@@ -75,9 +76,6 @@ function comparableSpeech(value, speakerHints = []) {
     .toLowerCase();
 }
 
-function mouthIsSealed(value) {
-  return /(?:双唇紧闭|双唇自然闭合|闭唇|闭口|安静闭合|closed(?:_non_speaking| lips)?|strictly_sealed)/iu.test(String(value || ''));
-}
 
 function videoTrajectories(videoSlots) {
   const top = Array.isArray(videoSlots?.trajectories) ? videoSlots.trajectories : [];

@@ -44,12 +44,21 @@ function translatePhysicalPhenomena(text) {
 function isGazeOnlyHold(values) {
   const text = values.filter(Boolean).map(value => String(value)).join('，').replace(/[\s\u3000]/gu, '');
   if (!text) return false;
-  const hasGaze = /(?:互相|相互|彼此|两人|双方)?(?:看着|对视|凝视|注视|看向|盯着|望着)|保持(?:对视|注视|姿势|安静|倾听)|安静倾听|等待|无动作|保持不动|互看/u.test(text);
+  const hasGaze = /(?:互相|相互|彼此|两人|双方)?(?:看着|对视|凝视|注视|看向|盯着|望着)|保持(?:对视|注视|视线|姿势|安静|倾听|沉默)|视线保持|安静倾听|等待|无动作|保持不动|互看/u.test(text);
   if (!hasGaze) return false;
   // 只把会改变空间关系、身体状态或正在发生的发声/反应视为动作。
   // “站着看”“坐着等待”属于静态姿态，不能用来填满时间段。
-  const hasPhysicalEvent = /(?:转身|回头|抬手|抬眼|抬头|挥手|伸手|递|接|扶|托|抓|握|按|指向|推|拉|挡|躲|退|冲|跑|走向|坐下|坐起|站起|跪下|躺下|起身|俯身|靠近|跌|摔|咳|吐|捂|擦|打开|关闭|拿起|放下|移动|跨|闪身|躲开|收回|离开|皱眉|咬牙|张口|闭眼|后退|前倾|后仰|点头|摇头|摇晃|颤抖|哭|笑|喊|喘|说|问|答|开口)/u.test(text);
+  const hasPhysicalEvent = /(?:转身|回头|转头|转过头|抬手|抬眼|抬头|抬起|抬|低头|垂头|俯首|垂首|下沉|耸肩|沉肩|叹气|叹息|轻叹|吸气|吐气|低语|低声|轻声|开合|合上|挥手|伸手|递|接|扶|托|抓|握|按|搭|搭在|搭手|撑|靠|倚|倚靠|贴|指向|指|手指|推|拉|挡|躲|退|冲|跑|走向|走去|步入|迈步|前行|跟上|起步|跟随|同行|进发|坐下|坐起|站起|跪下|躺下|起身|直起|直身|挺直|挺立|俯身|靠近|跌|摔|咳|吐|捂|擦|打开|关闭|拿起|放下|移动|跨|闪身|躲开|收回|离开|皱眉|咬牙|张口|开口|闭眼|闭合|后退|前倾|后仰|点头|摇头|摇晃|颤抖|哭|笑|喊|喘|说|问|答|承认|倾诉|坦白|沉思|扫向|扫视|操作|点击|翻看|记录|滑动|触碰|轻触|整理|持枪|持械|握持|戒备)/u.test(text);
   return !hasPhysicalEvent;
+}
+
+function mouthIsSealed(value) {
+  const str = String(value || '').trim();
+  if (!str) return false;
+  if (/(?:开口|张嘴|张口|说话|发声|喊话|大喊|低语|念诵|读出|朗读)/iu.test(str)) {
+    return /(?:闭合|紧闭|闭口|闭唇|strictly_sealed)$/iu.test(str);
+  }
+  return /(?:双唇紧闭|双唇自然闭合|双唇闭合|双唇微闭|双唇紧抿|闭唇|闭口|闭嘴|闭合|紧闭|抿紧|自然闭合|安静闭合|微闭|紧抿|咬牙紧闭|无口型|无说话口型|不说话|喘息|紧抿嘴唇|relaxed closed lips|strictly_sealed|closed(?:_non_speaking| lips)?)/iu.test(str);
 }
 
 function parseTimelineTimestamp(value) {
@@ -97,7 +106,17 @@ function createVideoSemanticSlots(data = {}) {
       speaker_in_frame: Boolean(audio.speaker_in_frame),
       delivery_medium: String(audio.delivery_medium || 'direct_speech').trim(), // 'direct_speech' | 'radio_headset' | 'phone_call' | 'intercom' | 'voiceover' | 'narration'
       dialogue_content: String(audio.dialogue_content || '').trim(),
-      visible_characters_lip_state: String(audio.visible_characters_lip_state || (audio.speaker_in_frame ? 'synchronized_lip' : 'strictly_sealed')).trim(),
+      visible_characters_lip_state: (() => {
+        const raw = String(audio.visible_characters_lip_state || '').trim();
+        const isSealedMode = !audio.speaker_in_frame || audio.mode === 'offscreen_voiceover' || audio.mode === 'narration' || audio.mode === 'silent_ambient' || audio.mode === 'bgm_only';
+        if (isSealedMode) {
+          if (raw && (raw === 'strictly_sealed' || /(?:双唇紧闭|双唇自然闭合|双唇闭合|闭唇|闭口|闭合|紧闭|无说话口型|无口型|strictly_sealed)/iu.test(raw))) {
+            return 'strictly_sealed';
+          }
+          return raw || 'strictly_sealed';
+        }
+        return raw || 'synchronized_lip';
+      })(),
       lip_sync_rule: String(audio.lip_sync_rule || '').trim(),
     },
     trajectories: Array.isArray(data.trajectories)
@@ -128,10 +147,18 @@ function createVideoSemanticSlots(data = {}) {
       pacing: String(timing.pacing || '稳健推进').trim(),
     },
     shots_timeline: Array.isArray(data.shots_timeline)
-      ? data.shots_timeline.map((s, idx) => ({
-          shot_number: s.shot_number || (idx + 1),
-          timestamp: s.timestamp || null,
-          duration: Number(s.duration || 0),
+      ? (() => {
+          let runningStart = 0;
+          return data.shots_timeline.map((s, idx) => {
+            const segDuration = Number(s?.duration || 0);
+            const timestamp = idx === 0
+              ? (s?.timestamp ? formatH3Timestamp(0) : null)
+              : formatH3Timestamp(runningStart);
+            runningStart += Number.isFinite(segDuration) ? segDuration : 0;
+            return {
+              shot_number: s.shot_number || (idx + 1),
+              timestamp,
+              duration: segDuration,
           camera: {
             shot_type: String(s.camera?.shot_type || '中景').trim(),
             movement: String(s.camera?.movement || 'tracking').trim(),
@@ -185,8 +212,10 @@ function createVideoSemanticSlots(data = {}) {
             dialogue_content: String(s.audio_lip_sync?.dialogue_content || '').trim(),
             lip_sync_rule: String(s.audio_lip_sync?.lip_sync_rule || '').trim(),
           },
-        }))
-      : [],
+        };
+      });
+    })()
+    : [],
     h3_multimodal: {
       shots: Array.isArray(data.h3_multimodal?.shots)
         ? data.h3_multimodal.shots.map((s, idx) => ({
@@ -276,24 +305,37 @@ function validateVideoSlots(shot, slots) {
       if (!speechWindow || !actionWindow || !overlaps(speechWindow, actionWindow) || !String(alignment.speaker_action || '').trim()) {
         violations.push({ ...base, rule: 'INVARIANT_SPEECH_ACTION_OVERLAP_MISSING', conflict_slots: [`video_slots.shots_timeline[${index}].speech_action_alignment`], message: `分镜 ${shotNum} 的第 ${index + 1} 段必须填写有效 speech_window、speaker_action_window 与 speaker_action，且动作时间必须覆盖发声时间的一部分；动作与语音应同时发生。` });
       }
-      const resolvedSpeaker = speakerId || visible.find(c => c.name && c.name === speakerName)?.id || 0;
+      const segAudio = segment?.audio_lip_sync || {};
+      const segSpeakerName = String(segAudio.speaker_name || speech.speaker_name || audio.speaker_name || '').trim();
       const segmentVisibleChars = Array.isArray(segment?.visible_characters)
         ? segment.visible_characters.map(c => ({ id: Number(c?.character_id ?? c?.id ?? c), name: String(c?.name || '') })).filter(c => c.id > 0)
         : visible;
-      if (audio.speaker_in_frame && Array.isArray(segment?.visible_characters)
-        && !segmentVisibleChars.some((character) => character.id === resolvedSpeaker)) {
+      const segSpeakerId = Number(segAudio.speaker_id || 0)
+        || segmentVisibleChars.find(c => c.name && c.name === segSpeakerName)?.id
+        || visible.find(c => c.name && c.name === segSpeakerName)?.id
+        || (speakerName === segSpeakerName ? speakerId : 0)
+        || 0;
+      const resolvedSpeaker = segSpeakerId;
+      const isSpeakerInFrame = segAudio.speaker_in_frame !== undefined
+        ? Boolean(segAudio.speaker_in_frame)
+        : Boolean(audio.speaker_in_frame);
+
+      if (isSpeakerInFrame && Array.isArray(segment?.visible_characters)
+        && !segmentVisibleChars.some((character) => character.id === resolvedSpeaker || (character.name && character.name === segSpeakerName))) {
         violations.push({
           rule: 'INVARIANT_SHORT_DRAMA_SPEAKER_NOT_VISIBLE',
           shot_number: shotNum,
           severity: 'error',
           segment_index: index,
           conflict_slots: [`video_slots.shots_timeline[${index}].visible_characters`, `video_slots.shots_timeline[${index}].audio_lip_sync.speaker_name`],
-          message: `分镜 ${shotNum} 的第 ${index + 1} 段声明画内说话人「${speakerName || resolvedSpeaker}」，但该人物不在本段 visible_characters 中；请改为画外音或把说话人纳入本段构图。`,
+          message: `分镜 ${shotNum} 的第 ${index + 1} 段声明画内说话人「${segSpeakerName || resolvedSpeaker}」，但该人物不在本段 visible_characters 中；请改为画外音或把说话人纳入本段构图。`,
         });
       }
-      if (audio.speaker_in_frame && segmentVisibleChars.length > 1) {
-        for (const listener of segmentVisibleChars.filter(c => c.id !== resolvedSpeaker)) {
-          const reaction = (Array.isArray(alignment.listener_reactions) ? alignment.listener_reactions : []).find(r => Number(r?.character_id) === listener.id);
+      if (isSpeakerInFrame && segmentVisibleChars.length > 1) {
+        for (const listener of segmentVisibleChars.filter(c => c.id !== resolvedSpeaker && c.name !== segSpeakerName)) {
+          const reaction = (Array.isArray(alignment.listener_reactions) ? alignment.listener_reactions : []).find(r =>
+            Number(r?.character_id) === listener.id || (r?.name && r?.name === listener.name)
+          );
           const reactionWindow = parseWindow(reaction?.action_window, duration, segmentOffset);
           if (!reaction || !String(reaction.action || '').trim() || !overlaps(speechWindow, reactionWindow)) {
             violations.push({ ...base, rule: 'INVARIANT_LISTENER_REACTION_OVERLAP_MISSING', character_id: listener.id, conflict_slots: [`video_slots.shots_timeline[${index}].speech_action_alignment.listener_reactions[character_id=${listener.id}]`], message: `分镜 ${shotNum} 的第 ${index + 1} 段中，角色「${listener.name || listener.id}」缺少与对白同步的听取/视线/动作反应。请写明 action 与 action_window，不能只写“说完后等待”。` });
@@ -303,8 +345,11 @@ function validateVideoSlots(shot, slots) {
     });
   }
   // 1. 画外音与口型契约校验（严格防止画内演员动嘴）
-  if (audio.mode === 'offscreen_voiceover' || !audio.speaker_in_frame) {
-    if (audio.dialogue_content && audio.visible_characters_lip_state !== 'strictly_sealed') {
+  const isVoiceover = audio.mode === 'offscreen_voiceover' || (Boolean(audio.dialogue_content) && !audio.speaker_in_frame);
+  if (isVoiceover) {
+    const isLipStateSealed = audio.visible_characters_lip_state === 'strictly_sealed'
+      || /(?:双唇紧闭|双唇自然闭合|双唇闭合|闭唇|闭口|闭合|紧闭|无说话口型|无口型|strictly_sealed)/iu.test(String(audio.visible_characters_lip_state || ''));
+    if (audio.dialogue_content && !isLipStateSealed) {
       violations.push({
         rule: 'INVARIANT_OFFSCREEN_LIP_SYNC_VIOLATION',
         shot_number: shotNum,
@@ -315,7 +360,7 @@ function validateVideoSlots(shot, slots) {
 
     if (Array.isArray(slots.trajectories)) {
       slots.trajectories.forEach((traj) => {
-        if (!/(?:双唇紧闭|双唇自然闭合|闭唇|闭口|relaxed closed lips|strictly_sealed)/i.test(traj.mouth_state)) {
+        if (!mouthIsSealed(traj?.mouth_state)) {
           violations.push({
             rule: 'INVARIANT_CHARACTER_MOUTH_NOT_SEALED',
             shot_number: shotNum,
@@ -494,7 +539,7 @@ function validateVideoSlots(shot, slots) {
         if (hasTimedPerformanceContract && isGazeOnlyHold([
           segment?.action,
           segment?.result,
-          ...trajectories.flatMap(item => [item?.trajectory, item?.terminal_pose, item?.facial_expression, item?.reaction_trigger]),
+          ...trajectories.flatMap(item => [item?.trajectory, item?.terminal_pose, item?.facial_expression]),
           ...(segment?.speech_action_alignment?.listener_reactions || []).map(item => item?.action),
         ])) {
           violations.push({
@@ -528,11 +573,14 @@ function validateVideoSlots(shot, slots) {
               message: `分镜 ${shotNum} 的镜内剪辑段 ${index + 1} 未给画内角色 ID ${id} 补齐执行字段：${missingFields.join('、')}。必须修复 ${targetPath} 下的这些确切字段；动作字段名是 trajectory，不是 visible_action，也不是顶层 video_slots.trajectories。其他已有字段保留。`,
             });
           }
-          if (hasTimedPerformanceContract && trajectory && isGazeOnlyHold([
+          const isSpeakingInSegment = segmentDialogue && String(segment?.audio_lip_sync?.speaker_name || '').trim() === String(trajectory?.name || '').trim();
+          const listenerReaction = (segment?.speech_action_alignment?.listener_reactions || []).find(r => Number(r?.character_id) === id);
+          if (hasTimedPerformanceContract && trajectory && !isSpeakingInSegment && isGazeOnlyHold([
             trajectory.trajectory,
             trajectory.terminal_pose,
             trajectory.facial_expression,
             trajectory.reaction_trigger,
+            listenerReaction?.action,
           ])) {
             violations.push({
               rule: 'INVARIANT_SHORT_DRAMA_CHARACTER_ACTION_EMPTY',
@@ -1224,4 +1272,6 @@ module.exports = {
   synthesizeH3MultimodalSlots,
   formatH3Timestamp,
   translatePhysicalPhenomena,
+  isGazeOnlyHold,
+  mouthIsSealed,
 };

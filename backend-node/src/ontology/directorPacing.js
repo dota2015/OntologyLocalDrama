@@ -33,6 +33,11 @@ function validatePlan(plan, requested) {
     throw new Error('节奏规划必须返回 feasible、非空 shots 与原因 reason');
   }
   for (const [i, shot] of plan.shots.entries()) {
+    if (typeof shot.duration === 'number' && Number.isFinite(shot.duration)) {
+      if (requested.count == null && requested.duration == null) {
+        shot.duration = Math.max(requested.range.min, Math.min(requested.range.max, Math.round(shot.duration)));
+      }
+    }
     if (!Number.isInteger(shot.duration) || shot.duration < requested.range.min || shot.duration > requested.range.max || !String(shot.purpose || '').trim()) {
       throw new Error(`节奏规划第 ${i + 1} 镜需在 ${requested.range.min}–${requested.range.max} 秒内，并说明剧情任务`);
     }
@@ -49,18 +54,22 @@ function validatePlan(plan, requested) {
 
 async function planEpisodePacing(db, log, script, requested, { maxAttempts = 500, onProgress = () => {} } = {}) {
   let feedback = '';
+  const rangeScopeText = requested.range.max > 8
+    ? '一个4～30秒逻辑分镜可以包含多个连续或同时发生的动作、对白和对方反应；9秒以上使用Continuum。只有超过30秒、场景或造型变化、或剧情确需独立视角时拆镜。'
+    : `当前单镜时长范围严格限制在 ${requested.range.min}～${requested.range.max} 秒之间（普通模式），严禁规划任何超过 ${requested.range.max} 秒的镜头！只有场景或造型变化、或动作对白超出 ${requested.range.max} 秒时才拆镜。`;
+
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     let plan;
     try {
       const result = await runtime.runAgent(db, log, {
         name: 'director-episode-pacing',
         instructions: `你是同一导演工作流的整集节奏规划节点，先根据完整剧情、逐字保留的台词、动作完成与互动反应决定镜头数量和逐镜时长。禁止按字符数除法、固定镜数或均分秒数决定切镜。每镜用一句 purpose 说明其连续剧情范围与任务，不输出完整槽位。\n${rangeTimingInstructions(requested.range, { tts_speed: requested.tts_speed })}\n用户填写的数量和总秒数是明确要求；空值才表示由你决定，旧剧集时长和页面公式估算都不是约束。自动决定镜数时通常不得超过 ${AUTO_MAX_SHOTS} 镜；优先让一个镜头承载同一事件中的多个连续动作、对白和即时反应。禁止用“说一句话后互相看着”、无意义特写、空等或重复反应凑镜头。若手动数值太少或太短，不能删台词、漏剧情、加速或静默覆盖；返回 feasible:false、具体 reason，以及能完整表达剧情的建议 shots。无需修改已有剧本。`,
-        input: `用户要求：${JSON.stringify(requested)}\n按连贯事件规划，不按动作个数拆镜：一个4～30秒逻辑分镜可以包含多个连续或同时发生的动作、对白和对方反应；9秒以上使用Continuum。不得为每句对白、每个动作、每次反应各建一镜；能自然同镜完成的应合并。只有超过30秒、场景或造型变化、或剧情确需独立视角时拆镜。两人对话优先使用有明确叙事作用的正反打（shot-reverse-shot）或过肩反打；正反打必须服务信息、反应或权力变化，不能把每句台词机械拆成无意义特写。台词逐字保留，不能为减少镜数删减剧情；也不要重复表达同一信息、添加停顿凑时长。\n完整剧本：\n${script}\n${feedback ? `上轮门禁反馈：${feedback}` : ''}`,
+        input: `用户要求：${JSON.stringify(requested)}\n按连贯事件规划，不按动作个数拆镜：${rangeScopeText}不得为每句对白、每个动作、每次反应各建一镜；能自然同镜完成的应合并。两人对话优先使用有明确叙事作用的正反打（shot-reverse-shot）或过肩反打；正反打必须服务信息、反应或权力变化，不能把每句台词机械拆成无意义特写。台词逐字保留，不能为减少镜数删减剧情；也不要重复表达同一信息、添加停顿凑时长。\n完整剧本：\n${script}\n${feedback ? `上轮门禁反馈：${feedback}` : ''}`,
         outputType: {
           type: 'json_schema', name: 'director_episode_pacing', strict: true,
           schema: { type: 'object', additionalProperties: false, required: ['feasible', 'reason', 'shots'], properties: {
             feasible: { type: 'boolean' }, reason: { type: 'string' },
-            shots: { type: 'array', minItems: 1, ...(requested.count == null ? { maxItems: AUTO_MAX_SHOTS } : {}), items: { type: 'object', additionalProperties: false, required: ['duration', 'purpose'], properties: { duration: { type: 'integer' }, purpose: { type: 'string' } } } },
+            shots: { type: 'array', minItems: 1, ...(requested.count == null ? { maxItems: AUTO_MAX_SHOTS } : {}), items: { type: 'object', additionalProperties: false, required: ['duration', 'purpose'], properties: { duration: { type: 'integer', minimum: requested.range.min, maximum: requested.range.max }, purpose: { type: 'string' } } } },
           } },
         },
         maxTokens: null, temperature: 0.2,

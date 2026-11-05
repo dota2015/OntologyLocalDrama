@@ -12,12 +12,12 @@
  * 通过确定性编译器（Deterministic Slot Compiler）将槽位合成为最终的高质量生图提示词。
  */
 
-const SCREEN_POSITION_REGEX = /(?:画面左侧|画面右侧|画面中央|画面正中|画面左前|画面右前|画面前景|画面中景|画面后景|左下角|右下角|左上方|右上方|左侧三分线|右侧三分线|居中|偏左|偏右|screen_left|screen_right|screen_center|foreground|midground|background)/i;
-const FACING_REGEX = /(?:正面|正对|背对|背面|背向|朝左|朝右|侧身|侧向|侧面|微侧|三刻|四分之三|3\/4|转朝|面对|斜向|前左|前右|后左|后右|左侧|右侧|剪影|front|back|left|right|facing|three_quarter|profile)/i;
+const SCREEN_POSITION_REGEX = /(?:画面(?:左侧|右侧|中央|正中|正中央|左前|右前|左后|右后|左前方|右前方|左后方|右后方|前景|中景|后景|近景|远景|深处|景深处|左半部|右半部|边缘|靠左|靠右|靠前|靠后|左侧中景|右侧中景|左侧远景|右侧远景|左侧前景|右侧前景|左侧近景|右侧近景)|左下角|右下角|左上方|右上方|左下方|右下方|左侧三分线|右侧三分线|三分线|居中|偏左|偏右|靠左|靠右|正中央|正中|中央|左侧|右侧|左前方?|右前方?|左后方?|右后方?|前景|中景|后景|景深处|近景|远景|screen_left|screen_right|screen_center|foreground|midground|background)/i;
+const FACING_REGEX = /(?:正面|正对|背对|背面|背向|朝左|朝右|朝前|朝后|侧身|侧向|侧面|微侧|三刻|四分之三|3\/4|转朝|面朝|面对|朝向|面向|斜向|前左|前右|后左|后右|左前|右前|左后|右后|左侧|右侧|剪影|front|back|left|right|facing|three_quarter|profile)/i;
 const HEAD_POSE_REGEX = /(?:头|仰|低头|偏头|转头|正对|回望|俯视|仰视|侧头|head|tilt|turn)/i;
 const GAZE_REGEX = /(?:目光|视线|看|眼|注视|盯|凝视|锁定|瞄准|gaze|look|eye|watch)/i;
-const POSTURE_REGEX = /(?:站|蹲|坐|卧|趴|扑|俯|仰|倾|跪|靠|crouch|stand|kneel|lean|prone|sit|lie|stride|奔|跑|跃|步|斜躺|低姿|姿态|姿势|姿|立|挺)/i;
-const HANDS_REGEX = /(?:手|臂|指|握|按|托|撑|抱|搭|提|拿|拉|伸|扣|掌|持|抓|悬|hand|arm|finger|hold|grip|press)/i;
+const POSTURE_REGEX = /(?:站|蹲|坐|卧|趴|扑|俯|仰|倾|跪|靠|crouch|stand|kneel|lean|prone|sit|lie|stride|奔|跑|跃|步|斜躺|低姿|姿态|姿势|姿|立|挺|后仰|消散|瘫|倒)/i;
+const HANDS_REGEX = /(?:手|臂|指|握|按|托|撑|抱|搭|提|拿|拉|伸|扣|掌|持|抓|悬|垂|置|放|hand|arm|finger|hold|grip|press)/i;
 
 // 导致文生图模型产生克隆人/多角色的两地时序位移与动态过程正则
 const CLONE_TRIGGER_REGEX = /(?:从.+?到.+?|从.+?跑向|从.+?冲向|从.+?跨向|沿.+?走到|从.+?走到|从.+?探出.+?缩回|来回(?:看|确认|扫视))/;
@@ -32,10 +32,10 @@ function createCharacterVisualSlot(data = {}) {
   let finalEnvAnchor = envAnchor;
 
   if (!finalScreenPos && spatialAnchor) {
-    const m = spatialAnchor.match(/^(画面(?:左侧|右侧|中央|正中|前景|中景|后景|左前|右前)[^，,\s]*)/);
+    const m = spatialAnchor.match(/^(?:画面)?(?:左侧|右侧|中央|正中|正中央|左前|右前|左后|右后|左前方|右前方|左后方|右后方|前景|中景|后景|近景|远景|深处|景深处|左下角|右下角|左上方|右上方|左下方|右下方|左侧三分线|右侧三分线|三分线|居中|偏左|偏右|靠左|靠右)[^，,\s]*/);
     if (m) {
-      finalScreenPos = m[1];
-      finalEnvAnchor = spatialAnchor.slice(m[1].length).replace(/^[，,\s]+/, '');
+      finalScreenPos = m[0];
+      finalEnvAnchor = spatialAnchor.slice(m[0].length).replace(/^[，,\s]+/, '');
     } else {
       finalScreenPos = spatialAnchor;
     }
@@ -45,8 +45,8 @@ function createCharacterVisualSlot(data = {}) {
   let depthLayer = String(data.depth_layer || '').trim().toLowerCase();
   if (!depthLayer) {
     const combined = `${finalScreenPos} ${spatialAnchor}`;
-    if (/(?:前景|近景|近处|左前|右前|过肩|foreground)/i.test(combined)) depthLayer = 'foreground';
-    else if (/(?:后景|远处|深处|远景|后方|背景|background)/i.test(combined)) depthLayer = 'background';
+    if (/(?:前景|近景|近处|左前|右前|左前方|右前方|过肩|foreground)/i.test(combined)) depthLayer = 'foreground';
+    else if (/(?:后景|远处|深处|远景|后方|左后|右后|左后方|右后方|背景|background)/i.test(combined)) depthLayer = 'background';
     else depthLayer = 'midground';
   }
 
@@ -209,11 +209,11 @@ function validateCharacterVisualSlots(shot, slots = [], slotField = 'character_v
     }
 
     // 检查是否存在前后远近纵深关系 (Z-Axis Depth Staging)
-    const hasForeground = slots.some((s) => s.depth_layer === 'foreground' || /(?:前景|近处|近景|前侧|左前|右前|过肩)/i.test(`${s.screen_position} ${s.spatial_anchor}`));
-    const hasBackOrMid = slots.some((s) => s.depth_layer === 'background' || /(?:后景|远处|深处|后方|背景)/i.test(`${s.screen_position} ${s.spatial_anchor}`));
+    const hasForeground = slots.some((s) => s.depth_layer === 'foreground' || /(?:前景|近处|近景|前侧|左前|右前|左前方|右前方|过肩)/i.test(`${s.screen_position} ${s.spatial_anchor}`));
+    const hasBackOrMid = slots.some((s) => s.depth_layer === 'background' || /(?:后景|远处|深处|后方|左后|右后|左后方|右后方|背景)/i.test(`${s.screen_position} ${s.spatial_anchor}`));
 
     // 如果所有角色只有横向左右（如全是“画面左侧”、“画面右侧”），没有任何前后远近纵深词
-    const allFlat = !hasForeground && !hasBackOrMid && !slots.some((s) => /(?:前景|近景|近处|后景|深处|远处|过肩)/i.test(`${s.screen_position} ${s.spatial_anchor}`));
+    const allFlat = !hasForeground && !hasBackOrMid && !slots.some((s) => /(?:前景|近景|近处|后景|深处|远处|左前|右前|左前方|右前方|左后|右后|左后方|右后方|过肩)/i.test(`${s.screen_position} ${s.spatial_anchor}`));
     if (allFlat) {
       violations.push({
         rule: 'INVARIANT_SLOT_MISSING_DEPTH_STAGING',
@@ -734,6 +734,7 @@ function synthesizeLastFrameVisualSlots(shot, catalogCharacters = [], firstFrame
 }
 
 module.exports = {
+  SCREEN_POSITION_REGEX,
   FACING_REGEX,
   HEAD_POSE_REGEX,
   GAZE_REGEX,

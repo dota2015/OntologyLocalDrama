@@ -751,16 +751,90 @@ function compileFl2vaPrompt(translated, timeline = [], options = {}) {
 function compilePrompt(refs, speech, translated, anchors = {}, options = {}) {
   if (!translated || typeof translated !== 'object' || Array.isArray(translated)) throw new Error('H3 英文提示词整理未返回有效内容，请重试');
   const lightingDesc = options.lightingDesc || (options.lightingStyle ? angleService.lightingToPrompt(options.lightingStyle) : '') || '';
+
+  const framing = String(options.dialogueFraming || options.shot?.dialogue_framing || options.framing || '').toLowerCase();
+  const shotType = String(options.shotType || options.shot?.shot_type || options.shot?.camera?.shot_type || '').toLowerCase();
+  const framingNorm = framing.replace(/[-\s]/g, '_');
+  const isTightFraming = /(?:over_the_shoulder|two_shot_close|single_close|ots_reverse|two_shot_face_to_face|single_reaction|close_up|extreme_close_up|ots)/i.test(framingNorm)
+    || /(?:近景|特写|大特写|过肩|正反打|反打|双人对话)/i.test(`${framing} ${shotType}`);
+
+  const isSingleFraming = /(?:single_close|single_reaction|close_up|extreme_close_up|solo_action|single_focus)/i.test(framingNorm)
+    || /(?:特写|大特写)/i.test(`${framing} ${shotType}`);
+  const isTwoShotFraming = /(?:over_the_shoulder|two_shot_close|ots_reverse|two_shot_face_to_face|ots|过肩|正反打|反打|双人)/i.test(`${framingNorm} ${shotType}`);
+  const maxFocalSubjects = isSingleFraming ? 1 : (isTwoShotFraming ? 2 : 3);
+
+  const rawBg = options.backgroundCharacters
+    || options.backgroundCharacterIds
+    || options.shot?.background_characters
+    || (typeof options.shot?.semantic_slots === 'object' ? options.shot?.semantic_slots?.background_characters : null)
+    || (typeof options.semanticSlots === 'object' ? options.semanticSlots?.background_characters : null);
+  const bgIds = new Set();
+  (Array.isArray(rawBg) ? rawBg : (typeof rawBg === 'string' ? parse(rawBg, []) : []))
+    .forEach(c => {
+      const id = Number(c?.character_id ?? c?.id ?? c);
+      if (Number.isFinite(id) && id > 0) bgIds.add(id);
+    });
+  const charVisuals = options.shot?.character_visuals
+    || (typeof options.shot?.character_visuals === 'string' ? parse(options.shot.character_visuals, []) : []);
+  if (Array.isArray(charVisuals)) {
+    charVisuals.forEach(cv => {
+      if (cv && cv.depth_layer === 'background' && cv.character_id != null) {
+        const id = Number(cv.character_id);
+        if (Number.isFinite(id) && id > 0) bgIds.add(id);
+      }
+    });
+  }
+  refs.forEach(r => {
+    if ((r.depth_layer === 'background' || r.is_background) && r.character_id != null) {
+      const id = Number(r.character_id);
+      if (Number.isFinite(id) && id > 0) bgIds.add(id);
+    }
+  });
+
+  const rawVisible = options.visibleCharacters
+    || options.shot?.visible_characters
+    || (typeof options.shot?.semantic_slots === 'object' ? options.shot?.semantic_slots?.visible_characters : null)
+    || (typeof options.semanticSlots === 'object' ? options.semanticSlots?.visible_characters : null);
+  const visibleIds = new Set();
+  if (rawVisible) {
+    (Array.isArray(rawVisible) ? rawVisible : (typeof rawVisible === 'string' ? parse(rawVisible, []) : []))
+      .forEach(c => {
+        const id = Number(c?.character_id ?? c?.id ?? c);
+        if (Number.isFinite(id) && id > 0) visibleIds.add(id);
+      });
+    for (const line of speech?.lines || []) {
+      const match = /^character:(\d+)$/.exec(line?.key || '');
+      if (match) visibleIds.add(Number(match[1]));
+    }
+  }
+
   const subjects = new Map();
   const definitions = [];
   const retention = [];
   for (const [i, ref] of refs.entries()) {
     const pic = `<Picture ${i+1}>`;
-    if (ref.character_id && !subjects.has(ref.character_id)) subjects.set(ref.character_id, subjects.size+1);
-    if (ref.kind === 'character_outfit') {
+    const refCharId = ref.character_id != null ? Number(ref.character_id) : null;
+    const isKnownSubject = refCharId && subjects.has(refCharId);
+    const isBackgroundInTight = Boolean(
+      isTightFraming &&
+      refCharId &&
+      !isKnownSubject &&
+      (
+        bgIds.has(refCharId) ||
+        (visibleIds.size > 0 && !visibleIds.has(refCharId)) ||
+        subjects.size >= maxFocalSubjects
+      )
+    );
+    if (refCharId && !isBackgroundInTight && !subjects.has(refCharId)) {
+      subjects.set(refCharId, subjects.size + 1);
+    }
+    if (isBackgroundInTight) {
+      definitions.push(`${pic} supplies secondary context for a background character in [Shot 1].`);
+      retention.push(`${pic} (background character context): secondary - provide general appearance context only; do not cast as a primary foreground subject.`);
+    } else if (ref.kind === 'character_outfit') {
       definitions.push(`${pic} supplies the selected outfit for this character in [Shot 1]. The same character's portrait and profile references define facial identity.`);
       retention.push(`${pic} (selected outfit in [Shot 1]): fully_preserved - retain garment colors, shape, layers and accessories consistently throughout this shot.`);
-    } else if (ref.kind === 'character_sheet') {
+    } else if (ref.kind === 'character_sheet' || ref.kind === 'character') {
       definitions.push(`${pic} is a multi-panel character reference sheet: its face portrait and side-profile panels define identity; its full-front view supplies base clothing when an opening-frame wardrobe anchor is absent. The sheet is reference material for one person.`);
       retention.push(`${pic} (character sheet in [Shot 1]): partially_preserved - transfer the facial identity from the face and profile panels; clothing follows the opening-frame wardrobe anchor when present, otherwise the established current costume.`);
     } else if (!ref.character_id && ref.source !== anchors.first && ref.source !== anchors.last) {
@@ -1169,6 +1243,12 @@ async function prepare(db, log, opts) {
       delivery,
       duration: opts.duration,
       allowChinese: true,
+      shot: initial.shot,
+      dialogueFraming: initial.shot.dialogue_framing,
+      shotType: initial.shot.shot_type,
+      visibleCharacters: initial.shot.characters || parse(initial.shot.semantic_slots, {})?.visible_characters,
+      backgroundCharacters: initial.shot.background_characters,
+      semanticSlots: parse(initial.shot.semantic_slots, {}),
     });
     images = refs.map(r => wireImage(root, r.source));
     mixedReferences = true;

@@ -549,11 +549,15 @@ function directorCharacterVisualsOutputType() {
   };
 }
 
-function directorExecutionSlotsOutputType(duration = 5) {
+function directorExecutionSlotsOutputType(duration = 5, options = {}) {
   const seconds = Math.max(4, Math.min(30, Number(duration) || 5));
   const timeline = videoSlotsSchema();
   timeline.properties.shots_timeline.minItems = Math.ceil(seconds / 2);
   timeline.properties.shots_timeline.maxItems = Math.floor(seconds);
+  const allowTailVisuals = options?.allowTailVisuals ?? (options?.lastFramePolicy === 'generate_tail');
+  const tailVisualsSchema = allowTailVisuals
+    ? { type: 'array', maxItems: 3, items: characterVisualSchema() }
+    : { type: 'array', maxItems: 0, items: characterVisualSchema() };
   return {
     type: 'json_schema',
     name: 'director_execution_slots',
@@ -563,7 +567,7 @@ function directorExecutionSlotsOutputType(duration = 5) {
       required: ['character_visuals', 'last_frame_visuals', 'video_slots'],
       properties: {
         character_visuals: { type: 'array', maxItems: 3, items: characterVisualSchema() },
-        last_frame_visuals: { type: 'array', maxItems: 3, items: characterVisualSchema() },
+        last_frame_visuals: tailVisualsSchema,
         video_slots: timeline,
       },
     },
