@@ -243,6 +243,17 @@ describe('Director Boost Fixes Verification', () => {
     assert.equal(tailOutputType.schema.properties.last_frame_visuals.maxItems, 3);
   });
 
+  it('execution contract schema requires a complete incoming continuity object', () => {
+    const outputType = agentsRuntime.directorExecutionSlotsOutputType(5);
+    const semantic = outputType.schema.properties.semantic_slots;
+    assert.ok(semantic.required.includes('continuity_from_previous'));
+    assert.ok(semantic.required.includes('source_script_excerpt'));
+    assert.deepEqual(
+      semantic.properties.continuity_from_previous.required,
+      ['relationship', 'previous_end_state', 'entry_state', 'causal_link', 'sound_bridge', 'requires_previous_tail'],
+    );
+  });
+
   it('normalizeTimelineTimestamps calculates deterministic timestamps based on segment durations', () => {
     const timeline = [
       { shot_number: 1, duration: 2, timestamp: '00:00.000' },

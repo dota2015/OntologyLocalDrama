@@ -375,7 +375,11 @@ function semanticSlotsSchema(assignedIds = null) {
       continuity_type: nonEmptyStringSchema(),
       continuity_from_previous: {
         type: 'object', additionalProperties: false,
-        required: ['relationship', 'previous_end_state', 'entry_state', 'causal_link'],
+        // The opening shot also has an explicit continuity contract.  Keeping
+        // the audio bridge and tail dependency in the required shape prevents
+        // the execution agent from silently dropping the fields that the
+        // continuity gate needs to reason about.
+        required: ['relationship', 'previous_end_state', 'entry_state', 'causal_link', 'sound_bridge', 'requires_previous_tail'],
         properties: {
           relationship: nonEmptyStringSchema(),
           previous_end_state: stringSchema(500),
@@ -558,6 +562,14 @@ function directorExecutionSlotsOutputType(duration = 5, options = {}) {
   const tailVisualsSchema = allowTailVisuals
     ? { type: 'array', maxItems: 3, items: characterVisualSchema() }
     : { type: 'array', maxItems: 0, items: characterVisualSchema() };
+  // Do not leave this object open-ended.  The execution agent is the author of
+  // the semantic contract, so the structured-output schema must reject an
+  // incomplete contract before it reaches the invariant gate.  In particular,
+  // continuity_from_previous is required even for shot 1 (with relationship
+  // "opening" and an empty previous_end_state).
+  const semantic = semanticSlotsSchema();
+  semantic.required = [...semantic.required, 'source_script_excerpt'];
+  semantic.properties.source_script_excerpt = { type: 'string', maxLength: 2000 };
   return {
     type: 'json_schema',
     name: 'director_execution_slots',
@@ -567,7 +579,7 @@ function directorExecutionSlotsOutputType(duration = 5, options = {}) {
       required: ['semantic_slots', 'character_visuals', 'last_frame_visuals', 'video_slots'],
       properties: {
         // 语义槽位由导演 Agent 明确规划；本地编译器不得根据对白或动作自行猜测。
-        semantic_slots: { type: 'object', additionalProperties: true },
+        semantic_slots: semantic,
         character_visuals: { type: 'array', maxItems: 3, items: characterVisualSchema() },
         last_frame_visuals: tailVisualsSchema,
         video_slots: timeline,

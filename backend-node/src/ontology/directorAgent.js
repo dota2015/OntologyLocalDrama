@@ -2563,6 +2563,10 @@ function autoPatchWholeEpisodeViolations(shots, violations = [], options = {}) {
 async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
   const retry = directorRetryContext(retryOptions);
   const maxAttempts = Math.max(1, Math.min(5, Number(retryOptions.maxAttempts || retryOptions.max_attempts || 3)));
+  // Database rows use storyboard_number; the in-memory director payload uses
+  // shot_number.  Always resolve one display number so failures can be tied
+  // back to the actual storyboard instead of being reported as #undefined.
+  const shotNumber = shot?.shot_number || shot?.storyboard_number || shot?.id || '?';
   const semantic = shot?.semantic_slots && typeof shot.semantic_slots === 'object' ? shot.semantic_slots : {};
   const duration = Number(semantic.shot_duration || shot.duration || 5);
   const durationPlanContract = timelineDurationPlanContract(duration);
@@ -2580,8 +2584,16 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
     ['shot_duration', Number.isFinite(Number(semantic.shot_duration))],
     ['continuity_from_previous', semantic.continuity_from_previous && typeof semantic.continuity_from_previous === 'object'],
   ];
+  const continuityRequired = ['relationship', 'previous_end_state', 'entry_state', 'causal_link', 'sound_bridge', 'requires_previous_tail'];
+  const continuityMissing = (value) => continuityRequired.filter((field) => {
+    if (!value || typeof value !== 'object') return true;
+    if (field === 'requires_previous_tail') return typeof value[field] !== 'boolean';
+    return typeof value[field] !== 'string';
+  });
+  const continuityErrors = (value) => continuityMissing(value).map((field) => ({ message: `缺少 Agent 规划的 semantic_slots.continuity_from_previous.${field}` }));
   let errors = [
     ...(requireSemantic ? semanticRequired.filter(([, valid]) => !valid).map(([field]) => ({ message: `缺少 Agent 规划的 semantic_slots.${field}` })) : []),
+    ...(requireSemantic ? continuityErrors(semantic.continuity_from_previous) : []),
     ...visualSlotErrors(shot, shot.character_visuals, shot.last_frame_visuals).map(message => ({ message })),
     ...(shot.video_slots && typeof shot.video_slots === 'object'
       ? shortDramaTimelineViolations(shot, shot.video_slots.shots_timeline)
@@ -2603,7 +2615,7 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
     try {
       const planned = await agentsRuntime.runAgent(db, log, {
         name: 'director-execution-slots-planner',
-        instructions: `你是短剧导演的视听执行合同节点。你必须一次输出当前镜头完整的 semantic_slots、character_visuals、last_frame_visuals 和 video_slots；禁止改写顶层剧情、角色清单、场景、对白、旁白和总时长。semantic_slots 必须明确规划 visible_characters、background_characters、speech_plan、sound_plan、continuity_from_previous、source_script_excerpt、h3_mode、required_references、first_frame_policy、last_frame_policy、shot_duration；本系统 Agent 规划统一使用 h3_mode=ref2va，first_frame_policy/last_frame_policy 按剧情明确填写。不得根据缺失字段自行省略或让后端猜测。过肩与近景双人对话镜头严禁包含背景在场角色。人物定格槽位和镜内时间轴必须描述同一套物理动作与终态：character_visuals 是起幅定格，last_frame_visuals 是明确要求尾帧时的落幅定格；video_slots.shots_timeline 是唯一的动作、对白和反应时间轴权威。${durationPlanContract}。每个 1 或 2 秒段都要先写 camera 与 visible_characters，再为每位入画人物写 trajectory、terminal_pose、facial_expression、facing、head_pose、gaze、attention_target、gaze_motivation、reaction_trigger、mouth_state。含对白段必须在同一段 speech_action_alignment 中写 speech_window、speaker_action_window、speaker_action 和 listener_reactions，动作窗口必须与发声窗口重叠；不能把动作、听取反应或视线留到说完以后。无语言段按实际声音模式填写闭口状态。不要重复输出顶层剧情字段，不要解释，只返回指定 JSON。\n${DIRECTOR_ACTION_COMPLETION_CONTRACT}`,
+        instructions: `你是短剧导演的视听执行合同节点。你必须一次输出当前镜头完整的 semantic_slots、character_visuals、last_frame_visuals 和 video_slots；禁止改写顶层剧情、角色清单、场景、对白、旁白和总时长。semantic_slots 必须完整输出 visible_characters、background_characters、identity_visibility、speech_plan、sound_plan、continuity_type、continuity_from_previous、h3_mode、h3_mode_reason、first_frame_policy、first_frame_reason、last_frame_policy、last_frame_reason、required_references、audio_lip_sync、shot_duration、execution_backend、continuum_plan 和 source_script_excerpt。continuity_from_previous 即使是第1镜也必须输出完整对象：relationship 填 opening、previous_end_state 填空串，并同时填写 entry_state、causal_link、sound_bridge、requires_previous_tail。不得根据缺失字段自行省略或让后端猜测。本系统 Agent 规划统一使用 h3_mode=ref2va，first_frame_policy/last_frame_policy 按剧情明确填写。过肩与近景双人对话镜头严禁包含背景在场角色。人物定格槽位和镜内时间轴必须描述同一套物理动作与终态：character_visuals 是起幅定格，last_frame_visuals 是明确要求尾帧时的落幅定格；video_slots.shots_timeline 是唯一的动作、对白和反应时间轴权威。${durationPlanContract}。每个 1 或 2 秒段都要先写 camera 与 visible_characters，再为每位入画人物写 trajectory、terminal_pose、facial_expression、facing、head_pose、gaze、attention_target、gaze_motivation、reaction_trigger、mouth_state。含对白段必须在同一段 speech_action_alignment 中写 speech_window、speaker_action_window、speaker_action 和 listener_reactions，动作窗口必须与发声窗口重叠；不能把动作、听取反应或视线留到说完以后。无语言段按实际声音模式填写闭口状态。不要重复输出顶层剧情字段，不要解释，只返回指定 JSON。\n${DIRECTOR_ACTION_COMPLETION_CONTRACT}`,
         input: `【权威时长】${duration} 秒\n【权威人物】${JSON.stringify(shot.characters || semantic.visible_characters || [])}\n【权威数据库对白】${JSON.stringify(shot.dialogue || '')}\n【权威数据库旁白】${JSON.stringify(shot.narration || '')}\n【当前完整分镜，只读】${JSON.stringify(shot)}\n【本集全部分镜只读上下文】${JSON.stringify(retryOptions.allShots || [])}\n【上一镜执行合同】${JSON.stringify(retryOptions.previousShot || null)}\n【下一镜执行合同】${JSON.stringify(retryOptions.nextShot || null)}\n【本集剧本】${String(retryOptions.episodeScript || '').slice(0, 24000)}\n【本体资产目录】${JSON.stringify(retryOptions.catalogs || {})}\n【上一轮执行合同反馈】${errors.map(item => item.message).join('；')}`,
         outputType: agentsRuntime.directorExecutionSlotsOutputType(duration, { lastFramePolicy, allowTailVisuals }),
         maxTokens: 24576,
@@ -2640,6 +2652,7 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
           ['shot_duration', Number.isFinite(Number(plannedSemantic.shot_duration))],
           ['continuity_from_previous', plannedSemantic.continuity_from_previous && typeof plannedSemantic.continuity_from_previous === 'object'],
         ].filter(([, valid]) => !valid).map(([field]) => ({ message: `Agent 未输出 semantic_slots.${field}` })) : []),
+        ...(requireSemantic ? continuityErrors(plannedSemantic.continuity_from_previous) : []),
         ...visualSlotErrors(currentShot, currentShot.character_visuals, currentShot.last_frame_visuals).map(message => ({ message })),
         ...shortDramaTimelineViolations(currentShot, currentShot.video_slots?.shots_timeline),
       ];
@@ -2652,11 +2665,11 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
       }
       if (errors.length === 0) return currentShot;
 
-      reportDirectorLayerRetry(retry, `分镜 #${shot.shot_number} 视听执行合同`, attempt, errors.map(item => item.message).join('；'));
+      reportDirectorLayerRetry(retry, `分镜 #${shotNumber} 视听执行合同`, attempt, errors.map(item => item.message).join('；'));
     } catch (error) {
       lastFatalError = error;
       errors = [{ message: `视听执行合同 Agent 输出格式失败：${error.message}` }];
-      reportDirectorLayerRetry(retry, `分镜 #${shot.shot_number} 视听执行合同`, attempt, errors[0].message);
+      reportDirectorLayerRetry(retry, `分镜 #${shotNumber} 视听执行合同`, attempt, errors[0].message);
     }
   }
 
@@ -2676,7 +2689,7 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
     if (fallbackErrors.length === 0) return fallback;
   }
 
-  throw new Error(`分镜 #${shot.shot_number} 的视听执行合同经过 ${maxAttempts} 轮门禁反馈仍未通过：${errors.map(item => item.message).join('；')}`);
+  throw new Error(`分镜 #${shotNumber} 的视听执行合同经过 ${maxAttempts} 轮门禁反馈仍未通过：${errors.map(item => item.message).join('；')}`);
 }
 
 /**

@@ -40,7 +40,7 @@ test('directorTwoStageEnrichment: execution contract is authored by the Agent an
         background_characters: [],
         speech_plan: { speaker_id: 1, speaker_name: '露娜', text: '撤退！', is_narration: false },
         sound_plan: { sound_effects: [], bgm_prompt: '', acoustic_env: '室内', is_silent: false },
-        continuity_from_previous: { relationship: 'opening', previous_end_state: '', entry_state: '露娜抬手', causal_link: '开场' },
+        continuity_from_previous: { relationship: 'opening', previous_end_state: '', entry_state: '露娜抬手', causal_link: '开场', sound_bridge: '', requires_previous_tail: false },
         source_script_excerpt: '露娜: 撤退！',
         h3_mode: 'ref2va',
         required_references: [{ type: 'scene', id: 10 }, { type: 'character', id: 1 }],
