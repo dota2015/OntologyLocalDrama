@@ -172,6 +172,8 @@ function ontologyRoutes(db, log) {
               valid: false,
               violations: agentErr.violations || [],
               status: agentErr.status || 422,
+              stage: agentErr.stage || null,
+              partial_shot_count: agentErr.partial_shot_count || 0,
               planning_advice: agentErr.planning_advice || null,
               token_usage: agentErr.token_usage,
               trace_file: agentErr.trace_file,

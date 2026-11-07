@@ -1484,6 +1484,20 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
   } catch (err) {
     log.error('Storyboard generation failed', { error: err.message, task_id: taskId });
 
+    // The two-stage director pipeline owns the async task lifecycle.  Stage 1
+    // must never mark that task as completed/failed and then return to the
+    // caller: the pipeline would continue into Stage 2 with a terminal task
+    // and its progress callback would report the misleading
+    // "导演任务已停止" error.  Re-throw the original failure so the outer
+    // director runner records the real cause and preserves a resumable
+    // checkpoint instead.
+    if (pipelineOptions?.chainEnrichment) {
+      const stageError = err instanceof Error ? err : new Error(String(err || '基础分镜生成失败'));
+      stageError.stage = 'stage1';
+      stageError.partial_shot_count = streamSavedNums.size;
+      throw stageError;
+    }
+
     // 若连接中断（ECONNRESET 等）但已通过增量流式保存了部分分镜，视为部分成功而非彻底失败
     if (streamSavedNums.size > 0) {
       try {

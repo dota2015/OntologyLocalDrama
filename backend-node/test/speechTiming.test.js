@@ -306,6 +306,25 @@ test('failed insert rolls back deletion of old storyboards and all replacement i
   assert.equal(db.prepare('SELECT title FROM storyboards WHERE deleted_at IS NULL').get().title, '旧分镜');
 });
 
+test('two-stage base generation propagates stage-one failures instead of terminalizing the shared task', async t => {
+  const db = createTestDb();
+  t.after(() => db.close());
+  const state = mockStoryboardTask(t);
+  t.mock.method(aiClient, 'generateText', async () => {
+    throw new Error('simulated stage-one provider failure');
+  });
+
+  await assert.rejects(
+    episodeService.processStoryboardGeneration(
+      db, log, { style: {} }, 'director-task', 1, null, '', 'script', 'system', false, false, 5,
+      null, { chainEnrichment: true }
+    ),
+    /simulated stage-one provider failure/
+  );
+  assert.equal(state.error, undefined);
+  assert.equal(state.result, undefined);
+});
+
 test('mixed manual dialogue and stored narration share one budget, and English words cannot be merged', () => {
   assert.equal(timing.assessVideoSpeech({ narration: '字'.repeat(12) }, '台词：“' + '字'.repeat(12) + '”', 5).ok, true);
   assert.equal(preservesSpeech({ dialogue: 'ice cream' }, [{ dialogue: 'icecream' }]), false);

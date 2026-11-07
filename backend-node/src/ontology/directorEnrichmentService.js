@@ -12,6 +12,7 @@ const {
   ensureDirectorExecutionSlots,
   normalizeTimelineTimestamps,
 } = require('./directorAgent');
+const directorCheckpoint = require('../services/directorCheckpoint');
 
 function parseJsonValue(value, fallback = null) {
   if (value == null || value === '') return fallback;
@@ -244,7 +245,21 @@ async function runTwoStageDirectorPipeline(db, log, cfg, episodeId, options = {}
   const taskId = options.taskId;
   const onProgress = typeof options.onProgress === 'function' ? options.onProgress : () => {};
 
+  // Keep a durable checkpoint for the two-stage path as well.  Previously the
+  // checkpoint was only opened by the deep-ReAct runner, so a stage-one parse
+  // or provider failure left no resumable state and the UI could only report a
+  // generic stopped task.
+  const checkpoint = directorCheckpoint.open(
+    db, taskId, epId, cfg, options, options.resume_task_id
+  );
+  const checkpointState = checkpoint.state;
+  const saveProgress = (stage, message, extra = {}) => {
+    Object.assign(checkpointState, { stage, message, ...extra });
+    checkpoint.save();
+  };
+
   log.info('[两阶段导演流水线] 启动', { episode_id: epId, task_id: taskId });
+  saveProgress('stage1', '启动快速分镜引擎');
   onProgress(5, '【阶段 1/2】启动快速分镜引擎，正在解析剧本并流式生成基础分镜...');
 
   // 确保 storyboards 表具备本体列
@@ -273,18 +288,47 @@ async function runTwoStageDirectorPipeline(db, log, cfg, episodeId, options = {}
 
   // 1. 阶段一：快速全集基础分镜生成
   const { runStageOneBaseGeneration } = require('../services/episodeStoryboardService');
-  const stage1Result = await runStageOneBaseGeneration(db, log, epId, taskId, options);
+  let stage1Result;
+  try {
+    stage1Result = await runStageOneBaseGeneration(db, log, epId, taskId, options);
+  } catch (error) {
+    saveProgress('stage1_failed', error.message, {
+      partial_shot_count: Number(error.partial_shot_count || 0),
+      error: error.message,
+    });
+    throw error;
+  }
+  if (!stage1Result || !Array.isArray(stage1Result.storyboards) || stage1Result.storyboards.length === 0) {
+    const error = new Error('阶段一基础分镜未生成完整结果，已保留检查点，请重试或从检查点继续');
+    error.stage = 'stage1';
+    saveProgress('stage1_failed', error.message);
+    throw error;
+  }
 
   // 2. 阶段二：视听本体槽位装配与 SHACL 门禁闭环
-  onProgress(58, '【阶段 1/2】全集基础分镜生成完成！【阶段 2/2】开始装配视听本体槽位...');
-  const stage2Result = await enrichEpisodeOntologySlots(db, log, cfg, epId, {
-    ...options,
-    onProgress: (pct, msg) => {
-      const overallPct = 58 + Math.floor(pct * 0.40); // 58% -> 98%
-      onProgress(overallPct, `【阶段 2/2】${msg}`);
-    },
+  saveProgress('stage2', '基础分镜生成完成，开始装配视听执行合同', {
+    completed_shots: stage1Result.storyboards.length,
   });
+  onProgress(58, '【阶段 1/2】全集基础分镜生成完成！【阶段 2/2】开始装配视听本体槽位...');
+  let stage2Result;
+  try {
+    stage2Result = await enrichEpisodeOntologySlots(db, log, cfg, epId, {
+      ...options,
+      onProgress: (pct, msg) => {
+        const overallPct = 58 + Math.floor(pct * 0.40); // 58% -> 98%
+        saveProgress('stage2', msg, { stage2_progress: pct });
+        onProgress(overallPct, `【阶段 2/2】${msg}`);
+      },
+    });
+  } catch (error) {
+    saveProgress('stage2_failed', error.message, { error: error.message });
+    throw error;
+  }
 
+  checkpointState.stage = 'completed';
+  checkpointState.published = true;
+  checkpointState.completed_shots = stage2Result.total_shots;
+  checkpoint.save();
   onProgress(100, '两阶段极速导演分镜推演完毕，视听契约已完整入库。');
   return {
     success: true,
