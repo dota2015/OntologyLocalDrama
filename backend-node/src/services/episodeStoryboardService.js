@@ -1282,6 +1282,12 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
       if (streamSavedNums.size > 0) {
         const partialBoards = getStoryboardsForEpisode(db, episodeIdNum);
         if (partialBoards.length > 0) {
+          if (pipelineOptions?.chainEnrichment) {
+            const stageError = new Error(`阶段一分镜 JSON 解析失败：${e.message || '格式错误'}`);
+            stageError.stage = 'stage1';
+            stageError.partial_shot_count = partialBoards.length;
+            throw stageError;
+          }
           const totalDuration = partialBoards.reduce((s, sb) => s + (Number(sb.duration) || 0), 0);
           log.warn('Parse failed but partial storyboards already saved incrementally, treating as truncated success', {
             task_id: taskId, recovered_count: partialBoards.length, parse_error: e.message,
@@ -1298,6 +1304,12 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
         }
       }
 
+      if (pipelineOptions?.chainEnrichment) {
+        const stageError = new Error('阶段一分镜 JSON 解析失败：' + (e.message || '格式错误'));
+        stageError.stage = 'stage1';
+        stageError.partial_shot_count = streamSavedNums.size;
+        throw stageError;
+      }
       taskService.updateTaskError(db, taskId, '解析分镜头结果失败: ' + (e.message || ''));
       return;
     }
@@ -1307,6 +1319,12 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
       if (streamSavedNums.size > 0) {
         const partialBoards = getStoryboardsForEpisode(db, episodeIdNum);
         if (partialBoards.length > 0) {
+          if (pipelineOptions?.chainEnrichment) {
+            const stageError = new Error(`阶段一只解析出 ${partialBoards.length} 个分镜，未形成完整结果`);
+            stageError.stage = 'stage1';
+            stageError.partial_shot_count = partialBoards.length;
+            throw stageError;
+          }
           const totalDuration = partialBoards.reduce((s, sb) => s + (Number(sb.duration) || 0), 0);
           log.warn('Final parse returned 0 items but incremental saves exist, using those', {
             task_id: taskId, recovered_count: partialBoards.length,
@@ -1322,6 +1340,11 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
         }
       }
       log.error('AI returned 0 storyboards', { task_id: taskId });
+      if (pipelineOptions?.chainEnrichment) {
+        const stageError = new Error('阶段一 AI 未返回任何分镜');
+        stageError.stage = 'stage1';
+        throw stageError;
+      }
       taskService.updateTaskError(db, taskId, 'AI生成分镜失败：返回的分镜数量为0');
       return;
     }
