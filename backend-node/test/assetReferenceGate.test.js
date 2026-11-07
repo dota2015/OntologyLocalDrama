@@ -43,6 +43,20 @@ test('planning gate counts semantic visible and background characters as one set
   assert.equal(violations.some((item) => item.rule === 'INVARIANT_PLANNING_CHARACTER_CAPACITY'), true);
 });
 
+test('planning gate rejects divergent top-level and semantic character lists', () => {
+  const violations = checkPlanningFeasibility([{
+    shot_number: 5,
+    characters: [25],
+    background_characters: [],
+    semantic_slots: {
+      visible_characters: [{ id: 26 }],
+      background_characters: [],
+      required_references: [],
+    },
+  }], { catalogs });
+  assert.ok(violations.some((item) => item.rule === 'INVARIANT_CHARACTER_SLOT_DIVERGENCE'));
+});
+
 test('planning gate rejects unknown scene, prop, and required reference IDs', () => {
   const violations = checkPlanningFeasibility([{
     shot_number: 2,

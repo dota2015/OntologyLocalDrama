@@ -58,6 +58,12 @@ function shotCharacterIds(shot) {
   };
 }
 
+function sameIds(left, right) {
+  const a = [...new Set(left)].sort((x, y) => x - y);
+  const b = [...new Set(right)].sort((x, y) => x - y);
+  return a.length === b.length && a.every((id, index) => id === b[index]);
+}
+
 function planningFeasibilityViolations(shots, options = {}) {
   const catalogs = options.catalogs || {};
   const hasCharacterCatalog = Array.isArray(catalogs.characters);
@@ -72,6 +78,29 @@ function planningFeasibilityViolations(shots, options = {}) {
   shots.forEach((shot, index) => {
     const shotNumber = Number(shot?.shot_number || shot?.storyboard_number || index + 1);
     const chars = shotCharacterIds(shot);
+    const semantic = semanticObject(shot);
+    if (shot?.characters != null && semantic.visible_characters != null && !sameIds(chars.visible, chars.semanticVisible)) {
+      violations.push({
+        rule: 'INVARIANT_CHARACTER_SLOT_DIVERGENCE', shot_number: shotNumber, severity: 'error',
+        conflict_slots: ['characters', 'semantic_slots.visible_characters'],
+        message: `分镜 #${shotNumber} 的顶层 characters 与 semantic_slots.visible_characters 不一致，必须在导演规划阶段统一人物清单。`,
+      });
+    }
+    if (shot?.background_characters != null && semantic.background_characters != null && !sameIds(chars.background, chars.semanticBackground)) {
+      violations.push({
+        rule: 'INVARIANT_CHARACTER_SLOT_DIVERGENCE', shot_number: shotNumber, severity: 'error',
+        conflict_slots: ['background_characters', 'semantic_slots.background_characters'],
+        message: `分镜 #${shotNumber} 的顶层 background_characters 与 semantic_slots.background_characters 不一致，必须在导演规划阶段统一人物清单。`,
+      });
+    }
+    const dualRoles = chars.semanticVisible.filter((id) => chars.semanticBackground.includes(id));
+    if (dualRoles.length) {
+      violations.push({
+        rule: 'INVARIANT_CHARACTER_DUAL_ROLE_CONFLICT', shot_number: shotNumber, severity: 'error',
+        conflict_slots: ['semantic_slots.visible_characters', 'semantic_slots.background_characters'],
+        message: `分镜 #${shotNumber} 的角色 ID [${dualRoles.join(', ')}] 同时被列为主体和背景人物，必须由导演明确唯一定位。`,
+      });
+    }
     const reportUnknown = (set, values, rule, label, slots) => {
       if (!set.size) return;
       for (const id of [...new Set(values)]) {
@@ -103,7 +132,6 @@ function planningFeasibilityViolations(shots, options = {}) {
       }
       const propIds = ids(shot.props ?? shot.prop_ids, ['prop_id', 'id']);
       if (hasPropCatalog) reportUnknown(knownProps, propIds, 'INVARIANT_UNKNOWN_PROP_REFERENCE', '道具', ['props', 'prop_ids']);
-      const semantic = semanticObject(shot);
       const refs = arrayValue(semantic.required_references);
       refs.forEach((ref) => {
         const type = String(ref?.type || '').toLowerCase();
