@@ -20,6 +20,7 @@ const ObsoleteAssetsRule = require('./rules/obsoleteAssetsRule');
 const SceneCoPresenceRule = require('./rules/sceneCoPresenceRule');
 const ShotTransitionContinuityRule = require('./rules/shotTransitionContinuityRule');
 const { CrossSlotInvariantsRule } = require('./rules/crossSlotRules');
+const { AssetReferenceRule, planningFeasibilityViolations } = require('./rules/assetReferenceRule');
 const { InvariantRuleEngine, defaultEngine } = require('./ruleEngine');
 
 // 实例化用于直接独立调用的单例规则
@@ -174,6 +175,7 @@ module.exports = {
   SceneCoPresenceRule,
   ShotTransitionContinuityRule,
   CrossSlotInvariantsRule,
+  AssetReferenceRule,
 
   // 词表与辅助函数
   FORBIDDEN_METAPHORS,
@@ -195,5 +197,6 @@ module.exports = {
   checkSceneCoPresence: (shots) => sceneCoPresenceRule.evaluate({ shots }),
   checkShotTransitionContinuity: (shots) => shotTransitionRule.evaluate({ shots }),
   checkCrossSlotInvariants: (shots) => crossSlotRule.evaluate({ shots }),
+  checkPlanningFeasibility: (shots, options = {}) => planningFeasibilityViolations(shots, options),
   validateAllInvariants,
 };

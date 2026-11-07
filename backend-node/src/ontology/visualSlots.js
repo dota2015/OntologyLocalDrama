@@ -14,6 +14,9 @@
 
 const SCREEN_POSITION_REGEX = /(?:画面(?:左侧|右侧|中央|正中|正中央|左前|右前|左后|右后|左前方|右前方|左后方|右后方|前景|中景|后景|近景|远景|深处|景深处|左半部|右半部|边缘|靠左|靠右|靠前|靠后|左侧中景|右侧中景|左侧远景|右侧远景|左侧前景|右侧前景|左侧近景|右侧近景)|左下角|右下角|左上方|右上方|左下方|右下方|左侧三分线|右侧三分线|三分线|居中|偏左|偏右|靠左|靠右|正中央|正中|中央|左侧|右侧|左前方?|右前方?|左后方?|右后方?|前景|中景|后景|景深处|近景|远景|screen_left|screen_right|screen_center|foreground|midground|background)/i;
 const FACING_REGEX = /(?:正面|正对|背对|背面|背向|朝左|朝右|朝前|朝后|侧身|侧向|侧面|微侧|三刻|四分之三|3\/4|转朝|面朝|面对|朝向|面向|斜向|前左|前右|后左|后右|左前|右前|左后|右后|左侧|右侧|剪影|front|back|left|right|facing|three_quarter|profile)/i;
+// 位置/视线方向（例如“画面左侧”“画面上方”）不能冒充人物身体朝向。
+// facing 至少要出现身体朝向关系或明确的正/背/侧面姿态词。
+const FACING_BODY_REGEX = /(?:正面|正对|背对|背面|背向|朝左|朝右|朝前|朝后|侧身|侧向|侧面|微侧|三刻|四分之三|3\/4|转朝|面朝|面对|朝向|面向|斜向|剪影|front|back|facing|three_quarter|profile)/i;
 const HEAD_POSE_REGEX = /(?:头|仰|低头|偏头|转头|正对|回望|俯视|仰视|侧头|head|tilt|turn)/i;
 const GAZE_REGEX = /(?:目光|视线|看|眼|注视|盯|凝视|锁定|瞄准|gaze|look|eye|watch)/i;
 const POSTURE_REGEX = /(?:站|蹲|坐|卧|趴|扑|俯|仰|倾|跪|靠|crouch|stand|kneel|lean|prone|sit|lie|stride|奔|跑|跃|步|斜躺|低姿|姿态|姿势|姿|立|挺|后仰|消散|瘫|倒)/i;
@@ -107,7 +110,7 @@ function validateCharacterVisualSlots(shot, slots = [], slotField = 'character_v
     }
 
     // 2. 朝向槽位必须明确（防止参考图正面呆立）
-    if (!slot.facing || !FACING_REGEX.test(slot.facing)) {
+    if (!slot.facing || !FACING_REGEX.test(slot.facing) || !FACING_BODY_REGEX.test(slot.facing)) {
       violations.push({
         rule: 'INVARIANT_SLOT_MISSING_FACING',
         shot_number: shotNum,
@@ -736,6 +739,7 @@ function synthesizeLastFrameVisualSlots(shot, catalogCharacters = [], firstFrame
 module.exports = {
   SCREEN_POSITION_REGEX,
   FACING_REGEX,
+  FACING_BODY_REGEX,
   HEAD_POSE_REGEX,
   GAZE_REGEX,
   POSTURE_REGEX,

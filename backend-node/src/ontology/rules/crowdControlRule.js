@@ -2,7 +2,7 @@
  * 门禁 3：群戏防人脸崩溃与防克隆人检查（单镜角色 <= 3）
  */
 const BaseInvariantRule = require('./baseRule');
-const { parseCharacterIds } = require('./visualSlotCompletenessRule');
+const { shotCharacterIds } = require('./assetReferenceRule');
 
 class CrowdControlRule extends BaseInvariantRule {
   constructor() {
@@ -22,7 +22,7 @@ class CrowdControlRule extends BaseInvariantRule {
 
     shots.forEach((shot, idx) => {
       const shotNum = shot.shot_number || (idx + 1);
-      const charIds = parseCharacterIds(shot.character_ids || shot.characters);
+      const charIds = shotCharacterIds(shot).all;
       if (charIds.length > 3) {
         violations.push({
           rule: 'INVARIANT_CROWD_COLLAPSE_RISK',

@@ -8,7 +8,7 @@
  */
 
 const { compileDramaSemanticPackage } = require('./semanticPackage');
-const { validateAllInvariants, checkSpeechTiming } = require('./invariants');
+const { validateAllInvariants, checkSpeechTiming, checkPlanningFeasibility } = require('./invariants');
 const { validateVideoSlots, formatH3Timestamp, isGazeOnlyHold, mouthIsSealed } = require('./videoSlots');
 const { validateCharacterVisualSlots, SCREEN_POSITION_REGEX, FACING_REGEX, HEAD_POSE_REGEX, GAZE_REGEX, POSTURE_REGEX, HANDS_REGEX, CLONE_TRIGGER_REGEX, DYNAMIC_REGEX } = require('./visualSlots');
 const { extractAllEntitiesFromScript } = require('./extractionAgent');
@@ -2567,6 +2567,13 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
   // shot_number.  Always resolve one display number so failures can be tied
   // back to the actual storyboard instead of being reported as #undefined.
   const shotNumber = shot?.shot_number || shot?.storyboard_number || shot?.id || '?';
+  const planningViolations = checkPlanningFeasibility([shot], { catalogs: retryOptions.catalogs || {} });
+  if (planningViolations.length) {
+    const error = new Error(`分镜 #${shotNumber} 的导演规划不可执行：${planningViolations.map((item) => item.message).join('；')}`);
+    error.status = 422;
+    error.violations = planningViolations;
+    throw error;
+  }
   const semantic = shot?.semantic_slots && typeof shot.semantic_slots === 'object' ? shot.semantic_slots : {};
   const duration = Number(semantic.shot_duration || shot.duration || 5);
   const durationPlanContract = timelineDurationPlanContract(duration);
@@ -2615,7 +2622,7 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
     try {
       const planned = await agentsRuntime.runAgent(db, log, {
         name: 'director-execution-slots-planner',
-        instructions: `你是短剧导演的视听执行合同节点。你必须一次输出当前镜头完整的 semantic_slots、character_visuals、last_frame_visuals 和 video_slots；禁止改写顶层剧情、角色清单、场景、对白、旁白和总时长。semantic_slots 必须完整输出 visible_characters、background_characters、identity_visibility、speech_plan、sound_plan、continuity_type、continuity_from_previous、h3_mode、h3_mode_reason、first_frame_policy、first_frame_reason、last_frame_policy、last_frame_reason、required_references、audio_lip_sync、shot_duration、execution_backend、continuum_plan 和 source_script_excerpt。continuity_from_previous 即使是第1镜也必须输出完整对象：relationship 填 opening、previous_end_state 填空串，并同时填写 entry_state、causal_link、sound_bridge、requires_previous_tail。不得根据缺失字段自行省略或让后端猜测。本系统 Agent 规划统一使用 h3_mode=ref2va，first_frame_policy/last_frame_policy 按剧情明确填写。过肩与近景双人对话镜头严禁包含背景在场角色。人物定格槽位和镜内时间轴必须描述同一套物理动作与终态：character_visuals 是起幅定格，last_frame_visuals 是明确要求尾帧时的落幅定格；video_slots.shots_timeline 是唯一的动作、对白和反应时间轴权威。${durationPlanContract}。每个 1 或 2 秒段都要先写 camera 与 visible_characters，再为每位入画人物写 trajectory、terminal_pose、facial_expression、facing、head_pose、gaze、attention_target、gaze_motivation、reaction_trigger、mouth_state。含对白段必须在同一段 speech_action_alignment 中写 speech_window、speaker_action_window、speaker_action 和 listener_reactions，动作窗口必须与发声窗口重叠；不能把动作、听取反应或视线留到说完以后。无语言段按实际声音模式填写闭口状态。不要重复输出顶层剧情字段，不要解释，只返回指定 JSON。\n${DIRECTOR_ACTION_COMPLETION_CONTRACT}`,
+        instructions: `你是短剧导演的视听执行合同节点。你必须一次输出当前镜头完整的 semantic_slots、character_visuals、last_frame_visuals 和 video_slots；禁止改写顶层剧情、角色清单、场景、对白、旁白和总时长。semantic_slots 必须完整输出 visible_characters、background_characters、identity_visibility、speech_plan、sound_plan、continuity_type、continuity_from_previous、h3_mode、h3_mode_reason、first_frame_policy、first_frame_reason、last_frame_policy、last_frame_reason、required_references、audio_lip_sync、shot_duration、execution_backend、continuum_plan 和 source_script_excerpt。continuity_from_previous 即使是第1镜也必须输出完整对象：relationship 填 opening、previous_end_state 填空串，并同时填写 entry_state、causal_link、sound_bridge、requires_previous_tail。不得根据缺失字段自行省略或让后端猜测。本系统 Agent 规划统一使用 h3_mode=ref2va，first_frame_policy/last_frame_policy 按剧情明确填写。过肩与近景双人对话镜头严禁包含背景在场角色。人物定格槽位和镜内时间轴必须描述同一套物理动作与终态：character_visuals 是起幅定格，last_frame_visuals 是明确要求尾帧时的落幅定格；video_slots.shots_timeline 是唯一的动作、对白和反应时间轴权威。${durationPlanContract}。每个 1 或 2 秒段都要先写 camera 与 visible_characters，再为每位入画人物写 trajectory、terminal_pose、facial_expression、facing、head_pose、gaze、attention_target、gaze_motivation、reaction_trigger、mouth_state。facing 必须写身体本身的朝向（如“侧身朝向画面左侧”“四分之三侧身面对受话人”“背向镜头”），不能只写“画面上方/山坡方向/看向某处”等目标或视线方向；目标方向另写在 gaze 和 attention_target。含对白段必须在同一段 speech_action_alignment 中写 speech_window、speaker_action_window、speaker_action 和 listener_reactions，动作窗口必须与发声窗口重叠；不能把动作、听取反应或视线留到说完以后。无语言段按实际声音模式填写闭口状态。不要重复输出顶层剧情字段，不要解释，只返回指定 JSON。\n${DIRECTOR_ACTION_COMPLETION_CONTRACT}`,
         input: `【权威时长】${duration} 秒\n【权威人物】${JSON.stringify(shot.characters || semantic.visible_characters || [])}\n【权威数据库对白】${JSON.stringify(shot.dialogue || '')}\n【权威数据库旁白】${JSON.stringify(shot.narration || '')}\n【当前完整分镜，只读】${JSON.stringify(shot)}\n【本集全部分镜只读上下文】${JSON.stringify(retryOptions.allShots || [])}\n【上一镜执行合同】${JSON.stringify(retryOptions.previousShot || null)}\n【下一镜执行合同】${JSON.stringify(retryOptions.nextShot || null)}\n【本集剧本】${String(retryOptions.episodeScript || '').slice(0, 24000)}\n【本体资产目录】${JSON.stringify(retryOptions.catalogs || {})}\n【上一轮执行合同反馈】${errors.map(item => item.message).join('；')}`,
         outputType: agentsRuntime.directorExecutionSlotsOutputType(duration, { lastFramePolicy, allowTailVisuals }),
         maxTokens: 24576,
@@ -2863,7 +2870,7 @@ ${DIRECTOR_ACTION_COMPLETION_CONTRACT}
    - 上述三种无语言模式中，顶层 dialogue/narration、semantic_slots.speech_plan.text、video_slots.audio_lip_sync.dialogue_content 必须全部为空；video_slots.trajectories 与每个 shots_timeline.character_trajectories 的 mouth_state 必须明确为“双唇紧闭无口型”。
 3. **H3 视频生成物理硬约束与智能拆镜（适配 H3 模型 9 张参考图物理上限）**：
    - **模型物理上限为 9 张参考图**：MiniMax H3 单镜头输入包含：首尾帧锚点（至多2张）+ 场景图（1张）+ 角色人设图（每人1张）+ 道具图（每件1张）。一旦超出 9 张或单镜要素过多，模型将严重变形、崩溃或报错！
-   - **单镜出场角色严格限制在 1～2 人**：绝不可把 3 个及以上角色塞入同一个分镜！遇多人交互场景，**必须主动拆镜**为正反打镜头序列（如：镜1「角色A动作中景」➔ 镜2「角色B反应特写/反打」➔ 镜3「角色C介入动作」）。
+   - **单镜出场角色最多 3 人**：主体与背景角色去重后绝不能超过 3 人；近景、过肩和正反打优先规划 1～2 人。遇到第 4 个身份角色必须拆镜，敌军、群众和火力事件若没有剧库角色资产只能写成环境事件，不能虚构角色 ID。
    - **单镜核心交互道具严格限制在 1 件**（至多不超过 2 件）：每个分镜只能聚焦 1 个核心交互道具（如拔枪、递药、看屏幕）。无实质物理交互的静态背景物件不作为道具挂载，**严禁在一个镜头中挂载 3 件以上道具**！
    - **按连贯事件规划，不按动作个数拆镜**：单个 4~30 秒分镜可以包含多个连续或同时发生的动作、对白和人物反应；9秒以上由 Continuum 承载。不得把一句对白、一个动作、一个反应机械拆成独立分镜。仅当实际台词或事件超过30秒、场景或造型变化、或剧情确需独立视角时拆镜。
    - **镜内剪辑节奏**：每个外层分镜在 video_slots.shots_timeline 中必须规划连续的 1 或 2 个整数秒动作段，总和精确等于本镜4～30秒时长。4～8秒使用普通H3，9～30秒使用Continuum；每段先声明本段 camera 和 visible_characters，再约束每个实际入画角色在该窗口内的动作、表情或因果反应。不得用一个完整大段、静态机位、无意义特写或安静互看填时长。
@@ -3098,6 +3105,10 @@ ${batch.script_segment}
         candidate.forEach((shot, index) => {
           if (Number(shot.duration) !== batchPacing[index].duration) throw new Error(`分镜 #${firstShotNumber + index} 时长应为导演规划的 ${batchPacing[index].duration} 秒，实际为 ${shot.duration} 秒，请修正`);
         });
+        const planningViolations = checkPlanningFeasibility(candidate, { catalogs: semPkg.catalogs });
+        if (planningViolations.length) {
+          throw new Error(`导演初稿规划可行性门禁未通过：${planningViolations.map((item) => item.message).join('；')}`);
+        }
         batchShots = batchMode ? materializeDirectorDraftBatchExcerpts(batch, candidate) : candidate;
         break;
       } catch (batchErr) {
@@ -3132,6 +3143,11 @@ ${batch.script_segment}
           maxAttempts: 2,
           onProgress,
           progress: shotProgress,
+          catalogs: semPkg.catalogs,
+          episodeScript: scriptContent,
+          allShots: shots,
+          previousShot: shots[shots.length - 1] || null,
+          nextShot: batchShots[shotIndex + 1] || null,
         };
         return ensureDirectorExecutionSlots(db, log, shot, shotRetry);
       })
@@ -3164,8 +3180,10 @@ ${batch.script_segment}
     dramaEra: semPkg.drama.era,
     directorPlanningMode: universalOmni ? 'universal' : 'classic',
     requestedPacing,
-    characterList: semPkg.characters,
-    dramaCharacters: semPkg.characters,
+    characterList: semPkg.catalogs.characters,
+    dramaCharacters: semPkg.catalogs.characters,
+    catalogs: semPkg.catalogs,
+    scriptContent,
   };
   let audit = auditDirectorDraft(shots, invariantOptions);
   directorTrace.record('draft_audited', { episode_id: episodeId, shots, audit });

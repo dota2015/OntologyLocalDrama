@@ -7,7 +7,7 @@
  */
 
 const { compileDramaSemanticPackage } = require('./semanticPackage');
-const { validateAllInvariants } = require('./invariants');
+const { validateAllInvariants, checkPlanningFeasibility } = require('./invariants');
 const {
   ensureDirectorExecutionSlots,
   normalizeTimelineTimestamps,
@@ -78,6 +78,13 @@ async function enrichEpisodeOntologySlots(db, log, cfg, episodeId, options = {})
   onProgress(15, `已加载 ${rows.length} 个基础分镜，开始装配视听契约与镜内时间线...`);
 
   const normalizedShots = rows.map(normalizeStoryboardForAgent);
+  const planningViolations = checkPlanningFeasibility(normalizedShots, { catalogs: pkg.catalogs });
+  if (planningViolations.length) {
+    const error = new Error(`阶段二执行前的导演规划可行性门禁未通过：${planningViolations.map((item) => item.message).join('；')}`);
+    error.status = 422;
+    error.violations = planningViolations;
+    throw error;
+  }
   let enrichedShots = [];
   const maxAttempts = Math.max(1, Math.min(5, Number(options.maxAttempts || options.max_attempts || 3)));
 

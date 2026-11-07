@@ -2,7 +2,7 @@
  * 门禁：H3视频参考图物理上限与复杂度审查（单镜角色<=3，核心道具<=2）
  */
 const BaseInvariantRule = require('./baseRule');
-const { parseCharacterIds } = require('./visualSlotCompletenessRule');
+const { shotCharacterIds } = require('./assetReferenceRule');
 
 class H3ReferenceCapacityRule extends BaseInvariantRule {
   constructor() {
@@ -22,7 +22,7 @@ class H3ReferenceCapacityRule extends BaseInvariantRule {
 
     shots.forEach((shot, idx) => {
       const shotNum = shot.shot_number || (idx + 1);
-      const charIds = parseCharacterIds(shot.character_ids || shot.characters);
+      const charIds = shotCharacterIds(shot).all;
       const propIds = Array.isArray(shot.props) ? shot.props : (Array.isArray(shot.prop_ids) ? shot.prop_ids : []);
 
       if (charIds.length > 3) {
@@ -39,6 +39,18 @@ class H3ReferenceCapacityRule extends BaseInvariantRule {
           shot_number: shotNum,
           severity: this.defaultSeverity,
           message: `分镜 ${shotNum} 挂载道具超过2件（当前${propIds.length}件），超出 H3 参考图槽位上限，必须拆镜精简！`,
+        });
+      }
+      const semantic = typeof shot.semantic_slots === 'string'
+        ? (() => { try { return JSON.parse(shot.semantic_slots); } catch (_) { return {}; } })()
+        : (shot.semantic_slots || {});
+      const refs = Array.isArray(semantic?.required_references) ? semantic.required_references : [];
+      if (refs.length > 9) {
+        violations.push({
+          rule: 'INVARIANT_H3_REFERENCE_OVERLOAD',
+          shot_number: shotNum,
+          severity: this.defaultSeverity,
+          message: `分镜 ${shotNum} 需要 ${refs.length} 张参考图，超过 H3 单镜 9 张参考图上限，必须减少非核心参考或拆镜！`,
         });
       }
     });

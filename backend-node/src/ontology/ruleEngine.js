@@ -17,6 +17,7 @@ const ObsoleteAssetsRule = require('./rules/obsoleteAssetsRule');
 const SceneCoPresenceRule = require('./rules/sceneCoPresenceRule');
 const ShotTransitionContinuityRule = require('./rules/shotTransitionContinuityRule');
 const { CrossSlotInvariantsRule } = require('./rules/crossSlotRules');
+const { AssetReferenceRule } = require('./rules/assetReferenceRule');
 const { CAMERA_MOVEMENTS } = require('./schema');
 
 class InvariantRuleEngine {
@@ -40,6 +41,7 @@ class InvariantRuleEngine {
     this.registerRule(new SceneCoPresenceRule());
     this.registerRule(new ShotTransitionContinuityRule());
     this.registerRule(new CrossSlotInvariantsRule());
+    this.registerRule(new AssetReferenceRule());
   }
 
   /**
