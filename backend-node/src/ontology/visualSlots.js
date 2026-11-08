@@ -17,8 +17,12 @@ const FACING_REGEX = /(?:正面|正对|背对|背面|背向|朝左|朝右|朝前
 // 位置/视线方向（例如“画面左侧”“画面上方”）不能冒充人物身体朝向。
 // facing 至少要出现身体朝向关系或明确的正/背/侧面姿态词。
 const FACING_BODY_REGEX = /(?:正面|正对|背对|背面|背向|朝左|朝右|朝前|朝后|侧身|侧向|侧面|微侧|三刻|四分之三|3\/4|转朝|面朝|面对|朝向|面向|斜向|剪影|front|back|facing|three_quarter|profile)/i;
-const HEAD_POSE_REGEX = /(?:头|仰|低头|偏头|转头|正对|回望|俯视|仰视|侧头|head|tilt|turn)/i;
-const GAZE_REGEX = /(?:目光|视线|看|眼|注视|盯|凝视|锁定|瞄准|gaze|look|eye|watch)/i;
+// Accept ordinary physical descriptions produced by the execution Agent as
+// well as the canonical examples.  The gate must reject an omitted slot, not
+// reject a valid phrase merely because it uses a natural synonym such as
+// “下巴略收” or “直视前方”.
+const HEAD_POSE_REGEX = /(?:头|仰|低头|偏头|转头|正对|回望|俯视|仰视|侧头|前倾|后仰|下颌|下巴|抬头|颈部|head|tilt|turn|chin|nod)/i;
+const GAZE_REGEX = /(?:目光|视线|看|眼|注视|盯|凝视|锁定|瞄准|直视|望向|望着|凝望|注目|视向|gaze|look|eye|watch|stare|gaze)/i;
 const POSTURE_REGEX = /(?:站|蹲|坐|卧|趴|扑|俯|仰|倾|跪|靠|crouch|stand|kneel|lean|prone|sit|lie|stride|奔|跑|跃|步|斜躺|低姿|姿态|姿势|姿|立|挺|后仰|消散|瘫|倒)/i;
 const HANDS_REGEX = /(?:手|臂|指|握|按|托|撑|抱|搭|提|拿|拉|伸|扣|掌|持|抓|悬|垂|置|放|hand|arm|finger|hold|grip|press)/i;
 

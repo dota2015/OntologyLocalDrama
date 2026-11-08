@@ -362,6 +362,23 @@ describe('Audiovisual Drama Ontology & Semantic Invariants', () => {
     };
     const v3 = checkVisualSlotCompleteness([goodShot]);
     assert.equal(v3.length, 0);
+
+    // Natural but valid Agent wording must not be rejected as a missing slot.
+    const naturalShot = {
+      shot_number: 6,
+      characters: '[101]',
+      character_visuals: [{
+        character_id: 101,
+        name: '红狼',
+        screen_position: '画面中央偏下',
+        facing: '四分之三侧身朝向画面右侧',
+        head_pose: '微微前倾，下巴略收',
+        gaze: '直视画面右侧深处',
+        posture: '身体前倾呈冲锋姿态',
+        hands: '双手紧握武器',
+      }],
+    };
+    assert.equal(checkVisualSlotCompleteness([naturalShot]).length, 0);
   });
 
   it('compileImagePromptFromSlots and synthesizeCharacterVisualSlots assemble complete static frame prompts', () => {
