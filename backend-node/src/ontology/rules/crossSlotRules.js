@@ -509,12 +509,12 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
           conflict_slots: ['speech_plan.audio_references'],
         });
       }
-      if (visibleCount > 3) {
+      if (visibleCount > 2) {
         violations.push({
           rule: 'INVARIANT_REFERENCE_CAPACITY_EXCEEDED',
           shot_number: shotNum,
           severity: this.defaultSeverity,
-          message: `分镜 #${shotNum} 画内主角超过 3 人（当前 ${visibleCount} 人），超出 H3 视频生成人脸保持上限，必须拆镜为正反打或特写！`,
+          message: `分镜 #${shotNum} 画内身份角色超过 2 人（当前 ${visibleCount} 人），必须拆镜为正反打或特写；路人/群众请改写为环境事件！`,
           conflict_slots: ['visible_characters'],
         });
       }

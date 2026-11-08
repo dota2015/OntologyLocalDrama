@@ -103,11 +103,11 @@ describe('Audiovisual Drama Ontology & Semantic Invariants', () => {
     assert.equal(violations.length, 0);
   });
 
-  it('Invariant checkCrowdControl flags single shots with >3 characters (crowd overload)', () => {
+  it('Invariant checkCrowdControl flags single shots with >2 identity characters (crowd overload)', () => {
     const shots = [
       { shot_number: 1, character_ids: [1, 2] },
-      { shot_number: 2, character_ids: [1, 2, 3] }, // 3人完全合法，符合用户需求
-      { shot_number: 3, character_ids: [1, 2, 3, 4] }, // >3人过载触发硬门禁
+      { shot_number: 2, character_ids: [1, 2] }, // 双人对话完全合法
+      { shot_number: 3, character_ids: [1, 2, 3] }, // >2人过载触发硬门禁
     ];
     const violations = checkCrowdControl(shots);
     assert.equal(violations.length, 1);

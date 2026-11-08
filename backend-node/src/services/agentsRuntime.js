@@ -222,7 +222,7 @@ function timelineSegmentSchema() {
       action: { type: 'string', minLength: 1, maxLength: 120 },
       result: { type: 'string', minLength: 1, maxLength: 120, description: '本段事件的实际结果，与参与人物的 terminal_pose 一致；未完成或被打断须按剧情明确结果。' },
       visible_characters: {
-        type: 'array', maxItems: 3,
+        type: 'array', maxItems: 2,
         description: '本段构图中实际入画的人物；特写、过肩和画外音可只列出当前可见人物，不得把未入画人物塞入轨迹。',
         items: {
           type: 'object', additionalProperties: false, required: ['character_id', 'name'],
@@ -346,13 +346,13 @@ function semanticSlotsSchema(assignedIds = null) {
     required,
     properties: {
       visible_characters: {
-        type: 'array', maxItems: 3,
+        type: 'array', maxItems: 2,
         items: {
           type: 'object', additionalProperties: false, required: ['id', 'name'],
           properties: { id: { type: 'integer', minimum: 1 }, name: stringSchema(80) },
         },
       },
-      background_characters: { type: 'array', maxItems: 3, items: backgroundCharacterSchema() },
+      background_characters: { type: 'array', maxItems: 2, items: backgroundCharacterSchema() },
       identity_visibility: nonEmptyStringSchema(),
       speech_plan: {
         type: 'object', additionalProperties: false,
@@ -432,8 +432,8 @@ function storyboardItemSchema(assignedIds = null) {
     long_take_role: { type: 'null' },
     long_take_sequence: { type: 'null' },
     title: stringSchema(80), scene_id: { type: 'integer', minimum: 1 },
-    characters: { type: 'array', maxItems: 3, items: { type: 'integer', minimum: 1 } },
-    background_characters: { type: 'array', maxItems: 3, items: backgroundCharacterSchema() },
+    characters: { type: 'array', maxItems: 2, items: { type: 'integer', minimum: 1 } },
+    background_characters: { type: 'array', maxItems: 2, items: backgroundCharacterSchema() },
     identity_visibility: stringSchema(80),
     wardrobe_id: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] },
     speech_plan: { type: 'object' }, sound_plan: { type: 'object' }, continuity_type: stringSchema(80),
@@ -452,8 +452,8 @@ function storyboardItemSchema(assignedIds = null) {
     duration: { type: 'integer', minimum: 4, maximum: 30 }, action: stringSchema(500), result: stringSchema(400),
     dialogue: stringSchema(500), narration: stringSchema(500), bgm_prompt: stringSchema(300), sound_effect: stringSchema(300),
     layout_description: stringSchema(500), emotion: stringSchema(120),
-    character_visuals: { type: 'array', maxItems: 3, items: characterVisualSchema() },
-    last_frame_visuals: { type: 'array', maxItems: 3, items: characterVisualSchema() },
+    character_visuals: { type: 'array', maxItems: 2, items: characterVisualSchema() },
+    last_frame_visuals: { type: 'array', maxItems: 2, items: characterVisualSchema() },
     video_slots: videoSlotsSchema(), semantic_slots: semanticSlotsSchema(assignedIds),
     creation_mode: stringSchema(80), universal_segment_text: stringSchema(1200),
     image_prompt: stringSchema(1200), last_frame_prompt: stringSchema(1200),
@@ -480,8 +480,8 @@ function storyboardDraftItemSchema(assignedIds = null) {
     properties: {
       shot_number: { type: 'integer', minimum: 1 },
       title: stringSchema(80), scene_id: { type: 'integer', minimum: 1 },
-      characters: { type: 'array', maxItems: 3, items: { type: 'integer', minimum: 1 } },
-      background_characters: { type: 'array', maxItems: 3, items: backgroundCharacterSchema() },
+      characters: { type: 'array', maxItems: 2, items: { type: 'integer', minimum: 1 } },
+      background_characters: { type: 'array', maxItems: 2, items: backgroundCharacterSchema() },
       props: { type: 'array', maxItems: 2, items: { type: 'integer', minimum: 1 } },
       shot_type: stringSchema(80), angle_h: stringSchema(80), angle_v: stringSchema(80), angle_s: stringSchema(80),
       movement: stringSchema(80), lighting_style: stringSchema(80), depth_of_field: stringSchema(80),
@@ -546,8 +546,8 @@ function directorCharacterVisualsOutputType() {
       type: 'object', additionalProperties: false,
       required: ['character_visuals', 'last_frame_visuals'],
       properties: {
-        character_visuals: { type: 'array', maxItems: 3, items: characterVisualSchema() },
-        last_frame_visuals: { type: 'array', maxItems: 3, items: characterVisualSchema() },
+      character_visuals: { type: 'array', maxItems: 2, items: characterVisualSchema() },
+      last_frame_visuals: { type: 'array', maxItems: 2, items: characterVisualSchema() },
       },
     },
   };
@@ -560,7 +560,7 @@ function directorExecutionSlotsOutputType(duration = 5, options = {}) {
   timeline.properties.shots_timeline.maxItems = Math.floor(seconds);
   const allowTailVisuals = options?.allowTailVisuals ?? (options?.lastFramePolicy === 'generate_tail');
   const tailVisualsSchema = allowTailVisuals
-    ? { type: 'array', maxItems: 3, items: characterVisualSchema() }
+    ? { type: 'array', maxItems: 2, items: characterVisualSchema() }
     : { type: 'array', maxItems: 0, items: characterVisualSchema() };
   // Do not leave this object open-ended.  The execution agent is the author of
   // the semantic contract, so the structured-output schema must reject an
@@ -580,7 +580,7 @@ function directorExecutionSlotsOutputType(duration = 5, options = {}) {
       properties: {
         // 语义槽位由导演 Agent 明确规划；本地编译器不得根据对白或动作自行猜测。
         semantic_slots: semantic,
-        character_visuals: { type: 'array', maxItems: 3, items: characterVisualSchema() },
+        character_visuals: { type: 'array', maxItems: 2, items: characterVisualSchema() },
         last_frame_visuals: tailVisualsSchema,
         video_slots: timeline,
       },

@@ -240,7 +240,7 @@ describe('Director Boost Fixes Verification', () => {
       lastFramePolicy: 'generate_tail',
       allowTailVisuals: true,
     });
-    assert.equal(tailOutputType.schema.properties.last_frame_visuals.maxItems, 3);
+    assert.equal(tailOutputType.schema.properties.last_frame_visuals.maxItems, 2);
   });
 
   it('execution contract schema requires a complete incoming continuity object', () => {

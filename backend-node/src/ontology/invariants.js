@@ -77,7 +77,7 @@ function checkVideoSlots(shots) {
 }
 
 /**
- * 门禁 3：群戏防人脸崩溃与防克隆人检查（单镜角色 <= 3）
+ * 门禁 3：群戏防人脸崩溃与防克隆人检查（单镜身份角色 <= 2）
  * @param {Array<object>} shots
  * @returns {Array<object>} 违规列表
  */
@@ -86,7 +86,7 @@ function checkCrowdControl(shots) {
 }
 
 /**
- * 门禁：H3视频参考图物理上限与复杂度审查（单镜角色<=3，核心道具<=2）
+ * 门禁：H3视频参考图物理上限与复杂度审查（单镜身份角色<=2，核心道具<=2）
  * @param {Array<object>} shots
  * @returns {Array<object>} 违规列表
  */

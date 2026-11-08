@@ -1,5 +1,5 @@
 /**
- * 门禁 3：群戏防人脸崩溃与防克隆人检查（单镜角色 <= 3）
+ * 门禁 3：群戏防人脸崩溃与防克隆人检查（单镜身份角色 <= 2）
  */
 const BaseInvariantRule = require('./baseRule');
 const { shotCharacterIds } = require('./assetReferenceRule');
@@ -11,7 +11,7 @@ class CrowdControlRule extends BaseInvariantRule {
       name: '群戏防人脸崩溃与克隆人',
       category: 'crowd',
       defaultSeverity: 'warning',
-      description: '单镜同时出场超过 3 人极易导致生图模型人脸崩溃、双胞胎或克隆人，建议拆解为正反打',
+      description: '单镜同时出场超过 2 个身份角色极易导致生图模型人脸崩溃、双胞胎或克隆人，建议拆解为正反打',
     });
   }
 
@@ -23,12 +23,12 @@ class CrowdControlRule extends BaseInvariantRule {
     shots.forEach((shot, idx) => {
       const shotNum = shot.shot_number || (idx + 1);
       const charIds = shotCharacterIds(shot).all;
-      if (charIds.length > 3) {
+      if (charIds.length > 2) {
         violations.push({
           rule: 'INVARIANT_CROWD_COLLAPSE_RISK',
           shot_number: shotNum,
           severity: this.defaultSeverity,
-          message: `分镜 ${shotNum} 关联了 ${charIds.length} 名角色（超过3人），违反短剧正反打语法。单镜同时出场超过 3 人极易导致生图模型人脸崩溃、双胞胎或克隆人，建议拆解为主体行动镜+反应特写。`,
+          message: `分镜 ${shotNum} 关联了 ${charIds.length} 名身份角色（超过2人），违反短剧正反打语法。路人/群众应写成环境事件，建议拆解为主体行动镜+反应特写。`,
         });
       }
     });

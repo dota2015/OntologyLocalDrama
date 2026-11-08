@@ -2,7 +2,7 @@
  * 资产引用与规划可行性门禁。
  *
  * 导演阶段可以输出很多结构化槽位，但所有 ID 都必须来自剧库语义包，
- * 且一个镜头的主体与背景人物去重后不能超过 H3 的三人上限。这个规则
+ * 且一个镜头的有身份主体与背景人物去重后不能超过短剧的两人上限。这个规则
  * 必须在执行槽位 Agent 之前运行，否则执行 Agent 会收到一个物理上不可
  * 满足的合同（例如四个人却只能输出三项 character_visuals）。
  */
@@ -155,7 +155,7 @@ function planningFeasibilityViolations(shots, options = {}) {
       });
     }
 
-    if (chars.all.length > 3) {
+    if (chars.all.length > 2) {
       violations.push({
         rule: 'INVARIANT_PLANNING_CHARACTER_CAPACITY', shot_number: shotNumber, severity: 'error',
         character_ids: chars.all,
@@ -163,7 +163,7 @@ function planningFeasibilityViolations(shots, options = {}) {
           'characters', 'background_characters', 'semantic_slots.visible_characters',
           'semantic_slots.background_characters', 'character_visuals',
         ],
-        message: `分镜 #${shotNumber} 的主体与背景人物去重后共有 ${chars.all.length} 人，超过 H3 单镜最多 3 人的物理上限。请把敌军/群众作为环境事件，或按剧情拆成连续镜头；禁止后端静默删除人物。`,
+        message: `分镜 #${shotNumber} 的有身份主体与背景人物去重后共有 ${chars.all.length} 人，超过短剧单镜最多 2 个角色的制作上限。路人/敌军群体必须写成环境事件，或按剧情拆成连续镜头；禁止后端静默删除人物。`,
       });
     }
     const refs = arrayValue(semanticObject(shot).required_references);

@@ -290,7 +290,12 @@ async function runTwoStageDirectorPipeline(db, log, cfg, episodeId, options = {}
   const { runStageOneBaseGeneration } = require('../services/episodeStoryboardService');
   let stage1Result;
   try {
-    stage1Result = await runStageOneBaseGeneration(db, log, epId, taskId, options);
+    stage1Result = await runStageOneBaseGeneration(db, log, epId, taskId, {
+      ...options,
+      // 阶段一必须先通过基础规划门禁，再把基础分镜发布给阶段二。
+      planningCatalogs: compileDramaSemanticPackage(db, epId).catalogs,
+      planningRepairAttempts: options.planningRepairAttempts || 3,
+    });
   } catch (error) {
     saveProgress('stage1_failed', error.message, {
       partial_shot_count: Number(error.partial_shot_count || 0),

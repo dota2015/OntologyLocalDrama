@@ -2870,7 +2870,7 @@ ${DIRECTOR_ACTION_COMPLETION_CONTRACT}
    - 上述三种无语言模式中，顶层 dialogue/narration、semantic_slots.speech_plan.text、video_slots.audio_lip_sync.dialogue_content 必须全部为空；video_slots.trajectories 与每个 shots_timeline.character_trajectories 的 mouth_state 必须明确为“双唇紧闭无口型”。
 3. **H3 视频生成物理硬约束与智能拆镜（适配 H3 模型 9 张参考图物理上限）**：
    - **模型物理上限为 9 张参考图**：MiniMax H3 单镜头输入包含：首尾帧锚点（至多2张）+ 场景图（1张）+ 角色人设图（每人1张）+ 道具图（每件1张）。一旦超出 9 张或单镜要素过多，模型将严重变形、崩溃或报错！
-   - **单镜出场角色最多 3 人**：主体与背景角色去重后绝不能超过 3 人；近景、过肩和正反打优先规划 1～2 人。遇到第 4 个身份角色必须拆镜，敌军、群众和火力事件若没有剧库角色资产只能写成环境事件，不能虚构角色 ID。
+   - **单镜出场角色最多 2 人**：有身份的主体与背景角色去重后绝不能超过 2 人；第三个及以上身份角色必须拆镜。敌军、群众和路人若没有剧库角色资产只能写成环境事件，不能虚构角色 ID。
    - **单镜核心交互道具严格限制在 1 件**（至多不超过 2 件）：每个分镜只能聚焦 1 个核心交互道具（如拔枪、递药、看屏幕）。无实质物理交互的静态背景物件不作为道具挂载，**严禁在一个镜头中挂载 3 件以上道具**！
    - **按连贯事件规划，不按动作个数拆镜**：单个 4~30 秒分镜可以包含多个连续或同时发生的动作、对白和人物反应；9秒以上由 Continuum 承载。不得把一句对白、一个动作、一个反应机械拆成独立分镜。仅当实际台词或事件超过30秒、场景或造型变化、或剧情确需独立视角时拆镜。
    - **镜内剪辑节奏**：每个外层分镜在 video_slots.shots_timeline 中必须规划连续的 1 或 2 个整数秒动作段，总和精确等于本镜4～30秒时长。4～8秒使用普通H3，9～30秒使用Continuum；每段先声明本段 camera 和 visible_characters，再约束每个实际入画角色在该窗口内的动作、表情或因果反应。不得用一个完整大段、静态机位、无意义特写或安静互看填时长。
@@ -2942,7 +2942,7 @@ ${DIRECTOR_ACTION_COMPLETION_CONTRACT}
       在过肩对视、近景或正反打双人对话构图（over_the_shoulder、ots_reverse、two_shot_face_to_face、近景、特写等非全景构图）中，**严禁声明背景在场人物**（background_characters 必须填 []，semantic_slots.background_characters 也必须为 []）！因为紧凑对话构图中挂载第三人背景参考会导致 H3 模型分配额外 Subject 生成克隆人或脸部融合；背景在场人物只适用于大远景、全景或三人及以上宽构图。
     - **数据结构输出**：
       * background_characters: 数组，填写本镜中处于背景的在场角色（如 [{"character_id": 2, "name": "妹妹", "depth_layer": "background", "screen_position": "画面右后方景深处书架旁", "activity": "低头安静翻看作业本", "mouth_state": "双唇紧闭，无台词口型，后景虚焦"}]）；近景/过肩对话或无背景角色必须填 []。
-      * character_visuals 内部：出场角色（主体 + 背景角色）总计不超过 3 人，背景角色必须指定 depth_layer: "background"。
+      * character_visuals 内部：出场身份角色（主体 + 背景角色）总计不超过 2 人，背景角色必须指定 depth_layer: "background"。
 
 12. **单镜头时序运动弧线（起幅态 ➔ 动作推进 ➔ 落幅态）与镜头过渡法则（Shot Arc & Transitions）**：
     - 每个分镜必须是一个具备开端、演进、定格与衔接的完整视听单元：
@@ -2976,7 +2976,7 @@ ${scriptContent}
 - long_take_sequence: 固定填 null
 - title: 3-5字镜头标题
 - scene_id: 所属场景ID (必须选自可用场景目录)
-- characters: 出场角色ID数组 (如 [1, 2]，单镜出场角色最多3人（<=3人），严禁超过3人（>3人）)
+- characters: 出场角色ID数组 (如 [1, 2]，单镜出场身份角色最多2人（<=2人），严禁超过2人（>2人）)
 - background_characters: 背景在场人物数组 (在场但不说话/主动作，保持空间恒常在场，绝不突然降临；如 [{"character_id": 2, "name": "妹妹", "depth_layer": "background", "screen_position": "画面右后方景深处书架旁", "activity": "低头安静翻看作业本", "mouth_state": "双唇紧闭，无台词口型，后景虚焦"}]，无背景角色填 []。铁律：同一个角色绝对严禁同时出现在 characters 与 background_characters 中！)
 - identity_visibility: 角色面部识别度 (clear_frontal/three_quarter/profile/back_view/silhouette/occluded，背影剪影严禁标为clear_frontal)
 - wardrobe_id: 当前镜头角色服装造型标识 (如 1 或 null，同一角色在同一镜头严禁出现多套服装)
@@ -3315,7 +3315,7 @@ ${hasSpeechDivergence ? '【台词槽位优先级】本镜同时出现台词槽�
 9. 服装一致：同一镜头内同一角色绝不允许出现多套不同服装，单镜服装必须统一！
 10. 尾帧承接：跨越不同场景、时间线跳跃或角色换装时，严禁使用 inherit_tail 继承上一镜尾帧，必须使用 generate_new 全新生成！
 11. 单镜造型：单镜头内严禁出现中途换衣、脱去外袍、换上战甲、变身等动作，必须拆为两个镜头！
-12. H3 参考容量上限：出场主角严格 <= 3 人，核心道具严格 <= 2 件，必要参考图 required_references 严格 <= 9 张，音频参考 <= 3 个！超标必须拆镜或精简，禁止塞入多余素材！
+12. H3 参考容量上限：出场身份角色严格 <= 2 人，核心道具严格 <= 2 件，必要参考图 required_references 严格 <= 9 张，音频参考 <= 3 个！超标必须拆镜或精简，禁止塞入多余素材！
 13. Picture 标签对齐：若提示词引用 <Picture N>，N 必须与 required_references 序号完全对应，绝不悬空！
 14. Ref2VA 执行方案：每镜必须由导演 Agent 输出 h3_mode="ref2va"、first_frame_policy="none"、last_frame_policy="none" 及对应理由；导演 Agent 不得输出 FL2VA 或任何首尾帧接力方案。用户可在生成后手动覆盖单镜执行模式。
 15. 台词时长预算：超出时长预算的分镜必须在标点符号处按语义拆分为 2 个以上独立 Ref2VA 分镜，严禁随意删减台词！

@@ -1211,6 +1211,30 @@ ${lastCtx}
 ${originalUserPrompt}`;
 }
 
+function buildPlanningRepairPrompt(originalUserPrompt, storyboards, violations, attempt) {
+  const messages = (violations || []).map((item) => `- ${item.message}`).join('\n');
+  return `[阶段一规划修复 - 第${attempt}次]\n
+下面是导演刚刚生成的完整基础分镜候选。它还没有入库，因为违反了基础物理规划规则。\n
+【必须修复的门禁反馈】\n${messages}\n
+【修复要求】\n
+- 只修复人物集合、场景层级、镜头拆分和由此产生的镜号衔接；保留原剧本对白、旁白和剧情因果，不得删字或改写台词。\n
+- 每个镜头最多包含 2 个有身份的剧库角色。路人、敌军群体和群众不要创建或挂载角色 ID，改写为环境事件。\n
+- 现实人物与游戏角色不能在同一镜头作为身份人物同时出现；需要时拆成连续镜头。\n
+- 如果拆镜，必须保持原对白逐字完整、镜号连续、前后镜头因果衔接清楚。\n
+- 返回修复后的完整 storyboards 数组，不要只返回补丁，不要解释文字。\n
+【当前完整候选】\n${JSON.stringify(storyboards)}\n
+【原始任务说明】\n${originalUserPrompt}`;
+}
+
+function parseStoryboardArray(text, log) {
+  const meta = {};
+  const parsed = safeParseAIJSON(text, null, log, meta);
+  const items = extractFirstArray(parsed) || [];
+  if (!items.length) throw new Error('阶段一规划修复未返回分镜数组');
+  if (meta.truncated) throw new Error('阶段一规划修复输出被截断');
+  return items;
+}
+
 async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, model, style, userPrompt, systemPrompt, includeNarration, universalOmni, targetClipDurationSec = null, durationRange = null, pipelineOptions = {}) {
   // 增量保存状态放在 try 外，catch 里可用于部分恢复
   const episodeIdNum = Number(episodeId);
@@ -1431,7 +1455,10 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
     // ── 续写结束 ────────────────────────────────────────────────────────────
 
     if (parseMeta.truncated) {
-      throw new Error('分镜结果仍不完整，未覆盖原分镜；请重试或减少单次剧本长度');
+      const incompleteError = new Error('分镜结果仍不完整，未覆盖原分镜；请重试或减少单次剧本长度');
+      incompleteError.stage = 'stage1';
+      incompleteError.partial_shot_count = storyboards.length;
+      throw incompleteError;
     }
     const wardrobePlanner=require('./storyboardWardrobeService');
     taskService.updateTaskStatus(db, taskId, 'processing', 63, '正在校验单镜造型，换装按镜头拆分...');
@@ -1464,6 +1491,35 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
     }
 
     storyboards.forEach(shot=>{wardrobePlanner.assertSingleOutfit(shot);wardrobePlanner.validateChoices(db,streamEpisode.drama_id,shot,episodeIdNum);});
+
+    // 规划门禁属于阶段一：人物数量、角色集合和镜头拆分会改变基础剧情结构，
+    // 必须在入库前反馈给生成模型，不能等阶段二开始后才直接拒绝。
+    if (pipelineOptions?.chainEnrichment && pipelineOptions.planningCatalogs) {
+      const planningAttempts = Math.max(1, Math.min(3, Number(pipelineOptions.planningRepairAttempts || 3)));
+      let planningViolations = checkPlanningFeasibility(storyboards, { catalogs: pipelineOptions.planningCatalogs });
+      for (let attempt = 1; planningViolations.length && attempt <= planningAttempts; attempt++) {
+        if (attempt === planningAttempts) break;
+        taskService.updateTaskStatus(db, taskId, 'processing', 66,
+          `阶段一规划门禁发现 ${planningViolations.length} 项问题，正在反馈导演 Agent 修复（第${attempt}次）...`);
+        const repairText = await generateTextForStoryboard(
+          db,
+          log,
+          buildPlanningRepairPrompt(userPrompt, storyboards, planningViolations, attempt),
+          `${systemPrompt}\n\n【阶段一规划修复模式】只输出修复后的基础分镜数组；每镜最多2个有身份角色，路人/群众只能写环境事件。`,
+          { model: model || undefined, temperature: 0.2 }
+        );
+        storyboards = parseStoryboardArray(repairText, log);
+        planningViolations = checkPlanningFeasibility(storyboards, { catalogs: pipelineOptions.planningCatalogs });
+      }
+      if (planningViolations.length) {
+        const planningError = new Error(`阶段一规划门禁未通过：${planningViolations.map((item) => item.message).join('；')}`);
+        planningError.stage = 'stage1';
+        planningError.partial_shot_count = storyboards.length;
+        planningError.violations = planningViolations;
+        planningError.status = 422;
+        throw planningError;
+      }
+    }
     const totalDuration = storyboards.reduce((sum, sb) => sum + (Number(sb.duration) || 0), 0);
     if (parseMeta.truncated) {
       log.warn('Storyboard still truncated after max continuations', {
@@ -1525,7 +1581,8 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
     if (pipelineOptions?.chainEnrichment) {
       const stageError = err instanceof Error ? err : new Error(String(err || '基础分镜生成失败'));
       stageError.stage = 'stage1';
-      stageError.partial_shot_count = streamSavedNums.size;
+      stageError.partial_shot_count = Number(err.partial_shot_count || streamSavedNums.size || 0);
+      if (err.violations) stageError.violations = err.violations;
       throw stageError;
     }
 

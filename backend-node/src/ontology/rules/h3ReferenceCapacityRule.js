@@ -1,5 +1,5 @@
 /**
- * 门禁：H3视频参考图物理上限与复杂度审查（单镜角色<=3，核心道具<=2）
+ * 门禁：H3视频参考图物理上限与复杂度审查（单镜身份角色<=2，核心道具<=2）
  */
 const BaseInvariantRule = require('./baseRule');
 const { shotCharacterIds } = require('./assetReferenceRule');
@@ -11,7 +11,7 @@ class H3ReferenceCapacityRule extends BaseInvariantRule {
       name: 'H3 视频参考图槽位上限',
       category: 'h3',
       defaultSeverity: 'error',
-      description: '单镜角色不超过3人、道具不超过2件，严格防止超出 H3 9张参考图物理上限',
+      description: '单镜身份角色不超过2人、道具不超过2件，严格防止短剧近景与正反打出现克隆人',
     });
   }
 
@@ -25,12 +25,12 @@ class H3ReferenceCapacityRule extends BaseInvariantRule {
       const charIds = shotCharacterIds(shot).all;
       const propIds = Array.isArray(shot.props) ? shot.props : (Array.isArray(shot.prop_ids) ? shot.prop_ids : []);
 
-      if (charIds.length > 3) {
+      if (charIds.length > 2) {
         violations.push({
           rule: 'INVARIANT_H3_CROWD_OVERLOAD',
           shot_number: shotNum,
           severity: this.defaultSeverity,
-          message: `分镜 ${shotNum} 出场角色超过3人（当前${charIds.length}人），超出 H3 视频生成 9 张参考图物理上限，必须拆镜为正反打镜头！`,
+          message: `分镜 ${shotNum} 出场身份角色超过2人（当前${charIds.length}人），短剧镜头必须拆为正反打或反应镜头；路人/群众请改写为环境事件！`,
         });
       }
       if (propIds.length > 2) {
