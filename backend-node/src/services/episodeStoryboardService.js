@@ -61,6 +61,9 @@ async function generateTextForStoryboard(db, log, userPrompt, systemPrompt, opti
     scene_key: 'storyboard_extraction',
     model: model || undefined,
     temperature,
+    // 阶段一只生成基础剧情分镜，不做隐藏推理；把输出预算留给完整 JSON。
+    // 阶段二由 Agents SDK 的执行合同 Agent 独立决定并保留 thinking。
+    thinking: 'disabled',
     max_tokens: DEFAULT_STORYBOARD_MAX_TOKENS,
     // 即使 AI 配置里残留了旧的 8192/16384 上限，导演分镜仍按当前任务
     // 的最高输出预算请求；供应商实际上限由 aiClient 的重试逻辑决定。
