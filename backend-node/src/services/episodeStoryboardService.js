@@ -1863,7 +1863,10 @@ async function runStageOneBaseGeneration(db, log, episodeId, taskId, options = {
     ctx.wantUniversalOmni,
     null,
     ctx.durationRange,
-    { chainEnrichment: true }
+    {
+      ...options,
+      chainEnrichment: true,
+    }
   );
 }
 
