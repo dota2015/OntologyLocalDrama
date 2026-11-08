@@ -13,12 +13,14 @@ const { enforceStoryboardSpeechTiming } = require('./storyboardSpeechService');
 
 /**
  * 分镜专用 generateText 包装：
- * 1. 默认携带 max_tokens:16384，让模型输出更长，减少截断续写次数。
+ * 1. 默认请求 max_tokens:65536，给整集基础分镜和续写保留足够的输出预算。
  * 2. 若 API 因 max_tokens 超上限报参数错误，由 aiClient 统一降级重试
  *    （有上限值则按上限重试，否则去掉 max_tokens），此处的包装不再需要自己处理。
  * 3. 所有尝试均记录日志。
  */
-const DEFAULT_STORYBOARD_MAX_TOKENS = 16384;
+// 这是请求上限而不是强制的厂商上限。aiClient 会在供应商返回参数上限时
+// 自动按错误中的最大值重试，或移除该参数使用模型默认值。
+const DEFAULT_STORYBOARD_MAX_TOKENS = 65536;
 
 /** 统一镜号（AI 可能返回字符串 "1"，须与 Set 去重键一致） */
 function normalizeStoryboardShotNumber(rawOrSb) {
@@ -60,6 +62,9 @@ async function generateTextForStoryboard(db, log, userPrompt, systemPrompt, opti
     model: model || undefined,
     temperature,
     max_tokens: DEFAULT_STORYBOARD_MAX_TOKENS,
+    // 即使 AI 配置里残留了旧的 8192/16384 上限，导演分镜仍按当前任务
+    // 的最高输出预算请求；供应商实际上限由 aiClient 的重试逻辑决定。
+    min_max_tokens: DEFAULT_STORYBOARD_MAX_TOKENS,
     streamCallback,
   });
 }
