@@ -10,6 +10,7 @@ const loadConfig = require('../config').loadConfig;
 const angleService = require('./angleService');
 const { timingInstructions, assessSpeechTiming } = require('../utils/speechTiming');
 const { enforceStoryboardSpeechTiming } = require('./storyboardSpeechService');
+const { checkPlanningFeasibility } = require('../ontology/invariants');
 
 /**
  * 分镜专用 generateText 包装：
