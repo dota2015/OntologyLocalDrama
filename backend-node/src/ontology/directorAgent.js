@@ -39,7 +39,7 @@ function normalizeTimelineTimestamps(timeline) {
       if (!alignment.speaker_action_window) {
         alignment.speaker_action_window = { start: 0, end: segDur || 2 };
       }
-      if (!String(alignment.speaker_action || '').trim()) {
+      if (!alignment.speaker_character_id && !String(alignment.speaker_action || '').trim()) {
         const spk = seg.audio_lip_sync?.speaker_name || '角色';
         alignment.speaker_action = `${spk}开口说话并保持战术戒备姿态`;
       }
@@ -1309,8 +1309,11 @@ function shortDramaTimelineViolations(shot, timeline) {
     ...(shot.video_slots && typeof shot.video_slots === 'object' ? shot.video_slots : {}),
     shots_timeline: normalizedTimeline,
   };
-  return validateVideoSlots(shot, videoSlots)
-    .filter((item) => String(item.rule || '').startsWith('INVARIANT_SHORT_DRAMA_') && item.severity === 'error');
+  const all = validateVideoSlots(shot, videoSlots);
+  if (videoSlots.performance_contract === 'sync_v2') {
+    return all.filter((item) => item.severity === 'error');
+  }
+  return all.filter((item) => String(item.rule || '').startsWith('INVARIANT_SHORT_DRAMA_') && item.severity === 'error');
 }
 
 async function ensureDirectorShotTimeline(db, log, shot, retryOptions = {}) {
@@ -1408,7 +1411,20 @@ function visualSlotErrors(shot, characterVisuals, lastFrameVisuals) {
   }
   if (policy !== 'generate_tail' && lastIds.length) errors.push(`last_frame_policy=${policy} 时 last_frame_visuals 必须为空数组`);
 
-  if (expected.length > 0 && Array.isArray(characterVisuals) && characterVisuals.length > 0) {
+  const structured = shot?.video_slots?.performance_contract === 'sync_v2';
+  if (structured && Array.isArray(characterVisuals)) {
+    const enumFields = {
+      facing: ['front_camera', 'back_camera', 'left_profile', 'right_profile', 'three_quarter_left', 'three_quarter_right', 'toward_character', 'toward_object', 'toward_event', 'away_from_camera'],
+      head_pose: ['neutral', 'turned_left', 'turned_right', 'tilted_up', 'tilted_down', 'turned_to_target', 'lowered', 'raised', 'recoiling'],
+      gaze_type: ['camera', 'character', 'prop', 'event', 'scene', 'offscreen', 'ground', 'none'],
+      posture: ['standing', 'sitting', 'kneeling', 'crouching', 'lying', 'leaning', 'walking', 'running', 'falling', 'supported'],
+      hands_state: ['free', 'holding_object', 'reaching', 'supporting_target', 'pointing', 'covering_mouth', 'on_surface', 'clenched', 'relaxed'],
+      expression: ['neutral', 'focused', 'alert', 'worried', 'angry', 'surprised', 'pain', 'fear', 'relief', 'determined', 'sad', 'confused', 'exhausted'],
+    };
+    characterVisuals.forEach((visual, index) => Object.entries(enumFields).forEach(([field, allowed]) => {
+      if (!allowed.includes(String(visual?.[field] || ''))) errors.push(`character_visuals[${index}].${field} 必须使用结构化枚举值`);
+    }));
+  } else if (expected.length > 0 && Array.isArray(characterVisuals) && characterVisuals.length > 0) {
     const visualViolations = validateCharacterVisualSlots(shot, characterVisuals, 'character_visuals')
       .filter((item) => item.severity === 'error');
     for (const v of visualViolations) {
@@ -2622,7 +2638,7 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
     try {
       const planned = await agentsRuntime.runAgent(db, log, {
         name: 'director-execution-slots-planner',
-        instructions: `你是短剧导演的视听执行合同节点。你必须一次输出当前镜头完整的 semantic_slots、character_visuals、last_frame_visuals 和 video_slots；禁止改写顶层剧情、角色清单、场景、对白、旁白和总时长。semantic_slots 必须完整输出 visible_characters、background_characters、identity_visibility、speech_plan、sound_plan、continuity_type、continuity_from_previous、h3_mode、h3_mode_reason、first_frame_policy、first_frame_reason、last_frame_policy、last_frame_reason、required_references、audio_lip_sync、shot_duration、execution_backend、continuum_plan 和 source_script_excerpt。continuity_from_previous 即使是第1镜也必须输出完整对象：relationship 填 opening、previous_end_state 填空串，并同时填写 entry_state、causal_link、sound_bridge、requires_previous_tail。不得根据缺失字段自行省略或让后端猜测。本系统 Agent 规划统一使用 h3_mode=ref2va，first_frame_policy/last_frame_policy 按剧情明确填写。过肩与近景双人对话镜头严禁包含背景在场角色。人物定格槽位和镜内时间轴必须描述同一套物理动作与终态：character_visuals 是起幅定格，last_frame_visuals 是明确要求尾帧时的落幅定格；video_slots.shots_timeline 是唯一的动作、对白和反应时间轴权威。${durationPlanContract}。每个 1 或 2 秒段都要先写 camera 与 visible_characters，再为每位入画人物写 trajectory、terminal_pose、facial_expression、facing、head_pose、gaze、attention_target、gaze_motivation、reaction_trigger、mouth_state。facing 必须写身体本身的朝向（如“侧身朝向画面左侧”“四分之三侧身面对受话人”“背向镜头”），不能只写“画面上方/山坡方向/看向某处”等目标或视线方向；目标方向另写在 gaze 和 attention_target。含对白段必须在同一段 speech_action_alignment 中写 speech_window、speaker_action_window、speaker_action 和 listener_reactions，动作窗口必须与发声窗口重叠；不能把动作、听取反应或视线留到说完以后。无语言段按实际声音模式填写闭口状态。不要重复输出顶层剧情字段，不要解释，只返回指定 JSON。\n${DIRECTOR_ACTION_COMPLETION_CONTRACT}`,
+        instructions: `你是短剧导演的视听执行合同节点。你必须一次输出当前镜头完整的 semantic_slots、character_visuals、last_frame_visuals 和 video_slots；禁止改写顶层剧情、角色清单、场景、对白、旁白和总时长。semantic_slots 必须完整输出 visible_characters、background_characters、identity_visibility、speech_plan、sound_plan、continuity_type、continuity_from_previous、h3_mode、h3_mode_reason、first_frame_policy、first_frame_reason、last_frame_policy、last_frame_reason、required_references、audio_lip_sync、shot_duration、execution_backend、continuum_plan 和 source_script_excerpt。continuity_from_previous 即使是第1镜也必须输出完整对象：relationship 填 opening、previous_end_state 填空串，并同时填写 entry_state、causal_link、sound_bridge、requires_previous_tail。不得根据缺失字段自行省略或让后端猜测。本系统 Agent 规划统一使用 h3_mode=ref2va，first_frame_policy/last_frame_policy 按剧情明确填写。过肩与近景双人对话镜头严禁包含背景在场角色。人物定格槽位和镜内时间轴必须描述同一套物理动作与终态：character_visuals 是起幅定格，last_frame_visuals 是明确要求尾帧时的落幅定格；video_slots.shots_timeline 是唯一的动作、对白和反应时间轴权威。${durationPlanContract}。\n【结构化动作合同 sync_v2】video_slots.performance_contract 必须为 sync_v2。每个 1 或 2 秒段只允许每位画内人物 1 个 action_atom，并填写 start_state、result_state、reaction_trigger。action_atom 必须从枚举中选择 action、body_part、target_type、direction、contact，并按动作需要填写 object_id 或 target_id；不要把两个主动作串在一个 atom 中，也不要拆成手指或关节微动作。角色视觉字段必须使用枚举 facing、head_pose、gaze_type、posture、hands_state、expression、mouth_state，并使用目标 ID 或 target_label 表达视线落点。含对白段填写 speaker_character_id 和 listener_reactions[].trajectory_action，动作窗口与语音窗口重叠；轨迹对象是唯一动作来源，不要用自由文本 speaker_action 替代。H3 最终提示词由后端把这些结构化字段编译为自然语言，不要输出 JSON 解释。不要重复输出顶层剧情字段，不要解释，只返回指定 JSON。\n${DIRECTOR_ACTION_COMPLETION_CONTRACT}`,
         input: `【权威时长】${duration} 秒\n【权威人物】${JSON.stringify(shot.characters || semantic.visible_characters || [])}\n【权威数据库对白】${JSON.stringify(shot.dialogue || '')}\n【权威数据库旁白】${JSON.stringify(shot.narration || '')}\n【当前完整分镜，只读】${JSON.stringify(shot)}\n【本集全部分镜只读上下文】${JSON.stringify(retryOptions.allShots || [])}\n【上一镜执行合同】${JSON.stringify(retryOptions.previousShot || null)}\n【下一镜执行合同】${JSON.stringify(retryOptions.nextShot || null)}\n【本集剧本】${String(retryOptions.episodeScript || '').slice(0, 24000)}\n【本体资产目录】${JSON.stringify(retryOptions.catalogs || {})}\n【上一轮执行合同反馈】${errors.map(item => item.message).join('；')}`,
         outputType: agentsRuntime.directorExecutionSlotsOutputType(duration, { lastFramePolicy, allowTailVisuals }),
         maxTokens: 24576,

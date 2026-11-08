@@ -1,6 +1,10 @@
 const aiConfigService = require('./aiConfigService');
 const { instrumentClient } = require('./agentTokenUsage');
 const { flattenModelIds, pickModelId, remapArkModelId } = require('./modelId');
+const {
+  structuredTrajectorySchema,
+  structuredVisualSchema,
+} = require('../ontology/actionAtoms');
 
 let sdkPromise = null;
 
@@ -126,7 +130,8 @@ function nullableStringSchema(maxLength = 500) {
   return { anyOf: [stringSchema(maxLength), { type: 'null' }] };
 }
 
-function characterVisualSchema() {
+function characterVisualSchema(options = {}) {
+  if (options.structured) return structuredVisualSchema();
   const fields = [
     'character_id', 'name', 'depth_layer', 'screen_position', 'environmental_anchor',
     'facing', 'expression', 'head_pose', 'gaze', 'posture', 'hands',
@@ -167,7 +172,8 @@ function backgroundCharacterSchema() {
   };
 }
 
-function characterTrajectorySchema() {
+function characterTrajectorySchema(options = {}) {
+  if (options.structured) return structuredTrajectorySchema();
   return {
     type: 'object',
     additionalProperties: false,
@@ -195,7 +201,8 @@ function characterTrajectorySchema() {
   };
 }
 
-function timelineSegmentSchema() {
+function timelineSegmentSchema(options = {}) {
+  const structured = Boolean(options.structured);
   return {
     type: 'object',
     additionalProperties: false,
@@ -231,7 +238,7 @@ function timelineSegmentSchema() {
       },
       character_trajectories: {
         type: 'array',
-        items: characterTrajectorySchema(),
+        items: characterTrajectorySchema({ structured }),
       },
       audio_lip_sync: {
         type: 'object',
@@ -247,7 +254,9 @@ function timelineSegmentSchema() {
       },
       speech_action_alignment: {
         type: 'object', additionalProperties: false,
-        required: ['mode', 'speech_window', 'speaker_action_window', 'speaker_action', 'listener_reactions', 'pause_reason'],
+        required: structured
+          ? ['mode', 'speech_window', 'speaker_character_id', 'speaker_action_window', 'listener_reactions', 'pause_reason']
+          : ['mode', 'speech_window', 'speaker_action_window', 'speaker_action', 'listener_reactions', 'pause_reason'],
         properties: {
           mode: { enum: ['concurrent', 'deliberate_pause', 'none'] },
           speech_window: {
@@ -258,10 +267,14 @@ function timelineSegmentSchema() {
             type: 'object', additionalProperties: false, required: ['start', 'end'],
             properties: { start: { type: 'number', minimum: 0 }, end: { type: 'number', minimum: 0 } },
           },
+          speaker_character_id: structured
+            ? { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] }
+            : { type: 'integer', minimum: 1 },
           speaker_action: { type: 'string', maxLength: 300 },
           listener_reactions: {
             type: 'array', maxItems: 3, items: {
-              type: 'object', additionalProperties: false, required: ['character_id', 'action_window', 'action'],
+              type: 'object', additionalProperties: false,
+              required: structured ? ['character_id', 'action_window', 'trajectory_action'] : ['character_id', 'action_window', 'action'],
               properties: {
                 character_id: { type: 'integer', minimum: 1 },
                 action_window: {
@@ -269,6 +282,7 @@ function timelineSegmentSchema() {
                   properties: { start: { type: 'number', minimum: 0 }, end: { type: 'number', minimum: 0 } },
                 },
                 action: { type: 'string', maxLength: 240 },
+                trajectory_action: { enum: ['react', 'listen', 'look', 'support', 'turn', 'none'] },
               },
             },
           },
@@ -279,13 +293,14 @@ function timelineSegmentSchema() {
   };
 }
 
-function videoSlotsSchema() {
+function videoSlotsSchema(options = {}) {
+  const structured = Boolean(options.structured);
   return {
     type: 'object',
     additionalProperties: false,
     required: ['performance_contract', 'camera', 'audio_lip_sync', 'trajectories', 'environment_vfx', 'timing', 'shots_timeline'],
     properties: {
-      performance_contract: { enum: ['sync_v1', 'legacy'] },
+      performance_contract: structured ? { const: 'sync_v2' } : { enum: ['sync_v1', 'sync_v2', 'legacy'] },
       camera: {
         type: 'object', additionalProperties: false,
         required: ['shot_type', 'angle_h', 'angle_v', 'angle_s', 'movement', 'movement_description'],
@@ -303,7 +318,7 @@ function videoSlotsSchema() {
           visible_characters_lip_state: stringSchema(160), lip_sync_rule: stringSchema(300),
         },
       },
-      trajectories: { type: 'array', items: characterTrajectorySchema() },
+      trajectories: { type: 'array', items: characterTrajectorySchema({ structured }) },
       environment_vfx: {
         type: 'object', additionalProperties: false,
         required: ['lighting_atmosphere', 'physical_phenomena', 'terminal_event'],
@@ -326,7 +341,7 @@ function videoSlotsSchema() {
         // A 30-second Continuum shot is still one logical shot, but its
         // executable timeline can contain up to thirty one-second windows.
         maxItems: 30,
-        items: timelineSegmentSchema(),
+        items: timelineSegmentSchema({ structured }),
       },
     },
   };
@@ -555,13 +570,13 @@ function directorCharacterVisualsOutputType() {
 
 function directorExecutionSlotsOutputType(duration = 5, options = {}) {
   const seconds = Math.max(4, Math.min(30, Number(duration) || 5));
-  const timeline = videoSlotsSchema();
+  const timeline = videoSlotsSchema({ structured: true });
   timeline.properties.shots_timeline.minItems = Math.ceil(seconds / 2);
   timeline.properties.shots_timeline.maxItems = Math.floor(seconds);
   const allowTailVisuals = options?.allowTailVisuals ?? (options?.lastFramePolicy === 'generate_tail');
   const tailVisualsSchema = allowTailVisuals
-    ? { type: 'array', maxItems: 2, items: characterVisualSchema() }
-    : { type: 'array', maxItems: 0, items: characterVisualSchema() };
+    ? { type: 'array', maxItems: 2, items: characterVisualSchema({ structured: true }) }
+    : { type: 'array', maxItems: 0, items: characterVisualSchema({ structured: true }) };
   // Do not leave this object open-ended.  The execution agent is the author of
   // the semantic contract, so the structured-output schema must reject an
   // incomplete contract before it reaches the invariant gate.  In particular,
@@ -580,7 +595,7 @@ function directorExecutionSlotsOutputType(duration = 5, options = {}) {
       properties: {
         // 语义槽位由导演 Agent 明确规划；本地编译器不得根据对白或动作自行猜测。
         semantic_slots: semantic,
-        character_visuals: { type: 'array', maxItems: 2, items: characterVisualSchema() },
+        character_visuals: { type: 'array', maxItems: 2, items: characterVisualSchema({ structured: true }) },
         last_frame_visuals: tailVisualsSchema,
         video_slots: timeline,
       },

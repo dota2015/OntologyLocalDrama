@@ -13,6 +13,10 @@ const angleService = require('../services/angleService');
 const { stripChineseExclusions } = require('../utils/framePromptSanitize');
 const { synthesizeLightingChiaroscuro } = require('./visualSlots');
 const { CONTINUUM_MAX_SECONDS, SINGLE_MAX_SECONDS, CONTINUUM_MIN_SECONDS } = require('../services/continuumPlan');
+const {
+  ACTIONS,
+  isStructuredTrajectory,
+} = require('./actionAtoms');
 
 // 物理现象与军事术语具象化字典
 const PHYSICAL_TRANSLATION_MAP = [
@@ -26,6 +30,212 @@ const PHYSICAL_TRANSLATION_MAP = [
 // 让每个角色在 0–1、1–2 这类窗口里都有可验证的动作合同。
 // 不能让一个 5～8 秒的大段把对白后的空白交给模型自由发挥。
 const MAX_SHORT_DRAMA_TIMELINE_SEGMENT_SECONDS = 2;
+
+const ACTION_TEXT = Object.freeze({
+  hold: '握住', grasp: '抓住', release: '松开', reach: '伸手靠近', touch: '触碰',
+  support: '支撑', lift: '抬起', push: '推开', pull: '拉回', turn: '转身',
+  walk: '走向', run: '跑向', crouch: '蹲下', stand_up: '站起', sit_down: '坐下',
+  fall: '倒下', look: '转头看向', speak: '开口说话', listen: '倾听', react: '作出反应',
+  use: '操作', point: '指向', block: '挡住',
+});
+
+const STATE_TEXT = Object.freeze({
+  neutral: '恢复中性状态', standing_alert: '保持站立戒备', standing: '保持站立', sitting: '保持坐姿',
+  lying: '保持躺卧', crouched: '保持蹲伏', walking: '进入行走状态', running: '进入奔跑状态',
+  falling: '进入倒下状态', holding: '保持持有状态', gripping: '保持抓握状态', touching: '保持接触',
+  reaching: '保持伸手状态', supported: '获得支撑', turned_to_target: '转向目标',
+  looking_at_target: '视线落在目标上', weapon_ready: '武器处于待发状态', object_on_surface: '对象落在表面',
+  object_released: '对象已松开', target_sitting_supported: '目标被扶稳为坐姿',
+});
+
+function resolveAtomRef(atom, field, options = {}) {
+  const id = atom?.[field];
+  if (id == null) return '';
+  const map = options.characterMap || options.propMap;
+  if (map && typeof map.get === 'function' && map.get(Number(id))) {
+    return String(map.get(Number(id)).name || map.get(Number(id))).trim();
+  }
+  return `${field === 'object_id' ? '道具' : '目标'}${id}`;
+}
+
+function compileActionAtom(atom, options = {}) {
+  if (!atom || typeof atom !== 'object') return '';
+  const action = String(atom.action || '').trim();
+  if (!ACTIONS.includes(action)) return '';
+  const objectName = resolveAtomRef(atom, 'object_id', options);
+  const targetName = atom.target_label || resolveAtomRef(atom, 'target_id', options);
+  const subject = options.actorName || '人物';
+  const verb = ACTION_TEXT[action] || action;
+  let phrase = `${subject}${verb}`;
+  if (action === 'hold' || action === 'grasp' || action === 'release' || action === 'use' || action === 'touch') {
+    phrase += objectName || '手中对象';
+  } else if (['support', 'lift', 'push', 'pull', 'walk', 'run', 'turn', 'look', 'point', 'block'].includes(action)) {
+    phrase += targetName || '目标';
+  }
+  if (atom.direction && atom.direction !== 'none' && !phrase.includes(targetName || '\u0000')) {
+    const direction = { left: '向左', right: '向右', forward: '向前', backward: '向后', up: '向上', down: '向下', toward_target: '朝向目标', away_from_target: '远离目标' }[atom.direction];
+    if (direction) phrase += direction;
+  }
+  return phrase;
+}
+
+function compileStructuredTrajectory(trajectory, options = {}) {
+  if (!isStructuredTrajectory(trajectory)) return '';
+  const actorName = trajectory.name || `角色${trajectory.character_id}`;
+  const action = compileActionAtom(trajectory.action_atom, { ...options, actorName });
+  const state = STATE_TEXT[trajectory.result_state] || trajectory.result_state || '';
+  const gazeTarget = trajectory.gaze_target_label || resolveAtomRef({ target_id: trajectory.gaze_target_id }, 'target_id', options);
+  const gaze = gazeTarget ? `，视线落在${gazeTarget}` : '';
+  const detail = trajectory.expression_detail ? `，${trajectory.expression_detail}` : '';
+  return `${actorName}${action ? action.replace(actorName, '') : '作出反应'}${gaze}${detail}${state ? `，${state}` : ''}`;
+}
+
+function structuredEnumError(value, allowed) {
+  return !allowed.includes(String(value || '').trim());
+}
+
+function validateStructuredExecutionContract(shot, slots) {
+  const violations = [];
+  const shotNum = shot.shot_number || shot.storyboard_number || 1;
+  let semantic = shot.semantic_slots;
+  if (typeof semantic === 'string') {
+    try { semantic = JSON.parse(semantic); } catch (_) { semantic = {}; }
+  }
+  semantic = semantic && typeof semantic === 'object' ? semantic : {};
+  const visibleIds = (Array.isArray(semantic.visible_characters) ? semantic.visible_characters : [])
+    .map((c) => Number(c?.id ?? c)).filter((id) => id > 0);
+  const backgroundIds = (Array.isArray(semantic.background_characters) ? semantic.background_characters : [])
+    .map((c) => Number(c?.character_id ?? c?.id ?? c)).filter((id) => id > 0);
+  const allowedIds = new Set([...visibleIds, ...backgroundIds]);
+  let propList = shot.props;
+  if (typeof propList === 'string') {
+    try { propList = JSON.parse(propList); } catch (_) { propList = []; }
+  }
+  const referenceProps = Array.isArray(semantic.required_references)
+    ? semantic.required_references.filter((item) => item?.type === 'prop').map((item) => Number(item.id)).filter((id) => id > 0)
+    : [];
+  const props = new Set([
+    ...(Array.isArray(propList) ? propList : []).map((item) => Number(item?.id ?? item)).filter((id) => id > 0),
+    ...referenceProps,
+  ]);
+  const add = (rule, path, message, extra = {}) => violations.push({
+    rule, shot_number: shotNum, severity: 'error', conflict_slots: [path], message, ...extra,
+  });
+
+  const targetValid = (atom, path) => {
+    const type = String(atom?.target_type || '');
+    const id = atom?.target_id == null ? null : Number(atom.target_id);
+    if (type === 'character' && (!Number.isInteger(id) || !allowedIds.has(id))) {
+      add('INVARIANT_ACTION_TARGET_INVALID', `${path}.target_id`, `分镜 ${shotNum} 的动作目标角色 ID 无效：${id || '空'}。`);
+    }
+    if (type === 'prop' && id != null && !props.has(id)) {
+      add('INVARIANT_ACTION_TARGET_INVALID', `${path}.target_id`, `分镜 ${shotNum} 的动作目标道具 ID ${id} 不在本镜道具清单中。`);
+    }
+    if (type !== 'none' && type !== 'event' && type !== 'scene' && id == null) {
+      add('INVARIANT_ACTION_TARGET_MISSING', `${path}.target_id`, `分镜 ${shotNum} 的 ${type} 目标必须填写 target_id。`);
+    }
+    if ((type === 'event' || type === 'scene') && !String(atom?.target_label || '').trim()) {
+      add('INVARIANT_ACTION_TARGET_LABEL_MISSING', `${path}.target_label`, `分镜 ${shotNum} 的环境事件或场景目标必须填写 target_label。`);
+    }
+  };
+
+  const validateTrajectory = (trajectory, path, segmentVisibleIds) => {
+    if (!trajectory || typeof trajectory !== 'object') {
+      add('INVARIANT_STRUCTURED_TRAJECTORY_EMPTY', path, `分镜 ${shotNum} 的 ${path} 缺少结构化人物轨迹。`);
+      return null;
+    }
+    const id = Number(trajectory.character_id);
+    if (!Number.isInteger(id) || !segmentVisibleIds.includes(id)) {
+      add('INVARIANT_SHORT_DRAMA_TRAJECTORY_NOT_VISIBLE', `${path}.character_id`, `分镜 ${shotNum} 的轨迹人物 ${id || '空'} 不在本段 visible_characters 中。`, { character_id: id });
+    }
+    const atom = trajectory.action_atom;
+    if (!atom || typeof atom !== 'object') {
+      add('INVARIANT_ACTION_ATOM_MISSING', `${path}.action_atom`, `分镜 ${shotNum} 的人物 ${id} 必须填写一个结构化 action_atom。`, { character_id: id });
+      return id;
+    }
+    if (structuredEnumError(atom.action, ACTIONS)) add('INVARIANT_ACTION_ENUM_INVALID', `${path}.action_atom.action`, `分镜 ${shotNum} 的 action 不在允许枚举中：${atom.action || '空'}。`);
+    if (structuredEnumError(atom.body_part, require('./actionAtoms').BODY_PARTS)) add('INVARIANT_ACTION_BODY_PART_INVALID', `${path}.action_atom.body_part`, `分镜 ${shotNum} 的 body_part 不在允许枚举中。`);
+    if (structuredEnumError(atom.target_type, require('./actionAtoms').TARGET_TYPES)) add('INVARIANT_ACTION_TARGET_TYPE_INVALID', `${path}.action_atom.target_type`, `分镜 ${shotNum} 的 target_type 不在允许枚举中。`);
+    if (structuredEnumError(atom.direction, require('./actionAtoms').DIRECTIONS)) add('INVARIANT_ACTION_DIRECTION_INVALID', `${path}.action_atom.direction`, `分镜 ${shotNum} 的 direction 不在允许枚举中。`);
+    if (structuredEnumError(atom.contact, require('./actionAtoms').CONTACTS)) add('INVARIANT_ACTION_CONTACT_INVALID', `${path}.action_atom.contact`, `分镜 ${shotNum} 的 contact 不在允许枚举中。`);
+    const needsObject = ['hold', 'grasp', 'release', 'use', 'touch'].includes(atom.action);
+    const needsTarget = ['support', 'lift', 'push', 'pull', 'walk', 'run', 'turn', 'look', 'point', 'block'].includes(atom.action);
+    if (needsObject && !Number.isInteger(Number(atom.object_id))) add('INVARIANT_ACTION_OBJECT_MISSING', `${path}.action_atom.object_id`, `分镜 ${shotNum} 的 ${atom.action} 动作必须填写 object_id。`);
+    if (needsTarget && String(atom.target_type || 'none') === 'none') add('INVARIANT_ACTION_TARGET_MISSING', `${path}.action_atom.target_type`, `分镜 ${shotNum} 的 ${atom.action} 动作必须填写目标。`);
+    if (Number(atom.target_id) === id && atom.target_type === 'character') add('INVARIANT_ACTION_SELF_TARGET', `${path}.action_atom.target_id`, `分镜 ${shotNum} 的人物不能把自己作为动作目标。`);
+    targetValid(atom, `${path}.action_atom`);
+    if (structuredEnumError(trajectory.start_state, require('./actionAtoms').STATES)) add('INVARIANT_ACTION_STATE_INVALID', `${path}.start_state`, `分镜 ${shotNum} 的 start_state 不在允许枚举中。`);
+    if (structuredEnumError(trajectory.result_state, require('./actionAtoms').STATES)) add('INVARIANT_ACTION_STATE_INVALID', `${path}.result_state`, `分镜 ${shotNum} 的 result_state 不在允许枚举中。`);
+    if (!trajectory.reaction_trigger || structuredEnumError(trajectory.reaction_trigger.type, require('./actionAtoms').TRIGGER_TYPES)) add('INVARIANT_ACTION_TRIGGER_INVALID', `${path}.reaction_trigger`, `分镜 ${shotNum} 的 reaction_trigger 不完整或类型无效。`);
+    if (structuredEnumError(trajectory.facing, require('./actionAtoms').FACING)) add('INVARIANT_VISUAL_ENUM_INVALID', `${path}.facing`, `分镜 ${shotNum} 的 facing 不在允许枚举中。`);
+    if (structuredEnumError(trajectory.head_pose, require('./actionAtoms').HEAD_POSES)) add('INVARIANT_VISUAL_ENUM_INVALID', `${path}.head_pose`, `分镜 ${shotNum} 的 head_pose 不在允许枚举中。`);
+    if (structuredEnumError(trajectory.gaze_type, require('./actionAtoms').GAZE_TYPES)) add('INVARIANT_VISUAL_ENUM_INVALID', `${path}.gaze_type`, `分镜 ${shotNum} 的 gaze_type 不在允许枚举中。`);
+    if (structuredEnumError(trajectory.posture, require('./actionAtoms').POSTURES)) add('INVARIANT_VISUAL_ENUM_INVALID', `${path}.posture`, `分镜 ${shotNum} 的 posture 不在允许枚举中。`);
+    if (structuredEnumError(trajectory.hands_state, require('./actionAtoms').HAND_STATES)) add('INVARIANT_VISUAL_ENUM_INVALID', `${path}.hands_state`, `分镜 ${shotNum} 的 hands_state 不在允许枚举中。`);
+    if (structuredEnumError(trajectory.expression, require('./actionAtoms').EXPRESSIONS)) add('INVARIANT_VISUAL_ENUM_INVALID', `${path}.expression`, `分镜 ${shotNum} 的 expression 不在允许枚举中。`);
+    if (structuredEnumError(trajectory.mouth_state, require('./actionAtoms').MOUTH_STATES)) add('INVARIANT_VISUAL_ENUM_INVALID', `${path}.mouth_state`, `分镜 ${shotNum} 的 mouth_state 不在允许枚举中。`);
+    return id;
+  };
+
+  const timeline = Array.isArray(slots.shots_timeline) ? slots.shots_timeline : [];
+  const duration = Number(slots.timing?.duration || semantic.shot_duration || shot.duration || 0);
+  if (!Number.isInteger(duration) || duration < 4 || duration > CONTINUUM_MAX_SECONDS) {
+    add('INVARIANT_SHORT_DRAMA_TIMELINE_DURATION', 'video_slots.timing.duration', `分镜 ${shotNum} 总时长必须是 ${4}～${CONTINUUM_MAX_SECONDS} 的整数秒。`);
+  }
+  const totalDuration = timeline.reduce((sum, segment) => sum + Number(segment?.duration || 0), 0);
+  if (totalDuration !== duration) add('INVARIANT_SHORT_DRAMA_TIMELINE_DURATION', 'video_slots.shots_timeline', `分镜 ${shotNum} 镜内时间轴合计 ${totalDuration} 秒，与总时长 ${duration} 秒不一致。`);
+  let expectedStart = 0;
+  timeline.forEach((segment, index) => {
+    const segmentDuration = Number(segment?.duration || 0);
+    if (!Number.isInteger(segmentDuration) || segmentDuration < 1 || segmentDuration > MAX_SHORT_DRAMA_TIMELINE_SEGMENT_SECONDS) {
+      add('INVARIANT_SHORT_DRAMA_SEGMENT_PACING', `video_slots.shots_timeline[${index}].duration`, `分镜 ${shotNum} 第 ${index + 1} 段必须是 1～2 个整数秒。`);
+    }
+    const actualStart = parseTimelineTimestamp(segment?.timestamp);
+    if (index > 0 && (actualStart == null || Math.abs(actualStart - expectedStart) > 0.001)) {
+      add('INVARIANT_SHORT_DRAMA_TIMELINE_TIMESTAMP', `video_slots.shots_timeline[${index}].timestamp`, `分镜 ${shotNum} 第 ${index + 1} 段时间戳必须连续从 ${formatH3Timestamp(expectedStart)} 开始。`);
+    }
+    expectedStart += Number.isFinite(segmentDuration) ? segmentDuration : 0;
+  });
+  const previousStates = new Map();
+  timeline.forEach((segment, index) => {
+    const segmentVisibleIds = [...new Set((Array.isArray(segment?.visible_characters) ? segment.visible_characters : [])
+      .map((c) => Number(c?.character_id ?? c?.id ?? c)).filter((id) => id > 0))];
+    if (segmentVisibleIds.length > 2) add('INVARIANT_SHORT_DRAMA_VISIBLE_CHARACTER_LIMIT', `video_slots.shots_timeline[${index}].visible_characters`, `分镜 ${shotNum} 第 ${index + 1} 段最多只能有 2 个有身份人物。`);
+    const trajectories = Array.isArray(segment?.character_trajectories) ? segment.character_trajectories : [];
+    const trajectoryIds = trajectories.map((t) => Number(t?.character_id)).filter((id) => id > 0);
+    if (trajectoryIds.length !== new Set(trajectoryIds).size) add('INVARIANT_SHORT_DRAMA_TRAJECTORY_DUPLICATE', `video_slots.shots_timeline[${index}].character_trajectories`, `分镜 ${shotNum} 第 ${index + 1} 段人物轨迹重复。`);
+    trajectories.forEach((trajectory, trajectoryIndex) => {
+      const id = validateTrajectory(trajectory, `video_slots.shots_timeline[${index}].character_trajectories[${trajectoryIndex}]`, segmentVisibleIds);
+      if (id && previousStates.has(id) && trajectory.start_state !== previousStates.get(id)) {
+        add('INVARIANT_ACTION_STATE_DISCONTINUITY', `video_slots.shots_timeline[${index}].character_trajectories[${trajectoryIndex}].start_state`, `分镜 ${shotNum} 第 ${index + 1} 段人物 ${id} 的起始状态 ${trajectory.start_state} 与上一段结果状态 ${previousStates.get(id)} 不一致。`, { character_id: id });
+      }
+      if (id && trajectory.result_state) previousStates.set(id, trajectory.result_state);
+    });
+    const dialogue = String(segment?.audio_lip_sync?.dialogue_content || '').trim();
+    const alignment = segment?.speech_action_alignment || {};
+    if (dialogue) {
+      if (alignment.mode !== 'concurrent') add('INVARIANT_SPEECH_ACTION_NOT_CONCURRENT', `video_slots.shots_timeline[${index}].speech_action_alignment.mode`, `分镜 ${shotNum} 第 ${index + 1} 段对白必须与动作同步。`);
+      const speakerId = Number(alignment.speaker_character_id || 0);
+      const speakerInFrame = segment?.audio_lip_sync?.speaker_in_frame !== false;
+      if (speakerInFrame && !speakerId) {
+        add('INVARIANT_SPEAKER_ID_MISSING', `video_slots.shots_timeline[${index}].speech_action_alignment.speaker_character_id`, `分镜 ${shotNum} 第 ${index + 1} 段为画内对白，必须填写 speaker_character_id。`);
+      }
+      if (speakerInFrame && speakerId && !segmentVisibleIds.includes(speakerId)) {
+        add('INVARIANT_SPEAKER_NOT_VISIBLE', `video_slots.shots_timeline[${index}].speech_action_alignment.speaker_character_id`, `分镜 ${shotNum} 第 ${index + 1} 段说话人 ${speakerId} 不在 visible_characters 中。`);
+      }
+      if (segmentVisibleIds.includes(speakerId)) {
+        const speaker = trajectories.find((t) => Number(t.character_id) === speakerId);
+        if (!speaker) add('INVARIANT_SPEAKER_TRAJECTORY_MISSING', `video_slots.shots_timeline[${index}].character_trajectories`, `分镜 ${shotNum} 第 ${index + 1} 段说话人缺少动作轨迹。`);
+        if (speaker && speaker.mouth_state !== 'speaker_synced') add('INVARIANT_SPEAKER_MOUTH_STATE_INVALID', `video_slots.shots_timeline[${index}].character_trajectories[character_id=${speakerId}].mouth_state`, `分镜 ${shotNum} 第 ${index + 1} 段说话人必须使用 speaker_synced。`);
+      }
+      for (const listener of (Array.isArray(alignment.listener_reactions) ? alignment.listener_reactions : [])) {
+        if (!segmentVisibleIds.includes(Number(listener.character_id))) add('INVARIANT_LISTENER_NOT_VISIBLE', `video_slots.shots_timeline[${index}].speech_action_alignment.listener_reactions`, `分镜 ${shotNum} 第 ${index + 1} 段听者不在画面中。`);
+        if (!['react', 'listen', 'look', 'support', 'turn'].includes(listener.trajectory_action)) add('INVARIANT_LISTENER_REACTION_INVALID', `video_slots.shots_timeline[${index}].speech_action_alignment.listener_reactions`, `分镜 ${shotNum} 第 ${index + 1} 段听者反应必须选择一个原子动作。`);
+      }
+    }
+  });
+  return violations;
+}
 
 function translatePhysicalPhenomena(text) {
   if (!text) return '';
@@ -123,6 +333,33 @@ function createVideoSemanticSlots(data = {}) {
       ? data.trajectories.map((t) => ({
           character_id: t.character_id != null ? Number(t.character_id) : null,
           name: String(t.name || '人物').trim(),
+          start_state: String(t.start_state || '').trim(),
+          action_atom: t.action_atom && typeof t.action_atom === 'object' ? {
+            action: String(t.action_atom.action || '').trim(),
+            body_part: String(t.action_atom.body_part || '').trim(),
+            object_id: t.action_atom.object_id != null ? Number(t.action_atom.object_id) : null,
+            target_type: String(t.action_atom.target_type || 'none').trim(),
+            target_id: t.action_atom.target_id != null ? Number(t.action_atom.target_id) : null,
+            target_label: String(t.action_atom.target_label || '').trim(),
+            direction: String(t.action_atom.direction || 'none').trim(),
+            contact: String(t.action_atom.contact || 'none').trim(),
+          } : null,
+          result_state: String(t.result_state || '').trim(),
+          reaction_trigger: t.reaction_trigger && typeof t.reaction_trigger === 'object' ? {
+            type: String(t.reaction_trigger.type || 'none').trim(),
+            source_id: t.reaction_trigger.source_id != null ? Number(t.reaction_trigger.source_id) : null,
+            source_label: String(t.reaction_trigger.source_label || '').trim(),
+          } : null,
+          facing_target_id: t.facing_target_id != null ? Number(t.facing_target_id) : null,
+          gaze_type: String(t.gaze_type || '').trim(),
+          gaze_target_id: t.gaze_target_id != null ? Number(t.gaze_target_id) : null,
+          gaze_target_label: String(t.gaze_target_label || '').trim(),
+          posture: String(t.posture || '').trim(),
+          hands_state: String(t.hands_state || '').trim(),
+          hands_object_id: t.hands_object_id != null ? Number(t.hands_object_id) : null,
+          hands_target_id: t.hands_target_id != null ? Number(t.hands_target_id) : null,
+          expression: String(t.expression || '').trim(),
+          expression_detail: String(t.expression_detail || '').trim(),
           start_anchor: String(t.start_anchor || '').trim(),
           trajectory: String(t.trajectory || '').trim(),
           end_anchor: String(t.end_anchor || '').trim(),
@@ -176,6 +413,33 @@ function createVideoSemanticSlots(data = {}) {
             ? s.character_trajectories.map((t) => ({
                 character_id: t.character_id != null ? Number(t.character_id) : null,
                 name: String(t.name || '人物').trim(),
+                start_state: String(t.start_state || '').trim(),
+                action_atom: t.action_atom && typeof t.action_atom === 'object' ? {
+                  action: String(t.action_atom.action || '').trim(),
+                  body_part: String(t.action_atom.body_part || '').trim(),
+                  object_id: t.action_atom.object_id != null ? Number(t.action_atom.object_id) : null,
+                  target_type: String(t.action_atom.target_type || 'none').trim(),
+                  target_id: t.action_atom.target_id != null ? Number(t.action_atom.target_id) : null,
+                  target_label: String(t.action_atom.target_label || '').trim(),
+                  direction: String(t.action_atom.direction || 'none').trim(),
+                  contact: String(t.action_atom.contact || 'none').trim(),
+                } : null,
+                result_state: String(t.result_state || '').trim(),
+                reaction_trigger: t.reaction_trigger && typeof t.reaction_trigger === 'object' ? {
+                  type: String(t.reaction_trigger.type || 'none').trim(),
+                  source_id: t.reaction_trigger.source_id != null ? Number(t.reaction_trigger.source_id) : null,
+                  source_label: String(t.reaction_trigger.source_label || '').trim(),
+                } : null,
+                facing_target_id: t.facing_target_id != null ? Number(t.facing_target_id) : null,
+                gaze_type: String(t.gaze_type || '').trim(),
+                gaze_target_id: t.gaze_target_id != null ? Number(t.gaze_target_id) : null,
+                gaze_target_label: String(t.gaze_target_label || '').trim(),
+                posture: String(t.posture || '').trim(),
+                hands_state: String(t.hands_state || '').trim(),
+                hands_object_id: t.hands_object_id != null ? Number(t.hands_object_id) : null,
+                hands_target_id: t.hands_target_id != null ? Number(t.hands_target_id) : null,
+                expression: String(t.expression || '').trim(),
+                expression_detail: String(t.expression_detail || '').trim(),
                 start_anchor: String(t.start_anchor || '').trim(),
                 trajectory: String(t.trajectory || '').trim(),
                 end_anchor: String(t.end_anchor || '').trim(),
@@ -194,6 +458,8 @@ function createVideoSemanticSlots(data = {}) {
           speech_action_alignment: {
             mode: String(s.speech_action_alignment?.mode || '').trim(),
             speech_window: s.speech_action_alignment?.speech_window || null,
+            speaker_character_id: s.speech_action_alignment?.speaker_character_id != null
+              ? Number(s.speech_action_alignment.speaker_character_id) : null,
             speaker_action_window: s.speech_action_alignment?.speaker_action_window || null,
             speaker_action: String(s.speech_action_alignment?.speaker_action || '').trim(),
             listener_reactions: Array.isArray(s.speech_action_alignment?.listener_reactions)
@@ -201,6 +467,7 @@ function createVideoSemanticSlots(data = {}) {
                   character_id: r.character_id != null ? Number(r.character_id) : null,
                   action_window: r.action_window || null,
                   action: String(r.action || '').trim(),
+                  trajectory_action: String(r.trajectory_action || '').trim(),
                 }))
               : [],
             pause_reason: String(s.speech_action_alignment?.pause_reason || '').trim(),
@@ -252,6 +519,13 @@ function validateVideoSlots(shot, slots) {
   }
 
   const audio = slots.audio_lip_sync || {};
+
+  // sync_v2 is the structured second-stage contract. It is validated by
+  // enums, IDs and state transitions; no Chinese keyword completeness check
+  // is used for these execution fields.
+  if (slots.performance_contract === 'sync_v2') {
+    violations.push(...validateStructuredExecutionContract(shot, slots));
+  }
 
   // Current Director outputs use explicit temporal overlap.  Legacy saved
   // shots without the contract remain readable, but every new sync_v1 shot
@@ -360,7 +634,7 @@ function validateVideoSlots(shot, slots) {
 
     if (Array.isArray(slots.trajectories)) {
       slots.trajectories.forEach((traj) => {
-        if (!mouthIsSealed(traj?.mouth_state)) {
+        if (traj?.mouth_state !== 'offscreen_sealed' && !mouthIsSealed(traj?.mouth_state)) {
           violations.push({
             rule: 'INVARIANT_CHARACTER_MOUTH_NOT_SEALED',
             shot_number: shotNum,
@@ -392,7 +666,7 @@ function validateVideoSlots(shot, slots) {
     try { semantic = JSON.parse(semantic); } catch (_) { semantic = null; }
   }
   const isH3Planned = semantic && ['fl2va', 'ref2va'].includes(semantic.h3_mode);
-  if (isH3Planned) {
+  if (isH3Planned && slots.performance_contract !== 'sync_v2') {
     // 旧数据没有 performance_contract 时仍可读取；只有新 Agent 明确提交
     // sync_v1，才启用 1～2 秒动作窗口与逐角色动作门禁。
     const hasTimedPerformanceContract = slots.performance_contract === 'sync_v1';
@@ -682,6 +956,21 @@ function compileVideoPromptFromSlots(shot, slots, options = {}) {
   }
   if (Array.isArray(characterVisuals) && characterVisuals.length) {
     const visualContracts = characterVisuals.map((v) => {
+      if (v.gaze_type || v.hands_state || v.posture) {
+        const gazeTarget = v.gaze_target_label || resolveAtomRef({ target_id: v.gaze_target_id }, 'target_id', options);
+        const facingTarget = v.facing_target_id != null ? resolveAtomRef({ target_id: v.facing_target_id }, 'target_id', options) : '';
+        const items = [
+          v.screen_position ? `站位：${v.screen_position}` : '',
+          v.facing ? `身体朝向：${v.facing}${facingTarget ? `（目标：${facingTarget}）` : ''}` : '',
+          v.head_pose ? `头部：${v.head_pose}` : '',
+          v.gaze_type ? `视线：${v.gaze_type}${gazeTarget ? `（${gazeTarget}）` : ''}` : '',
+          v.posture ? `体态：${v.posture}` : '',
+          v.hands_state ? `手部：${v.hands_state}` : '',
+          v.expression ? `表情：${v.expression}` : '',
+          v.expression_detail || '',
+        ].filter(Boolean);
+        return `「${v.name || '人物'}」${items.join('，')}`;
+      }
       const items = [];
       if (v.screen_position) items.push(`站位：${v.screen_position}`);
       if (v.facing) items.push(`身体朝向：${v.facing}`);
@@ -709,6 +998,7 @@ function compileVideoPromptFromSlots(shot, slots, options = {}) {
   // 4. 角色动态与物理轨迹（明确起点、动作、终态与口型）
   if (normSlots.trajectories.length > 0) {
     const trajLines = normSlots.trajectories.map((t) => {
+      if (isStructuredTrajectory(t)) return compileStructuredTrajectory(t, options);
       const items = [];
       if (t.start_anchor) items.push(`起点：${t.start_anchor}`);
       if (t.trajectory) items.push(`动作轨迹：${t.trajectory}`);
@@ -733,10 +1023,32 @@ function compileVideoPromptFromSlots(shot, slots, options = {}) {
     .filter((segment) => segment.audio_lip_sync?.dialogue_content && segment.speech_action_alignment?.mode === 'concurrent')
     .map((segment) => {
       const a = segment.speech_action_alignment;
-      const listeners = (a.listener_reactions || []).map((r) => `角色${r.character_id}在${JSON.stringify(r.action_window)}同步${r.action}`).join('；');
-      return `对白${JSON.stringify(segment.audio_lip_sync.dialogue_content)}期间，发言者在${JSON.stringify(a.speaker_action_window)}同步${a.speaker_action}${listeners ? `；${listeners}` : ''}`;
+      const speaker = (segment.character_trajectories || []).find((t) => Number(t.character_id) === Number(a.speaker_character_id));
+      const speakerAction = speaker && isStructuredTrajectory(speaker)
+        ? compileStructuredTrajectory(speaker, options)
+        : a.speaker_action;
+      const listeners = (a.listener_reactions || []).map((r) => {
+        const listener = (segment.character_trajectories || []).find((t) => Number(t.character_id) === Number(r.character_id));
+        const reaction = listener && isStructuredTrajectory(listener)
+          ? compileStructuredTrajectory(listener, options)
+          : r.action;
+        return `角色${r.character_id}在${JSON.stringify(r.action_window)}同步${reaction}`;
+      }).join('；');
+      return `对白${JSON.stringify(segment.audio_lip_sync.dialogue_content)}期间，发言者在${JSON.stringify(a.speaker_action_window)}同步${speakerAction || '执行本段动作'}${listeners ? `；${listeners}` : ''}`;
     });
   if (alignedBeats.length) parts.push('同步视听事件：' + alignedBeats.join('；'));
+  const physicalBeats = normSlots.shots_timeline
+    .filter((segment) => Array.isArray(segment.character_trajectories) && segment.character_trajectories.some(isStructuredTrajectory))
+    .map((segment) => {
+      const start = segment.timestamp || '00:00.000';
+      const actions = segment.character_trajectories
+        .filter(isStructuredTrajectory)
+        .map((trajectory) => compileStructuredTrajectory(trajectory, options))
+        .filter(Boolean)
+        .join('；');
+      return `${start}（${segment.duration || 1}秒）：${actions}`;
+    });
+  if (physicalBeats.length) parts.push('原子动作时间线：' + physicalBeats.join('；'));
 
   // 5. 音频与口型控制契约（Lip-Sync Contract）
   const audio = normSlots.audio_lip_sync;
@@ -853,6 +1165,10 @@ function synthesizeH3MultimodalSlots(shot, options = {}) {
           desc += ` Dialogue follows: ${spk}“${cleanDiag}”`;
         }
       }
+      const structuredTrajectories = Array.isArray(st.character_trajectories)
+        ? st.character_trajectories.filter(isStructuredTrajectory).map((t) => compileStructuredTrajectory(t, options)).filter(Boolean)
+        : [];
+      if (structuredTrajectories.length) desc += ` Physical performance: ${structuredTrajectories.join('; ')}.`;
       const alignment = st.speech_action_alignment;
       if (alignment?.mode === 'concurrent' && alignment.speaker_action) {
         const listeners = (alignment.listener_reactions || [])
@@ -1272,6 +1588,8 @@ module.exports = {
   synthesizeH3MultimodalSlots,
   formatH3Timestamp,
   translatePhysicalPhenomena,
+  compileActionAtom,
+  compileStructuredTrajectory,
   isGazeOnlyHold,
   mouthIsSealed,
 };
