@@ -2670,7 +2670,13 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
       if (Math.abs(Number(currentShot.video_slots?.timing?.duration || 0) - duration) > 0.1) {
         errors.push({ message: `video_slots.timing.duration 必须等于权威时长 ${duration} 秒` });
       }
-      if (errors.length === 0) return currentShot;
+      if (errors.length === 0) {
+        // Report successful completion as well as retries.  Without this
+        // callback the two-stage runner leaves the task row showing the last
+        // shot that started, even while later shots are already running.
+        retry.onProgress(`分镜 #${shotNumber} 执行合同已通过`);
+        return currentShot;
+      }
 
       reportDirectorLayerRetry(retry, `分镜 #${shotNumber} 视听执行合同`, attempt, errors.map(item => item.message).join('；'));
     } catch (error) {
