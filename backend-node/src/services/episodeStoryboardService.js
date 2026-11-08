@@ -1536,16 +1536,20 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
       saveStoryboards(db, log, episodeId, storyboards, cfg, style, null, deriveOpts)
     )();
 
-    // ── 分镜角色补全（字符串匹配，无 AI，极快）──────────────────────────────────
-    taskService.updateTaskStatus(db, taskId, 'processing', 75, '正在校验分镜角色关联...');
-    let totalCharAdded = 0;
-    for (const sb of saved) {
-      if (!sb?.id) continue;
-      const { added } = syncStoryboardCharacters(db, log, sb.id);
-      totalCharAdded += added.length;
-    }
-    if (totalCharAdded > 0) {
-      log.info('[分镜] 角色补全完成', { episode_id: episodeId, total_added: totalCharAdded });
+    // 导演两阶段路径的人物清单是 Agent 的规划合同；不能再用文本扫描静默追加
+    // 角色，否则阶段一门禁通过后又会把台词中提到的第三人写回 characters，
+    // 直到阶段二才暴露为 H3 人数冲突。旧的非导演生成入口仍保留历史补全行为。
+    if (!pipelineOptions?.chainEnrichment) {
+      taskService.updateTaskStatus(db, taskId, 'processing', 75, '正在校验分镜角色关联...');
+      let totalCharAdded = 0;
+      for (const sb of saved) {
+        if (!sb?.id) continue;
+        const { added } = syncStoryboardCharacters(db, log, sb.id);
+        totalCharAdded += added.length;
+      }
+      if (totalCharAdded > 0) {
+        log.info('[分镜] 角色补全完成', { episode_id: episodeId, total_added: totalCharAdded });
+      }
     }
 
     taskService.updateTaskStatus(db, taskId, 'processing', 90, '正在更新剧集时长...');
