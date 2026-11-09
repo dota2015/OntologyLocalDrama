@@ -325,6 +325,86 @@ function timelineDurationPlanContract(duration) {
   return `shots_timeline 是因果动作节拍，不是强制切镜：可以使用一个 ${duration} 秒连续段，也可以按真实的机位、说话人或信息变化拆成多个正整数秒段；每段 1～30 秒，所有段时长之和必须严格等于总时长。只有 camera.shot_change=true 时才切镜。禁止用“说完后互相看着”、无意义特写、等待或静止填满时长。`;
 }
 
+// Stage-two prompts must describe the current shot, not replay the entire
+// episode database. Keep only immutable story facts and the execution fields
+// that are relevant to the current repair.
+function compactExecutionShot(shot, options = {}) {
+  const value = shot && typeof shot === 'object' ? shot : {};
+  const semantic = value.semantic_slots && typeof value.semantic_slots === 'object'
+    ? value.semantic_slots : {};
+  const result = {
+    shot_number: value.shot_number ?? value.storyboard_number ?? null,
+    title: value.title || '',
+    scene_id: value.scene_id ?? null,
+    duration: Number(value.duration ?? semantic.shot_duration ?? 0) || 0,
+    characters: Array.isArray(value.characters) ? value.characters : [],
+    background_characters: Array.isArray(value.background_characters) ? value.background_characters : [],
+    props: Array.isArray(value.props) ? value.props : [],
+    dialogue: value.dialogue || '',
+    narration: value.narration || '',
+    action: value.action || '',
+    result: value.result || '',
+    shot_type: value.shot_type || '',
+    dialogue_framing: value.dialogue_framing || '',
+    start_framing: value.start_framing || '',
+    end_framing: value.end_framing || '',
+    transition_to_next: value.transition_to_next || '',
+    semantic_slots: {
+      visible_characters: semantic.visible_characters || [],
+      background_characters: semantic.background_characters || [],
+      identity_visibility: semantic.identity_visibility || '',
+      speech_plan: semantic.speech_plan || {},
+      sound_plan: semantic.sound_plan || {},
+      continuity_type: semantic.continuity_type || '',
+      continuity_from_previous: semantic.continuity_from_previous || {},
+      h3_mode: semantic.h3_mode || '',
+      h3_mode_reason: semantic.h3_mode_reason || '',
+      first_frame_policy: semantic.first_frame_policy || '',
+      first_frame_reason: semantic.first_frame_reason || '',
+      last_frame_policy: semantic.last_frame_policy || '',
+      last_frame_reason: semantic.last_frame_reason || '',
+      required_references: semantic.required_references || [],
+      audio_lip_sync: semantic.audio_lip_sync || '',
+      shot_duration: semantic.shot_duration ?? value.duration ?? null,
+      execution_backend: semantic.execution_backend || '',
+      continuum_plan: semantic.continuum_plan ?? null,
+      source_script_excerpt: semantic.source_script_excerpt || '',
+    },
+  };
+  if (options.includeExecution) {
+    result.character_visuals = Array.isArray(value.character_visuals) ? value.character_visuals : [];
+    result.last_frame_visuals = Array.isArray(value.last_frame_visuals) ? value.last_frame_visuals : [];
+    result.video_slots = value.video_slots || {};
+  }
+  return result;
+}
+
+function compactExecutionCatalogs(catalogs = {}, shot = {}) {
+  const ids = new Set();
+  const names = new Set();
+  const add = (value) => (Array.isArray(value) ? value : []).forEach((item) => {
+    const id = Number(item && typeof item === 'object' ? (item.id ?? item.character_id ?? item.prop_id) : item);
+    if (Number.isInteger(id) && id > 0) ids.add(id);
+    const name = item && typeof item === 'object' ? item.name : (typeof item === 'string' ? item : '');
+    if (String(name || '').trim()) names.add(String(name).trim());
+  });
+  add(shot.characters);
+  add(shot.background_characters);
+  add(shot.props);
+  add(shot.semantic_slots?.visible_characters);
+  add(shot.semantic_slots?.background_characters);
+  add(shot.semantic_slots?.required_references);
+  const pick = (items = []) => (Array.isArray(items) ? items : [])
+    .filter((item) => ids.has(Number(item?.id)) || names.has(String(item?.name || '').trim()))
+    .map((item) => ({ id: item.id, name: item.name, location: item.location, role: item.role }));
+  return {
+    characters: pick(catalogs.characters),
+    scenes: (catalogs.scenes || []).filter((item) => Number(item?.id) === Number(shot.scene_id))
+      .map((item) => ({ id: item.id, name: item.name, location: item.location, time: item.time })),
+    props: pick(catalogs.props),
+  };
+}
+
 function selectBalancedPartition(partitions, sourceUnits) {
   if (!partitions || !partitions.length) return null;
   if (partitions.length === 1) return partitions[0];
@@ -2643,32 +2723,76 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
       // Each retry must see the latest candidate. Sending the original shot
       // made the loop forget every previous repair and repeat the same omission.
       const candidateBase = currentShot;
+      const patchMode = attempt > 1;
+      const patchFields = new Set();
+      for (const item of errors) {
+        const message = String(item?.message || item || '');
+        if (/character_visuals/.test(message)) patchFields.add('character_visuals');
+        if (/last_frame_visuals/.test(message)) patchFields.add('last_frame_visuals');
+        if (/semantic_slots|continuity|source_script_excerpt|h3_mode|人物清单/.test(message)) patchFields.add('semantic_slots');
+        if (/video_slots|时间轴|动作|角色 ID .*第 .*段|trajectory|audio_lip_sync|对白/.test(message)) patchFields.add('video_slots');
+      }
+      if (!patchFields.size) ['semantic_slots', 'character_visuals', 'last_frame_visuals', 'video_slots'].forEach(field => patchFields.add(field));
+      const compactCandidate = compactExecutionShot(candidateBase, { includeExecution: patchMode });
+      const compactNeighbours = [retryOptions.previousShot, retryOptions.nextShot]
+        .filter(Boolean).map(item => compactExecutionShot(item));
+      const compactCatalogs = compactExecutionCatalogs(retryOptions.catalogs || {}, candidateBase);
+      const requestInput = patchMode
+        ? `【权威镜头事实】${JSON.stringify(compactExecutionShot(candidateBase))}
+【当前已有执行槽位】${JSON.stringify(compactCandidate)}
+【允许修复字段】${JSON.stringify([...patchFields])}
+【相邻镜头连续性摘要】${JSON.stringify(compactNeighbours)}
+【本体资产白名单】${JSON.stringify(compactCatalogs)}
+【门禁反馈】${errors.map(item => item.message).join('；')}
+只返回 {"repairs":[{"shot_number":${Number(shotNumber) || 0},"patch":{...}}]}。patch 只能包含允许修复字段；character_visuals 和 video_slots.shots_timeline 必须返回该字段的完整新值，其他字段保持不变。`
+        : `【权威镜头事实】${JSON.stringify(compactExecutionShot(candidateBase))}
+【相邻镜头连续性摘要】${JSON.stringify(compactNeighbours)}
+【本体资产白名单】${JSON.stringify(compactCatalogs)}
+【门禁反馈】${errors.map(item => item.message).join('；')}
+必须输出当前镜头完整执行合同。`;
       const planned = await agentsRuntime.runAgent(db, log, {
         name: 'director-execution-slots-planner',
-        instructions: `你是短剧导演的视听执行合同节点。你必须一次输出当前镜头完整的 semantic_slots、character_visuals、last_frame_visuals 和 video_slots；禁止改写顶层剧情、角色清单、场景、对白、旁白和总时长。semantic_slots 必须完整输出 visible_characters、background_characters、identity_visibility、speech_plan、sound_plan、continuity_type、continuity_from_previous、h3_mode、h3_mode_reason、first_frame_policy、first_frame_reason、last_frame_policy、last_frame_reason、required_references、audio_lip_sync、shot_duration、execution_backend、continuum_plan 和 source_script_excerpt。continuity_from_previous 即使是第1镜也必须输出完整对象：relationship 填 opening、previous_end_state 填空串，并同时填写 entry_state、causal_link、sound_bridge、requires_previous_tail。不得根据缺失字段自行省略或让后端猜测。本系统 Agent 规划统一使用 h3_mode=ref2va，first_frame_policy/last_frame_policy 按剧情明确填写。过肩与近景双人对话镜头严禁包含背景在场角色。人物定格槽位和镜内时间轴必须描述同一套物理动作与终态：character_visuals 是起幅定格，last_frame_visuals 是明确要求尾帧时的落幅定格；video_slots.shots_timeline 是唯一的动作、对白和反应时间轴权威。${durationPlanContract}。\n【结构化动作合同 sync_v2】video_slots.performance_contract 必须为 sync_v2。每个动作节拍为每位画内人物一个主要物理动作或反应；可使用 action_atom 或自然语言 action_detail，并填写 start_state、result_state、reaction_trigger。优先使用 action_atom 表达主要物理动作；action 可使用核心枚举或具体自然语言，复杂动作写入 action_detail。body_part、target_type、direction、contact 仍使用枚举，并按动作需要填写目标；不要拆成手指或关节微动作。角色视觉字段必须使用枚举 facing、head_pose、gaze_type、posture、hands_state、expression、mouth_state，并使用目标 ID 或 target_label 表达视线落点。含对白段填写 speaker_character_id 和 listener_reactions[].trajectory_action，动作窗口与语音窗口重叠；轨迹对象是唯一动作来源，不要用自由文本 speaker_action 替代。H3 最终提示词由后端把这些结构化字段编译为自然语言，不要输出 JSON 解释。不要重复输出顶层剧情字段，不要解释，只返回指定 JSON。\n${DIRECTOR_ACTION_COMPLETION_CONTRACT}`,
-        input: `【权威时长】${duration} 秒\n【权威人物】${JSON.stringify(shot.characters || semantic.visible_characters || [])}\n【权威数据库对白】${JSON.stringify(shot.dialogue || '')}\n【权威数据库旁白】${JSON.stringify(shot.narration || '')}\n【当前完整分镜，只读】${JSON.stringify(candidateBase)}\n【本集全部分镜只读上下文】${JSON.stringify(retryOptions.allShots || [])}\n【上一镜执行合同】${JSON.stringify(retryOptions.previousShot || null)}\n【下一镜执行合同】${JSON.stringify(retryOptions.nextShot || null)}\n【本集剧本】${String(retryOptions.episodeScript || '').slice(0, 24000)}\n【本体资产目录】${JSON.stringify(retryOptions.catalogs || {})}\n【上一轮执行合同反馈】${errors.map(item => item.message).join('；')}`,
-        outputType: agentsRuntime.directorExecutionSlotsOutputType(duration, { lastFramePolicy, allowTailVisuals }),
+        instructions: patchMode
+          ? `你是短剧导演执行合同的局部修复节点。只修复门禁反馈列出的字段，禁止改写人物清单、场景、对白、旁白、总时长和其他已通过字段。character_visuals 必须精确覆盖权威人物且每人有实际定格；video_slots.shots_timeline 必须让每位画内角色在该段有与事件同步的动作或反应。只返回指定 repairs JSON，不要解释。`
+          : `你是短剧导演执行合同节点。根据紧凑的当前镜头事实，一次输出完整 semantic_slots、character_visuals、last_frame_visuals 和 video_slots。禁止改写人物清单、场景、对白、旁白和总时长。semantic_slots.continuity_from_previous 必须完整；h3_mode 固定 ref2va；performance_contract 固定 sync_v2。动作与对白必须同步，所有画内人物都要有本段可执行动作或反应。${durationPlanContract}。只返回指定 JSON，不要解释。`,
+        input: requestInput,
+        outputType: patchMode
+          ? agentsRuntime.directorExecutionRepairOutputType(shotNumber)
+          : agentsRuntime.directorExecutionSlotsOutputType(duration, { lastFramePolicy, allowTailVisuals }),
         thinking: 'enabled',
         maxTokens: 24576,
         temperature: 0.2,
       });
       hasValidAgentOutput = true;
-      const plannedVideoSlots = planned?.video_slots ? {
-        ...planned.video_slots,
-        ...(Array.isArray(planned.video_slots.shots_timeline) ? {
-          shots_timeline: normalizeTimelineTimestamps(planned.video_slots.shots_timeline),
+      const plannedPatch = patchMode ? (planned?.repairs?.[0]?.patch || {}) : planned;
+      const plannedVideoSlots = plannedPatch?.video_slots ? {
+        ...(patchMode ? (candidateBase.video_slots || {}) : {}),
+        ...plannedPatch.video_slots,
+        ...(Array.isArray(plannedPatch.video_slots.shots_timeline) ? {
+          shots_timeline: normalizeTimelineTimestamps(plannedPatch.video_slots.shots_timeline),
         } : {}),
       } : null;
       // Merge the new execution contract onto the latest candidate so a
       // partial response does not erase fields that already passed review.
+      const mergedSemantic = plannedPatch?.semantic_slots
+        ? Object.entries(plannedPatch.semantic_slots).reduce((merged, [key, value]) => {
+          if (value && typeof value === 'object' && !Array.isArray(value)
+            && merged[key] && typeof merged[key] === 'object' && !Array.isArray(merged[key])) {
+            merged[key] = { ...merged[key], ...value };
+          } else {
+            merged[key] = value;
+          }
+          return merged;
+        }, { ...(candidateBase.semantic_slots || {}) })
+        : (patchMode ? candidateBase.semantic_slots : plannedPatch?.semantic_slots);
       currentShot = {
         ...candidateBase,
         // 阶段二 forceAgent 必须拿到 Agent 新输出的 semantic_slots；旧深度路径
         // 若只返回视觉/视频补丁则保留原语义，避免破坏断点恢复。
-        semantic_slots: planned?.semantic_slots ?? (requireSemantic ? undefined : candidateBase.semantic_slots),
-        character_visuals: planned?.character_visuals ?? candidateBase.character_visuals,
-        last_frame_visuals: planned?.last_frame_visuals ?? candidateBase.last_frame_visuals,
-        video_slots: plannedVideoSlots ?? candidateBase.video_slots,
+        semantic_slots: mergedSemantic,
+        character_visuals: plannedPatch?.character_visuals ?? (patchMode ? candidateBase.character_visuals : undefined),
+        last_frame_visuals: plannedPatch?.last_frame_visuals ?? (patchMode ? candidateBase.last_frame_visuals : undefined),
+        video_slots: plannedVideoSlots ?? (patchMode ? candidateBase.video_slots : plannedPatch?.video_slots),
       };
       const plannedSemantic = currentShot.semantic_slots && typeof currentShot.semantic_slots === 'object'
         ? currentShot.semantic_slots

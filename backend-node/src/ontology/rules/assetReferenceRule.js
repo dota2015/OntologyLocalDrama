@@ -18,7 +18,7 @@ function arrayValue(value) {
   return Array.isArray(parsed) ? parsed : [];
 }
 
-function idOf(value, preferred = []) {
+function idOf(value, preferred = [], nameToId = null) {
   if (value == null) return null;
   if (typeof value === 'object') {
     for (const key of preferred) {
@@ -27,13 +27,17 @@ function idOf(value, preferred = []) {
     for (const key of ['id', 'character_id', 'scene_id', 'prop_id']) {
       if (value[key] != null && Number.isFinite(Number(value[key]))) return Number(value[key]);
     }
+    const name = String(value.name || '').trim();
+    if (name && nameToId?.has(name)) return nameToId.get(name);
     return null;
   }
-  return Number.isFinite(Number(value)) ? Number(value) : null;
+  if (Number.isFinite(Number(value))) return Number(value);
+  const key = String(value || '').trim();
+  return nameToId?.get(key) || null;
 }
 
-function ids(value, preferred = []) {
-  return arrayValue(value).map((item) => idOf(item, preferred)).filter((id) => id != null);
+function ids(value, preferred = [], nameToId = null) {
+  return arrayValue(value).map((item) => idOf(item, preferred, nameToId)).filter((id) => id != null);
 }
 
 function semanticObject(shot) {
@@ -70,6 +74,9 @@ function planningFeasibilityViolations(shots, options = {}) {
   const hasSceneCatalog = Array.isArray(catalogs.scenes);
   const hasPropCatalog = Array.isArray(catalogs.props);
   const knownCharacters = new Set((catalogs.characters || []).map((item) => Number(item.id)).filter(Number.isFinite));
+  const characterNameToId = new Map((catalogs.characters || [])
+    .filter((item) => item?.name != null && Number.isFinite(Number(item.id)))
+    .map((item) => [String(item.name).trim(), Number(item.id)]));
   const knownScenes = new Set((catalogs.scenes || []).map((item) => Number(item.id)).filter(Number.isFinite));
   const knownProps = new Set((catalogs.props || []).map((item) => Number(item.id)).filter(Number.isFinite));
   const violations = [];
@@ -77,8 +84,24 @@ function planningFeasibilityViolations(shots, options = {}) {
 
   shots.forEach((shot, index) => {
     const shotNumber = Number(shot?.shot_number || shot?.storyboard_number || index + 1);
-    const chars = shotCharacterIds(shot);
+    // Stage-one drafts may still contain display names. Resolve those names
+    // against the immutable catalog before applying the H3 two-person gate;
+    // otherwise a three-person draft can slip through because Number('露娜')
+    // is NaN and only fails later in character_visuals.
+    const chars = {
+      ...shotCharacterIds(shot),
+      visible: ids(shot?.characters ?? shot?.character_ids, ['character_id', 'id'], characterNameToId),
+      background: ids(shot?.background_characters, ['character_id', 'id'], characterNameToId),
+    };
     const semantic = semanticObject(shot);
+    chars.semanticVisible = ids(semantic.visible_characters, ['id', 'character_id'], characterNameToId);
+    chars.semanticBackground = ids(semantic.background_characters, ['character_id', 'id'], characterNameToId);
+    chars.visuals = chars.visuals || [];
+    chars.lastVisuals = chars.lastVisuals || [];
+    chars.all = [...new Set([
+      ...chars.visible, ...chars.background, ...chars.semanticVisible, ...chars.semanticBackground,
+      ...chars.visuals, ...chars.lastVisuals,
+    ])];
     if (shot?.characters != null && semantic.visible_characters != null && !sameIds(chars.visible, chars.semanticVisible)) {
       violations.push({
         rule: 'INVARIANT_CHARACTER_SLOT_DIVERGENCE', shot_number: shotNumber, severity: 'error',

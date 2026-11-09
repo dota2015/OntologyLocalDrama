@@ -71,6 +71,9 @@ test('directorTwoStageEnrichment: execution contract is authored by the Agent an
     const source = { id: 7, storyboard_number: 1, duration: 4, dialogue: '露娜: 撤退！', action: '原始动作', characters: [1], scene_id: 10 };
     const planned = await ensureDirectorExecutionSlots({}, { info() {}, warn() {} }, source, { forceAgent: true, maxAttempts: 1 });
     assert.equal(received.name, 'director-execution-slots-planner');
+    assert.equal(received.input.includes('本集全部分镜只读上下文'), false);
+    assert.equal(received.input.includes('本体资产目录'), false);
+    assert.ok(received.input.length < 10000, `stage-two input unexpectedly large: ${received.input.length}`);
     assert.equal(planned.action, '原始动作');
     assert.equal(planned.semantic_slots.source_script_excerpt, '露娜: 撤退！');
     assert.equal(planned.semantic_slots.h3_mode, 'ref2va');

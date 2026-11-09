@@ -603,6 +603,44 @@ function directorExecutionSlotsOutputType(duration = 5, options = {}) {
   };
 }
 
+// Retry output for stage-two execution contracts. The first pass creates the
+// complete contract; later passes return only a patch over the last candidate.
+function directorExecutionRepairOutputType(shotNumber) {
+  const partialObject = { type: 'object', additionalProperties: true };
+  const visualArray = { type: 'array', maxItems: 2, items: structuredVisualSchema() };
+  return {
+    type: 'json_schema',
+    name: 'director_execution_slot_repair',
+    strict: false,
+    schema: {
+      type: 'object', additionalProperties: false,
+      required: ['repairs'],
+      properties: {
+        repairs: {
+          type: 'array', minItems: 1, maxItems: 1,
+          prefixItems: [{
+            type: 'object', additionalProperties: false,
+            required: ['shot_number', 'patch'],
+            properties: {
+              shot_number: { const: Number(shotNumber) },
+              patch: {
+                type: 'object', additionalProperties: false,
+                properties: {
+                  semantic_slots: partialObject,
+                  character_visuals: visualArray,
+                  last_frame_visuals: visualArray,
+                  video_slots: partialObject,
+                },
+              },
+            },
+          }],
+          items: false,
+        },
+      },
+    },
+  };
+}
+
 function buildContiguousSourcePartitions(sourceUnits, shotCount) {
   const ids = (Array.isArray(sourceUnits) ? sourceUnits : [])
     .map((unit) => String(unit?.id || unit || '')).filter(Boolean);
@@ -912,6 +950,7 @@ module.exports = {
   directorVideoSlotsOutputType,
   directorCharacterVisualsOutputType,
   directorExecutionSlotsOutputType,
+  directorExecutionRepairOutputType,
   directorRepairOutputType,
   directorPatchRepairOutputType,
   directorStructuralRepairOutputType,
