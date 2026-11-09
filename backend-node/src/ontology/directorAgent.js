@@ -2567,7 +2567,11 @@ function autoPatchWholeEpisodeViolations(shots, violations = [], options = {}) {
 // the same performance and should not be planned by independent agents.
 async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
   const retry = directorRetryContext(retryOptions);
-  const maxAttempts = Math.max(1, Math.min(12, Number(retryOptions.maxAttempts || retryOptions.max_attempts || 6)));
+  // Execution-slot repair is an Agent loop.  Six attempts was too small for a
+  // long structured contract and made a recoverable field omission terminal.
+  // Keep a finite, configurable safety ceiling, but default to the same 20
+  // rounds used by the director retry context.
+  const maxAttempts = Math.max(1, Math.min(20, Number(retryOptions.maxAttempts || retryOptions.max_attempts || 20)));
   // Database rows use storyboard_number; the in-memory director payload uses
   // shot_number.  Always resolve one display number so failures can be tied
   // back to the actual storyboard instead of being reported as #undefined.
@@ -2621,14 +2625,28 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
   if (errors.length === 0) return shot;
 
   let currentShot = shot;
+  const semanticCharacterIds = (value, background = false) => {
+    const list = Array.isArray(value) ? value : [];
+    return list.map(item => Number(item && typeof item === 'object'
+      ? (background ? (item.character_id ?? item.id) : (item.id ?? item.character_id))
+      : item)).filter(id => Number.isInteger(id) && id > 0).sort((a, b) => a - b);
+  };
+  const sameIds = (left, right) => left.length === right.length && left.every((id, index) => id === right[index]);
+  const lockedVisibleIds = semanticCharacterIds(semantic.visible_characters);
+  const lockedBackgroundIds = semanticCharacterIds(semantic.background_characters, true);
+  const hasLockedCharacterContract = Array.isArray(semantic.visible_characters)
+    && Array.isArray(semantic.background_characters);
   let lastFatalError = null;
   let hasValidAgentOutput = false;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
+      // Each retry must see the latest candidate. Sending the original shot
+      // made the loop forget every previous repair and repeat the same omission.
+      const candidateBase = currentShot;
       const planned = await agentsRuntime.runAgent(db, log, {
         name: 'director-execution-slots-planner',
         instructions: `你是短剧导演的视听执行合同节点。你必须一次输出当前镜头完整的 semantic_slots、character_visuals、last_frame_visuals 和 video_slots；禁止改写顶层剧情、角色清单、场景、对白、旁白和总时长。semantic_slots 必须完整输出 visible_characters、background_characters、identity_visibility、speech_plan、sound_plan、continuity_type、continuity_from_previous、h3_mode、h3_mode_reason、first_frame_policy、first_frame_reason、last_frame_policy、last_frame_reason、required_references、audio_lip_sync、shot_duration、execution_backend、continuum_plan 和 source_script_excerpt。continuity_from_previous 即使是第1镜也必须输出完整对象：relationship 填 opening、previous_end_state 填空串，并同时填写 entry_state、causal_link、sound_bridge、requires_previous_tail。不得根据缺失字段自行省略或让后端猜测。本系统 Agent 规划统一使用 h3_mode=ref2va，first_frame_policy/last_frame_policy 按剧情明确填写。过肩与近景双人对话镜头严禁包含背景在场角色。人物定格槽位和镜内时间轴必须描述同一套物理动作与终态：character_visuals 是起幅定格，last_frame_visuals 是明确要求尾帧时的落幅定格；video_slots.shots_timeline 是唯一的动作、对白和反应时间轴权威。${durationPlanContract}。\n【结构化动作合同 sync_v2】video_slots.performance_contract 必须为 sync_v2。每个动作节拍为每位画内人物一个主要物理动作或反应；可使用 action_atom 或自然语言 action_detail，并填写 start_state、result_state、reaction_trigger。优先使用 action_atom 表达主要物理动作；action 可使用核心枚举或具体自然语言，复杂动作写入 action_detail。body_part、target_type、direction、contact 仍使用枚举，并按动作需要填写目标；不要拆成手指或关节微动作。角色视觉字段必须使用枚举 facing、head_pose、gaze_type、posture、hands_state、expression、mouth_state，并使用目标 ID 或 target_label 表达视线落点。含对白段填写 speaker_character_id 和 listener_reactions[].trajectory_action，动作窗口与语音窗口重叠；轨迹对象是唯一动作来源，不要用自由文本 speaker_action 替代。H3 最终提示词由后端把这些结构化字段编译为自然语言，不要输出 JSON 解释。不要重复输出顶层剧情字段，不要解释，只返回指定 JSON。\n${DIRECTOR_ACTION_COMPLETION_CONTRACT}`,
-        input: `【权威时长】${duration} 秒\n【权威人物】${JSON.stringify(shot.characters || semantic.visible_characters || [])}\n【权威数据库对白】${JSON.stringify(shot.dialogue || '')}\n【权威数据库旁白】${JSON.stringify(shot.narration || '')}\n【当前完整分镜，只读】${JSON.stringify(shot)}\n【本集全部分镜只读上下文】${JSON.stringify(retryOptions.allShots || [])}\n【上一镜执行合同】${JSON.stringify(retryOptions.previousShot || null)}\n【下一镜执行合同】${JSON.stringify(retryOptions.nextShot || null)}\n【本集剧本】${String(retryOptions.episodeScript || '').slice(0, 24000)}\n【本体资产目录】${JSON.stringify(retryOptions.catalogs || {})}\n【上一轮执行合同反馈】${errors.map(item => item.message).join('；')}`,
+        input: `【权威时长】${duration} 秒\n【权威人物】${JSON.stringify(shot.characters || semantic.visible_characters || [])}\n【权威数据库对白】${JSON.stringify(shot.dialogue || '')}\n【权威数据库旁白】${JSON.stringify(shot.narration || '')}\n【当前完整分镜，只读】${JSON.stringify(candidateBase)}\n【本集全部分镜只读上下文】${JSON.stringify(retryOptions.allShots || [])}\n【上一镜执行合同】${JSON.stringify(retryOptions.previousShot || null)}\n【下一镜执行合同】${JSON.stringify(retryOptions.nextShot || null)}\n【本集剧本】${String(retryOptions.episodeScript || '').slice(0, 24000)}\n【本体资产目录】${JSON.stringify(retryOptions.catalogs || {})}\n【上一轮执行合同反馈】${errors.map(item => item.message).join('；')}`,
         outputType: agentsRuntime.directorExecutionSlotsOutputType(duration, { lastFramePolicy, allowTailVisuals }),
         thinking: 'enabled',
         maxTokens: 24576,
@@ -2641,14 +2659,16 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
           shots_timeline: normalizeTimelineTimestamps(planned.video_slots.shots_timeline),
         } : {}),
       } : null;
+      // Merge the new execution contract onto the latest candidate so a
+      // partial response does not erase fields that already passed review.
       currentShot = {
-        ...shot,
+        ...candidateBase,
         // 阶段二 forceAgent 必须拿到 Agent 新输出的 semantic_slots；旧深度路径
         // 若只返回视觉/视频补丁则保留原语义，避免破坏断点恢复。
-        semantic_slots: planned?.semantic_slots ?? (requireSemantic ? undefined : shot.semantic_slots),
-        character_visuals: planned?.character_visuals,
-        last_frame_visuals: planned?.last_frame_visuals,
-        video_slots: plannedVideoSlots,
+        semantic_slots: planned?.semantic_slots ?? (requireSemantic ? undefined : candidateBase.semantic_slots),
+        character_visuals: planned?.character_visuals ?? candidateBase.character_visuals,
+        last_frame_visuals: planned?.last_frame_visuals ?? candidateBase.last_frame_visuals,
+        video_slots: plannedVideoSlots ?? candidateBase.video_slots,
       };
       const plannedSemantic = currentShot.semantic_slots && typeof currentShot.semantic_slots === 'object'
         ? currentShot.semantic_slots
@@ -2669,6 +2689,20 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
         ...visualSlotErrors(currentShot, currentShot.character_visuals, currentShot.last_frame_visuals).map(message => ({ message })),
         ...shortDramaTimelineViolations(currentShot, currentShot.video_slots?.shots_timeline),
       ];
+      // Stage one owns the story structure.  Stage two may fill execution
+      // fields, but it must not add/remove identity characters while repairing
+      // those fields.  Otherwise the required visual IDs become impossible to
+      // satisfy and the error only appears much later as a misleading array
+      // mismatch.
+      if (requireSemantic && hasLockedCharacterContract) {
+        const plannedVisibleIds = semanticCharacterIds(plannedSemantic.visible_characters);
+        const plannedBackgroundIds = semanticCharacterIds(plannedSemantic.background_characters, true);
+        if (!sameIds(lockedVisibleIds, plannedVisibleIds) || !sameIds(lockedBackgroundIds, plannedBackgroundIds)) {
+          errors.push({ message: `阶段二不得改写阶段一锁定的人物清单：visible_characters 应为 ${JSON.stringify(lockedVisibleIds)}、background_characters 应为 ${JSON.stringify(lockedBackgroundIds)}，Agent 实际输出为 visible_characters=${JSON.stringify(plannedVisibleIds)}、background_characters=${JSON.stringify(plannedBackgroundIds)}` });
+        }
+        const planningDrift = checkPlanningFeasibility([currentShot], { catalogs: retryOptions.catalogs || {} });
+        errors.push(...planningDrift.map(item => ({ message: item.message })));
+      }
       if (requireSemantic && typeof semantic.source_script_excerpt === 'string'
         && plannedSemantic.source_script_excerpt !== semantic.source_script_excerpt) {
         errors.push({ message: 'semantic_slots.source_script_excerpt 必须保持阶段一/原剧本覆盖证据不变，不能由执行槽位 Agent 改写' });

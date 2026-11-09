@@ -100,7 +100,10 @@ async function enrichEpisodeOntologySlots(db, log, cfg, episodeId, options = {})
   const shotNumberOf = item => Number(item?.storyboard_number || item?.shot_number || 0);
   const enrichedByNumber = new Map(enrichedShots.map(item => [shotNumberOf(item), item]).filter(([n]) => Number.isFinite(n) && n > 0));
   const completedNumbers = new Set(enrichedByNumber.keys());
-  const maxAttempts = Math.max(1, Math.min(12, Number(options.maxAttempts || options.max_attempts || 6)));
+  // A single execution contract can require several structured corrections.
+  // Do not terminate the whole episode after the old six-attempt default;
+  // checkpoints still make the finite 20-round ceiling resumable and safe.
+  const maxAttempts = Math.max(1, Math.min(20, Number(options.maxAttempts || options.max_attempts || 20)));
 
   // 执行合同由专用导演 Agent 生成。为了保证连戏上下文，阶段二按镜头顺序执行。
   for (let i = 0; i < normalizedShots.length; i++) {
