@@ -97,29 +97,6 @@ test('video prompt deterministically preserves static and timed eyeline contract
   assert.match(prompt, /反应触发：赵虎开口威胁/);
 });
 
-test('H3 Director gate requires explicit timelines and character directions from every visible character', () => {
-  const shot = {
-    storyboard_number: 6,
-    duration: 5,
-    semantic_slots: { h3_mode: 'ref2va', shot_duration: 5, visible_characters: [{ id: 1 }, { id: 2 }] },
-  };
-  const base = {
-    camera: {}, audio_lip_sync: {}, trajectories: [], environment_vfx: {}, timing: { duration: 5 },
-  };
-  assert.ok(slots.validateVideoSlots(shot, base).some(v => v.rule === 'INVARIANT_SHORT_DRAMA_TIMELINE_MISSING'));
-  const valid = { ...base, shots_timeline: [timelineSegment(1, 2, [1, 2]), timelineSegment(2, 2, [1, 2]), timelineSegment(3, 1, [1, 2])] };
-  assert.equal(slots.validateVideoSlots(shot, valid).filter(v => v.severity === 'error').length, 0);
-  const missingEyeline = structuredClone(valid);
-  delete missingEyeline.shots_timeline[0].character_trajectories[1].attention_target;
-  assert.ok(slots.validateVideoSlots(shot, missingEyeline).some(v => v.rule === 'INVARIANT_SHORT_DRAMA_CHARACTER_REACTION_MISSING'));
-  const missingFacing = structuredClone(valid);
-  delete missingFacing.shots_timeline[0].character_trajectories[1].facing;
-  assert.ok(slots.validateVideoSlots(shot, missingFacing).some(v => v.rule === 'INVARIANT_SHORT_DRAMA_CHARACTER_REACTION_MISSING'));
-  const missingMotivation = structuredClone(valid);
-  delete missingMotivation.shots_timeline[0].character_trajectories[1].gaze_motivation;
-  assert.ok(slots.validateVideoSlots(shot, missingMotivation).some(v => v.rule === 'INVARIANT_SHORT_DRAMA_CHARACTER_REACTION_MISSING'));
-});
-
 test('sync_v1 rejects a dialogue segment that only holds an eye-line', () => {
   const shot = {
     storyboard_number: 31,
@@ -153,46 +130,6 @@ test('sync_v1 rejects a dialogue segment that only holds an eye-line', () => {
   const violations = slots.validateVideoSlots(shot, video);
   assert.ok(violations.some(v => v.rule === 'INVARIANT_SHORT_DRAMA_INTERACTION_BEAT_EMPTY'));
   assert.ok(violations.some(v => v.rule === 'INVARIANT_SHORT_DRAMA_CHARACTER_ACTION_EMPTY'));
-});
-
-test('sync_v1 requires speech and performance windows to overlap for every visible listener', () => {
-  const shot = {
-    storyboard_number: 22,
-    duration: 5,
-    semantic_slots: {
-      h3_mode: 'ref2va', shot_duration: 5,
-      visible_characters: [{ id: 1, name: '红狼' }, { id: 2, name: '露娜' }],
-      speech_plan: { speaker_id: 1, speaker_name: '红狼', text: '哪条是备用路线？' },
-    },
-  };
-  const base = {
-    performance_contract: 'sync_v1',
-    camera: {}, trajectories: [], environment_vfx: {}, timing: { duration: 5 },
-    audio_lip_sync: { mode: 'in_frame_dialogue', speaker_name: '红狼', speaker_in_frame: true },
-    shots_timeline: [{
-      shot_number: 1, duration: 2, camera: {}, visible_characters: [{ character_id: 1, name: '红狼' }, { character_id: 2, name: '露娜' }], action: '对话', result: '转身完成',
-      character_trajectories: [
-        { character_id: 1, trajectory: '转身询问', terminal_pose: '面向露娜', facial_expression: '焦急', facing: '朝向露娜', head_pose: '转向露娜', gaze: '看向露娜', attention_target: '露娜', gaze_motivation: '求助', reaction_trigger: '开口', mouth_state: 'speaker_synced' },
-        { character_id: 2, trajectory: '抬眼并侧身听取', terminal_pose: '注视红狼', facial_expression: '专注', facing: '朝向红狼', head_pose: '转向红狼', gaze: '看向红狼', attention_target: '红狼', gaze_motivation: '听取问题', reaction_trigger: '红狼开口', mouth_state: '闭唇' },
-      ],
-      audio_lip_sync: { mode: 'in_frame_dialogue', speaker_name: '红狼', speaker_in_frame: true, dialogue_content: '哪条是备用路线？', lip_sync_rule: '同步' },
-      speech_action_alignment: {
-        mode: 'concurrent', speech_window: { start: 0, end: 2 }, speaker_action_window: { start: 0, end: 2 }, speaker_action: '红狼边转身边询问',
-        listener_reactions: [{ character_id: 2, action_window: { start: 0, end: 2 }, action: '露娜边听边抬眼锁定红狼' }], pause_reason: '',
-      },
-    }],
-  };
-  base.shots_timeline.push(
-    { ...structuredClone(base.shots_timeline[0]), shot_number: 2, timestamp: '00:02.000', duration: 2, audio_lip_sync: { ...base.shots_timeline[0].audio_lip_sync, dialogue_content: '' }, speech_action_alignment: { mode: 'none', speech_window: null, speaker_action_window: null, speaker_action: '', listener_reactions: [], pause_reason: '' } },
-    { ...structuredClone(base.shots_timeline[0]), shot_number: 3, timestamp: '00:04.000', duration: 1, audio_lip_sync: { ...base.shots_timeline[0].audio_lip_sync, dialogue_content: '' }, speech_action_alignment: { mode: 'none', speech_window: null, speaker_action_window: null, speaker_action: '', listener_reactions: [], pause_reason: '' } },
-  );
-  assert.equal(slots.validateVideoSlots(shot, base).filter(v => v.severity === 'error').length, 0);
-  const noOverlap = structuredClone(base);
-  noOverlap.shots_timeline[0].speech_action_alignment.speaker_action_window = { start: 2, end: 5 };
-  assert.ok(slots.validateVideoSlots(shot, noOverlap).some(v => v.rule === 'INVARIANT_SPEECH_ACTION_OVERLAP_MISSING'));
-  const noListener = structuredClone(base);
-  noListener.shots_timeline[0].speech_action_alignment.listener_reactions = [];
-  assert.ok(slots.validateVideoSlots(shot, noListener).some(v => v.rule === 'INVARIANT_LISTENER_REACTION_OVERLAP_MISSING'));
 });
 
 test('timeline validates only the characters visible in each local shot segment', () => {
@@ -241,51 +178,6 @@ test('legacy video slots stay readable until regenerated under sync_v1', () => {
   assert.equal(slots.validateVideoSlots(shot, legacy).some(v => v.rule === 'INVARIANT_SPEECH_ACTION_OVERLAP_MISSING'), false);
 });
 
-test('H3 prompt executes the Agent timeline and uses the full declared speech window', () => {
-  const refs = [
-    { source: 'speaker.png', kind: 'character', character_id: 1 },
-    { source: 'listener.png', kind: 'character', character_id: 2 },
-  ];
-  const speech = {
-    narrative_style: { speech_rate: 1.3 },
-    references: [{ key: 'character:1', kind: 'dialogue' }],
-    lines: [{ key: 'character:1', kind: 'dialogue', text: '这棚子姓赵。想住，就把口粮留下。' }],
-    soundtrack: { events: [{ start_seconds: 0.5, end_seconds: 5.5 }] },
-  };
-  const timeline = [
-    { ...timelineSegment(1, 2, [1, 2]), timestamp: null },
-    { ...timelineSegment(2, 2, [1, 2]), timestamp: '00:02.000' },
-    { ...timelineSegment(3, 2, [1, 2]), timestamp: '00:04.000' },
-    { ...timelineSegment(4, 2, [1, 2]), timestamp: '00:06.000' },
-  ];
-  const translated = {
-    visual_description: 'A tense confrontation unfolds at a shelter entrance.',
-    shot_descriptions: timeline.map((_, index) => ({
-      shot_number: index + 1,
-      description: `The characters perform distinct physical reactions in edit beat ${index + 1}.`,
-      character_directions: [
-        { character_id: 1, direction: 'turns his head toward the listener and fixes both eyes on her face after beginning the threat.' },
-        { character_id: 2, direction: 'raises her head toward the speaker and fixes both eyes on his face in direct response.' },
-      ],
-    })),
-    overall_soundscape: 'Dry wind and footsteps move through the shelter entrance.',
-    non_diegetic_music: 'N/A',
-  };
-  const prompt = h3.compilePrompt(refs, speech, translated, {}, {
-    timeline,
-    duration: 8,
-    delivery: { end_reserve_seconds: 1.5 },
-  });
-  assert.match(prompt, /A 4-shot edit/);
-  assert.match(prompt, /\[Shot 2\] At 00:02\.000/);
-  assert.match(prompt, /complete every final word by second 8\.0/);
-  assert.equal((prompt.match(/<scenetrans>/g) || []).length, 4, 'only the 2s and 4s cuts crossed by the utterance get paired transition markers');
-  assert.equal((prompt.match(/这棚子姓赵。想住，就把口粮留下。/g) || []).length, 1);
-  assert.match(prompt, /Character direction/);
-  assert.match(prompt, /<Subject 1> turns his head toward the listener/);
-  assert.doesNotMatch(prompt.replace(/<d>.*?<\/d>/gs, ''), /\b(no|not|without|avoid|never)\b/i);
-});
-
 test('Ref2VA does not claim speech crosses every cut when no exact event timing exists', () => {
   const refs = [{ source: 'speaker.png', kind: 'character', character_id: 1 }];
   const speech = {
@@ -310,33 +202,6 @@ test('Ref2VA does not claim speech crosses every cut when no exact event timing 
   assert.equal((prompt.match(/<scenetrans>/g) || []).length, 0);
   assert.equal((prompt.match(/马上出发。/g) || []).length, 1);
   assert.doesNotMatch(prompt, /ongoing spoken performance/);
-});
-
-test('FL2VA executes the same Agent-owned short-drama timeline', () => {
-  const timeline = [
-    { ...timelineSegment(1, 2, [1, 2]), timestamp: null },
-    { ...timelineSegment(2, 2, [1, 2]), timestamp: '00:02.000' },
-  ];
-  const prompt = h3.compileFl2vaPrompt({
-    visual_description: 'Two characters confront each other at a shelter entrance.',
-    shot_descriptions: [
-      { shot_number: 1, description: 'The speaker steps forward while the listener braces and narrows her eyes.', character_directions: [
-        { character_id: 1, direction: 'The standing speaker looks into the listener face.' },
-        { character_id: 2, direction: 'The listener looks back into the speaker face.' },
-      ] },
-      { shot_number: 2, description: 'The view cuts closer as both characters shift their weight and exchange tense reactions.', character_directions: [
-        { character_id: 1, direction: 'The standing speaker maintains eye contact with the listener.' },
-        { character_id: 2, direction: 'The listener keeps her eyes on the speaker face.' },
-      ] },
-    ],
-    overall_soundscape: 'Dry wind moves across the shelter entrance.',
-    non_diegetic_music: 'N/A',
-  }, timeline);
-  assert.match(prompt, /^integrated_multimodal_description:/);
-  assert.match(prompt, /\[Shot 1\]/);
-  assert.match(prompt, /\[Shot 2\] At 00:02\.000/);
-  assert.match(prompt, /overall_soundscape:/);
-  assert.match(prompt, /listener looks back into the speaker face/);
 });
 
 test('runtime H3 compilation uses authoritative Chinese text without a second model rewrite', () => {

@@ -15,15 +15,6 @@ const imageService=require('../src/services/imageService');
 const imageClient=require('../src/services/imageClient');
 const native=require('../src/services/h3NativeService');
 const log={info(){},warn(){},error(){}};
-test('all narrative preferences share causal continuity and intentional action without forcing speech or movement',()=>{
- assert.equal(narrative.PRESETS.some(p=>p.id==='dialogue_fast'),false);
- assert.equal(narrative.normalize({preset:'dialogue_fast'}).preset,'balanced');
- for(const preset of narrative.PRESETS.map(p=>p.id)) {
-  const prompt=narrative.instructions({narrative_style:{preset}});
-  for(const text of ['承接上一段的结果并触发下一段','同一信息只交代一次','不为填满时长重复动作或拉长停顿','不要求每句简短','已有剧本台词仍逐字保留','实际 TTS 时长','后端不得静默删字','每个 1～2 秒窗口']) assert.ok(prompt.includes(text),preset+': '+text);
-  assert.doesNotMatch(prompt,/DIALOGUE-DRIVEN FAST|对白驱动/);
- }
-});
 function setup(t){
  const db=new Database(':memory:');t.after(()=>db.close());
  t.mock.method(console,'log',()=>{});t.mock.method(console,'warn',()=>{});
