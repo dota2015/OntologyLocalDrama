@@ -76,7 +76,12 @@ function actionAtomSchema() {
     additionalProperties: false,
     required: ['action', 'body_part', 'object_id', 'target_type', 'target_id', 'target_label', 'direction', 'contact'],
     properties: {
-      action: enumSchema(ACTIONS),
+      // Core actions are recommended, but H3 scenes often need concrete
+      // actions outside a small vocabulary (sit up, support a parent, pour a
+      // bowl, kneel, etc.). Keep the atom shape structured while allowing a
+      // natural-language detail instead of rejecting the entire shot.
+      action: { anyOf: [enumSchema(ACTIONS), { type: 'string', minLength: 1, maxLength: 80 }] },
+      action_detail: { type: 'string', maxLength: 240 },
       body_part: enumSchema(BODY_PARTS),
       object_id: nullableIntegerSchema(),
       target_type: enumSchema(TARGET_TYPES),
@@ -117,6 +122,7 @@ function structuredTrajectorySchema() {
       name: { type: 'string', maxLength: 80 },
       start_state: enumSchema(STATES),
       action_atom: actionAtomSchema(),
+      action_detail: { type: 'string', maxLength: 240 },
       result_state: enumSchema(STATES),
       reaction_trigger: reactionTriggerSchema(),
       facing: enumSchema(FACING),

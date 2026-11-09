@@ -193,6 +193,11 @@ function ensureAllColumns(database) {
     { name: 'transition_to_next',    type: 'TEXT' },               // 与下一镜的视听过渡类型与承接说明（eyeline_match/match_cut/rack_focus/ots_reverse 等）
     { name: 'background_characters', type: 'TEXT' },               // JSON: 背景在场人物列表（空间恒常在场，杜绝突然降临）
     { name: 'semantic_slots',        type: 'TEXT' },               // JSON: 12项分镜核心语义槽位契约（visible_characters, speech_plan, required_references 等）
+    { name: 'h3_contract_json',       type: 'TEXT' },               // JSON: H3 唯一执行合同（结构化权威快照）
+    { name: 'h3_contract_version',    type: 'TEXT' },               // 当前合同版本，例如 h3_contract_v1
+    { name: 'h3_contract_status',     type: 'TEXT' },               // planned | audited | submitted | failed
+    { name: 'h3_prompt_snapshot',     type: 'TEXT' },               // 实际提交 H3 的六段 Prompt 快照
+    { name: 'h3_quality_audit',       type: 'TEXT' },               // ASR/生成后质检结果
     { name: 'h3_generation_plan',    type: 'TEXT' },               // JSON: 可解释的H3执行模式推导方案与依据（mode, reason, references）
     { name: 'status',            type: 'TEXT DEFAULT \'draft\'' },
     { name: 'created_at',        type: 'TEXT' },

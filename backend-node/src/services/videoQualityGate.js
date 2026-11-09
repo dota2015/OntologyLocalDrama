@@ -211,7 +211,7 @@ async function auditGeneratedVideo(videoPath, shot = {}, options = {}) {
         check: 'audio_lip_sync',
         severity: 'warning',
         message: '分镜包含画内对白且采用 Ref2VA 原生音色，但生成视频流未检测到音轨！',
-        recommendation: '建议通过外部 TTS 配音管线为该分镜补齐音频',
+        recommendation: '检查 H3 原生音频生成结果；若确实无声，重新提交本镜并保留音色参考',
       });
     }
   }

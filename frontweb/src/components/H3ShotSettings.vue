@@ -20,11 +20,10 @@
           <p>Ref2VA 图片参考去重后最多 9 张；声音按「编辑文本」中的人物与旁白绑定，优先上传样音，否则使用已分配的 Edge-TTS 音色，每镜最多 3 个声音。</p>
           <el-alert v-if="data.wardrobe_change || data.continuity_reset" title="本镜开始前切换了造型，不能继承上一镜尾帧；请使用本镜新生成的首帧或让 Agent 重新规划。" type="info" :closable="false" />
           <el-form label-position="top">
-            <el-form-item label="生成模式策略">
+            <el-form-item label="生成模式">
               <el-radio-group v-model="engineMode" style="width:100%" :disabled="disabled || saving">
-                <el-radio-button label="auto">🤖 采用导演 Ref2VA 方案 (默认)</el-radio-button>
+                <el-radio-button label="ref2va">🎭 角色多参考 (默认)</el-radio-button>
                 <el-radio-button label="fl2va">🎯 首帧强绑定 (FL2VA 覆盖)</el-radio-button>
-                <el-radio-button label="ref2va">🎭 角色多参考 (Ref2VA 覆盖)</el-radio-button>
               </el-radio-group>
               <div v-if="data.resolution_reason" class="resolution-reason-banner">
                 <el-tag size="small" :type="data.resolved_mode === 'fl2va' ? 'success' : 'warning'">
@@ -38,10 +37,7 @@
                 <div><strong>尾帧：</strong>{{ lastPolicyLabel(data.h3_generation_plan.last_frame_policy) }}<span>— {{ data.h3_generation_plan.last_frame_reason }}</span></div>
               </div>
               <div style="font-size:12px; color:#64748b; margin-top:6px; line-height:1.6;">
-                <span v-if="engineMode === 'auto'">
-                  <b>采用导演 Ref2VA 方案</b>：使用导演列出的场景、人物、道具和声音参考，不生成首尾帧。
-                </span>
-                <span v-else-if="engineMode === 'fl2va'">
+                <span v-if="engineMode === 'fl2va'">
                   <b>首帧强绑定 (FL2VA)</b>：100% 构图贴合分镜图，不传入人物卡、场景卡或参考音频；结构化台词由 H3 原生生成，分镜图画面即是起幅。
                 </span>
                 <span v-else>
@@ -108,10 +104,10 @@ const loading = ref(false)
 const saving = ref(false)
 const data = ref(null)
 const error = ref('')
-const engineMode = ref('auto')
+const engineMode = ref('ref2va')
 const firstFramePolicy = ref('agent')
 const lastFramePolicy = ref('agent')
-const effectiveMode = computed(() => engineMode.value === 'auto' ? (data.value?.agent_mode || data.value?.resolved_mode) : engineMode.value)
+const effectiveMode = computed(() => engineMode.value || data.value?.resolved_mode || 'ref2va')
 const effectiveFirstPolicy = computed(() => {
   if (effectiveMode.value === 'ref2va') return 'none'
   if (firstFramePolicy.value !== 'agent') return firstFramePolicy.value
@@ -127,7 +123,7 @@ async function open() {
   loading.value = true
   try {
     data.value = await videosAPI.h3Inputs(props.dramaId, props.storyboardId)
-    engineMode.value = data.value.engine_mode || 'auto'
+    engineMode.value = ['fl2va', 'ref2va'].includes(data.value.engine_mode) ? data.value.engine_mode : 'ref2va'
     firstFramePolicy.value = data.value.first_frame_policy_override || 'agent'
     lastFramePolicy.value = data.value.last_frame_policy_override || 'agent'
   }
@@ -140,8 +136,8 @@ async function save() {
   try {
     data.value = await videosAPI.saveH3Inputs(props.dramaId, props.storyboardId, {
       engine_mode: engineMode.value,
-      first_frame_policy: effectiveMode.value === 'ref2va' ? 'agent' : firstFramePolicy.value,
-      last_frame_policy: effectiveMode.value === 'ref2va' ? 'agent' : lastFramePolicy.value,
+      first_frame_policy: effectiveMode.value === 'ref2va' ? 'none' : firstFramePolicy.value,
+      last_frame_policy: effectiveMode.value === 'ref2va' ? 'none' : lastFramePolicy.value,
     })
     ElMessage.success('H3 完整执行方案已保存')
     visible.value = false

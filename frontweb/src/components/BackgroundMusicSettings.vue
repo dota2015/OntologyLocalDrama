@@ -1,7 +1,7 @@
 <template>
   <div class="background-music" v-loading="loading">
     <h3>背景音乐</h3>
-    <p class="music-tip">为当前集添加音乐。上传和设置自动保存，重新合成后生效；音乐与视频原声或 TTS 配音混合。</p>
+    <p class="music-tip">为当前集添加音乐。上传和设置自动保存，重新合成后生效；音乐会与 H3 原生视频声音混合。</p>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
     <div class="music-row">
       <input ref="fileInput" type="file" accept=".mp3,.wav,.m4a,.ogg,.flac,.aac" style="display:none" @change="upload" />

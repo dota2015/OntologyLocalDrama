@@ -80,11 +80,11 @@ describe('OpenAI Agents SDK director runtime', () => {
     assert.equal(shotSchema.additionalProperties, false);
 
     const timeline = directorTimelineOutputType(5).schema.properties.shots_timeline;
-    assert.equal(timeline.minItems, 3);
+    assert.equal(timeline.minItems, 1);
     assert.equal(timeline.maxItems, 5);
     assert.equal(timeline.items.properties.duration.type, 'integer');
     assert.equal(timeline.items.properties.duration.minimum, 1);
-    assert.equal(timeline.items.properties.duration.maximum, 2);
+    assert.equal(timeline.items.properties.duration.maximum, 30);
     assert.equal(timeline.items.properties.action.maxLength, 120);
     assert.ok(timeline.items.required.includes('shot_number'));
     assert.ok(timeline.items.required.includes('timestamp'));

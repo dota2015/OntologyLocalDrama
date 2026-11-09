@@ -213,9 +213,9 @@ function timelineSegmentSchema(options = {}) {
     properties: {
       shot_number: { type: 'integer', minimum: 1 },
       timestamp: { anyOf: [{ type: 'string' }, { type: 'null' }] },
-      // 外层逻辑分镜为 4～30 秒，但镜内时间线每段只允许 1～2 秒，
-      // 这样每个人物的动作和反应都有明确的时间窗口。
-      duration: { type: 'integer', minimum: 1, maximum: 2 },
+      // Timeline entries are causal beats, not mandatory camera cuts.  A beat
+      // may span the full logical shot when the action remains continuous.
+      duration: { type: 'integer', minimum: 1, maximum: 30 },
       camera: {
         type: 'object',
         additionalProperties: false,
@@ -300,7 +300,7 @@ function videoSlotsSchema(options = {}) {
     additionalProperties: false,
     required: ['performance_contract', 'camera', 'audio_lip_sync', 'trajectories', 'environment_vfx', 'timing', 'shots_timeline'],
     properties: {
-      performance_contract: structured ? { const: 'sync_v2' } : { enum: ['sync_v1', 'sync_v2', 'legacy'] },
+      performance_contract: { const: 'sync_v2' },
       camera: {
         type: 'object', additionalProperties: false,
         required: ['shot_type', 'angle_h', 'angle_v', 'angle_s', 'movement', 'movement_description'],
@@ -526,7 +526,7 @@ function directorTimelineOutputType(duration = 5) {
       properties: {
         shots_timeline: {
           type: 'array',
-          minItems: Math.ceil(seconds / 2),
+          minItems: 1,
           maxItems: Math.floor(seconds),
           items: timelineSegmentSchema(),
         },
@@ -538,8 +538,8 @@ function directorTimelineOutputType(duration = 5) {
 function directorVideoSlotsOutputType(duration = 5) {
   const seconds = Math.max(4, Math.min(30, Number(duration) || 5));
   const schema = videoSlotsSchema();
-  // 每个段最多 2 秒，因此逻辑分镜至少需要 ceil(duration / 2) 段。
-  schema.properties.shots_timeline.minItems = Math.ceil(seconds / 2);
+  // Timeline beats are causal directives rather than forced 1–2 second cuts.
+  schema.properties.shots_timeline.minItems = 1;
   schema.properties.shots_timeline.maxItems = Math.floor(seconds);
   return {
     type: 'json_schema',
@@ -571,7 +571,7 @@ function directorCharacterVisualsOutputType() {
 function directorExecutionSlotsOutputType(duration = 5, options = {}) {
   const seconds = Math.max(4, Math.min(30, Number(duration) || 5));
   const timeline = videoSlotsSchema({ structured: true });
-  timeline.properties.shots_timeline.minItems = Math.ceil(seconds / 2);
+  timeline.properties.shots_timeline.minItems = 1;
   timeline.properties.shots_timeline.maxItems = Math.floor(seconds);
   const allowTailVisuals = options?.allowTailVisuals ?? (options?.lastFramePolicy === 'generate_tail');
   const tailVisualsSchema = allowTailVisuals

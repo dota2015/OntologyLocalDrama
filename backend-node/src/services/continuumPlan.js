@@ -36,20 +36,24 @@ function chunkPlan(duration, options = {}) {
     throw new Error(`Continuum chunk_seconds 必须是整数，当前为 ${preferred}`);
   }
   const preferredSeconds = Math.max(4, Math.min(15, preferred));
-  // V3.9 uses one shared chunk_seconds value.  The physical chunks must
-  // therefore divide the logical shot exactly; a short final remainder is
-  // not representable by the sampler.  Keep each chunk in the validated
-  // 4–15 second range and allow fractional physical chunks while the public
-  // logical shot duration remains an integer.
-  const chunks = Math.max(2, Math.ceil(total / preferredSeconds));
-  const chunkSeconds = total / chunks;
-  if (chunkSeconds < 4 || chunkSeconds > 15) {
-    throw new Error(`Continuum 无法把 ${total} 秒均分为 4～15 秒的物理片段`);
+  // Physical chunks are integer seconds.  H3's public contract and the
+  // director timeline both use whole-second boundaries; fractional chunks
+  // make speech deadlines and continuation frames drift.
+  let chunks = Math.max(2, Math.ceil(total / preferredSeconds));
+  while (chunks > 2 && Math.floor(total / chunks) < 4) chunks -= 1;
+  const minChunks = Math.ceil(total / 15);
+  if (chunks < minChunks) chunks = minChunks;
+  if (chunks < 2 || Math.floor(total / chunks) < 4 || Math.ceil(total / chunks) > 15) {
+    throw new Error(`Continuum 无法把 ${total} 秒划分为 4～15 秒整数物理片段`);
   }
   const slices = [];
   let start = 0;
+  const base = Math.floor(total / chunks);
+  const remainder = total % chunks;
   for (let i = 0; i < chunks; i += 1) {
-    const seconds = chunkSeconds;
+    // Put the remainder on the first slices, keeping every slice integral and
+    // within the same 4–15 second physical range.
+    const seconds = base + (i < remainder ? 1 : 0);
     slices.push({ chunk_index: i, start_seconds: start, duration_seconds: seconds, end_seconds: start + seconds });
     start += seconds;
   }
@@ -57,7 +61,7 @@ function chunkPlan(duration, options = {}) {
     enabled: true,
     total_duration: total,
     chunks,
-    chunk_seconds: chunkSeconds,
+    chunk_seconds: base,
     prompt_mode: options.prompt_mode || 'timeline',
     audio_continuity: options.audio_continuity !== false,
     motion_continuity: options.motion_continuity !== false,

@@ -203,7 +203,12 @@ async function callImageApi(db, log, opts) {
   const incomingUserNeg = user_negative_prompt || opts.negative_prompt;
   const refCountForNeg = Array.isArray(opts.reference_image_urls) ? opts.reference_image_urls.filter(Boolean).length : 0;
   const isVolcOrSeedream = protocol === 'volcengine' || /seedream|doubao/i.test(model);
-  const autoNegativePrompt = opts.structured_storyboard ? '' : refCountForNeg >= 1 || isVolcOrSeedream || protocol === 'unsloth' ? ANTI_SPLIT_NEGATIVE_PROMPT : '';
+  // Structured storyboard requests use the same identity protection as every
+  // other multi-reference request.  The guard stays in the negative channel
+  // so it cannot pollute the positive scene description.
+  const autoNegativePrompt = refCountForNeg >= 1 || isVolcOrSeedream || protocol === 'unsloth'
+    ? ANTI_SPLIT_NEGATIVE_PROMPT
+    : '';
   const userNegFragment = (incomingUserNeg && String(incomingUserNeg).trim()) || '';
   const mergedNegativePrompt = mergeNegativePromptFragments(autoNegativePrompt, userNegFragment);
 

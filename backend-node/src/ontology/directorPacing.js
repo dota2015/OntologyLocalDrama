@@ -72,6 +72,8 @@ async function planEpisodePacing(db, log, script, requested, { maxAttempts = 500
             shots: { type: 'array', minItems: 1, ...(requested.count == null ? { maxItems: AUTO_MAX_SHOTS } : {}), items: { type: 'object', additionalProperties: false, required: ['duration', 'purpose'], properties: { duration: { type: 'integer', minimum: requested.range.min, maximum: requested.range.max }, purpose: { type: 'string' } } } },
           } },
         },
+        thinking: 'disabled',
+        reasoningEffort: 'none',
         maxTokens: null, temperature: 0.2,
       });
       plan = validatePlan(result, requested);

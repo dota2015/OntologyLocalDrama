@@ -509,9 +509,8 @@
                           size="small"
                           style="width:160px;"
                         >
-                          <el-option value="auto" label="⚡ 采用导演 Ref2VA 方案 (推荐)" />
-                          <el-option value="fl2va" label="🎯 首帧强绑定 (FL2VA)" />
-                          <el-option value="ref2va" label="🎭 角色多参考 (Ref2VA)" />
+                          <el-option value="ref2va" label="🎭 角色多参考 (默认)" />
+                          <el-option value="fl2va" label="🎯 首帧强绑定 (手动覆盖)" />
                         </el-select>
                         <span style="font-size:11.5px; color:#6b7280; margin-left:8px;">首帧：</span>
                         <el-select
@@ -519,7 +518,7 @@
                           v-model="sbPromptH3Data.first_frame_policy_override"
                           size="small"
                           style="width:210px;"
-                          :disabled="sbPromptH3Data.engine_mode === 'ref2va' || (sbPromptH3Data.engine_mode === 'auto' && sbPromptH3Data.agent_mode === 'ref2va')"
+                          :disabled="sbPromptH3Data.engine_mode === 'ref2va'"
                         >
                           <el-option value="agent" label="采用 Agent 方案" />
                           <el-option value="generate_new" label="Qwen 生成新首帧" />
@@ -532,7 +531,7 @@
                           v-model="sbPromptH3Data.last_frame_policy_override"
                           size="small"
                           style="width:170px;"
-                          :disabled="sbPromptH3Data.engine_mode === 'ref2va' || (sbPromptH3Data.engine_mode === 'auto' && sbPromptH3Data.agent_mode === 'ref2va')"
+                          :disabled="sbPromptH3Data.engine_mode === 'ref2va'"
                         >
                           <el-option value="agent" label="采用 Agent 方案" />
                           <el-option value="none" label="不生成尾帧" />
@@ -540,8 +539,7 @@
                         </el-select>
                       </div>
                       <div v-if="sbPromptH3Data" style="font-size:11px; color:#94a3b8; text-align:right; margin-top:2px;">
-                        <span v-if="sbPromptH3Data.engine_mode === 'auto'">⚡ 导演方案：{{ sbPromptH3Data.agent_mode?.toUpperCase() || '未规划' }} · </span>
-                        <span v-else-if="sbPromptH3Data.engine_mode === 'fl2va'">🎯 首帧强绑定：100% 贴合分镜，无跳脸漂移 · </span>
+                        <span v-if="sbPromptH3Data.engine_mode === 'fl2va'">🎯 首帧强绑定：100% 贴合分镜，无跳脸漂移 · </span>
                         <span v-else>🎭 角色多参考：不生成首尾帧，以人物卡、场景卡和声音参考保持一致 · </span>
                         <span>最终：{{ sbPromptH3Data.h3_generation_plan?.first_frame_policy || '未规划' }} / {{ sbPromptH3Data.h3_generation_plan?.last_frame_policy || '未规划' }}</span>
                       </div>
@@ -3227,9 +3225,9 @@ async function onSaveSbPromptDialog() {
     }
     if (sbPromptH3Data.value && dramaId.value) {
       await videosAPI.saveH3Inputs(dramaId.value, sb.id, {
-        engine_mode: sbPromptH3Data.value.engine_mode || 'auto',
-        first_frame_policy: (sbPromptH3Data.value.engine_mode === 'ref2va' || (sbPromptH3Data.value.engine_mode === 'auto' && sbPromptH3Data.value.agent_mode === 'ref2va')) ? 'agent' : (sbPromptH3Data.value.first_frame_policy_override || 'agent'),
-        last_frame_policy: (sbPromptH3Data.value.engine_mode === 'ref2va' || (sbPromptH3Data.value.engine_mode === 'auto' && sbPromptH3Data.value.agent_mode === 'ref2va')) ? 'agent' : (sbPromptH3Data.value.last_frame_policy_override || 'agent'),
+        engine_mode: ['fl2va', 'ref2va'].includes(sbPromptH3Data.value.engine_mode) ? sbPromptH3Data.value.engine_mode : 'ref2va',
+        first_frame_policy: sbPromptH3Data.value.engine_mode === 'ref2va' ? 'none' : (sbPromptH3Data.value.first_frame_policy_override || 'agent'),
+        last_frame_policy: sbPromptH3Data.value.engine_mode === 'ref2va' ? 'none' : (sbPromptH3Data.value.last_frame_policy_override || 'agent'),
       })
     }
     await storyboardsAPI.update(sb.id, patch)

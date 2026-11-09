@@ -1847,6 +1847,11 @@ If words cannot fit, increase the shot count rather than omit words, rush speech
 
 async function runStageOneBaseGeneration(db, log, episodeId, taskId, options = {}) {
   const ctx = prepareStoryboardGenerationContext(db, episodeId, options);
+  // Stage 1 is deliberately a small, fast narrative pass.  The execution
+  // contract Agent owns semantic/video slots in Stage 2; sending those low
+  // level fields here made the first response huge and caused truncation.
+  ctx.systemPrompt = `你是短剧基础分镜导演。只把本集剧本拆成完整、紧凑、可执行的剧情分镜，先保证剧情顺序和台词逐字覆盖。每镜4～30秒整数秒，超过30秒才按语义拆镜；单镜最多2名有身份角色，群众/敌军写成环境事件。不要输出 semantic_slots、video_slots、character_visuals、动作原子、口型、视线枚举或 H3 提示词。只返回 JSON 对象 {"storyboards":[...]}，不要解释。每镜字段：shot_number,title,scene_id,characters,background_characters,props,duration,location,time,shot_type,angle_h,angle_v,angle_s,movement,action,result,dialogue,narration,emotion,start_framing,end_framing,transition_to_next。对白和旁白必须逐字保留，动作必须与对白同时发生，禁止用互相看着或静止等待填时长。可用场景目录：${JSON.stringify(ctx.scenes.map(s => ({ id: s.id, name: s.name, location: s.location })))}；可用角色目录：${JSON.stringify(ctx.characters.map(c => ({ id: c.id, name: c.name })))}；可用道具目录：${JSON.stringify(ctx.props.map(p => ({ id: p.id, name: p.name })))}。`;
+  ctx.userPrompt = `【本集剧本】\n${ctx.scriptContent}\n\n【规划目标】镜头数${ctx.storyboardCount || '自动'}；总时长${ctx.videoDuration || '自动'}秒；镜头时长范围${ctx.durationRange ? JSON.stringify(ctx.durationRange) : '4～30秒'}。按剧情节拍规划，不删台词、不重复内容。`;
   log.info('Running Stage 1 Base Storyboard Generation', {
     task_id: taskId,
     episode_id: episodeId,

@@ -55,7 +55,7 @@ test('Comfy records exactly the submitted prompt, seed, aligned size and ordered
   assert.equal(record.prompt, submitted.prompt['4'].inputs.prompt);
   assert.equal(record.parameters.seed, 42);
   assert.equal(record.parameters.width % 32, 0);
-  assert.equal(record.negative_prompt, '用户负面词');
+  assert.match(record.negative_prompt, /^用户负面词, duplicate person, clone/);
   assert.deepEqual(record.references.map(r => r.content_sha256), ['a','b'].map(snapshots.sha256));
   assert.deepEqual(record.references.map(r => r.asset_id), [1,2]);
 });

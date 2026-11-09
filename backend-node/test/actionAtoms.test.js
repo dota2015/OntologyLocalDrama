@@ -74,7 +74,9 @@ test('execution schema uses sync_v2 structured action atoms', () => {
   assert.deepEqual(video.properties.performance_contract, { const: 'sync_v2' });
   const trajectory = video.properties.shots_timeline.items.properties.character_trajectories.items;
   assert.ok(trajectory.required.includes('action_atom'));
-  assert.equal(trajectory.properties.action_atom.properties.action.enum.includes('hold'), true);
+  const actionSchema = trajectory.properties.action_atom.properties.action;
+  assert.equal(actionSchema.anyOf.some((item) => item.enum?.includes('hold')), true);
+  assert.ok(trajectory.properties.action_atom.properties.action_detail);
   assert.equal(trajectory.properties.trajectory, undefined);
 });
 

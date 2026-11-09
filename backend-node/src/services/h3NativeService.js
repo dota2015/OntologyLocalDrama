@@ -10,6 +10,8 @@ const wardrobe = require('./wardrobeService');
 const angleService = require('./angleService');
 const { getFfmpegPath } = require('../utils/ffmpegPath');
 const { normalizeExecutionPlan, timelinePrompt } = require('./continuumPlan');
+const { compileActionAtom } = require('../ontology/videoSlots');
+const { assembleRef2va, assembleBase } = require('./h3PromptCompiler');
 
 const MODES = ['auto', 'off', 'previous_tail'];
 const H3_STEPS = 23;
@@ -67,7 +69,7 @@ function load(db, dramaId, shotId) {
   const metadata = layout.parseMetadata(project.metadata);
   const shotMeta = metadata.h3_shots?.[shot.id] || {};
   const continuity = shotMeta.continuity || metadata.h3_default_continuity || 'off';
-  const engine_mode = shotMeta.engine_mode || metadata.h3_default_engine_mode || 'auto';
+  const engine_mode = shotMeta.engine_mode || metadata.h3_default_engine_mode || 'ref2va';
   const first_frame_policy = shotMeta.first_frame_policy || null;
   const last_frame_policy = shotMeta.last_frame_policy || null;
   return { project, shot, continuity, engine_mode, first_frame_policy, last_frame_policy };
@@ -549,10 +551,14 @@ function labelledContractText(entries) {
 }
 
 function trajectoryContractText(item = {}) {
+  const atomText = item.action_atom && typeof item.action_atom === 'object'
+    ? compileActionAtom(item.action_atom, { actorName: item.name || `角色${item.character_id || ''}` })
+    : '';
   return labelledContractText([
     ['人物', item.name || (item.character_id != null ? `角色${item.character_id}` : '')],
     ['画面位置', item.screen_position || item.start_anchor],
-    ['动作', item.trajectory || item.action],
+    ['动作', atomText || item.trajectory || item.action],
+    ['动作细节', item.action_detail || item.expression_detail],
     ['终态', item.terminal_pose || item.end_action],
     ['表情', item.facial_expression || item.expression_change],
     ['姿态', item.posture],
@@ -677,6 +683,10 @@ function compileFl2vaPrompt(translated, timeline = [], options = {}) {
   const ambience = text(translated.overall_soundscape, '环境音');
   const music = text(translated.non_diegetic_music, '配乐');
   const descriptions = Array.isArray(translated.shot_descriptions) ? translated.shot_descriptions : [];
+  const duration = Number(options.duration || 0);
+  const frameAlignment = options.firstFramePresent
+    ? `How the reference pictures align with the target video — <Picture 1> aligns with the 0.00-second mark of the target video${options.lastFramePresent ? `; <Picture 2> aligns with the ${duration.toFixed(2)}-second mark of the target video` : ''}.\n\n`
+    : '';
   const speechLines = Array.isArray(options.speech?.lines) ? options.speech.lines : [];
   const speakerIds = new Map();
   const seenSpeech = new Set();
@@ -732,9 +742,10 @@ function compileFl2vaPrompt(translated, timeline = [], options = {}) {
         : '';
       const spoken = segmentSpeech(segment, index);
       const beatDescription = [spoken, description, directions].filter(Boolean).join(' ');
-      return index === 0
-        ? `[Shot 1] ${beatDescription}`
-        : `[Shot ${index + 1}] At ${segment.timestamp}, the camera cuts to the next short-drama beat. ${beatDescription}`;
+      const explicitCut = segment.camera?.shot_change === true || segment.shot_change === true || segment.camera_change === true;
+      if (index === 0) return `[Shot 1] ${beatDescription}`;
+      if (explicitCut) return `[Shot ${index + 1}] At ${segment.timestamp}, the camera cuts to the next short-drama beat. ${beatDescription}`;
+      return `At ${segment.timestamp || 'the next beat'}, the continuous action develops without a cut: ${beatDescription}`;
     }).join('\n');
   } else {
     const spoken = speechLines.map((line) => {
@@ -745,11 +756,24 @@ function compileFl2vaPrompt(translated, timeline = [], options = {}) {
     }).filter(Boolean).join(' ');
     picture = `[Shot 1] ${spoken} ${visual}`.trim();
   }
-  return `integrated_multimodal_description: ${visual}\n${picture}\n\noverall_soundscape:\n${ambience}\n\nnon_diegetic_music:\n${music}`;
+  return assembleBase({
+    alignment: frameAlignment,
+    integratedDescription: `${picture} ${visual}`.trim(),
+    overallSoundscape: ambience,
+    nonDiegeticMusic: music,
+  });
 }
 
 function compilePrompt(refs, speech, translated, anchors = {}, options = {}) {
   if (!translated || typeof translated !== 'object' || Array.isArray(translated)) throw new Error('H3 英文提示词整理未返回有效内容，请重试');
+  // The production contract is timbre-reference only.  A legacy caller may
+  // still hand us a `soundtrack` item; ignore it instead of emitting an
+  // official `fully_copy` instruction or submitting duplicate speech audio.
+  speech = {
+    ...speech,
+    references: (speech.references || []).filter(ref => ref.kind !== 'soundtrack'),
+    soundtrack: null,
+  };
   const lightingDesc = options.lightingDesc || (options.lightingStyle ? angleService.lightingToPrompt(options.lightingStyle) : '') || '';
 
   const framing = String(options.dialogueFraming || options.shot?.dialogue_framing || options.framing || '').toLowerCase();
@@ -758,9 +782,14 @@ function compilePrompt(refs, speech, translated, anchors = {}, options = {}) {
   const isTightFraming = /(?:over_the_shoulder|two_shot_close|single_close|ots_reverse|two_shot_face_to_face|single_reaction|close_up|extreme_close_up|ots)/i.test(framingNorm)
     || /(?:近景|特写|大特写|过肩|正反打|反打|双人对话)/i.test(`${framing} ${shotType}`);
 
-  const isSingleFraming = /(?:single_close|single_reaction|close_up|extreme_close_up|solo_action|single_focus)/i.test(framingNorm)
-    || /(?:特写|大特写)/i.test(`${framing} ${shotType}`);
   const isTwoShotFraming = /(?:over_the_shoulder|two_shot_close|ots_reverse|two_shot_face_to_face|ots|过肩|正反打|反打|双人)/i.test(`${framingNorm} ${shotType}`);
+  // Explicit two-person framing wins over the generic Chinese word “特写”.
+  // The previous order silently removed the second speaker from close reverse
+  // shots, which made H3 invent a duplicate or talk to empty space.
+  const isSingleFraming = !isTwoShotFraming && (
+    /(?:single_close|single_reaction|close_up|extreme_close_up|solo_action|single_focus)/i.test(framingNorm)
+      || /(?:特写|大特写)/i.test(`${framing} ${shotType}`)
+  );
   const maxFocalSubjects = isSingleFraming ? 1 : (isTwoShotFraming ? 2 : 3);
 
   const rawBg = options.backgroundCharacters
@@ -816,21 +845,18 @@ function compilePrompt(refs, speech, translated, anchors = {}, options = {}) {
     const refCharId = ref.character_id != null ? Number(ref.character_id) : null;
     const isKnownSubject = refCharId && subjects.has(refCharId);
     const isBackgroundInTight = Boolean(
-      isTightFraming &&
-      refCharId &&
-      !isKnownSubject &&
-      (
-        bgIds.has(refCharId) ||
-        (visibleIds.size > 0 && !visibleIds.has(refCharId)) ||
-        subjects.size >= maxFocalSubjects
-      )
+      isTightFraming && refCharId && !isKnownSubject &&
+      (bgIds.has(refCharId) || (visibleIds.size > 0 && !visibleIds.has(refCharId)) || subjects.size >= maxFocalSubjects)
     );
+    if (isBackgroundInTight) {
+      throw new Error(`H3 近景/正反打包含未规划的背景人物 ${ref.name || refCharId}；请由导演移出本镜或改为宽景，后端不静默降级人物参考`);
+    }
     if (refCharId && !isBackgroundInTight && !subjects.has(refCharId)) {
       subjects.set(refCharId, subjects.size + 1);
     }
     if (isBackgroundInTight) {
       definitions.push(`${pic} supplies secondary context for a background character in [Shot 1].`);
-      retention.push(`${pic} (background character context): secondary - provide general appearance context only; do not cast as a primary foreground subject.`);
+      retention.push(`${pic} (background character context): secondary - keep this identity in the declared background layer with general appearance context.`);
     } else if (ref.kind === 'character_outfit') {
       definitions.push(`${pic} supplies the selected outfit for this character in [Shot 1]. The same character's portrait and profile references define facial identity.`);
       retention.push(`${pic} (selected outfit in [Shot 1]): fully_preserved - retain garment colors, shape, layers and accessories consistently throughout this shot.`);
@@ -852,18 +878,13 @@ function compilePrompt(refs, speech, translated, anchors = {}, options = {}) {
   }
   for (const [id, index] of subjects) {
     const pictures = refs.flatMap((r, i) => r.character_id === id ? [`<Picture ${i+1}>`] : []);
-    definitions.push(`<Subject ${index}> is the same person across ${pictures.join(', ')}. Follow the referenced facial features, face shape, age and hair; portrait/profile panels define identity. ${anchors.first ? 'The supplied opening frame defines' : 'The selected costume reference and planned clothing define'} the current outfit, preserved throughout the video.`);
+      const subjectName = refs.find(r => Number(r.character_id) === Number(id))?.name || `character ${id}`;
+      definitions.push(`<Subject ${index}> is the same person across ${pictures.join(', ')}; this is ${subjectName}. Follow the referenced facial features, face shape, age and hair; portrait/profile panels define one consistent identity. Each multi-panel sheet represents this single person. ${anchors.first ? 'The supplied opening frame defines' : 'The selected costume reference and planned clothing define'} the current outfit, preserved throughout the video.`);
     retention.push(`<Subject ${index}> (appears in [Shot 1]): fully_preserved - preserve the referenced identity, age and hairstyle; preserve the selected outfit and accessories throughout this video.`);
   }
-  const soundtrackIndex = speech.references.findIndex(ref => ref.kind === 'soundtrack');
   const uniqueSpeakerKeys = [...new Set(speech.lines.map(line => line.key))];
   const speakerIds = new Map(uniqueSpeakerKeys.map((key, index) => [key, index + 1]));
   for (const [i, ref] of speech.references.entries()) {
-    if (ref.kind === 'soundtrack') {
-      definitions.push(`<Audio ${i+1}> is the exact complete speech soundtrack for [Shot 1], with every spoken word, speaker turn, timing, pace, and silence already fixed.`);
-      retention.push(`<Audio ${i+1}>: fully_copy - reuse <Audio ${i+1}> 1:1 as the target video's complete final audio track, preserving every word and its exact timing.`);
-      continue;
-    }
     const characterId = /^character:(\d+)$/.exec(ref.key)?.[1];
     const subject = subjects.get(Number(characterId));
     const who = ref.kind === 'narration' ? 'the off-screen narrator' : subject ? `<Subject ${subject}>` : 'an off-screen speaker';
@@ -873,15 +894,15 @@ function compilePrompt(refs, speech, translated, anchors = {}, options = {}) {
   const events = speech.lines.map((line, lineIndex) => {
     const speaker = speakerIds.get(line.key);
     const matchingAudio = speech.references.findIndex(ref => ref.key === line.key);
-    const audio = matchingAudio >= 0 ? matchingAudio + 1 : soundtrackIndex >= 0 ? soundtrackIndex + 1 : 0;
-    if (!speaker || !audio) throw new Error('H3 说话人与参考声音编号不一致');
+    const audio = matchingAudio >= 0 ? matchingAudio + 1 : 0;
+    if (!speaker) throw new Error('H3 说话人与参考声音编号不一致');
     if (/<\/?d\b|<Audio|<Subject|<Picture/iu.test(line.text)) throw new Error('台词含 H3 控制标签，请在编辑文本中移除');
     const subject = subjects.get(Number(/^character:(\d+)$/.exec(line.key)?.[1]));
     const actor = line.kind === 'narration' ? 'The narrator' : subject ? `<Subject ${subject}>` : 'The off-screen speaker';
     const offScreen = line.kind === 'narration' || !subject;
-    const exactEvent = speech.soundtrack?.events?.[lineIndex];
-    const exactStart = Number(exactEvent?.start_seconds);
-    const exactEnd = Number(exactEvent?.end_seconds);
+    const exactEvent = speech.events?.[lineIndex] || line;
+    const exactStart = Number(exactEvent?.start_seconds ?? exactEvent?.start);
+    const exactEnd = Number(exactEvent?.end_seconds ?? exactEvent?.end);
     const hasExactTiming = Number.isFinite(exactStart) && Number.isFinite(exactEnd) && exactStart >= 0 && exactEnd > exactStart;
     const timing = hasExactTiming ? `from second ${exactStart.toFixed(2)} through second ${exactEnd.toFixed(2)}` : 'from the opening beat';
     const action = offScreen ? `says in an off-screen voiceover ${timing}` : `speaks ${timing} following the planned character direction`;
@@ -889,9 +910,9 @@ function compilePrompt(refs, speech, translated, anchors = {}, options = {}) {
       ? 'During this voiceover, visible characters continue their planned actions and reactions; their lips stay closed except during their own explicitly planned spoken lines.'
       : 'After this line completes, the speaker stops speaking until their next planned line and continues the planned actions and reactions.';
     const language = /\p{Script=Han}/u.test(line.text) ? 'Chinese' : 'English';
-    const audioInstruction = soundtrackIndex >= 0
-      ? `synchronized exactly to the copied waveform in <Audio ${audio}>`
-      : `using the vocal timbre referenced from <Audio ${audio}>`;
+    const audioInstruction = audio
+      ? `using the vocal timbre referenced from <Audio ${audio}>`
+      : 'using H3 native voice generation';
     return {
       prompt: `${actor} (S${speaker}), ${audioInstruction}, ${action}, <d>[${language}] ${line.text}</d> ${closing}`,
       start_seconds: hasExactTiming ? exactStart : null,
@@ -976,7 +997,11 @@ function compilePrompt(refs, speech, translated, anchors = {}, options = {}) {
         return `[Shot 1] ${opening} ${speechDeadline}${subjectCue}${boundDirectionCue}${description}`;
       }
       const spokenCue = speechAtBeat ? `${speechAtBeat} ` : '';
-      return `[Shot ${index + 1}] At ${segment.timestamp}, the camera cuts to the next short-drama beat. ${transitionIn}${spokenCue}${subjectCue}${boundDirectionCue}${description}${transitionOut}`;
+      const explicitCut = segment.camera?.shot_change === true || segment.shot_change === true || segment.camera_change === true;
+      if (explicitCut) {
+        return `[Shot ${index + 1}] At ${segment.timestamp}, the camera cuts to the next short-drama beat. ${transitionIn}${spokenCue}${subjectCue}${boundDirectionCue}${description}${transitionOut}`;
+      }
+      return `At ${segment.timestamp || 'the next beat'}, the continuous action develops without a cut. ${transitionIn}${spokenCue}${subjectCue}${boundDirectionCue}${description}${transitionOut}`;
     }).join('\n');
   } else {
     const hasDuration = Number(options.duration) > 0;
@@ -987,13 +1012,19 @@ function compilePrompt(refs, speech, translated, anchors = {}, options = {}) {
     detailedTimeline = `[Shot 1] ${opening} ${speechDeadline} ${visual}`;
   }
   if (timeline.length) detailedTimeline = `${visual}\n${detailedTimeline}`;
-  const editSummary = timeline.length > 1 ? `A ${timeline.length}-shot edit` : 'A single continuous shot';
-  const audioTask = soundtrackIndex >= 0 ? ' + audio reuse' : speech.references.length ? ' + audio reference' : '';
-  const soundscape = soundtrackIndex >= 0
-    ? `<Audio ${soundtrackIndex + 1}> is directly reused as the complete final audio track; preserve its speech and silence exactly.`
-    : ambience;
-  const finalMusic = soundtrackIndex >= 0 ? 'N/A' : music;
-  return `subject_definitions:\n${definitions.join('\n') || 'The scene is described in [Shot 1].'}\n\nsummary:\n[${anchors.first || anchors.last ? 'keyframe completion + ' : ''}reference generation${audioTask}] ${editSummary} follows the supplied visual references and the spoken timeline below.\n\nretention_analysis:\n${retention.join('\n') || 'The visual scene follows the description below.'}\n\ndetailed_description:\nThe video uses a natural cinematic style with consistent identity, lighting, and spatial continuity.${lightingSentence} One outfit per character is established before the shot starts. Clothing stays consistent through every cut and the ending frame.\n${countRule ? countRule + '\n' : ''}${narrative.h3Delivery(speech.narrative_style)}\n${detailedTimeline}\n${ending} The planned action progression reaches its specified end state at the end of the shot.\n\noverall_soundscape:\n${soundscape}\n\nnon_diegetic_music:\n${finalMusic}`;
+  const cutCount = timeline.slice(1).filter(segment => segment.camera?.shot_change === true || segment.shot_change === true || segment.camera_change === true).length;
+  const editSummary = cutCount > 0 ? `A ${cutCount + 1}-shot edit` : 'A single continuous shot';
+  const audioTask = speech.references.length ? ' + audio reference' : '';
+  const soundscape = ambience;
+  const finalMusic = music;
+  return assembleRef2va({
+    subjectDefinitions: definitions,
+    summary: `[${anchors.first || anchors.last ? 'keyframe completion + ' : ''}reference generation${audioTask}] ${editSummary} follows the supplied visual references and the spoken timeline below.`,
+    retentionAnalysis: retention,
+    detailedDescription: `The video uses a natural cinematic style with consistent identity, lighting, and spatial continuity.${lightingSentence} One outfit per character is established before the shot starts. Clothing stays consistent through every cut and the ending frame.\n${countRule ? countRule + '\n' : ''}${narrative.h3Delivery(speech.narrative_style)}\n${detailedTimeline}\n${ending} The planned action progression reaches its specified end state at the end of the shot.`,
+    overallSoundscape: soundscape,
+    nonDiegeticMusic: finalMusic,
+  });
 }
 async function prepare(db, log, opts) {
   const { drama_id: dramaId, storyboard_id: shotId, storage_local_path: root } = opts;
@@ -1030,37 +1061,12 @@ async function prepare(db, log, opts) {
     throwOnViolation: true,
   });
 
-  // A timbre sample cannot tell H3 the exact utterance timing. For production
-  // Ref2VA jobs, synthesize the authoritative lines first and provide that
-  // complete track to H3 as its audio input. The generated H3 audio remains the
-  // final soundtrack; this reference is never remuxed over the downloaded video.
-  let exactSpeechTrack = null;
-  if (executionPlan.mode === 'ref2va' && opts.video_gen_id && speech.lines.length) {
-    exactSpeechTrack = await require('./h3SpeechTrackService').prepare(
-      db, log, dramaId, shotId, root, speech.lines, opts.duration, delivery
-    );
-    if (exactSpeechTrack) {
-      speech.references = [{
-        key: 'soundtrack',
-        kind: 'soundtrack',
-        speaker: '完整台词音轨',
-        url: exactSpeechTrack.url,
-      }];
-      speech.soundtrack = exactSpeechTrack;
-      const record = db.prepare('SELECT resolution_plan FROM video_generations WHERE id=?').get(Number(opts.video_gen_id));
-      let savedPlan = {};
-      try { savedPlan = JSON.parse(record?.resolution_plan || '{}'); } catch {}
-      savedPlan.h3_speech_reference = {
-        local_path: exactSpeechTrack.local_path,
-        source_hash: exactSpeechTrack.source_hash,
-        speech_end_seconds: exactSpeechTrack.speech_end_seconds,
-        speech_rate: exactSpeechTrack.speech_rate,
-        events: exactSpeechTrack.events,
-      };
-      db.prepare('UPDATE video_generations SET resolution_plan=? WHERE id=?')
-        .run(JSON.stringify(savedPlan), Number(opts.video_gen_id));
-    }
-  }
+  // H3 receives voice-timbre references only. The authoritative dialogue is
+  // written verbatim into the prompt and H3 produces the native soundtrack.
+  // Submitting a complete TTS waveform alongside the same dialogue creates
+  // duplicate or unintelligible speech, so that path is deliberately removed.
+  speech.references = (speech.references || []).filter(ref => ref.kind !== 'soundtrack');
+  delete speech.soundtrack;
 
   const prev = previous(db, initial.shot);
   const wardrobeChanged = !!clothing.change || clothing.continuity_reset;
@@ -1229,7 +1235,13 @@ async function prepare(db, log, opts) {
     // 仅以首帧（及可选尾帧）为绝对视觉基准，不传入人物卡与场景卡（避免特征争抢导致的跳脸漂移）
     // 台词由结构化 speech_plan 编译为 <d> 交给 H3 原生生成；FL2VA 不附加参考音频，
     // 成片下载后也不会用外部音轨替换 H3 音轨。
-    prompt = compileFl2vaPrompt(translated, videoTimeline, { allowChinese: true, speech });
+    prompt = compileFl2vaPrompt(translated, videoTimeline, {
+      allowChinese: true,
+      speech,
+      duration: opts.duration,
+      firstFramePresent: Boolean(anchors.first),
+      lastFramePresent: Boolean(anchors.last),
+    });
     images = [];
     mixedReferences = false;
     audioReferences = [];
@@ -1280,6 +1292,15 @@ async function prepare(db, log, opts) {
     execution_backend: execution.execution_backend,
     continuum_plan: execution.continuum_plan,
   };
+  // Persist exactly what the H3 bridge will receive.  This is a snapshot for
+  // review and retry diagnostics; it never becomes a second source of truth.
+  try {
+    db.prepare(`UPDATE storyboards
+      SET h3_prompt_snapshot=?, h3_contract_status=?, updated_at=? WHERE id=?`)
+      .run(prompt, 'prepared', new Date().toISOString(), Number(shotId));
+  } catch (_) {
+    // Older test databases may not have additive contract columns yet.
+  }
   fs.mkdirSync(path.dirname(destination), { recursive: true });
   fs.writeFileSync(destination, JSON.stringify({ prompt, translation: translated, references: refs, previous_storyboard_id: usePrevious ? prev.id : null,
     width, height, steps: H3_STEPS, duration: opts.duration, speech_delivery: delivery, voices: speech.references.map(({ url, ...r }) => r) }, null, 2));

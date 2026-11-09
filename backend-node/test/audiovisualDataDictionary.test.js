@@ -92,21 +92,23 @@ test('storyboardService supports creating, updating and retrieving dialogue_fram
     // the same semantic gate as production Director-created storyboards.
     db.prepare('UPDATE storyboards SET semantic_slots = ?, video_slots = ?, bgm_prompt = ? WHERE id = ?').run(
       JSON.stringify({
-        h3_mode: 'fl2va', h3_mode_reason: '固定开场构图',
-        first_frame_policy: 'generate_new', first_frame_reason: '生成首帧锁定构图',
+        h3_mode: 'fl2va', h3_mode_reason: '人工首帧测试',
+        first_frame_policy: 'generate_new', first_frame_reason: '人工首帧测试',
         last_frame_policy: 'none', last_frame_reason: '自然收束',
         required_references: [], visible_characters: [], background_characters: [],
         speech_plan: { speaker_name: '', text: '', is_narration: false, audio_references: [] },
         shot_duration: 5,
       }),
       JSON.stringify({
+        performance_contract: 'sync_v2',
+        execution_backend: 'h3_single',
         camera: { shot_type: '中景', movement: 'push' },
         audio_lip_sync: { mode: 'silent_ambient', speaker_name: '', speaker_in_frame: false, dialogue_content: '', visible_characters_lip_state: 'strictly_sealed' },
         trajectories: [], environment_vfx: {}, timing: { duration: 5 },
         shots_timeline: [
-          { shot_number: 1, duration: 2, camera: { shot_type: '中景', movement: 'push' }, action: '摄影机缓慢推进', character_trajectories: [], audio_lip_sync: { mode: 'silent_ambient' } },
-          { shot_number: 2, duration: 2, camera: { shot_type: '近景', movement: 'push' }, action: '构图关系逐渐清晰', character_trajectories: [], audio_lip_sync: { mode: 'silent_ambient' } },
-          { shot_number: 3, duration: 1, camera: { shot_type: '近景', movement: 'static' }, action: '画面稳定收束', character_trajectories: [], audio_lip_sync: { mode: 'silent_ambient' } },
+          { shot_number: 1, timestamp: '00:00.000', duration: 2, camera: { shot_type: '中景', movement: 'push' }, visible_characters: [], action: '摄影机缓慢推进至空间主体', result: '建立空间关系', character_trajectories: [], audio_lip_sync: { mode: 'silent_ambient' } },
+          { shot_number: 2, timestamp: '00:02.000', duration: 2, camera: { shot_type: '近景', movement: 'push' }, visible_characters: [], action: '镜头继续推进观察现场细节', result: '关键环境细节清晰可见', character_trajectories: [], audio_lip_sync: { mode: 'silent_ambient' } },
+          { shot_number: 3, timestamp: '00:04.000', duration: 1, camera: { shot_type: '近景', movement: 'static' }, visible_characters: [], action: '镜头稳定停住', result: '画面在环境细节上收束', character_trajectories: [], audio_lip_sync: { mode: 'silent_ambient' } },
         ],
       }),
       '低沉克制的悬疑弦乐与轻微环境脉冲',

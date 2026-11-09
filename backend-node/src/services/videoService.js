@@ -310,6 +310,17 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
         firstFrameSourcePath: firstFrameAbs,
         firstFrameRequired: !!firstFramePath,
       });
+      try {
+        const { auditGeneratedSpeech } = require('./asrQualityAudit');
+        qualityAudit.asr = await auditGeneratedSpeech(absPath, shotRow);
+        if (row.storyboard_id) {
+          db.prepare('UPDATE storyboards SET h3_quality_audit=?, updated_at=? WHERE id=?')
+            .run(JSON.stringify(qualityAudit), new Date().toISOString(), row.storyboard_id);
+        }
+      } catch (asrError) {
+        qualityAudit.asr = { status: 'error', reason: asrError.message };
+        log.warn('[ASR] 生成后语音质检未执行', { video_gen_id: videoGenId, error: asrError.message });
+      }
     } catch (qErr) {
       qualityAudit = {
         passed: false,
@@ -350,6 +361,12 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
       now,
       videoGenId
     );
+    if (row.storyboard_id) {
+      try {
+        db.prepare('UPDATE storyboards SET h3_quality_audit=?, h3_contract_status=?, updated_at=? WHERE id=?')
+          .run(auditJson, 'failed', now, row.storyboard_id);
+      } catch (_) {}
+    }
     if (row.task_id) {
       taskService.updateTaskError(db, row.task_id, errMsg);
     }

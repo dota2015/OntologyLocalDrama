@@ -208,7 +208,10 @@ class ComfyUiImageProvider extends BaseImageProvider {
     };
 
     const antiCloneTokens = 'duplicate person, clone, two identical people, extra person, multiple views of same person, duplicate face, duplicate characters, extra people, background bystander, split panels, collage';
-    const finalNegativePrompt = opts.structured_storyboard ? (mergedNegativePrompt || '') : mergedNegativePrompt
+    // Structured storyboard prompts still need an image-side anti-clone guard.
+    // Keep it in the negative channel only; never contaminate the semantic
+    // positive prompt with defensive prose.
+    const finalNegativePrompt = mergedNegativePrompt
       ? `${mergedNegativePrompt}, ${antiCloneTokens}`
       : `blurry, ugly, distorted, deformed, extra limbs, ${antiCloneTokens}`;
 

@@ -67,7 +67,7 @@ test('official R2V compiler binds multiple pictures to one identity and preserve
   assert.match(cleanPrompt, /non_diegetic_music:\s*N\/A/);
 });
 
-test('exact speech soundtrack is fully copied with fixed line timing', () => {
+test('soundtrack inputs are never copied; spoken text remains a native H3 cue', () => {
   const refs = [{ source: 'card', kind: 'character', character_id: 5 }];
   const speech = {
     references: [{ key: 'soundtrack', kind: 'soundtrack', url: 'data:audio/wav;base64,AAAA' }],
@@ -75,11 +75,10 @@ test('exact speech soundtrack is fully copied with fixed line timing', () => {
     soundtrack: { events: [{ start_seconds: 0, end_seconds: 1.8 }] },
   };
   const prompt = native.compilePrompt(refs, speech, translation, {}, { duration: 5, delivery: { end_reserve_seconds: 1.5 } });
-  assert.match(prompt, /\[reference generation \+ audio reuse\]/);
-  assert.match(prompt, /<Audio 1>: fully_copy/);
-  assert.match(prompt, /from second 0\.00 through second 1\.80/);
+  assert.doesNotMatch(prompt, /fully_copy|complete final audio track/);
+  assert.doesNotMatch(prompt, /audio reuse|fully_copy/);
   assert.match(prompt, /<d>\[Chinese\] 一句也不能少。<\/d>/);
-  assert.match(prompt, /complete final audio track/);
+  assert.match(prompt, /reference generation/);
 });
 
 test('H3 sanitizers clean Chinese exclusion noise and English negative words', () => {
@@ -159,6 +158,7 @@ test('settings are project-scoped, merge only the shot setting, and report actua
   assert.equal(metadata.h3_shots[2].continuity, 'off');
   assert.equal(native.getSettings(db, 1, 2).previous_storyboard.id, 1);
   assert.equal(native.getSettings(db, 1, 3).previous_storyboard.same_scene, false);
+  native.saveSettings(db, 1, 2, { engine_mode: 'fl2va' });
   const overridden = native.saveSettings(db, 1, 2, { first_frame_policy: 'inherit_tail', last_frame_policy: 'none' });
   assert.equal(overridden.h3_generation_plan.first_frame_policy, 'inherit_tail');
   assert.equal(overridden.h3_generation_plan.last_frame_policy, 'none');
@@ -176,14 +176,14 @@ test('backend assembles deduplicated ordered images, first/last guides, voice an
   t.mock.method(global, 'fetch', async (_url, options) => { body = JSON.parse(options.body); return { ok: true, status: 200, text: async () => '{"id":"native-task"}' }; });
 
   // 1. 默认 FL2VA 纯血首帧模式测试：首帧/尾帧独占，零 reference_image 污染，零参考音频污染
-  const flResult = await client.callVideoApi(db, log, { ...opts, model: 'MiniMax-H3', first_frame_url: 'http://host/static/first.png', last_frame_url: '/static/last.png', reference_urls: ['http://host/static/room.png', 'http://host/static/card.png', 'first.png', 'last.png'] });
+  const flResult = await client.callVideoApi(db, log, { ...opts, h3_engine_mode: 'fl2va', model: 'MiniMax-H3', first_frame_url: 'http://host/static/first.png', last_frame_url: '/static/last.png', reference_urls: ['http://host/static/room.png', 'http://host/static/card.png', 'first.png', 'last.png'] });
   assert.equal(flResult.task_id, 'native-task');
   assert.deepEqual(body.h3_native, { width: 1344, height: 768, steps: 23 });
   const flImages = body.content.filter(i => i.type === 'image_url');
   assert.deepEqual(flImages.map(i => i.role), ['first_frame', 'last_frame']);
   const flAudios = body.content.filter(i => i.type === 'audio_url');
   assert.equal(flAudios.length, 0); // FL2VA 不向 DiT 塞音频以防桥接层被动降级为 ref2va
-  assert.doesNotMatch(body.content[0].text, /<Picture|<Subject|<Audio/);
+  assert.match(body.content[0].text, /<d>\[Chinese\] 开始行动。<\/d>/);
 
   // 2. Ref2VA 纯多参考模式：显式首尾帧输入也不会进入请求
   const refResult = await client.callVideoApi(db, log, { ...opts, h3_engine_mode: 'ref2va', model: 'MiniMax-H3', first_frame_url: 'http://host/static/first.png', last_frame_url: '/static/last.png', reference_urls: ['http://host/static/room.png', 'http://host/static/card.png', 'first.png', 'last.png'] });
@@ -196,9 +196,9 @@ test('backend assembles deduplicated ordered images, first/last guides, voice an
 });
 test('FL2VA rejects missing first frames and Ref2VA rejects oversized reference lists', async t => {
   const { db, opts } = setup(t);
-  await assert.rejects(native.prepare(db, log, { ...opts, storyboard_id: 3 }), /缺少首帧/);
-  native.saveSettings(db, 1, 2, { continuity: 'previous_tail' });
-  await assert.rejects(native.prepare(db, log, opts), /上一镜尚无/);
+  await assert.rejects(native.prepare(db, log, { ...opts, h3_engine_mode: 'fl2va', storyboard_id: 3 }), /缺少首帧/);
+  native.saveSettings(db, 1, 2, { engine_mode: 'fl2va', continuity: 'previous_tail' });
+  await assert.rejects(native.prepare(db, log, { ...opts, h3_engine_mode: 'fl2va' }), /上一镜尚无/);
   native.saveSettings(db, 1, 2, { continuity: 'off' });
   await assert.rejects(
     () => native.prepare(db, log, { ...opts, h3_engine_mode:'ref2va', reference_urls: Array.from({ length: 10 }, (_, i) => `https://example.com/${i}.png`) }),
@@ -207,7 +207,7 @@ test('FL2VA rejects missing first frames and Ref2VA rejects oversized reference 
 });
 test('direct Chinese compilation needs no text-model round trip and all canvas presets respect the native pixel limit', async t => {
   const { db, opts } = setup(t);
-  const prepared = await native.prepare(db, log, { ...opts, first_frame_url:'first.png' });
+  const prepared = await native.prepare(db, log, { ...opts, h3_engine_mode: 'fl2va', first_frame_url:'first.png' });
   assert.equal(prepared.h3_mode, 'fl2va');
   assert.match(prepared.prompt, /房间中的男孩|少年开口|按已规划的分镜构图/);
   for (const ratio of ['16:9','9:16','1:1','4:3','3:4','21:9']) {
@@ -224,7 +224,7 @@ test('unrelated project character edits do not invalidate an H3 shot being prepa
     db.prepare('UPDATE characters SET extra_images=? WHERE id=6').run('["card.png"]');
     return { references: [], lines: [] };
   });
-  const result = await native.prepare(db, log, { ...opts, first_frame_url:'first.png' });
+  const result = await native.prepare(db, log, { ...opts, h3_engine_mode: 'fl2va', first_frame_url:'first.png' });
   assert.equal(result.h3_mode, 'fl2va');
 });
 
@@ -235,7 +235,7 @@ test('generation output bookkeeping does not invalidate immutable H3 inputs', as
     db.prepare("UPDATE storyboards SET selected_video_id=99,video_url='new.mp4',status='processing' WHERE id=2").run();
     return { references: [], lines: [] };
   });
-  const result = await native.prepare(db, log, { ...opts, first_frame_url:'first.png' });
+  const result = await native.prepare(db, log, { ...opts, h3_engine_mode: 'fl2va', first_frame_url:'first.png' });
   assert.equal(result.h3_mode, 'fl2va');
 });
 
@@ -314,11 +314,11 @@ test('FL2VA continuity can inherit the prior video tail while Ref2VA ignores all
   db.prepare('UPDATE storyboards SET local_path=? WHERE id=1').run('previous.mp4');
   // Default is 'off' (uses own first frame)
   assert.equal(native.getSettings(db, 1, 2).continuity, 'off');
-  const defaultOff = await native.prepare(db, log, { ...opts, first_frame_url: 'first.png' });
+  const defaultOff = await native.prepare(db, log, { ...opts, h3_engine_mode: 'fl2va', first_frame_url: 'first.png' });
   assert.equal(defaultOff.first_frame_url, 'data:image/png;base64,' + fs.readFileSync(path.join(root,'first.png')).toString('base64'));
 
   // When explicitly enabled to 'auto', uses previous video tail
-  native.saveSettings(db, 1, 2, { continuity: 'auto' });
+  native.saveSettings(db, 1, 2, { engine_mode: 'fl2va', continuity: 'auto' });
   const result = await native.prepare(db, log, { ...opts, first_frame_url: 'first.png' });
   assert.ok(result.first_frame_url.startsWith('data:image/png;base64,'));
   assert.equal(result.reference_urls.length, 0); // FL2VA 模式下纯首帧输入，无额外 reference_url
@@ -334,7 +334,7 @@ test('FL2VA continuity can inherit the prior video tail while Ref2VA ignores all
   const actual = await run(ffmpeg, ['-v','error','-i',path.join(root,tail),'-f','rawvideo','-pix_fmt','rgb24','pipe:1'], { encoding:'buffer' });
   assert.deepEqual(actual.stdout, expected.stdout);
   native.saveSettings(db, 1, 2, { continuity: 'off' });
-  const off = await native.prepare(db, log, { ...opts, first_frame_url: 'first.png' });
+  const off = await native.prepare(db, log, { ...opts, h3_engine_mode: 'fl2va', first_frame_url: 'first.png' });
   assert.equal(off.first_frame_url, 'data:image/png;base64,' + fs.readFileSync(path.join(root,'first.png')).toString('base64'));
 });
 
@@ -354,10 +354,10 @@ test('an explicit wardrobe transition skips previous-tail selection and rejects 
   wardrobe.saveShot(db,2,{change:{reason:'进入梦境，更换训练服',characters:[{character_id:5,description:'银色训练服，黑色靴子'}]}});
   // A completed predecessor exists but its local file is deliberately unavailable.
   db.prepare("INSERT INTO video_generations VALUES(1,1,1,'completed','prior-outfit.mp4',NULL)").run();
-  const prepared=await native.prepare(db,log,{...opts,first_frame_url:'first.png'});
+  const prepared=await native.prepare(db,log,{...opts,h3_engine_mode:'fl2va',first_frame_url:'first.png'});
   assert.ok(prepared.first_frame_url);
   assert.match(prepared.prompt,/银色训练服，黑色靴子/);
-  native.saveSettings(db,1,2,{continuity:'previous_tail'});
+  native.saveSettings(db,1,2,{engine_mode:'fl2va',continuity:'previous_tail'});
   await assert.rejects(native.prepare(db,log,opts),/换装或时间线变化/);
 });
 

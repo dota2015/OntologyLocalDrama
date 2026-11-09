@@ -11,6 +11,11 @@ function ensureTable(db) {
     options_json TEXT NOT NULL, fingerprint_json TEXT NOT NULL, state_json TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`);
+  db.exec(`CREATE TABLE IF NOT EXISTS director_checkpoint_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL, stage TEXT, shot_number INTEGER, round INTEGER,
+    event_type TEXT NOT NULL, payload_json TEXT, created_at TEXT NOT NULL
+  )`);
 }
 function read(db, taskId) {
   ensureTable(db);
@@ -56,7 +61,7 @@ function requireResume(db, taskId, episodeId, cfg) {
   return saved;
 }
 function open(db, taskId, episodeId, cfg, options, resumeId) {
-  if (!taskId) return { state: {}, save() {}, assertCurrent() {} };
+  if (!taskId) return { state: {}, save() {}, record() {}, assertCurrent() {} };
   ensureTable(db);
   const saved = resumeId ? requireResume(db, resumeId, episodeId, cfg) : null;
   const initial = saved?.fingerprint || fingerprint(db, episodeId, cfg);
@@ -72,8 +77,18 @@ function open(db, taskId, episodeId, cfg, options, resumeId) {
       ON CONFLICT(task_id) DO UPDATE SET state_json=excluded.state_json, updated_at=excluded.updated_at`)
       .run(taskId, Number(episodeId), VERSION, JSON.stringify(cleanOptions(options)), JSON.stringify(initial), JSON.stringify(state), new Date().toISOString());
   };
+  const record = (event = {}) => {
+    if (!taskId) return;
+    ensureTable(db);
+    db.prepare(`INSERT INTO director_checkpoint_events
+      (task_id, stage, shot_number, round, event_type, payload_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(taskId, event.stage || state.stage || null, event.shot_number == null ? null : Number(event.shot_number),
+        event.round == null ? null : Number(event.round), event.type || 'progress',
+        event.payload == null ? null : JSON.stringify(event.payload), new Date().toISOString());
+  };
   save();
-  return { state, save, assertCurrent() { assertActive(); assertCompatible(initial, fingerprint(db, episodeId, cfg)); } };
+  return { state, save, record, assertCurrent() { assertActive(); assertCompatible(initial, fingerprint(db, episodeId, cfg)); } };
 }
 function summary(db, taskId) {
   ensureTable(db);
@@ -82,7 +97,15 @@ function summary(db, taskId) {
     json_array_length(state_json,'$.shots') AS completed_shots,
     json_extract(state_json,'$.resumed_from') AS resumed_from,
     json_extract(state_json,'$.currentShot') AS current_shot,
-    json_extract(state_json,'$.reflectionRound') AS reflection_round FROM director_checkpoints WHERE task_id=?`).get(taskId);
-  return s ? { ...s, published: undefined, available: !s.published, completed_shots: s.completed_shots || 0, stage: s.stage || '准备' } : null;
+    json_extract(state_json,'$.reflectionRound') AS reflection_round,
+    json_extract(state_json,'$.stage1Complete') AS stage1_complete FROM director_checkpoints WHERE task_id=?`).get(taskId);
+  if (!s) return null;
+  const latest = db.prepare('SELECT stage, shot_number, round, event_type, created_at FROM director_checkpoint_events WHERE task_id=? ORDER BY id DESC LIMIT 1').get(taskId);
+  const count = db.prepare('SELECT COUNT(*) AS count FROM director_checkpoint_events WHERE task_id=?').get(taskId)?.count || 0;
+  return { ...s, published: undefined, available: !s.published, completed_shots: s.completed_shots || 0, stage: s.stage || '准备', latest_event: latest || null, event_count: count };
 }
-module.exports = { read, open, summary, requireResume, fingerprint, assertCompatible, cleanOptions };
+function events(db, taskId, limit = 100) {
+  ensureTable(db);
+  return db.prepare('SELECT * FROM director_checkpoint_events WHERE task_id=? ORDER BY id DESC LIMIT ?').all(taskId, Number(limit) || 100);
+}
+module.exports = { read, open, summary, events, requireResume, fingerprint, assertCompatible, cleanOptions };

@@ -13,6 +13,7 @@ const {
   normalizeTimelineTimestamps,
 } = require('./directorAgent');
 const directorCheckpoint = require('../services/directorCheckpoint');
+const { VERSION: H3_CONTRACT_VERSION, buildH3Contract } = require('../services/h3Contract');
 
 function parseJsonValue(value, fallback = null) {
   if (value == null || value === '') return fallback;
@@ -86,23 +87,44 @@ async function enrichEpisodeOntologySlots(db, log, cfg, episodeId, options = {})
     error.violations = planningViolations;
     throw error;
   }
-  let enrichedShots = [];
-  const maxAttempts = Math.max(1, Math.min(5, Number(options.maxAttempts || options.max_attempts || 3)));
+  // Keep stage-two output in the checkpoint. A failed run resumes from the
+  // first uncompleted shot instead of asking the Agent to regenerate passed
+  // contracts.
+  const checkpointState = options.checkpointState || {};
+  let enrichedShots = Array.isArray(checkpointState.enrichedShots)
+    ? checkpointState.enrichedShots.map(normalizeStoryboardForAgent)
+    : [];
+  // Resume by storyboard number, never by array index. A failed run can have
+  // completed non-contiguous shots in its checkpoint; using `enrichedShots[i]`
+  // as the previous shot would then attach the wrong continuity contract.
+  const shotNumberOf = item => Number(item?.storyboard_number || item?.shot_number || 0);
+  const enrichedByNumber = new Map(enrichedShots.map(item => [shotNumberOf(item), item]).filter(([n]) => Number.isFinite(n) && n > 0));
+  const completedNumbers = new Set(enrichedByNumber.keys());
+  const maxAttempts = Math.max(1, Math.min(12, Number(options.maxAttempts || options.max_attempts || 6)));
 
   // 执行合同由专用导演 Agent 生成。为了保证连戏上下文，阶段二按镜头顺序执行。
   for (let i = 0; i < normalizedShots.length; i++) {
     const shot = normalizedShots[i];
+    if (completedNumbers.has(Number(shot.storyboard_number || shot.shot_number))) continue;
     const planned = await ensureDirectorExecutionSlots(db, log, shot, {
       maxAttempts,
       forceAgent: true,
       onProgress: (message) => onProgress(15 + Math.floor(((i + 1) / rows.length) * 55), `正在由导演 Agent 规划第 ${i + 1}/${rows.length} 镜：${message}`),
       episodeScript: pkg.episode?.script_content || '',
       catalogs: pkg.catalogs,
-      allShots: normalizedShots.map((item, index) => enrichedShots[index] || item),
-      previousShot: enrichedShots[i - 1] || null,
+      allShots: normalizedShots.map(item => enrichedByNumber.get(shotNumberOf(item)) || item),
+      previousShot: i > 0 ? (enrichedByNumber.get(shotNumberOf(normalizedShots[i - 1])) || normalizedShots[i - 1]) : null,
       nextShot: normalizedShots[i + 1] || null,
+      checkpoint: options.checkpoint,
     });
-    enrichedShots.push(planned);
+    enrichedByNumber.set(shotNumberOf(planned) || shotNumberOf(shot), planned);
+    enrichedShots = normalizedShots.map(item => enrichedByNumber.get(shotNumberOf(item)) || item)
+      .filter(item => enrichedByNumber.has(shotNumberOf(item)));
+    checkpointState.enrichedShots = enrichedShots;
+    checkpointState.currentShot = Number(shot.storyboard_number || shot.shot_number);
+    checkpointState.completed_shots = enrichedShots.length;
+    options.checkpoint?.record?.({ stage: 'stage2', shot_number: checkpointState.currentShot, type: 'shot_completed', payload: planned });
+    options.checkpoint?.save?.();
   }
 
   onProgress(75, '导演 Agent 已输出全集执行合同，正在进行视听本体门禁审查...');
@@ -120,7 +142,7 @@ async function enrichEpisodeOntologySlots(db, log, cfg, episodeId, options = {})
 
   // 门禁只反馈，不创作。每轮把同一镜头的完整违规一次性交给 Agent，
   // 并连同相邻镜头上下文重新规划完整执行合同。
-  const repairRounds = Math.max(1, Math.min(5, Number(options.repairRounds || options.repair_rounds || 3)));
+  const repairRounds = Math.max(1, Math.min(8, Number(options.repairRounds || options.repair_rounds || 4)));
   for (let round = 1; !audit.valid && round <= repairRounds; round++) {
     const byShot = new Map();
     for (const violation of audit.violations || []) {
@@ -150,8 +172,14 @@ async function enrichEpisodeOntologySlots(db, log, cfg, episodeId, options = {})
         allShots: enrichedShots,
         previousShot: enrichedShots[index - 1] || null,
         nextShot: enrichedShots[index + 1] || null,
+        checkpoint: options.checkpoint,
         onProgress: (message) => onProgress(75 + Math.floor((round / repairRounds) * 10), `导演 Agent 修复第 ${shotNumber} 镜：${message}`),
       });
+      checkpointState.enrichedShots = enrichedShots;
+      checkpointState.currentShot = shotNumber;
+      checkpointState.completed_shots = enrichedShots.length;
+      options.checkpoint?.record?.({ stage: 'stage2', shot_number: shotNumber, round, type: 'repair_completed', payload: enrichedShots[index] });
+      options.checkpoint?.save?.();
     }
     audit = validateAllInvariants(enrichedShots, auditOptions);
   }
@@ -167,6 +195,17 @@ async function enrichEpisodeOntologySlots(db, log, cfg, episodeId, options = {})
   onProgress(85, '门禁审查与对齐完成，正在持久化写入数据库...');
 
   // 持久化更新回 storyboards 表
+  // Test databases and older installations may not have the new contract
+  // columns yet; add only these additive columns at the boundary.
+  const existingColumns = new Set(db.prepare('PRAGMA table_info(storyboards)').all().map((item) => item.name));
+  for (const column of [
+    ['h3_contract_json', 'TEXT'], ['h3_contract_version', 'TEXT'],
+    ['h3_contract_status', 'TEXT'], ['h3_prompt_snapshot', 'TEXT'], ['h3_quality_audit', 'TEXT'],
+  ]) {
+    if (!existingColumns.has(column[0])) {
+      try { db.prepare(`ALTER TABLE storyboards ADD COLUMN ${column[0]} ${column[1]}`).run(); } catch (_) {}
+    }
+  }
   const updateStmt = db.prepare(`
     UPDATE storyboards SET
       characters = ?,
@@ -186,6 +225,9 @@ async function enrichEpisodeOntologySlots(db, log, cfg, episodeId, options = {})
       action = ?,
       result = ?,
       image_prompt = ?,
+      h3_contract_json = ?,
+      h3_contract_version = ?,
+      h3_contract_status = ?,
       updated_at = ?
     WHERE id = ?
   `);
@@ -211,6 +253,9 @@ async function enrichEpisodeOntologySlots(db, log, cfg, episodeId, options = {})
         shot.action || null,
         shot.result || null,
         shot.image_prompt || null,
+        JSON.stringify(buildH3Contract(shot)),
+        H3_CONTRACT_VERSION,
+        'audited',
         now,
         shot.id
       );
@@ -290,12 +335,21 @@ async function runTwoStageDirectorPipeline(db, log, cfg, episodeId, options = {}
   const { runStageOneBaseGeneration } = require('../services/episodeStoryboardService');
   let stage1Result;
   try {
-    stage1Result = await runStageOneBaseGeneration(db, log, epId, taskId, {
-      ...options,
-      // 阶段一必须先通过基础规划门禁，再把基础分镜发布给阶段二。
-      planningCatalogs: compileDramaSemanticPackage(db, epId).catalogs,
-      planningRepairAttempts: options.planningRepairAttempts || 3,
-    });
+    if (checkpointState.stage1Complete && Array.isArray(checkpointState.stage1Storyboards) && checkpointState.stage1Storyboards.length) {
+      stage1Result = { storyboards: checkpointState.stage1Storyboards, resumed: true };
+      log.info('[两阶段导演流水线] 从检查点恢复阶段一结果', { episode_id: epId, count: checkpointState.stage1Storyboards.length });
+    } else {
+      stage1Result = await runStageOneBaseGeneration(db, log, epId, taskId, {
+        ...options,
+        // 阶段一必须先通过基础规划门禁，再把基础分镜发布给阶段二。
+        planningCatalogs: compileDramaSemanticPackage(db, epId).catalogs,
+        planningRepairAttempts: options.planningRepairAttempts || 3,
+      });
+      checkpointState.stage1Complete = true;
+      checkpointState.stage1Storyboards = stage1Result.storyboards;
+      checkpoint.record({ stage: 'stage1', type: 'stage1_completed', payload: stage1Result.storyboards });
+      checkpoint.save();
+    }
   } catch (error) {
     saveProgress('stage1_failed', error.message, {
       partial_shot_count: Number(error.partial_shot_count || 0),
@@ -319,6 +373,8 @@ async function runTwoStageDirectorPipeline(db, log, cfg, episodeId, options = {}
   try {
     stage2Result = await enrichEpisodeOntologySlots(db, log, cfg, epId, {
       ...options,
+      checkpoint,
+      checkpointState,
       onProgress: (pct, msg) => {
         const overallPct = 58 + Math.floor(pct * 0.40); // 58% -> 98%
         saveProgress('stage2', msg, { stage2_progress: pct });
