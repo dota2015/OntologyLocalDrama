@@ -201,7 +201,7 @@ function planningFeasibilityViolations(shots, options = {}) {
     if (characterNameToId.size) {
       const narrative = [
         shot.action, shot.result, shot.start_framing, shot.end_framing,
-        shot.transition_to_next, shot.layout_description,
+        shot.layout_description,
       ].filter(Boolean).join('；');
       for (const [name, id] of characterNameToId.entries()) {
         if (!name || !escapedNamePattern(name).test(narrative) || chars.all.includes(id)) continue;
