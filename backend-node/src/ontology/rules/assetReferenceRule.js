@@ -68,6 +68,10 @@ function sameIds(left, right) {
   return a.length === b.length && a.every((id, index) => id === b[index]);
 }
 
+function escapedNamePattern(name) {
+  return new RegExp(String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+}
+
 function planningFeasibilityViolations(shots, options = {}) {
   const catalogs = options.catalogs || {};
   const hasCharacterCatalog = Array.isArray(catalogs.characters);
@@ -188,6 +192,28 @@ function planningFeasibilityViolations(shots, options = {}) {
         ],
         message: `分镜 #${shotNumber} 的有身份主体与背景人物去重后共有 ${chars.all.length} 人，超过短剧单镜最多 2 个角色的制作上限。路人/敌军群体必须写成环境事件，或按剧情拆成连续镜头；禁止后端静默删除人物。`,
       });
+    }
+    // A stage-one shot cannot mention an identity character in its physical
+    // action or framing while leaving that character out of the roster. That
+    // omission later makes stage two invent a background character, which can
+    // exceed H3's two-person contract. Return it to the Director while the
+    // story structure is still editable; never add the person silently.
+    if (characterNameToId.size) {
+      const narrative = [
+        shot.action, shot.result, shot.start_framing, shot.end_framing,
+        shot.transition_to_next, shot.layout_description,
+      ].filter(Boolean).join('；');
+      for (const [name, id] of characterNameToId.entries()) {
+        if (!name || !escapedNamePattern(name).test(narrative) || chars.all.includes(id)) continue;
+        violations.push({
+          rule: 'INVARIANT_CHARACTER_NARRATIVE_ROSTER_MISMATCH',
+          shot_number: shotNumber,
+          severity: 'error',
+          asset_id: id,
+          conflict_slots: ['action', 'result', 'start_framing', 'end_framing', 'characters', 'background_characters'],
+          message: `分镜 #${shotNumber} 的动作/构图文本提及角色「${name}」，但人物清单未包含该角色。请由导演加入该角色并确保单镜最多2人，或将其改写为无身份环境事件/拆成连续镜头；后端不会静默补充人物。`,
+        });
+      }
     }
     const refs = arrayValue(semanticObject(shot).required_references);
     if (refs.length > 9) {

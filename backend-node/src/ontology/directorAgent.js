@@ -2711,11 +2711,30 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
       ? (background ? (item.character_id ?? item.id) : (item.id ?? item.character_id))
       : item)).filter(id => Number.isInteger(id) && id > 0).sort((a, b) => a - b);
   };
+  const resolveRosterIds = (value) => {
+    const catalog = Array.isArray(retryOptions.catalogs?.characters) ? retryOptions.catalogs.characters : [];
+    const byName = new Map(catalog.map(item => [String(item?.name || '').trim(), Number(item?.id)]));
+    const list = Array.isArray(value) ? value : [];
+    return list.map(item => {
+      const raw = item && typeof item === 'object' ? (item.id ?? item.character_id ?? item.name) : item;
+      const numeric = Number(raw);
+      if (Number.isInteger(numeric) && numeric > 0) return numeric;
+      return byName.get(String(raw || '').trim()) || 0;
+    }).filter(id => Number.isInteger(id) && id > 0).sort((a, b) => a - b);
+  };
   const sameIds = (left, right) => left.length === right.length && left.every((id, index) => id === right[index]);
-  const lockedVisibleIds = semanticCharacterIds(semantic.visible_characters);
-  const lockedBackgroundIds = semanticCharacterIds(semantic.background_characters, true);
+  // Stage one owns the identity roster. If its semantic arrays are not yet
+  // present, lock the top-level draft roster (names are resolved through the
+  // immutable catalog) so stage two cannot invent background characters from
+  // a free-text action description.
+  const lockedVisibleIds = Array.isArray(semantic.visible_characters)
+    ? semanticCharacterIds(semantic.visible_characters)
+    : resolveRosterIds(shot.characters);
+  const lockedBackgroundIds = Array.isArray(semantic.background_characters)
+    ? semanticCharacterIds(semantic.background_characters, true)
+    : resolveRosterIds(shot.background_characters);
   const hasLockedCharacterContract = Array.isArray(semantic.visible_characters)
-    && Array.isArray(semantic.background_characters);
+    || Array.isArray(shot.characters);
   let lastFatalError = null;
   let hasValidAgentOutput = false;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -2738,14 +2757,16 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
         .filter(Boolean).map(item => compactExecutionShot(item));
       const compactCatalogs = compactExecutionCatalogs(retryOptions.catalogs || {}, candidateBase);
       const requestInput = patchMode
-        ? `【权威镜头事实】${JSON.stringify(compactExecutionShot(candidateBase))}
+        ? `【阶段一锁定人物】visible=${JSON.stringify(lockedVisibleIds)}，background=${JSON.stringify(lockedBackgroundIds)}。不得新增、删除或改角色归属。
+【权威镜头事实】${JSON.stringify(compactExecutionShot(candidateBase))}
 【当前已有执行槽位】${JSON.stringify(compactCandidate)}
 【允许修复字段】${JSON.stringify([...patchFields])}
 【相邻镜头连续性摘要】${JSON.stringify(compactNeighbours)}
 【本体资产白名单】${JSON.stringify(compactCatalogs)}
 【门禁反馈】${errors.map(item => item.message).join('；')}
 只返回 {"repairs":[{"shot_number":${Number(shotNumber) || 0},"patch":{...}}]}。patch 只能包含允许修复字段；character_visuals 和 video_slots.shots_timeline 必须返回该字段的完整新值，其他字段保持不变。`
-        : `【权威镜头事实】${JSON.stringify(compactExecutionShot(candidateBase))}
+        : `【阶段一锁定人物】visible=${JSON.stringify(lockedVisibleIds)}，background=${JSON.stringify(lockedBackgroundIds)}。不得新增、删除或改角色归属。
+【权威镜头事实】${JSON.stringify(compactExecutionShot(candidateBase))}
 【相邻镜头连续性摘要】${JSON.stringify(compactNeighbours)}
 【本体资产白名单】${JSON.stringify(compactCatalogs)}
 【门禁反馈】${errors.map(item => item.message).join('；')}

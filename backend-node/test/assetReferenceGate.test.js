@@ -57,6 +57,25 @@ test('planning gate rejects divergent top-level and semantic character lists', (
   assert.ok(violations.some((item) => item.rule === 'INVARIANT_CHARACTER_SLOT_DIVERGENCE'));
 });
 
+test('planning gate rejects identity names mentioned in action but missing from the roster', () => {
+  const violations = checkPlanningFeasibility([{
+    shot_number: 12,
+    characters: ['红狼'],
+    background_characters: [],
+    action: '红狼关闭简报，蜂医和露娜无奈跟上',
+    result: '小队进入峡谷',
+    semantic_slots: {},
+  }], {
+    catalogs: {
+      characters: [{ id: 25, name: '红狼' }, { id: 27, name: '露娜' }, { id: 28, name: '蜂医' }],
+    },
+  });
+  assert.deepEqual(
+    violations.filter((item) => item.rule === 'INVARIANT_CHARACTER_NARRATIVE_ROSTER_MISMATCH').map((item) => item.asset_id).sort((a, b) => a - b),
+    [27, 28]
+  );
+});
+
 test('planning gate rejects unknown scene, prop, and required reference IDs', () => {
   const violations = checkPlanningFeasibility([{
     shot_number: 2,
