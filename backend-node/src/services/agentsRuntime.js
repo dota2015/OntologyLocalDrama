@@ -618,7 +618,7 @@ function directorExecutionRepairOutputType(shotNumber) {
       properties: {
         repairs: {
           type: 'array', minItems: 1, maxItems: 1,
-          prefixItems: [{
+          items: {
             type: 'object', additionalProperties: false,
             required: ['shot_number', 'patch'],
             properties: {
@@ -633,8 +633,7 @@ function directorExecutionRepairOutputType(shotNumber) {
                 },
               },
             },
-          }],
-          items: false,
+          },
         },
       },
     },

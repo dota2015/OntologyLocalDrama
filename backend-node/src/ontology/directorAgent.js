@@ -2852,6 +2852,13 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
 
       reportDirectorLayerRetry(retry, `分镜 #${shotNumber} 视听执行合同`, attempt, errors.map(item => item.message).join('；'));
     } catch (error) {
+      // Schema/protocol failures happen before the model can produce a
+      // candidate. Retrying the identical invalid request only burns the
+      // entire retry budget and hides the actual deployment bug.
+      if (/json schema|schema error|schema must be|invalid schema|response_format/i.test(String(error?.message || ''))) {
+        error.status = error.status || 502;
+        throw error;
+      }
       lastFatalError = error;
       errors = [{ message: `视听执行合同 Agent 输出格式失败：${error.message}` }];
       reportDirectorLayerRetry(retry, `分镜 #${shotNumber} 视听执行合同`, attempt, errors[0].message);
