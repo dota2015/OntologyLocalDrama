@@ -456,9 +456,9 @@ describe('Three-Tier Architectural Evolution: Agent First, Ontology Gatekeeper, 
       });
       assert.equal(semantic.offscreen_characters[0].mode, 'off_screen');
       const violations = checkCrossSlotInvariants([{ shot_number: 1, characters: [1], semantic_slots: semantic }]);
-      const warn = violations.find((v) => v.rule === 'INVARIANT_OFFSCREEN_MODE_INVALID');
-      assert.ok(warn);
-      assert.equal(warn.severity, 'warning');
+      const violation = violations.find((v) => v.rule === 'INVARIANT_OFFSCREEN_MODE_INVALID');
+      assert.ok(violation);
+      assert.equal(violation.severity, 'error');
     });
   });
 

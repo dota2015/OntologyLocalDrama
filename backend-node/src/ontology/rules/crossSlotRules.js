@@ -138,7 +138,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
         violations.push({
           rule: 'INVARIANT_OFFSCREEN_MODE_INVALID',
           shot_number: shotNum,
-          severity: 'warning',
+          severity: 'error',
           conflict_slots: ['semantic_slots.offscreen_characters'],
           message: `分镜 #${shotNum} 的画外参与者 mode 非法（${invalidOffscreenModes.map((c) => c.mode).join('、')}），只能为 ${[...VALID_OFFSCREEN_MODES].join(' / ')}。`,
         });
