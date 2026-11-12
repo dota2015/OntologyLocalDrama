@@ -19,11 +19,14 @@
           @update:model-value="updateObjectKey(key, $event)"
         />
         <el-input-number
-          v-else-if="typeof value === 'number'"
+          v-else-if="typeof value === 'number' || isNullableIntKey(key)"
           :model-value="value"
           size="small"
+          :min="isIdKey(key) ? 1 : undefined"
+          :value-on-clear="null"
           controls-position="right"
-          @update:model-value="updateObjectKey(key, $event)"
+          placeholder="null"
+          @update:model-value="updateObjectKey(key, $event == null ? null : $event)"
         />
         <el-input
           v-else
@@ -31,7 +34,8 @@
           type="textarea"
           :autosize="{ minRows: 1, maxRows: 4 }"
           size="small"
-          @update:model-value="updateObjectKey(key, $event)"
+          :placeholder="key === 'timestamp' ? 'null (首段无切镜时刻)' : ''"
+          @update:model-value="updateObjectKey(key, normalizeStringUpdate(key, $event))"
         />
       </div>
     </template>
@@ -72,28 +76,126 @@ const isArray = computed(() => Array.isArray(props.modelValue))
 const isObject = computed(() => !isArray.value && props.modelValue && typeof props.modelValue === 'object')
 const entries = computed(() => isObject.value ? Object.entries(props.modelValue) : [])
 
+const NULLABLE_INT_KEYS = new Set([
+  'character_id', 'facing_target_id', 'gaze_target_id', 'hands_object_id',
+  'hands_target_id', 'object_id', 'target_id', 'source_id',
+  'speaker_character_id', 'wardrobe_id',
+])
+
 const LABELS = {
-  character_id: '角色 ID', name: '名称', depth_layer: '景深层级', screen_position: '画面位置',
-  environmental_anchor: '环境锚点', spatial_anchor: '空间锚点', facing: '身体朝向', expression: '表情',
-  head_pose: '头部姿态', gaze: '视线落点', head_gaze: '头部与视线', posture: '身体姿态与重心',
-  hands: '手部动作', prop_interaction: '道具交互', appearance_details: '本镜造型细节', start_anchor: '动作起点',
-  trajectory: '运动轨迹', end_anchor: '动作终点', terminal_pose: '终态姿势', facial_expression: '面部表情',
-  attention_target: '注意对象', gaze_motivation: '视线动机', reaction_trigger: '反应触发事件', mouth_state: '口型状态',
-  shot_type: '景别', angle_h: '水平机位', angle_v: '俯仰机位', angle_s: '画面尺度', movement: '运镜方式',
-  movement_description: '运镜描述', mode: '音频模式', speaker_name: '说话人', speaker_in_frame: '说话人在画内',
-  delivery_medium: '声音传导方式', dialogue_content: '对白内容', visible_characters_lip_state: '画内人物口型',
-  lip_sync_rule: '口型规则', lighting_atmosphere: '光照氛围', physical_phenomena: '物理环境交互', terminal_event: '收束事件',
-  duration: '时长', pacing: '节奏', beats: '节拍规划', visible_characters: '画内主体角色',
-  background_characters: '背景人物', identity_visibility: '身份可见度', wardrobe_id: '造型 ID', speech_plan: '语言计划',
-  sound_plan: '声音计划', continuity_type: '连戏类型', h3_mode: 'H3 模式', h3_mode_reason: '模式选择依据',
-  first_frame_policy: '首帧策略', first_frame_reason: '首帧策略依据', last_frame_policy: '尾帧策略',
-  last_frame_reason: '尾帧策略依据', required_references: '必需参考素材', audio_lip_sync: '音频与口型契约',
-  shot_duration: '分镜时长', continuity_snapshot: '连戏快照', camera: '摄影机', trajectories: '角色轨迹',
-  environment_vfx: '环境与特效', timing: '时长与节奏', shots_timeline: '镜内剪辑时间线', h3_multimodal: 'H3 多模态编译数据',
+  performance_contract: '性能执行契约',
+  execution_backend: '执行引擎版本',
+  character_id: '角色 ID',
+  name: '名称',
+  depth_layer: '景深层级',
+  screen_position: '画面位置',
+  environmental_anchor: '环境锚点',
+  facing: '身体朝向',
+  facing_target_id: '朝向目标 ID',
+  head_pose: '头部姿态',
+  gaze_type: '视线类型',
+  gaze_target_id: '视线目标 ID',
+  gaze_target_label: '视线目标描述',
+  posture: '身体姿态与重心',
+  hands_state: '手部状态',
+  hands_object_id: '手持道具 ID',
+  hands_target_id: '手部接触角色 ID',
+  expression: '基础表情',
+  expression_detail: '微表情细节',
+  appearance_details: '本镜造型细节',
+  start_state: '起始状态',
+  action_atom: '结构化动作原子',
+  action: '动作类型/描述',
+  action_detail: '动作细节',
+  body_part: '发力部位',
+  object_id: '操持道具 ID',
+  target_type: '目标类型',
+  target_id: '目标对象 ID',
+  target_label: '目标描述',
+  direction: '动作方向',
+  contact: '物理接触部位',
+  result_state: '结束状态',
+  reaction_trigger: '反应触发事件',
+  type: '触发/类型',
+  source_id: '触发源 ID',
+  source_label: '触发源描述',
+  mouth_state: '口型状态',
+  shot_number: '分镜序号',
+  timestamp: '切镜时刻',
+  result: '事件收束结果',
+  character_visuals: '首帧角色视觉槽位',
+  last_frame_visuals: '尾帧角色视觉槽位',
+  character_trajectories: '角色运动轨迹列表',
+  speech_action_alignment: '音画动作对齐契约',
+  speech_window: '说话时间窗',
+  speaker_character_id: '说话人角色 ID',
+  speaker_action_window: '说话人动作窗',
+  speaker_action: '说话人伴随动作',
+  listener_reactions: '听者同步反应',
+  action_window: '动作时间窗',
+  trajectory_action: '轨迹映射动作',
+  pause_reason: '停顿原因',
+  start: '开始(秒)',
+  end: '结束(秒)',
+  shot_type: '景别',
+  angle_h: '水平机位',
+  angle_v: '俯仰机位',
+  angle_s: '画面尺度',
+  movement: '运镜方式',
+  movement_description: '运镜描述',
+  mode: '模式',
+  speaker_name: '说话人',
+  speaker_in_frame: '说话人在画内',
+  delivery_medium: '声音传导方式',
+  dialogue_content: '对白内容',
+  visible_characters_lip_state: '画内人物口型',
+  lip_sync_rule: '口型规则',
+  lighting_atmosphere: '光照氛围',
+  physical_phenomena: '物理环境交互',
+  terminal_event: '收束事件',
+  duration: '时长',
+  pacing: '节奏',
+  beats: '节拍规划',
+  visible_characters: '画内主体角色',
+  background_characters: '背景人物',
+  identity_visibility: '身份可见度',
+  wardrobe_id: '造型 ID',
+  speech_plan: '语言计划',
+  sound_plan: '声音计划',
+  continuity_type: '连戏类型',
+  h3_mode: 'H3 模式',
+  h3_mode_reason: '模式选择依据',
+  first_frame_policy: '首帧策略',
+  first_frame_reason: '首帧策略依据',
+  last_frame_policy: '尾帧策略',
+  last_frame_reason: '尾帧策略依据',
+  required_references: '必需参考素材',
+  audio_lip_sync: '音频与口型契约',
+  shot_duration: '分镜时长',
+  continuity_snapshot: '连戏快照',
+  camera: '摄影机',
+  trajectories: '角色轨迹',
+  environment_vfx: '环境与特效',
+  timing: '时长与节奏',
+  shots_timeline: '镜内剪辑时间线',
+  h3_multimodal: 'H3 多模态编译数据',
 }
 
 function fieldLabel(key) {
   return LABELS[key] || key
+}
+
+function isIdKey(key) {
+  return NULLABLE_INT_KEYS.has(key)
+}
+
+function isNullableIntKey(key) {
+  return NULLABLE_INT_KEYS.has(key)
+}
+
+function normalizeStringUpdate(key, value) {
+  if (key === 'timestamp' && String(value || '').trim() === '') return null
+  return value
 }
 
 function isContainer(value) {

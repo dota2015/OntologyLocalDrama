@@ -297,69 +297,97 @@
                         <span>「{{ c.name }}」</span>
                         <span style="font-size:11px; color:#64748b; font-weight:normal;">出场角色 #{{ cIdx + 1 }}</span>
                       </div>
-                      <div class="sb-slot-char-grid" style="grid-template-columns: repeat(4, 1fr); gap:8px; margin-top:4px;">
+                      <div class="sb-slot-structured-grid">
                         <div>
-                          <span class="sb-slot-mini-label">角色 ID</span>
-                          <el-input-number v-model="c.character_id" size="small" controls-position="right" style="width:100%" />
+                          <span class="sb-slot-mini-label">角色 ID (character_id)</span>
+                          <el-input-number v-model="c.character_id" size="small" :min="1" :value-on-clear="null" controls-position="right" style="width:100%" @change="syncVisualSlotsToPromptPreview" />
                         </div>
                         <div>
-                          <span class="sb-slot-mini-label">景深层级</span>
-                          <el-input v-model="c.depth_layer" size="small" placeholder="foreground / midground / background" @input="syncVisualSlotsToPromptPreview" />
+                          <span class="sb-slot-mini-label">景深层级 (depth_layer)</span>
+                          <el-select v-model="c.depth_layer" size="small" style="width:100%" placeholder="选择景深层级" @change="syncVisualSlotsToPromptPreview">
+                            <el-option v-for="opt in DEPTH_LAYER_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                          </el-select>
                         </div>
                         <div>
-                          <span class="sb-slot-mini-label">画面位置</span>
-                          <el-input v-model="c.screen_position" size="small" placeholder="如：画面左侧前景" @input="syncVisualSlotsToPromptPreview" />
+                          <span class="sb-slot-mini-label">画面位置 (screen_position)</span>
+                          <el-select v-model="c.screen_position" size="small" style="width:100%" placeholder="选择画面位置" @change="syncVisualSlotsToPromptPreview">
+                            <el-option v-for="opt in SCREEN_POSITION_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                          </el-select>
                         </div>
                         <div>
-                          <span class="sb-slot-mini-label">环境锚点</span>
+                          <span class="sb-slot-mini-label">环境锚点 (environmental_anchor)</span>
                           <el-input v-model="c.environmental_anchor" size="small" placeholder="如：破棚木柱旁" @input="syncVisualSlotsToPromptPreview" />
                         </div>
                       </div>
-                      <div class="sb-slot-char-grid" style="grid-template-columns: repeat(4, 1fr); gap:8px; margin-top:6px;">
+                      <div class="sb-slot-structured-grid" style="margin-top:6px;">
                         <div>
-                          <span class="sb-slot-mini-label">空间站位锚点</span>
-                          <el-input v-model="c.spatial_anchor" size="small" placeholder="画面左侧前景近景" @input="syncVisualSlotsToPromptPreview" />
+                          <span class="sb-slot-mini-label">身体朝向 (facing)</span>
+                          <el-select v-model="c.facing" size="small" style="width:100%" placeholder="选择身体朝向" @change="syncVisualSlotsToPromptPreview">
+                            <el-option v-for="opt in FACING_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                          </el-select>
                         </div>
                         <div>
-                          <span class="sb-slot-mini-label">身体朝向</span>
-                          <el-input v-model="c.facing" size="small" placeholder="3/4侧身面向搭档" @input="syncVisualSlotsToPromptPreview" />
+                          <span class="sb-slot-mini-label">朝向目标 ID (facing_target_id)</span>
+                          <el-input-number v-model="c.facing_target_id" size="small" :min="1" :value-on-clear="null" controls-position="right" placeholder="null" style="width:100%" @change="syncVisualSlotsToPromptPreview" />
                         </div>
                         <div>
-                          <span class="sb-slot-mini-label">表情</span>
-                          <el-input v-model="c.expression" size="small" placeholder="具体微表情" @input="syncVisualSlotsToPromptPreview" />
+                          <span class="sb-slot-mini-label">头部姿态 (head_pose)</span>
+                          <el-select v-model="c.head_pose" size="small" style="width:100%" placeholder="选择头部姿态" @change="syncVisualSlotsToPromptPreview">
+                            <el-option v-for="opt in HEAD_POSE_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                          </el-select>
                         </div>
                         <div>
-                          <span class="sb-slot-mini-label">头部姿态 head_pose</span>
-                          <el-input v-model="c.head_pose" size="small" placeholder="头部转向搭档面部" @input="syncVisualSlotsToPromptPreview" />
-                        </div>
-                      </div>
-                      <div class="sb-slot-char-grid" style="grid-template-columns: repeat(4, 1fr); gap:8px; margin-top:6px;">
-                        <div>
-                          <span class="sb-slot-mini-label">视线落点 gaze</span>
-                          <el-input v-model="c.gaze" size="small" placeholder="目光锁定搭档双眼" @input="syncVisualSlotsToPromptPreview" />
-                        </div>
-                        <div>
-                          <span class="sb-slot-mini-label">身体姿态与重心</span>
-                          <el-input v-model="c.posture" size="small" placeholder="挺拔立姿微侧，重心稳固" @input="syncVisualSlotsToPromptPreview" />
-                        </div>
-                        <div>
-                          <span class="sb-slot-mini-label">手部与肢体动作</span>
-                          <el-input v-model="c.hands" size="small" placeholder="双手微弯自然悬于身侧" @input="syncVisualSlotsToPromptPreview" />
-                        </div>
-                        <div>
-                          <span class="sb-slot-mini-label">头部与视线兼容字段</span>
-                          <el-input v-model="c.head_gaze" size="small" placeholder="兼容旧数据" @input="syncVisualSlotsToPromptPreview" />
+                          <span class="sb-slot-mini-label">身体姿态 (posture)</span>
+                          <el-select v-model="c.posture" size="small" style="width:100%" placeholder="选择身体姿态" @change="syncVisualSlotsToPromptPreview">
+                            <el-option v-for="opt in POSTURE_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                          </el-select>
                         </div>
                       </div>
-                      <div class="sb-slot-char-grid" style="grid-template-columns: 1fr 1fr; gap:8px; margin-top:6px;">
+                      <div class="sb-slot-structured-grid" style="margin-top:6px;">
                         <div>
-                          <span class="sb-slot-mini-label">道具交互</span>
-                          <el-input v-model="c.prop_interaction" size="small" placeholder="与具体道具的接触关系" @input="syncVisualSlotsToPromptPreview" />
+                          <span class="sb-slot-mini-label">视线类型 (gaze_type)</span>
+                          <el-select v-model="c.gaze_type" size="small" style="width:100%" placeholder="选择视线类型" @change="syncVisualSlotsToPromptPreview">
+                            <el-option v-for="opt in GAZE_TYPE_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                          </el-select>
                         </div>
                         <div>
-                          <span class="sb-slot-mini-label">本镜造型细节</span>
-                          <el-input v-model="c.appearance_details" size="small" placeholder="服装、发型、污损等本镜细节" @input="syncVisualSlotsToPromptPreview" />
+                          <span class="sb-slot-mini-label">视线目标 ID (gaze_target_id)</span>
+                          <el-input-number v-model="c.gaze_target_id" size="small" :min="1" :value-on-clear="null" controls-position="right" placeholder="null" style="width:100%" @change="syncVisualSlotsToPromptPreview" />
                         </div>
+                        <div>
+                          <span class="sb-slot-mini-label">视线目标描述 (gaze_target_label)</span>
+                          <el-input v-model="c.gaze_target_label" size="small" placeholder="如：桌上的医药箱" @input="syncVisualSlotsToPromptPreview" />
+                        </div>
+                        <div>
+                          <span class="sb-slot-mini-label">手部状态 (hands_state)</span>
+                          <el-select v-model="c.hands_state" size="small" style="width:100%" placeholder="选择手部状态" @change="syncVisualSlotsToPromptPreview">
+                            <el-option v-for="opt in HAND_STATE_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                          </el-select>
+                        </div>
+                      </div>
+                      <div class="sb-slot-structured-grid" style="margin-top:6px;">
+                        <div>
+                          <span class="sb-slot-mini-label">手持道具 ID (hands_object_id)</span>
+                          <el-input-number v-model="c.hands_object_id" size="small" :min="1" :value-on-clear="null" controls-position="right" placeholder="null" style="width:100%" @change="syncVisualSlotsToPromptPreview" />
+                        </div>
+                        <div>
+                          <span class="sb-slot-mini-label">手部接触角色 ID (hands_target_id)</span>
+                          <el-input-number v-model="c.hands_target_id" size="small" :min="1" :value-on-clear="null" controls-position="right" placeholder="null" style="width:100%" @change="syncVisualSlotsToPromptPreview" />
+                        </div>
+                        <div>
+                          <span class="sb-slot-mini-label">基础表情 (expression)</span>
+                          <el-select v-model="c.expression" size="small" style="width:100%" placeholder="选择表情" @change="syncVisualSlotsToPromptPreview">
+                            <el-option v-for="opt in EXPRESSION_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                          </el-select>
+                        </div>
+                        <div>
+                          <span class="sb-slot-mini-label">微表情细节 (expression_detail)</span>
+                          <el-input v-model="c.expression_detail" size="small" placeholder="具体面部神态细节" @input="syncVisualSlotsToPromptPreview" />
+                        </div>
+                      </div>
+                      <div style="margin-top:6px;">
+                        <span class="sb-slot-mini-label">本镜造型细节 (appearance_details)</span>
+                        <el-input v-model="c.appearance_details" size="small" placeholder="服装、发型、污损等本镜细节" @input="syncVisualSlotsToPromptPreview" />
                       </div>
                     </div>
                   </div>
@@ -687,7 +715,7 @@
                     </div>
                   </div>
 
-                  <!-- 镜头动作描述 -->
+                  <!-- 镜头动作与收束结果 -->
                   <div class="sb-slot-action-row">
                     <span class="sb-slot-field-label">镜头动作：</span>
                     <el-input
@@ -699,45 +727,196 @@
                       @input="syncSlotsToPromptPreview"
                     />
                   </div>
+                  <div class="sb-slot-action-row" style="margin-top:6px;">
+                    <span class="sb-slot-field-label">本段结果：</span>
+                    <el-input
+                      v-model="st.result"
+                      size="small"
+                      placeholder="本段事件的实际结果，与人物 result_state 一致"
+                      @input="syncSlotsToPromptPreview"
+                    />
+                  </div>
+                  <div v-if="st.visible_characters && st.visible_characters.length" style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-top:6px;">
+                    <span class="sb-slot-field-label">入画人物：</span>
+                    <el-tag v-for="(vc, vcIdx) in st.visible_characters" :key="vc.character_id || vcIdx" size="small" effect="plain">
+                      {{ vc.name || '角色' }} (ID: {{ vc.character_id }})
+                    </el-tag>
+                  </div>
 
-                  <!-- 角色动态轨迹与姿态 -->
+                  <!-- 角色动态轨迹与姿态 (structured_sync) -->
                   <div v-if="st.character_trajectories && st.character_trajectories.length" class="sb-slot-chars-container">
-                    <div class="sb-slot-section-subtitle">角色轨迹与口型状态：</div>
+                    <div class="sb-slot-section-subtitle">角色动作原子与多维轨迹（structured_sync）：</div>
                     <div
                       v-for="(c, cIdx) in st.character_trajectories"
-                      :key="c.name || cIdx"
+                      :key="c.character_id || c.name || cIdx"
                       class="sb-slot-char-card"
                     >
-                      <div class="sb-slot-char-name">「{{ c.name }}」</div>
-                      <div class="sb-slot-char-grid">
-                        <div class="sb-slot-char-item">
-                          <span class="sb-slot-mini-label">起点</span>
-                          <el-input v-model="c.start_anchor" size="small" placeholder="起始位置" @input="syncSlotsToPromptPreview" />
+                      <div class="sb-slot-char-name" style="display:flex; align-items:center; gap:8px;">
+                        <span>「{{ c.name }}」</span>
+                        <span v-if="c.character_id" style="font-size:11px; color:#64748b; font-weight:normal;">ID: {{ c.character_id }}</span>
+                      </div>
+                      <div class="sb-slot-structured-grid">
+                        <div>
+                          <span class="sb-slot-mini-label">起态 (start_state)</span>
+                          <el-select v-model="c.start_state" size="small" style="width:100%" placeholder="选择起始状态" @change="syncSlotsToPromptPreview">
+                            <el-option v-for="opt in STATE_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                          </el-select>
                         </div>
-                        <div class="sb-slot-char-item">
-                          <span class="sb-slot-mini-label">终点</span>
-                          <el-input v-model="c.end_anchor" size="small" placeholder="终点位置" @input="syncSlotsToPromptPreview" />
+                        <div>
+                          <span class="sb-slot-mini-label">终态 (result_state)</span>
+                          <el-select v-model="c.result_state" size="small" style="width:100%" placeholder="选择结束状态" @change="syncSlotsToPromptPreview">
+                            <el-option v-for="opt in STATE_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                          </el-select>
                         </div>
-                        <div class="sb-slot-char-item" style="flex:2;">
-                          <span class="sb-slot-mini-label">终态姿态</span>
-                          <el-input v-model="c.terminal_pose" size="small" placeholder="终态姿势" @input="syncSlotsToPromptPreview" />
+                        <div>
+                          <span class="sb-slot-mini-label">身体姿态 (posture)</span>
+                          <el-select v-model="c.posture" size="small" style="width:100%" placeholder="选择姿态" @change="syncSlotsToPromptPreview">
+                            <el-option v-for="opt in POSTURE_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                          </el-select>
                         </div>
-                        <div class="sb-slot-char-item" style="flex:1.5;">
-                          <span class="sb-slot-mini-label">口型状态</span>
-                          <el-input v-model="c.mouth_state" size="small" placeholder="如：开口说话并同步口型 / 双唇紧闭" @input="syncSlotsToPromptPreview" />
+                        <div>
+                          <span class="sb-slot-mini-label">口型状态 (mouth_state)</span>
+                          <el-select v-model="c.mouth_state" size="small" style="width:100%" placeholder="选择口型状态" @change="syncSlotsToPromptPreview">
+                            <el-option v-for="opt in MOUTH_STATE_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                          </el-select>
                         </div>
                       </div>
-                      <div class="sb-slot-char-grid" style="margin-top:6px;">
-                        <div class="sb-slot-char-item"><span class="sb-slot-mini-label">运动轨迹</span><el-input v-model="c.trajectory" size="small" @input="syncSlotsToPromptPreview" /></div>
-                        <div class="sb-slot-char-item"><span class="sb-slot-mini-label">面部表情</span><el-input v-model="c.facial_expression" size="small" @input="syncSlotsToPromptPreview" /></div>
-                        <div class="sb-slot-char-item"><span class="sb-slot-mini-label">身体朝向</span><el-input v-model="c.facing" size="small" @input="syncSlotsToPromptPreview" /></div>
-                        <div class="sb-slot-char-item"><span class="sb-slot-mini-label">头部姿态 head_pose</span><el-input v-model="c.head_pose" size="small" @input="syncSlotsToPromptPreview" /></div>
+
+                      <!-- 动作原子 (action_atom) -->
+                      <div v-if="c.action_atom" class="sb-slot-subbox">
+                        <div class="sb-slot-subbox-title">动作原子 (action_atom)</div>
+                        <div class="sb-slot-structured-grid">
+                          <div>
+                            <span class="sb-slot-mini-label">核心动作 (action)</span>
+                            <el-select v-model="c.action_atom.action" size="small" filterable allow-create default-first-option style="width:100%" placeholder="选择或输入动作" @change="syncSlotsToPromptPreview">
+                              <el-option v-for="opt in ACTION_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                            </el-select>
+                          </div>
+                          <div>
+                            <span class="sb-slot-mini-label">发力部位 (body_part)</span>
+                            <el-select v-model="c.action_atom.body_part" size="small" style="width:100%" placeholder="选择发力部位" @change="syncSlotsToPromptPreview">
+                              <el-option v-for="opt in BODY_PART_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                            </el-select>
+                          </div>
+                          <div>
+                            <span class="sb-slot-mini-label">动作方向 (direction)</span>
+                            <el-select v-model="c.action_atom.direction" size="small" style="width:100%" placeholder="选择方向" @change="syncSlotsToPromptPreview">
+                              <el-option v-for="opt in DIRECTION_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                            </el-select>
+                          </div>
+                          <div>
+                            <span class="sb-slot-mini-label">物理接触 (contact)</span>
+                            <el-select v-model="c.action_atom.contact" size="small" style="width:100%" placeholder="选择接触部位" @change="syncSlotsToPromptPreview">
+                              <el-option v-for="opt in CONTACT_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                            </el-select>
+                          </div>
+                        </div>
+                        <div class="sb-slot-structured-grid" style="margin-top:6px;">
+                          <div>
+                            <span class="sb-slot-mini-label">目标类型 (target_type)</span>
+                            <el-select v-model="c.action_atom.target_type" size="small" style="width:100%" placeholder="选择目标类型" @change="syncSlotsToPromptPreview">
+                              <el-option v-for="opt in TARGET_TYPE_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                            </el-select>
+                          </div>
+                          <div>
+                            <span class="sb-slot-mini-label">目标 ID (target_id)</span>
+                            <el-input-number v-model="c.action_atom.target_id" size="small" :min="1" :value-on-clear="null" controls-position="right" placeholder="null" style="width:100%" @change="syncSlotsToPromptPreview" />
+                          </div>
+                          <div>
+                            <span class="sb-slot-mini-label">道具 ID (object_id)</span>
+                            <el-input-number v-model="c.action_atom.object_id" size="small" :min="1" :value-on-clear="null" controls-position="right" placeholder="null" style="width:100%" @change="syncSlotsToPromptPreview" />
+                          </div>
+                          <div>
+                            <span class="sb-slot-mini-label">目标描述 (target_label)</span>
+                            <el-input v-model="c.action_atom.target_label" size="small" placeholder="目标对象或空间说明" @input="syncSlotsToPromptPreview" />
+                          </div>
+                        </div>
+                        <div style="margin-top:6px;">
+                          <span class="sb-slot-mini-label">动作细节 (action_detail)</span>
+                          <el-input v-model="c.action_atom.action_detail" type="textarea" :autosize="{ minRows: 1, maxRows: 3 }" size="small" placeholder="本段具体执行的物理动作细节" @input="syncSlotsToPromptPreview" />
+                        </div>
                       </div>
-                      <div class="sb-slot-char-grid" style="margin-top:6px;">
-                        <div class="sb-slot-char-item"><span class="sb-slot-mini-label">视线落点 gaze</span><el-input v-model="c.gaze" size="small" @input="syncSlotsToPromptPreview" /></div>
-                        <div class="sb-slot-char-item"><span class="sb-slot-mini-label">注意对象</span><el-input v-model="c.attention_target" size="small" @input="syncSlotsToPromptPreview" /></div>
-                        <div class="sb-slot-char-item"><span class="sb-slot-mini-label">视线动机</span><el-input v-model="c.gaze_motivation" size="small" @input="syncSlotsToPromptPreview" /></div>
-                        <div class="sb-slot-char-item"><span class="sb-slot-mini-label">反应触发事件</span><el-input v-model="c.reaction_trigger" size="small" @input="syncSlotsToPromptPreview" /></div>
+
+                      <!-- 反应触发与朝向 -->
+                      <div class="sb-slot-structured-grid" style="margin-top:6px;">
+                        <div>
+                          <span class="sb-slot-mini-label">触发类型 (reaction_trigger.type)</span>
+                          <el-select v-model="c.reaction_trigger.type" size="small" style="width:100%" @change="syncSlotsToPromptPreview">
+                            <el-option v-for="opt in TRIGGER_TYPE_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                          </el-select>
+                        </div>
+                        <div>
+                          <span class="sb-slot-mini-label">触发源 ID (source_id)</span>
+                          <el-input-number v-model="c.reaction_trigger.source_id" size="small" :min="1" :value-on-clear="null" controls-position="right" placeholder="null" style="width:100%" @change="syncSlotsToPromptPreview" />
+                        </div>
+                        <div>
+                          <span class="sb-slot-mini-label">触发源描述 (source_label)</span>
+                          <el-input v-model="c.reaction_trigger.source_label" size="small" placeholder="如：无 / 门外脚步声" @input="syncSlotsToPromptPreview" />
+                        </div>
+                        <div>
+                          <span class="sb-slot-mini-label">身体朝向 (facing)</span>
+                          <el-select v-model="c.facing" size="small" style="width:100%" @change="syncSlotsToPromptPreview">
+                            <el-option v-for="opt in FACING_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                          </el-select>
+                        </div>
+                      </div>
+
+                      <!-- 头部、视线与手部 -->
+                      <div class="sb-slot-structured-grid" style="margin-top:6px;">
+                        <div>
+                          <span class="sb-slot-mini-label">朝向目标 ID (facing_target_id)</span>
+                          <el-input-number v-model="c.facing_target_id" size="small" :min="1" :value-on-clear="null" controls-position="right" placeholder="null" style="width:100%" @change="syncSlotsToPromptPreview" />
+                        </div>
+                        <div>
+                          <span class="sb-slot-mini-label">头部姿态 (head_pose)</span>
+                          <el-select v-model="c.head_pose" size="small" style="width:100%" @change="syncSlotsToPromptPreview">
+                            <el-option v-for="opt in HEAD_POSE_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                          </el-select>
+                        </div>
+                        <div>
+                          <span class="sb-slot-mini-label">视线类型 (gaze_type)</span>
+                          <el-select v-model="c.gaze_type" size="small" style="width:100%" @change="syncSlotsToPromptPreview">
+                            <el-option v-for="opt in GAZE_TYPE_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                          </el-select>
+                        </div>
+                        <div>
+                          <span class="sb-slot-mini-label">视线目标 ID (gaze_target_id)</span>
+                          <el-input-number v-model="c.gaze_target_id" size="small" :min="1" :value-on-clear="null" controls-position="right" placeholder="null" style="width:100%" @change="syncSlotsToPromptPreview" />
+                        </div>
+                      </div>
+
+                      <div class="sb-slot-structured-grid" style="margin-top:6px;">
+                        <div>
+                          <span class="sb-slot-mini-label">视线目标描述 (gaze_target_label)</span>
+                          <el-input v-model="c.gaze_target_label" size="small" placeholder="如：无 / 对方眼睛" @input="syncSlotsToPromptPreview" />
+                        </div>
+                        <div>
+                          <span class="sb-slot-mini-label">手部状态 (hands_state)</span>
+                          <el-select v-model="c.hands_state" size="small" style="width:100%" @change="syncSlotsToPromptPreview">
+                            <el-option v-for="opt in HAND_STATE_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                          </el-select>
+                        </div>
+                        <div>
+                          <span class="sb-slot-mini-label">手持道具 ID (hands_object_id)</span>
+                          <el-input-number v-model="c.hands_object_id" size="small" :min="1" :value-on-clear="null" controls-position="right" placeholder="null" style="width:100%" @change="syncSlotsToPromptPreview" />
+                        </div>
+                        <div>
+                          <span class="sb-slot-mini-label">手部接触角色 ID (hands_target_id)</span>
+                          <el-input-number v-model="c.hands_target_id" size="small" :min="1" :value-on-clear="null" controls-position="right" placeholder="null" style="width:100%" @change="syncSlotsToPromptPreview" />
+                        </div>
+                      </div>
+
+                      <div class="sb-slot-structured-grid" style="grid-template-columns: 1fr 2fr; margin-top:6px;">
+                        <div>
+                          <span class="sb-slot-mini-label">基础表情 (expression)</span>
+                          <el-select v-model="c.expression" size="small" style="width:100%" @change="syncSlotsToPromptPreview">
+                            <el-option v-for="opt in EXPRESSION_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                          </el-select>
+                        </div>
+                        <div>
+                          <span class="sb-slot-mini-label">微表情细节 (expression_detail)</span>
+                          <el-input v-model="c.expression_detail" size="small" placeholder="微表情或背影可见度说明" @input="syncSlotsToPromptPreview" />
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -748,6 +927,63 @@
                     <div style="flex:1; display:flex; gap:8px; align-items:center;">
                       <el-input v-model="st.audio_lip_sync.speaker_name" size="small" style="width:100px;" placeholder="说话人" @input="syncSlotsToPromptPreview" />
                       <el-input v-model="st.audio_lip_sync.dialogue_content" size="small" style="flex:1;" placeholder="台词内容（若无台词可留空）" @input="syncSlotsToPromptPreview" />
+                    </div>
+                  </div>
+
+                  <!-- 音画动作对齐契约 (speech_action_alignment) -->
+                  <div v-if="st.speech_action_alignment" class="sb-slot-subbox" style="margin-top:8px;">
+                    <div class="sb-slot-subbox-title">音画动作对齐 (speech_action_alignment)</div>
+                    <div class="sb-slot-structured-grid">
+                      <div>
+                        <span class="sb-slot-mini-label">对齐模式 (mode)</span>
+                        <el-select v-model="st.speech_action_alignment.mode" size="small" style="width:100%" @change="syncSlotsToPromptPreview">
+                          <el-option v-for="opt in ALIGNMENT_MODE_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                        </el-select>
+                      </div>
+                      <div>
+                        <span class="sb-slot-mini-label">说话人 ID (speaker_character_id)</span>
+                        <el-input-number v-model="st.speech_action_alignment.speaker_character_id" size="small" :min="1" :value-on-clear="null" controls-position="right" placeholder="null" style="width:100%" @change="syncSlotsToPromptPreview" />
+                      </div>
+                      <div>
+                        <span class="sb-slot-mini-label">说话时间窗 (speech_window)</span>
+                        <div style="display:flex; align-items:center; gap:4px;">
+                          <el-input-number v-model="st.speech_action_alignment.speech_window.start" size="small" :min="0" :step="0.5" controls-position="right" style="width:50%" />
+                          <span>~</span>
+                          <el-input-number v-model="st.speech_action_alignment.speech_window.end" size="small" :min="0" :step="0.5" controls-position="right" style="width:50%" />
+                        </div>
+                      </div>
+                      <div>
+                        <span class="sb-slot-mini-label">说话人动作窗 (speaker_action_window)</span>
+                        <div style="display:flex; align-items:center; gap:4px;">
+                          <el-input-number v-model="st.speech_action_alignment.speaker_action_window.start" size="small" :min="0" :step="0.5" controls-position="right" style="width:50%" />
+                          <span>~</span>
+                          <el-input-number v-model="st.speech_action_alignment.speaker_action_window.end" size="small" :min="0" :step="0.5" controls-position="right" style="width:50%" />
+                        </div>
+                      </div>
+                    </div>
+                    <div class="sb-slot-structured-grid" style="grid-template-columns: 1fr 1fr; margin-top:6px;">
+                      <div>
+                        <span class="sb-slot-mini-label">说话人伴随动作 (speaker_action)</span>
+                        <el-input v-model="st.speech_action_alignment.speaker_action" size="small" placeholder="说话人同时配合的物理动作" @input="syncSlotsToPromptPreview" />
+                      </div>
+                      <div>
+                        <span class="sb-slot-mini-label">停顿原因 (pause_reason)</span>
+                        <el-input v-model="st.speech_action_alignment.pause_reason" size="small" placeholder="若 deliberate_pause 填写原因" @input="syncSlotsToPromptPreview" />
+                      </div>
+                    </div>
+                    <div v-if="st.speech_action_alignment.listener_reactions && st.speech_action_alignment.listener_reactions.length" style="margin-top:6px; display:flex; flex-direction:column; gap:4px;">
+                      <span class="sb-slot-mini-label">听者同步反应 (listener_reactions)</span>
+                      <div
+                        v-for="(lr, lrIdx) in st.speech_action_alignment.listener_reactions"
+                        :key="lr.character_id || lrIdx"
+                        style="display:grid; grid-template-columns: 100px 160px 1fr; gap:6px; align-items:center;"
+                      >
+                        <el-input-number v-model="lr.character_id" size="small" :min="1" :value-on-clear="null" controls-position="right" placeholder="角色ID" />
+                        <el-select v-model="lr.trajectory_action" size="small">
+                          <el-option v-for="opt in LISTENER_ACTION_OPTIONS" :key="opt.value" :value="opt.value" :label="opt.label" />
+                        </el-select>
+                        <el-input v-model="lr.action" size="small" placeholder="听者伴随反应描述" />
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1160,6 +1396,30 @@ import { GEN_RESOURCE } from '@/stores/generationTaskStore'
 import { useAgentContext } from '@/stores/agentContext'
 import { canUseUniversalOmniVideoApi, isH3VideoAiConfig } from '@/utils/videoOmniSupport'
 import { h3ShotInputPolicy } from '@/utils/h3ShotInputPolicy'
+import {
+  DEPTH_LAYER_OPTIONS,
+  SCREEN_POSITION_OPTIONS,
+  FACING_OPTIONS,
+  HEAD_POSE_OPTIONS,
+  GAZE_TYPE_OPTIONS,
+  POSTURE_OPTIONS,
+  HAND_STATE_OPTIONS,
+  EXPRESSION_OPTIONS,
+  MOUTH_STATE_OPTIONS,
+  STATE_OPTIONS,
+  ACTION_OPTIONS,
+  BODY_PART_OPTIONS,
+  TARGET_TYPE_OPTIONS,
+  DIRECTION_OPTIONS,
+  CONTACT_OPTIONS,
+  TRIGGER_TYPE_OPTIONS,
+  ALIGNMENT_MODE_OPTIONS,
+  LISTENER_ACTION_OPTIONS,
+  normalizeCharacterVisualList,
+  normalizeVideoSlots,
+  createEmptyTimelineSegment,
+  buildVisualSlotsPreviewText,
+} from '@/constants/structuredSync'
 
 const ctx = inject('filmCreateContext', {})
 
@@ -2832,11 +3092,7 @@ function parseSlotObject(value) {
 function ensureShotsTimeline(slots) {
   // 页面只展示 Agent 已落库的真实槽位。缺失字段保持缺失，禁止在编辑器中
   // 静默合成动作、时间线、口型或视线计划后冒充导演决策。
-  if (!slots || typeof slots !== 'object' || Array.isArray(slots)) return null
-  const normalized = JSON.parse(JSON.stringify(slots))
-  if (!Array.isArray(normalized.trajectories)) normalized.trajectories = []
-  if (!Array.isArray(normalized.shots_timeline)) normalized.shots_timeline = []
-  return normalized
+  return normalizeVideoSlots(slots)
 }
 
 function addTimelineShot() {
@@ -2851,29 +3107,13 @@ function addTimelineShot() {
   const mm = String(Math.floor(cutSec / 60)).padStart(2, '0')
   const ss = String(Math.floor(cutSec % 60)).padStart(2, '0')
   const timecode = `${mm}:${ss}.000`
+  const prevSeg = sbPromptVideoSlots.value.shots_timeline[len - 1]
+  const baseTrajectories = prevSeg?.character_trajectories || sbPromptVideoSlots.value.trajectories || []
+  const baseVisibleChars = prevSeg?.visible_characters || []
 
-  sbPromptVideoSlots.value.shots_timeline.push({
-    shot_number: nextNum,
-    timestamp: timecode,
-    duration: 3,
-    camera: {
-      shot_type: '特写',
-      movement: 'static',
-      movement_description: '',
-    },
-    action: '镜头切至特写/反打，主体完成关键反应',
-    result: '',
-    character_trajectories: (sbPromptVideoSlots.value.trajectories || []).map((t) => ({
-      ...t,
-      shot_number: nextNum,
-    })),
-    audio_lip_sync: {
-      mode: 'silent_ambient',
-      speaker_name: '',
-      dialogue_content: '',
-      lip_sync_rule: '画内全员紧闭双唇，无台词口型',
-    },
-  })
+  sbPromptVideoSlots.value.shots_timeline.push(
+    createEmptyTimelineSegment(nextNum, timecode, baseTrajectories, baseVisibleChars)
+  )
   syncSlotsToPromptPreview()
 }
 
@@ -2896,18 +3136,19 @@ function syncSlotsToPromptPreview() {
   if (!slots) return
   if (Array.isArray(slots.shots_timeline) && slots.shots_timeline.length > 0) {
     const h3Shots = slots.shots_timeline.map((st) => {
-      let desc = ''
       const cam = st.camera?.shot_type || 'medium shot'
       const move = st.camera?.movement || 'tracking'
-      if (!st.timestamp) {
-        desc = `Live-action, cinematic. A ${cam} establishes the scene. The camera begins with ${move} as ${st.action || 'the action initiates'}.`
-      } else {
-        desc = `At ${st.timestamp}, the camera cuts to a ${cam}, where ${st.action || 'the movement resolves'}.`
-        if (st.audio_lip_sync?.dialogue_content) {
-          const spk = st.audio_lip_sync.speaker_name ? `${st.audio_lip_sync.speaker_name}: ` : ''
-          const cleanDiag = String(st.audio_lip_sync.dialogue_content).replace(/^["“](.*)["”]$/, '$1')
-          desc += ` Dialogue follows: ${spk}“${cleanDiag}”`
-        }
+      const actionLine = st.action || (st.timestamp ? 'the movement resolves' : 'the action initiates')
+      let desc = st.timestamp
+        ? `At ${st.timestamp}, the camera cuts to a ${cam}, where ${actionLine}.`
+        : `Live-action, cinematic. A ${cam} establishes the scene. The camera begins with ${move} as ${actionLine}.`
+      if (st.result) {
+        desc += ` Result: ${st.result}.`
+      }
+      if (st.audio_lip_sync?.dialogue_content) {
+        const spk = st.audio_lip_sync.speaker_name ? `${st.audio_lip_sync.speaker_name}: ` : ''
+        const cleanDiag = String(st.audio_lip_sync.dialogue_content).replace(/^["“](.*)["”]$/, '$1')
+        desc += ` Dialogue: ${spk}“${cleanDiag}”`
       }
       return {
         shot_number: st.shot_number,
@@ -2995,55 +3236,26 @@ function ensureVisualSlots(sb = {}) {
   if (typeof cv === 'string') {
     try { cv = JSON.parse(cv) } catch (_) { cv = null }
   }
-  if (!Array.isArray(cv) || cv.length === 0) {
-    cv = []
-  } else {
-    cv = JSON.parse(JSON.stringify(cv)).map((c, idx) => ({
-      ...c,
-      character_id: c.character_id,
-      name: c.name || `角色${idx + 1}`,
-      depth_layer: c.depth_layer || '',
-      screen_position: c.screen_position || '',
-      environmental_anchor: c.environmental_anchor || '',
-      spatial_anchor: c.spatial_anchor || '',
-      facing: c.facing || '',
-      expression: c.expression || '',
-      head_pose: c.head_pose || '',
-      gaze: c.gaze || '',
-      posture: c.posture || '',
-      hands: c.hands || '',
-      head_gaze: c.head_gaze || '',
-      prop_interaction: c.prop_interaction || '',
-      appearance_details: c.appearance_details || '',
-    }))
-  }
+  cv = normalizeCharacterVisualList(cv)
 
   let lastFrameVisuals = sb.last_frame_visuals
   if (typeof lastFrameVisuals === 'string') {
     try { lastFrameVisuals = JSON.parse(lastFrameVisuals) } catch (_) { lastFrameVisuals = [] }
   }
-  if (!Array.isArray(lastFrameVisuals)) lastFrameVisuals = []
-
-  const shotType = sb.shot_type || ''
-  const angleH = sb.angle_h || ''
-  const angleV = sb.angle_v || ''
-  const dof = sb.depth_of_field || ''
-  const lens = sb.cinematic_lens || ''
-
-  let envDepth = sb.environment_depth
+  lastFrameVisuals = normalizeCharacterVisualList(lastFrameVisuals)
 
   return {
     location: sb.location || '',
     time: sb.time || '',
-    environment_depth: envDepth,
-    shot_type: shotType,
-    angle_h: angleH,
-    angle_v: angleV,
+    environment_depth: sb.environment_depth,
+    shot_type: sb.shot_type || '',
+    angle_h: sb.angle_h || '',
+    angle_v: sb.angle_v || '',
     angle_s: sb.angle_s || '',
-    depth_of_field: dof,
-    cinematic_lens: lens,
+    depth_of_field: sb.depth_of_field || '',
+    cinematic_lens: sb.cinematic_lens || '',
     character_visuals: cv,
-    last_frame_visuals: JSON.parse(JSON.stringify(lastFrameVisuals)),
+    last_frame_visuals: lastFrameVisuals,
     lighting_style: sb.lighting_style || '',
     lighting_chiaroscuro: sb.lighting_chiaroscuro || '',
     dialogue_framing: sb.dialogue_framing || '',
@@ -3056,93 +3268,7 @@ function ensureVisualSlots(sb = {}) {
 function syncVisualSlotsToPromptPreview() {
   const vs = sbPromptVisualSlots.value
   if (!vs) return
-
-  const parts = []
-
-  // 1. 场景空间与纵深
-  const locParts = [vs.location, vs.time].filter(Boolean)
-  const locStr = locParts.length ? `${locParts.join('，')}。` : ''
-  const envStr = vs.environment_depth ? `${vs.environment_depth}。` : ''
-  parts.push(`【场景空间与纵深】${locStr}${envStr}`)
-
-  // 2. 机位景别
-  const shotMap = {
-    '特写': '特写镜头 (Close-up)',
-    '大特写': '微距大特写 (Extreme Close-up)',
-    '近景': '近景镜头 (Medium Close-up)',
-    '中景': '中景镜头 (Medium Shot)',
-    '中全景': '中全景镜头 (Medium Long Shot)',
-    '全景': '全景镜头 (Long Shot / Full Shot)',
-    '远景': '大远景镜头 (Extreme Long Shot)',
-  }
-  const hMap = {
-    front: '正面平视',
-    '3_4_left': '四分之三侧身朝左',
-    '3_4_right': '四分之三侧身朝右',
-    side_left: '正侧面朝左',
-    side_right: '正侧面朝右',
-    back: '背面视角',
-    overhead: '俯视顶拍',
-  }
-  const vMap = {
-    eye_level: '平视拍摄',
-    low_angle: '微仰角仰拍',
-    high_angle: '微俯角俯拍',
-    dutch_angle: '倾斜荷兰角',
-  }
-  const dofMap = {
-    shallow: '浅景深主体突出，背景奶油般柔和虚化',
-    medium: '中等景深，主体与环境自然过渡',
-    deep: '大景深，前后景均清晰可见',
-    extreme_shallow: '超浅景深，焦点极其微薄细腻',
-  }
-
-  const shotName = shotMap[vs.shot_type] || vs.shot_type || '中景'
-  const hName = hMap[vs.angle_h] || vs.angle_h || ''
-  const vName = vMap[vs.angle_v] || vs.angle_v || ''
-  const dofName = dofMap[vs.depth_of_field] || ''
-  const lensName = vs.cinematic_lens || ''
-
-  const camDesc = [shotName, hName, vName, dofName, lensName].filter(Boolean).join('，')
-  parts.push(`【机位景别】${camDesc}`)
-
-  // 3. 角色构图与姿态
-  const chars = vs.character_visuals || []
-  if (chars.length > 0) {
-    const charPhrases = chars.map((c) => {
-      const charName = `角色「${c.name}」`
-      const items = []
-      if (c.depth_layer) items.push(`景深层级${c.depth_layer}`)
-      if (c.screen_position) items.push(c.screen_position)
-      if (c.environmental_anchor) items.push(c.environmental_anchor)
-      else if (c.spatial_anchor) items.push(c.spatial_anchor)
-      if (c.facing) items.push(c.facing)
-      if (c.expression) items.push(c.expression)
-      if (c.head_pose) items.push(c.head_pose)
-      if (c.gaze) items.push(c.gaze)
-      if (c.posture) items.push(c.posture)
-      if (c.hands) items.push(c.hands)
-      if (c.prop_interaction) items.push(c.prop_interaction)
-      if (c.appearance_details) items.push(c.appearance_details)
-      return `${charName}：${items.join('，')}`
-    })
-    const countRule = `画面中仅有且必须仅有 ${chars.length} 个人物（${chars.map((c) => c.name).join('、')}）。`
-    parts.push(`【角色构图与姿态】${countRule}${charPhrases.join('；')}`)
-  }
-
-  // 4. 光影影调
-  if (vs.lighting_chiaroscuro) {
-    parts.push(`【光影影调】${vs.lighting_chiaroscuro}`)
-  }
-
-  if (vs.start_framing) parts.push(`【起幅构图】${vs.start_framing}`)
-  if (vs.end_framing) parts.push(`【落幅构图】${vs.end_framing}`)
-  if (vs.transition_to_next) parts.push(`【下镜转场】${vs.transition_to_next}`)
-
-  // 5. 摄影风格
-  parts.push('【摄影风格】photorealistic, ultra-detailed, 8k uhd, sharp focus, natural cinematic lighting, RAW photo, real skin texture，首帧静止画面')
-
-  sbPromptImageText.value = parts.join('\n')
+  sbPromptImageText.value = buildVisualSlotsPreviewText(vs)
 }
 
 async function onRebuildSbImagePrompt() {
@@ -4923,6 +5049,32 @@ html.light .sb-slot-shot-card {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+.sb-slot-structured-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  align-items: end;
+}
+.sb-slot-subbox {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+.sb-slot-subbox-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #475569;
+  margin-bottom: 6px;
+}
+:global(html.dark .sb-slot-subbox) {
+  background: #1e293b;
+  border-color: #334155;
+}
+:global(html.dark .sb-slot-subbox-title) {
+  color: #cbd5e1;
 }
 .sb-slot-char-item {
   display: flex;
