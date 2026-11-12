@@ -5,11 +5,53 @@ const os = require('os');
 const path = require('path');
 const Database = require('better-sqlite3');
 const native = require('../src/services/h3NativeService');
+const stage3 = require('../src/services/h3Stage3PromptService');
+const agentsRuntime = require('../src/services/agentsRuntime');
 const voices = require('../src/services/h3VoiceReferenceService');
 const configs = require('../src/services/aiConfigService');
 const client = require('../src/services/videoClient');
 const log = { info() {}, warn() {}, error() {} };
-const translation = { visual_description: 'A boy with short black hair sits at a wooden desk. He turns toward the door as the camera moves slowly closer.', overall_soundscape: 'Quiet room tone and soft clothing rustle.', non_diegetic_music: 'N/A' };
+
+function buildOfficialMockPromptFromSpec(spec) {
+  const speechText = (spec.spoken_lines || []).map((line) => {
+    const lang = line.language || 'Chinese';
+    return `The speaker (S1) says, <d>[${lang}] ${line.text}</d>`;
+  }).join(' ');
+  const outfitHint = (spec.authoritative_contract?.wardrobe || []).map((w) => w.description || '').filter(Boolean).join('; ');
+  if (spec.mode === 'fl2va') {
+    const align = spec.firstFramePresent
+      ? `How the reference pictures align with the target video — <Picture 1> aligns with the 0.00-second mark${spec.lastFramePresent ? ` and <Picture 2> aligns with the ${Number(spec.duration_seconds || 5).toFixed(2)}-second mark` : ''}.\n\n`
+      : '';
+    return `${align}integrated_multimodal_description: [Shot 1] Starting from <Picture 1>, the character acts continuously in natural lighting${outfitHint ? ' with updated silver tactical uniform' : ''}. ${speechText}\n\noverall_soundscape:\nQuiet room ambience.\n\nnon_diegetic_music:\nN/A`;
+  }
+  const picDefs = (spec.picture_bindings || []).map((p, idx) => `<Subject ${idx + 1}> is the referenced ${p.type || 'context'} in ${p.tag}.`);
+  const audioDefs = (spec.audio_bindings || []).map((a) => `${a.tag} is the voice-timbre reference for ${a.kind === 'narration' ? 'the off-screen narrator' : '<Subject 1>'} (S1).`);
+  const picRets = (spec.picture_bindings || []).map((_, idx) => `<Subject ${idx + 1}> (appears in [Shot 1]): fully_preserved - retained.`);
+  const audioRets = (spec.audio_bindings || []).map((a) => `${a.tag}: reference - vocal timbre only.`);
+  return [
+    'subject_definitions:',
+    ...picDefs,
+    ...audioDefs,
+    '',
+    'summary:',
+    `[reference generation${audioDefs.length ? ' + audio reference' : ''}] Continuous shot featuring <Subject 1>.`,
+    '',
+    'retention_analysis:',
+    ...picRets,
+    ...audioRets,
+    '',
+    'detailed_description:',
+    'Natural cinematic lighting.',
+    `[Shot 1] Wide framing establishing <Subject 1> inside the room. ${speechText}`,
+    '',
+    'overall_soundscape:',
+    'Quiet indoor ambience.',
+    '',
+    'non_diegetic_music:',
+    'N/A',
+  ].join('\n');
+}
+
 function setup(t) {
   const db = new Database(':memory:');
   db.exec(`CREATE TABLE dramas(id INTEGER PRIMARY KEY,title TEXT,metadata TEXT,created_at TEXT,updated_at TEXT,deleted_at TEXT);
@@ -33,69 +75,57 @@ function setup(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'h3-native-'));
   for (const file of ['card.png', 'profile.png', 'room.png', 'field.png', 'first.png', 'last.png']) fs.writeFileSync(path.join(root, file), 'image bytes ' + file);
   t.mock.method(voices, 'forShot', async () => ({ references: [], lines: [] }));
-  t.after(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });
-  return { db, root, opts: { drama_id: 1, storyboard_id: 2, storage_local_path: root, prompt: '@图片1 房间中的男孩转身', aspect_ratio: '16:9', duration: 5 } };
-}
-test('official R2V compiler binds multiple pictures to one identity and preserves only exact speech in dialogue tags', () => {
-  const refs = [{ source: 'card', kind: 'character_sheet', character_id: 5 }, { source: 'side', kind: 'character', character_id: 5 }, { source: 'frame', kind: 'first_frame' }];
-  const speech = { references: [{ key: 'character:5', kind: 'dialogue' }, { key: 'narrator', kind: 'narration' }], lines: [
-    { key: 'character:5', kind: 'dialogue', text: '先想清楚，再开始行动。' }, { key: 'narrator', kind: 'narration', text: '他终于下定决心。' },
-  ] };
-  const prompt = native.compilePrompt(refs, speech, translation, { first: 'frame' });
-  assert.match(prompt, /<Subject 1> is the same person across <Picture 1>, <Picture 2>/);
-  assert.match(prompt, /<Audio 1> is the voice-timbre reference for <Subject 1> \(S1\)/);
-  assert.match(prompt, /<Audio 2> is the voice-timbre reference for the off-screen narrator \(S2\)/);
-  assert.match(prompt, /<Audio 1>: reference/);
-  assert.match(prompt, /<Picture 3> is the opening frame/);
-  assert.deepEqual([...prompt.matchAll(/<d>\[Chinese\] (.*?)<\/d>/g)].map(m => m[1]), speech.lines.map(l => l.text));
-  assert.doesNotMatch(prompt.replace(/<d>.*?<\/d>/g, ''), /\p{Script=Han}/u);
-  assert.deepEqual([...prompt.matchAll(/^(\w+):$/gm)].map(m => m[1]), ['subject_definitions', 'summary', 'retention_analysis', 'detailed_description', 'overall_soundscape', 'non_diegetic_music']);
-  assert.match(native.compilePrompt(refs, speech, { ...translation, visual_description: 'A handwritten heading reads "解" on the page.' }), /reads "解"/);
-  assert.throws(() => native.compilePrompt(refs, speech, null), /有效/);
-  assert.throws(() => native.compilePrompt(refs, speech, { ...translation, visual_description: 'No speech. 避免变形' }), /失败/);
-
-  // Negative words auto-sanitized without throwing
-  const cleanPrompt = native.compilePrompt(refs, speech, {
-    ...translation,
-    visual_description: 'A boy crouches quietly. No text interface or countdown appears.',
-    overall_soundscape: 'Ambient room tone, without dialogue.',
-    non_diegetic_music: 'No background music is played.'
+  const runAgentMock = t.mock.method(agentsRuntime, 'runAgent', async (_db, _log, options) => {
+    const jsonStart = String(options.input || '').indexOf('{');
+    const spec = JSON.parse(options.input.slice(jsonStart));
+    return buildOfficialMockPromptFromSpec(spec);
   });
-  assert.doesNotMatch(cleanPrompt, /\b(no|not|without|avoid|never)\b/i);
-  assert.match(cleanPrompt, /A boy crouches quietly/);
-  assert.match(cleanPrompt, /Ambient room tone/);
-  assert.match(cleanPrompt, /non_diegetic_music:\s*N\/A/);
-});
-
-test('soundtrack inputs are never copied; spoken text remains a native H3 cue', () => {
-  const refs = [{ source: 'card', kind: 'character', character_id: 5 }];
-  const speech = {
-    references: [{ key: 'soundtrack', kind: 'soundtrack', url: 'data:audio/wav;base64,AAAA' }],
-    lines: [{ key: 'character:5', kind: 'dialogue', speaker: '王奕宸', text: '一句也不能少。' }],
-    soundtrack: { events: [{ start_seconds: 0, end_seconds: 1.8 }] },
+  t.after(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });
+  return { db, root, runAgentMock, opts: { drama_id: 1, storyboard_id: 2, storage_local_path: root, prompt: '@图片1 房间中的男孩转身', aspect_ratio: '16:9', duration: 5 } };
+}
+test('Stage 3 official validator enforces 6-section Ref2VA format, <Picture>/<Audio> bounds, verbatim <d> speech, and English prose', () => {
+  const shot = {
+    id: 2,
+    storyboard_number: 1,
+    duration: 5,
+    semantic_slots: { h3_mode: 'ref2va', required_references: [{ type: 'character', id: 5, character_id: 5, name: '王奕宸' }] },
   };
-  const prompt = native.compilePrompt(refs, speech, translation, {}, { duration: 5, delivery: { end_reserve_seconds: 1.5 } });
-  assert.doesNotMatch(prompt, /fully_copy|complete final audio track/);
-  assert.doesNotMatch(prompt, /audio reuse|fully_copy/);
-  assert.match(prompt, /<d>\[Chinese\] 一句也不能少。<\/d>/);
-  assert.match(prompt, /reference generation/);
+  const spec = stage3.buildStage3PromptSpec(null, shot, {
+    refs: [{ source: 'card.png', kind: 'character_sheet', character_id: 5 }, { source: 'side.png', kind: 'character', character_id: 5 }],
+    speech: {
+      references: [{ key: 'character:5', kind: 'dialogue' }, { key: 'narrator', kind: 'narration' }],
+      lines: [
+        { key: 'character:5', kind: 'dialogue', text: '先想清楚，再开始行动。' },
+        { key: 'narrator', kind: 'narration', text: '他终于下定决心。' },
+      ],
+    },
+  });
+  const validPrompt = buildOfficialMockPromptFromSpec(spec);
+  const res = stage3.validateOfficialH3Prompt(validPrompt, spec);
+  assert.deepEqual(res.errors, []);
+  assert.deepEqual([...validPrompt.matchAll(/^(\w+):$/gm)].map(m => m[1]), ['subject_definitions', 'summary', 'retention_analysis', 'detailed_description', 'overall_soundscape', 'non_diegetic_music']);
+
+  // Allows quoted visible scene lettering inside English prose
+  const withVisibleText = validPrompt.replace('Natural cinematic lighting.', 'A handwritten heading reads "解" on the desk.');
+  assert.deepEqual(stage3.validateOfficialH3Prompt(withVisibleText, spec).errors, []);
+
+  // Rejects unquoted Chinese prose, dangling tags, and missing dialogue
+  assert.equal(stage3.validateOfficialH3Prompt('', spec).valid, false);
+  assert.equal(stage3.validateOfficialH3Prompt(validPrompt.replace('Natural cinematic lighting.', '室内柔和光线。'), spec).valid, false);
+  assert.equal(stage3.validateOfficialH3Prompt(validPrompt.replace('<Picture 2>', '<Picture 9>'), spec).valid, false);
+  assert.equal(stage3.validateOfficialH3Prompt(validPrompt.replace('先想清楚，再开始行动。', '篡改台词'), spec).valid, false);
 });
 
-test('H3 sanitizers clean Chinese exclusion noise and English negative words', () => {
-  const strippedZh = native.stripChineseExclusions('仓储深处一只低调封闭的情报箱静置，不出现任何文字界面或倒计时。镜头标题：岔路失措。');
-  assert.equal(strippedZh, '仓储深处一只低调封闭的情报箱静置。镜头标题：岔路失措。');
-
-  const strippedZh2 = native.stripChineseExclusions('仓库内部货箱区，无UI界面或倒计时，黄昏光线');
-  assert.equal(strippedZh2, '仓库内部货箱区，黄昏光线');
-
-  const cleanedEnVisual = native.sanitizeH3NegativeProse('Man crouches behind crates. No text interface or countdown appears.', '画面');
-  assert.equal(cleanedEnVisual, 'Man crouches behind crates.');
-
-  const cleanedEnVisual2 = native.sanitizeH3NegativeProse('A low-profile sealed intel case rests deep in the storage area, without any text interface or countdown.', '画面');
-  assert.equal(cleanedEnVisual2, 'A low-profile sealed intel case rests deep in the storage area.');
-
-  const cleanedEnMusic = native.sanitizeH3NegativeProse('No background music is played.', '配乐');
-  assert.equal(cleanedEnMusic, 'N/A');
+test('Stage 3 audio bindings ignore soundtrack items and preserve timbre-reference role only', () => {
+  const spec = stage3.buildStage3PromptSpec(null, { id: 1, storyboard_number: 1, semantic_slots: { h3_mode: 'ref2va' } }, {
+    refs: [{ source: 'card.png', kind: 'character', character_id: 5 }],
+    speech: {
+      references: [{ key: 'soundtrack', kind: 'soundtrack', url: 'data:audio/wav;base64,AAAA' }],
+      lines: [{ key: 'character:5', kind: 'dialogue', speaker: '王奕宸', text: '一句也不能少。' }],
+    },
+  });
+  assert.equal(spec.audio_bindings.length, 0);
+  assert.equal(spec.spoken_lines[0].text, '一句也不能少。');
 });
 test('H3 ignores saved per-shot pace and records the natural-speed budget', async t => {
   const { db, root, opts } = setup(t);
@@ -114,8 +144,7 @@ test('H3 ignores saved per-shot pace and records the natural-speed budget', asyn
     lines: [{ key: 'character:5', kind: 'dialogue', speaker: '王奕宸', text: '开始行动。' }],
   }));
   const result = await native.prepare(db, log, opts);
-  assert.match(result.prompt, /configured TTS speed/);
-  assert.doesNotMatch(result.prompt, /approximately 1.4 times/);
+  assert.match(result.prompt, /<d>\[Chinese\] 开始行动。<\/d>/);
   assert.equal(native.getSettings(db, 1, 2).steps, 23);
   const directory = path.join(root, 'projects/0001_20261022_test/h3-prompts');
   const record = JSON.parse(fs.readFileSync(path.join(directory, fs.readdirSync(directory)[0])));
@@ -141,8 +170,8 @@ test('selected stage reference reaches H3 and a new outfit starts from its own f
     speech_plan:{audio_references:[]},
   }));
   const result = await native.prepare(db, log, { ...opts, h3_engine_mode: 'ref2va', first_frame_url: 'first.png', last_frame_url: 'last.png' });
-  assert.match(result.prompt, /supplies the selected outfit/);
-  assert.match(result.prompt, /One outfit per character/);
+  assert.match(result.prompt, /subject_definitions:/);
+  assert.match(result.prompt, /<Picture 1>/);
   assert.ok(result.reference_urls.some(url => url.includes(Buffer.from('stage image').toString('base64'))));
   assert.equal(native.getSettings(db, 1, 2).continuity_reset, true);
   native.saveSettings(db, 1, 2, { engine_mode: 'fl2va', continuity: 'previous_tail' });
@@ -205,11 +234,18 @@ test('FL2VA rejects missing first frames and Ref2VA rejects oversized reference 
     /最多支持 9 张参考图/
   );
 });
-test('direct Chinese compilation needs no text-model round trip and all canvas presets respect the native pixel limit', async t => {
-  const { db, opts } = setup(t);
-  const prepared = await native.prepare(db, log, { ...opts, h3_engine_mode: 'fl2va', first_frame_url:'first.png' });
+test('Stage 3 fails loudly without LLM fallback and all canvas presets respect the native pixel limit', async t => {
+  const { db, opts, runAgentMock } = setup(t);
+  const prepared = await native.prepare(db, log, { ...opts, h3_engine_mode: 'fl2va', first_frame_url: 'first.png' });
   assert.equal(prepared.h3_mode, 'fl2va');
-  assert.match(prepared.prompt, /房间中的男孩|少年开口|按已规划的分镜构图/);
+  assert.match(prepared.prompt, /integrated_multimodal_description:/);
+  assert.match(prepared.prompt, /<Picture 1>/);
+
+  runAgentMock.mock.mockImplementationOnce(async () => { throw new Error('Stage 3 text model unavailable'); });
+  await assert.rejects(
+    () => native.prepare(db, log, { ...opts, h3_engine_mode: 'fl2va', first_frame_url: 'first.png' }),
+    /Stage 3 text model unavailable/
+  );
   for (const ratio of ['16:9','9:16','1:1','4:3','3:4','21:9']) {
     const [w,h] = native.nativeCanvas(ratio);
     assert.ok(w % 32 === 0 && h % 32 === 0 && w*h <= 1344*768);
@@ -356,7 +392,7 @@ test('an explicit wardrobe transition skips previous-tail selection and rejects 
   db.prepare("INSERT INTO video_generations VALUES(1,1,1,'completed','prior-outfit.mp4',NULL)").run();
   const prepared=await native.prepare(db,log,{...opts,h3_engine_mode:'fl2va',first_frame_url:'first.png'});
   assert.ok(prepared.first_frame_url);
-  assert.match(prepared.prompt,/银色训练服，黑色靴子/);
+  assert.match(prepared.prompt,/updated silver tactical uniform/);
   native.saveSettings(db,1,2,{engine_mode:'fl2va',continuity:'previous_tail'});
   await assert.rejects(native.prepare(db,log,opts),/换装或时间线变化/);
 });

@@ -342,6 +342,7 @@ function setupRouter(cfg, db, log) {
   r.post('/storyboards/:id/upscale', storyboards.upscale);
   r.post('/storyboards/:id/regenerate-layout-description', storyboards.regenerateLayoutDescription);
   r.post('/storyboards/:id/rebuild-image-prompt', storyboards.rebuildImagePrompt);
+  r.post('/storyboards/:id/compile-h3-prompt', storyboards.compileH3Prompt);
   r.post('/storyboards/:id/split-by-audio', storyboards.splitByAudio);
   r.post('/storyboards/:id/ai-split', storyboards.aiSplit);
   r.post('/storyboards/:id/clear-media', storyboards.clearStoryboardMedia);

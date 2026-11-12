@@ -90,13 +90,22 @@ test('script expansion and current-episode rewrite receive selected narrative ru
  for(const call of calls){assert.match(call.system,/UNIVERSAL DIRECTING PRINCIPLES/);assert.match(call.system,/通用剧本组织/);assert.match(call.system,/连续动作链/);assert.match(call.system,/多个配角轮流总结/);assert.match(call.system,/人物与游戏身份映射/);assert.match(call.system,/实际 TTS 配置计算/);assert.doesNotMatch(call.system,/speech_rate.*1.5x/);assert.match(call.system,/服装连续性/);assert.match(call.system,/TTS-aware speech budget/);assert.match(call.system,/不要求每句简短/);assert.doesNotMatch(call.system,/台词要短|台词用短句|Keep spoken lines short/);}
  assert.deepEqual(db.prepare('SELECT * FROM episodes ORDER BY id').all(),before);
 });
-test('H3 preserves literal dialogue and prioritizes opening-frame wardrobe at natural speech speed',()=>{
- const lines=[{key:'character:5',kind:'dialogue',text:'先做一道题。'}];
- const prompt=native.compilePrompt([{source:'card',character_id:5,kind:'character_sheet'},{source:'start',kind:'first_frame'},{source:'end',kind:'last_frame'}],
- {narrative_style:{preset:'dialogue_fast',speech_rate:1.5},references:[{key:'character:5',kind:'dialogue'}],lines},
- {visual_description:'A boy talks at his desk.',overall_soundscape:'Soft room tone.',non_diegetic_music:'N/A'},{first:'start',last:'end'});
- assert.match(prompt,/configured TTS speed/);assert.doesNotMatch(prompt,/approximately 1.5 times/);assert.match(prompt,/opening frame defines the current outfit/);
- assert.match(prompt,/<d>\[Chinese\] 先做一道题。<\/d>/);assert.doesNotMatch(prompt,/measured delivery/);
+test('Stage 3 H3 spec preserves literal dialogue and base frame alignment cleanly',()=>{
+ const { buildStage3PromptSpec, validateOfficialH3Prompt } = require('../src/services/h3Stage3PromptService');
+ const shot = {
+   id: 80, storyboard_number: 1, duration: 5,
+   semantic_slots: { h3_mode: 'fl2va', first_frame_policy: 'generate_new', last_frame_policy: 'generate_tail', required_references: [] },
+ };
+ const spec = buildStage3PromptSpec(null, shot, {
+   executionPlan: { mode: 'fl2va', last_frame_policy: 'generate_tail' },
+   anchors: { first: 'start', last: 'end' },
+   firstFramePresent: true, lastFramePresent: true,
+   speech: { narrative_style: { preset: 'dialogue_fast', speech_rate: 1.5 }, references: [{ key: 'character:5', kind: 'dialogue' }], lines: [{ key: 'character:5', kind: 'dialogue', text: '先做一道题。' }] },
+ });
+ assert.deepEqual(spec.picture_bindings.map(p => p.role), ['first_frame', 'last_frame']);
+ assert.equal(spec.spoken_lines[0].text, '先做一道题。');
+ const prompt = `How the reference pictures align with the target video — <Picture 1> aligns with the 0.00-second mark and <Picture 2> aligns with the 5.00-second mark.\n\nintegrated_multimodal_description: [Shot 1] Starting from <Picture 1> and ending at <Picture 2>, the boy (S1) speaks at a desk: <d>[Chinese] 先做一道题。</d>\n\noverall_soundscape:\nSoft indoor room tone.\n\nnon_diegetic_music:\nN/A`;
+ assert.equal(validateOfficialH3Prompt(prompt, spec).valid, true);
 });
 test('image generation passes first-frame wardrobe reference even when camera-layout locking is disabled',async t=>{
  const db=setup(t);

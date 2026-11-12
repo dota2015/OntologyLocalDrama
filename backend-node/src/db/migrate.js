@@ -196,7 +196,9 @@ function ensureAllColumns(database) {
     { name: 'h3_contract_json',       type: 'TEXT' },               // JSON: H3 唯一执行合同（结构化权威快照）
     { name: 'h3_contract_version',    type: 'TEXT' },               // 当前合同版本，例如 h3_contract_v1
     { name: 'h3_contract_status',     type: 'TEXT' },               // planned | audited | submitted | failed
-    { name: 'h3_prompt_snapshot',     type: 'TEXT' },               // 实际提交 H3 的六段 Prompt 快照
+    { name: 'h3_prompt_snapshot',     type: 'TEXT' },               // 实际提交 H3 的官方 Prompt 快照（三阶产出/手工锁定）
+    { name: 'h3_prompt_fingerprint',  type: 'TEXT' },               // 三阶 Prompt 对应的锁定合同与媒体指纹
+    { name: 'h3_prompt_manual',       type: 'INTEGER DEFAULT 0' },  // 1 表示人工编辑锁定，不被自动重编覆盖
     { name: 'h3_quality_audit',       type: 'TEXT' },               // ASR/生成后质检结果
     { name: 'h3_generation_plan',    type: 'TEXT' },               // JSON: 可解释的H3执行模式推导方案与依据（mode, reason, references）
     { name: 'status',            type: 'TEXT DEFAULT \'draft\'' },

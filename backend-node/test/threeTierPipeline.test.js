@@ -8,7 +8,7 @@ const {
 const { defaultEngine } = require('../src/ontology/invariants');
 const { resolveH3Mode } = require('../src/services/h3ModeResolver');
 const { auditGeneratedVideo, probeVideoMetadata } = require('../src/services/videoQualityGate');
-const { compilePrompt } = require('../src/services/h3NativeService');
+const { validateOfficialH3Prompt, buildStage3PromptSpec } = require('../src/services/h3Stage3PromptService');
 const {
   createSemanticSlots,
   IDENTITY_VISIBILITIES,
@@ -583,27 +583,61 @@ describe('Three-Tier Architectural Evolution: Agent First, Ontology Gatekeeper, 
     });
   });
 
-  describe('Ref2VA Picture Alignment & Zero Negative Word Pollution', () => {
-    it('CompilePrompt maps <Picture 1> to first frame and aligns references strictly', () => {
-      const refs = [
-        { source: 'img_first.png', kind: 'first_frame', name: '首帧' },
-        { source: 'char_sufengyi.png', kind: 'character', character_id: 10, name: '苏凤仪' },
-      ];
-      const anchors = { first: 'img_first.png' };
-      const speech = {
-        lines: [{ key: 'character:10', text: '我们走！', speaker: '苏凤仪', kind: 'dialogue' }],
-        references: [{ key: 'character:10', kind: 'dialogue', speaker: '苏凤仪' }],
+  describe('Official Ref2VA SKILL Prompt Alignment & Reference Validation', () => {
+    it('Validates 6-section English Ref2VA prompt against Stage-2 bindings and rejects dangling tags', () => {
+      const shot = {
+        id: 1,
+        storyboard_number: 1,
+        duration: 5,
+        semantic_slots: {
+          h3_mode: 'ref2va',
+          first_frame_policy: 'none',
+          last_frame_policy: 'none',
+          required_references: [
+            { type: 'scene', id: 10, name: '边塞雪山' },
+            { type: 'character', id: 10, character_id: 10, name: '苏凤仪' },
+          ],
+          speech_plan: { speaker_id: 10, speaker_name: '苏凤仪', text: '我们走！', is_narration: false },
+        },
       };
-      const translated = {
-        visual_description: 'An expansive snowy mountain pass.',
-        overall_soundscape: 'Howling wind echoing across the canyon.',
-        non_diegetic_music: 'Solemn orchestral strings.',
-      };
+      const spec = buildStage3PromptSpec(null, shot, {
+        refs: [
+          { source: 'scene.png', type: 'scene', id: 10, name: '边塞雪山' },
+          { source: 'char_sufengyi.png', type: 'character', character_id: 10, name: '苏凤仪' },
+        ],
+        speech: {
+          lines: [{ key: 'character:10', text: '我们走！', speaker: '苏凤仪', kind: 'dialogue' }],
+          references: [{ key: 'character:10', kind: 'dialogue', speaker: '苏凤仪' }],
+        },
+      });
 
-      const compiled = compilePrompt(refs, speech, translated, anchors, {});
-      assert.ok(compiled.includes('<Picture 1>'), 'Must reference <Picture 1> for first frame anchor');
-      assert.ok(!compiled.includes('严禁克隆'), 'Must not contain negative exclusion prose pollution');
-      assert.ok(!compiled.includes('不得正面'), 'Must not contain negative exclusion prose pollution');
+      const validPrompt = [
+        'subject_definitions:',
+        '<Subject 1> is the snowy mountain pass in <Picture 1>.',
+        '<Subject 2> is the female operative in dark winter armor in <Picture 2>.',
+        '<Audio 1> is the voice-timbre reference for <Subject 2> (S1).',
+        '',
+        'summary:',
+        '[reference generation + audio reference] In <Subject 1>, <Subject 2> speaks and moves forward.',
+        '',
+        'retention_analysis:',
+        '<Subject 1> (appears in [Shot 1]): fully_preserved - retain the snowy canyon.',
+        '<Subject 2> (appears in [Shot 1]): fully_preserved - identity and clothing retained.',
+        '<Audio 1>: reference - vocal timbre only.',
+        '',
+        'detailed_description:',
+        'Natural cold winter daylight illuminates the pass.',
+        '[Shot 1] Wide framing inside <Subject 1>. <Subject 2> (S1) turns and, using the vocal timbre from <Audio 1>, says, <d>[Chinese] 我们走！</d> Howling wind sweeps snow across the path.',
+        '',
+        'overall_soundscape:',
+        'Howling wind across the rocky canyon.',
+        '',
+        'non_diegetic_music:',
+        'Solemn orchestral strings.',
+      ].join('\n');
+
+      assert.deepEqual(validateOfficialH3Prompt(validPrompt, spec).errors, []);
+      assert.equal(validateOfficialH3Prompt(validPrompt.replace('<Picture 2>', '<Picture 9>'), spec).valid, false);
     });
   });
 

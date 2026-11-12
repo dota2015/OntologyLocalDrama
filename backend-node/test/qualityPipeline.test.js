@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const plan = require('../src/services/storyboardImagePlan');
 const frames = require('../src/services/framePromptService');
 const videoSlots = require('../src/ontology/videoSlots');
-const h3 = require('../src/services/h3NativeService');
+const h3Stage3 = require('../src/services/h3Stage3PromptService');
 const qualityShots = require('./fixtures/qualityShots');
 
 const visual = {
@@ -25,30 +25,36 @@ test('planned frame bypasses LLM rewriting, preserves eyeline and uses distinct 
   assert.throws(() => plan.compileFrame({ ...shot, character_visuals: [] }, null, 'first'), /槽位缺失/);
 });
 
-test('voiceover and non-timeline speech also leave physical actions under Director control', () => {
+test('Stage 3 H3 spec leaves physical actions and spoken lines under Director control without leaking Stage 1 description', () => {
   const fixture = qualityShots.find(f => f.name === 'continuous_action');
-  const contract = h3.buildDirectH3TextContract(fixture.shot, [fixture.segment]);
   const speech = {
     references: [{ key: 'narrator', kind: 'narration' }],
     lines: [{ key: 'narrator', kind: 'narration', text: '她放下了碗。' }],
   };
-  for (const timeline of [[], [fixture.segment]]) {
-    const prompt = h3.compilePrompt(fixture.refs, speech, contract, {}, { timeline, duration: 6, allowChinese: true });
-    assert.match(prompt, /visible characters continue their planned actions and reactions/);
-    assert.match(prompt, /their lips stay closed except during their own explicitly planned spoken lines/);
-    assert.doesNotMatch(prompt, /settles|settling|terminal state holds/);
-    assert.match(prompt, /放到木桌中央/);
-  }
+  const spec = h3Stage3.buildStage3PromptSpec(null, {
+    ...fixture.shot,
+    description: '【运镜】wrong_stage1_movement',
+    video_slots: { shots_timeline: [fixture.segment] },
+  }, { refs: fixture.refs, speech, duration: 6 });
+  assert.equal(spec.authoritative_contract.video_slots.shots_timeline.length, 1);
+  assert.equal(spec.spoken_lines[0].text, '她放下了碗。');
+  assert.equal(JSON.stringify(spec).includes('wrong_stage1_movement'), false);
 });
 
-test('a future promise does not cause the compiler to invent an immediate action', () => {
+test('Stage 3 H3 validator enforces verbatim spoken lines and rejects leaked Chinese prose', () => {
   const fixture = structuredClone(qualityShots.find(f => f.name === 'solo_dialogue'));
   fixture.speech.lines[0].text = '明天我扶您出去。';
-  const before = JSON.stringify(fixture);
-  const timeline = [fixture.segment];
-  const prompt = h3.compilePrompt(fixture.refs, fixture.speech, h3.buildDirectH3TextContract(fixture.shot, timeline), {}, { timeline, duration: 6, allowChinese: true });
-  assert.equal(JSON.stringify(fixture), before);
-  assert.match(prompt, /苏晚倾听/);
-  assert.match(prompt, /<d>\[Chinese\] 明天我扶您出去。<\/d>/);
-  assert.doesNotMatch(prompt, /托肩背|撑床|转为坐姿|推门走出/);
+  const spec = h3Stage3.buildStage3PromptSpec(null, {
+    ...fixture.shot,
+    video_slots: { shots_timeline: [fixture.segment] },
+  }, { refs: fixture.refs, speech: fixture.speech, duration: 6 });
+
+  const picDefs = fixture.refs.map((_, idx) => `<Subject ${idx + 1}> is the character in <Picture ${idx + 1}>.`).join('\n');
+  const validPrompt = `subject_definitions:\n${picDefs}\n<Audio 1> is the voice-timbre reference for <Subject 1> (S1).\n\nsummary:\n[reference generation + audio reference] <Subject 1> speaks gently in the room using <Audio 1>.\n\nretention_analysis:\n<Subject 1> (appears in [Shot 1]): fully_preserved - appearance retained.\n<Audio 1>: reference - vocal timbre only.\n\ndetailed_description:\nThe scene uses natural indoor lighting.\n[Shot 1] <Subject 1> (S1) leans softly beside the wooden bed, using the timbre from <Audio 1>, and says, <d>[Chinese] 明天我扶您出去。</d> Another character listens attentively without rising.\n\noverall_soundscape:\nQuiet indoor room tone.\n\nnon_diegetic_music:\nN/A`;
+  assert.deepEqual(h3Stage3.validateOfficialH3Prompt(validPrompt, spec).errors, []);
+
+  const leakedChinese = validPrompt.replace('leans softly beside the wooden bed', '轻声扶着床沿');
+  const bad = h3Stage3.validateOfficialH3Prompt(leakedChinese, spec);
+  assert.equal(bad.valid, false);
+  assert.ok(bad.errors.some((e) => e.includes('残留汉字')));
 });

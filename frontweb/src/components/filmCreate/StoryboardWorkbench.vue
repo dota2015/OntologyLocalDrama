@@ -1044,6 +1044,31 @@
                 <p style="color:#6b7280; font-size:13px; margin-bottom:10px;">当前分镜尚未合成结构化镜头时间线槽位，您可以一键按分镜参数构建。</p>
                 <p style="color:#b45309;font-size:12px;">请重新运行「导演生成分镜脚本」，由导演 Agent 补齐权威槽位。</p>
               </div>
+
+              <!-- Stage 3 官方 H3 提交提示词（查看 / 手工编辑锁定 / 重新编译） -->
+              <div class="sb-slot-soundscape-card" style="margin-top:12px;">
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
+                  <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                    <span class="sb-slot-section-subtitle" style="margin:0;">📜 官方 H3 英文提交提示词（Stage 3 · MiniMax-H3 SKILL）</span>
+                    <el-tag size="small" :type="sbPromptH3Manual ? 'warning' : (sbPromptH3SnapshotText.trim() ? 'success' : 'info')">
+                      {{ sbPromptH3Manual ? '手工编辑已锁定' : (sbPromptH3SnapshotText.trim() ? 'Stage 3 已编译' : '待编译（生成/提交前自动编译）') }}
+                    </el-tag>
+                  </div>
+                  <el-button
+                    size="small"
+                    type="primary"
+                    plain
+                    :loading="sbPromptH3Compiling"
+                    @click="onCompileSbH3Prompt"
+                  >🔄 重新编译 H3 提示词</el-button>
+                </div>
+                <el-input
+                  v-model="sbPromptH3SnapshotText"
+                  type="textarea"
+                  :rows="10"
+                  placeholder="三阶段会在二阶门禁通过后按官方 MiniMax-H3 SKILL 编译标准英文提示词；也可以直接在此手工微调并保存（手工修改后将锁定，不被自动重编覆盖，直到点击“重新编译 H3 提示词”）。"
+                />
+              </div>
             </div>
           </el-form>
         </el-tab-pane>
@@ -1729,6 +1754,10 @@ const sbPromptPolishedText = ref('')    // AI 优化后 polished_prompt
 const sbPromptVideoSlots = ref(null)     // video_slots 结构化对象
 const sbPromptH3Data = ref(null)         // H3 原生素材与声音绑定对象
 const sbPromptH3Loading = ref(false)     // H3 素材加载中
+const sbPromptH3SnapshotText = ref('')   // Stage 3 / 手工锁定的官方 H3 提交提示词
+const sbPromptH3SnapshotInitial = ref('')
+const sbPromptH3Manual = ref(false)
+const sbPromptH3Compiling = ref(false)
 const sbPromptSaving = ref(false)
 const sbPromptPolishing = ref(false)
 const sbPromptImageRebuilding = ref(false)
@@ -3045,6 +3074,9 @@ async function onOpenSbPromptDialog(sb, initialTab = 'image') {
   sbPromptSemanticSlots.value = parseSlotObject(sb.semantic_slots)
   sbPromptImageText.value = formatImagePromptForEdit((sb.image_prompt || '').toString())
   sbPromptPolishedText.value = formatImagePromptForEdit((sb.polished_prompt || '').toString())
+  sbPromptH3SnapshotText.value = (sb.h3_prompt_snapshot || '').toString()
+  sbPromptH3SnapshotInitial.value = sbPromptH3SnapshotText.value
+  sbPromptH3Manual.value = Boolean(sb.h3_prompt_manual)
   let rawSlots = sb.video_slots
   if (typeof rawSlots === 'string') {
     try { rawSlots = JSON.parse(rawSlots) } catch (_) { rawSlots = null }
@@ -3067,6 +3099,9 @@ async function onOpenSbPromptDialog(sb, initialTab = 'image') {
       sbPromptSemanticSlots.value = parseSlotObject(fresh.semantic_slots)
       sbPromptImageText.value = formatImagePromptForEdit((fresh.image_prompt || '').toString())
       sbPromptPolishedText.value = formatImagePromptForEdit((fresh.polished_prompt || '').toString())
+      sbPromptH3SnapshotText.value = (fresh.h3_prompt_snapshot || '').toString()
+      sbPromptH3SnapshotInitial.value = sbPromptH3SnapshotText.value
+      sbPromptH3Manual.value = Boolean(fresh.h3_prompt_manual)
       let freshSlots = fresh.video_slots
       if (typeof freshSlots === 'string') {
         try { freshSlots = JSON.parse(freshSlots) } catch (_) { freshSlots = null }
@@ -3349,6 +3384,12 @@ async function onSaveSbPromptDialog() {
     if (sbPromptSemanticSlots.value) {
       patch.semantic_slots = sbPromptSemanticSlots.value
     }
+    const nextH3Snapshot = sbPromptH3SnapshotText.value.trim()
+    const initH3Snapshot = sbPromptH3SnapshotInitial.value.trim()
+    if (nextH3Snapshot !== initH3Snapshot) {
+      patch.h3_prompt_snapshot = nextH3Snapshot || null
+      patch.h3_prompt_manual = Boolean(nextH3Snapshot)
+    }
     if (sbPromptH3Data.value && dramaId.value) {
       await videosAPI.saveH3Inputs(dramaId.value, sb.id, {
         engine_mode: ['fl2va', 'ref2va'].includes(sbPromptH3Data.value.engine_mode) ? sbPromptH3Data.value.engine_mode : 'ref2va',
@@ -3369,6 +3410,36 @@ async function onSaveSbPromptDialog() {
     ElMessage.error(e.message || '保存失败')
   } finally {
     sbPromptSaving.value = false
+  }
+}
+
+async function onCompileSbH3Prompt() {
+  const sb = sbPromptTarget.value
+  if (!sb?.id) return
+  sbPromptH3Compiling.value = true
+  try {
+    const res = await storyboardsAPI.compileH3Prompt(sb.id)
+    const text = (res?.h3_prompt_snapshot || '').toString()
+    sbPromptH3SnapshotText.value = text
+    sbPromptH3SnapshotInitial.value = text
+    sbPromptH3Manual.value = false
+    sb.h3_prompt_snapshot = text
+    sb.h3_prompt_manual = false
+    if (res?.h3_prompt_fingerprint) sb.h3_prompt_fingerprint = res.h3_prompt_fingerprint
+    const list = store.currentEpisode?.storyboards
+    if (Array.isArray(list)) {
+      const row = list.find((x) => Number(x.id) === Number(sb.id))
+      if (row) {
+        row.h3_prompt_snapshot = text
+        row.h3_prompt_manual = false
+        if (res?.h3_prompt_fingerprint) row.h3_prompt_fingerprint = res.h3_prompt_fingerprint
+      }
+    }
+    ElMessage.success('已按官方 H3 SKILL 重新编译英文提示词')
+  } catch (e) {
+    ElMessage.error(e.message || 'H3 提示词编译失败')
+  } finally {
+    sbPromptH3Compiling.value = false
   }
 }
 

@@ -97,7 +97,7 @@ function createStoryboard(db, log, req) {
 function updateStoryboard(db, log, id, req) {
   const row = db.prepare('SELECT * FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(Number(id));
   if (!row) return null;
-  const allowed = ['title', 'description', 'location', 'time', 'duration', 'dialogue', 'narration', 'action', 'result', 'atmosphere', 'image_prompt', 'polished_prompt', 'video_model', 'scene_id', 'characters', 'character_visuals', 'last_frame_visuals', 'video_slots', 'composed_image', 'image_url', 'local_path', 'main_panel_idx', 'video_url', 'selected_video_id', 'audio_local_path', 'narration_audio_local_path', 'status', 'shot_type', 'angle', 'angle_h', 'angle_v', 'angle_s', 'dialogue_framing', 'movement', 'lighting_style', 'depth_of_field', 'bgm_prompt', 'sound_effect', 'segment_index', 'segment_title', 'creation_mode', 'universal_segment_text', 'layout_description', 'start_framing', 'end_framing', 'transition_to_next', 'background_characters', 'continuity_snapshot', 'first_frame_image_id', 'last_frame_image_id', 'last_frame_image_url', 'last_frame_local_path', 'long_take_group_id', 'long_take_role', 'long_take_sequence'];
+  const allowed = ['title', 'description', 'location', 'time', 'duration', 'dialogue', 'narration', 'action', 'result', 'atmosphere', 'image_prompt', 'polished_prompt', 'video_model', 'scene_id', 'characters', 'character_visuals', 'last_frame_visuals', 'video_slots', 'composed_image', 'image_url', 'local_path', 'main_panel_idx', 'video_url', 'selected_video_id', 'audio_local_path', 'narration_audio_local_path', 'status', 'shot_type', 'angle', 'angle_h', 'angle_v', 'angle_s', 'dialogue_framing', 'movement', 'lighting_style', 'depth_of_field', 'bgm_prompt', 'sound_effect', 'segment_index', 'segment_title', 'creation_mode', 'universal_segment_text', 'layout_description', 'start_framing', 'end_framing', 'transition_to_next', 'background_characters', 'continuity_snapshot', 'first_frame_image_id', 'last_frame_image_id', 'last_frame_image_url', 'last_frame_local_path', 'long_take_group_id', 'long_take_role', 'long_take_sequence', 'h3_prompt_snapshot', 'h3_prompt_manual'];
   if (req.video_model != null && req.video_model !== '') {
     const configs = require('./aiConfigService').listConfigs(db, 'video');
     if (!configs.some(c => c.is_active && (Array.isArray(c.model) ? c.model : [c.model]).includes(req.video_model))) throw new Error('所选视频模型未启用或已删除');
@@ -161,11 +161,24 @@ function updateStoryboard(db, log, id, req) {
   for (const key of allowed) {
     if (key === 'characters') continue;
     if (req[key] !== undefined) {
+      if (key === 'h3_prompt_manual') {
+        updates.push('h3_prompt_manual = ?');
+        params.push(req[key] ? 1 : 0);
+        continue;
+      }
       updates.push(key + ' = ?');
       const val = req[key];
       const jsonColumns = new Set(['character_visuals', 'last_frame_visuals', 'video_slots', 'background_characters', 'continuity_snapshot']);
       params.push(jsonColumns.has(key) && val != null && typeof val === 'object' ? JSON.stringify(val) : val);
     }
+  }
+  if (req.h3_prompt_snapshot !== undefined && !String(req.h3_prompt_snapshot || '').trim()) {
+    if (req.h3_prompt_manual === undefined) {
+      updates.push('h3_prompt_manual = ?');
+      params.push(0);
+    }
+    updates.push('h3_prompt_fingerprint = ?');
+    params.push(null);
   }
 
   // 只有 Agent/用户明确提交 semantic_slots 时才更新；普通字段编辑绝不重建或覆盖语义决策。
@@ -273,6 +286,8 @@ function getStoryboardById(db, id) {
     h3_contract_version: r.h3_contract_version ?? null,
     h3_contract_status: r.h3_contract_status ?? null,
     h3_prompt_snapshot: r.h3_prompt_snapshot ?? null,
+    h3_prompt_fingerprint: r.h3_prompt_fingerprint ?? null,
+    h3_prompt_manual: Boolean(r.h3_prompt_manual),
     h3_quality_audit: (() => { try { return r.h3_quality_audit ? (typeof r.h3_quality_audit === 'string' ? JSON.parse(r.h3_quality_audit) : r.h3_quality_audit) : null; } catch (_) { return null; } })(),
     background_characters: (() => { try { return r.background_characters ? (typeof r.background_characters === 'string' ? JSON.parse(r.background_characters) : r.background_characters) : []; } catch (_) { return []; } })(),
     continuity_snapshot: (() => { try { return r.continuity_snapshot ? (typeof r.continuity_snapshot === 'string' ? JSON.parse(r.continuity_snapshot) : r.continuity_snapshot) : null; } catch (_) { return null; } })(),

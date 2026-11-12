@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const slots = require('../src/ontology/videoSlots');
-const h3 = require('../src/services/h3NativeService');
+const h3Stage3 = require('../src/services/h3Stage3PromptService');
 
 function timelineSegment(shotNumber, duration, ids) {
   return {
@@ -241,117 +241,92 @@ test('legacy sync_v1 and sync_v2 video slots are rejected immediately by validat
   }
 });
 
-test('Ref2VA does not claim speech crosses every cut when no exact event timing exists', () => {
-  const refs = [{ source: 'speaker.png', kind: 'character', character_id: 1 }];
-  const speech = {
-    references: [{ key: 'character:1', kind: 'dialogue' }],
-    lines: [{ key: 'character:1', kind: 'dialogue', text: '马上出发。' }],
-  };
+test('Stage 3 validator handles multi-cut dialogue timeline without duplicate spoken lines', () => {
   const timeline = [
     { ...timelineSegment(1, 2, [1]), timestamp: null },
-    { ...timelineSegment(2, 2, [1]), timestamp: '00:02.000' },
+    { ...timelineSegment(2, 2, [1]), timestamp: '00:02.000', camera: { shot_change: true } },
   ];
-  const translated = {
-    visual_description: 'A young scout prepares to leave.',
-    shot_descriptions: timeline.map((_, index) => ({
-      shot_number: index + 1,
-      description: `The scout completes physical beat ${index + 1}.`,
-      character_directions: [{ character_id: 1, direction: 'The scout watches the exit.' }],
-    })),
-    overall_soundscape: 'Quiet room tone.',
-    non_diegetic_music: 'N/A',
-  };
-  const prompt = h3.compilePrompt(refs, speech, translated, {}, { timeline, duration: 4 });
-  assert.equal((prompt.match(/<scenetrans>/g) || []).length, 0);
+  const spec = h3Stage3.buildStage3PromptSpec(null, {
+    id: 1, storyboard_number: 1, duration: 4,
+    semantic_slots: { h3_mode: 'ref2va', required_references: [{ type: 'character', id: 1, character_id: 1, name: '角色A' }] },
+    video_slots: { shots_timeline: timeline },
+  }, {
+    refs: [{ source: 'card.png', type: 'character', character_id: 1, name: '角色A' }],
+    speech: {
+      references: [{ key: 'character:1', kind: 'dialogue', speaker: '角色A' }],
+      lines: [{ key: 'character:1', kind: 'dialogue', speaker: '角色A', text: '马上出发。' }],
+    },
+    duration: 4,
+  });
+  const prompt = [
+    'subject_definitions:',
+    '<Subject 1> is the scout in <Picture 1>.',
+    '<Audio 1> is the voice-timbre reference for <Subject 1> (S1).',
+    '',
+    'summary:',
+    '[reference generation + audio reference] <Subject 1> speaks and moves forward across two beats.',
+    '',
+    'retention_analysis:',
+    '<Subject 1> (appears in [Shot 1], [Shot 2]): fully_preserved - retain facial identity and attire.',
+    '<Audio 1>: reference - vocal timbre only.',
+    '',
+    'detailed_description:',
+    'Natural daylight across the exterior corridor.',
+    '[Shot 1] <Subject 1> (S1), using the timbre from <Audio 1>, watches the exit and says, <d>[Chinese] 马上出发。</d> Then the mouth closes naturally.',
+    '[Shot 2] At 00:02.000, the shot cuts to a tighter angle as <Subject 1> advances smoothly.',
+    '',
+    'overall_soundscape:',
+    'Quiet room tone.',
+    '',
+    'non_diegetic_music:',
+    'N/A',
+  ].join('\n');
+  assert.deepEqual(h3Stage3.validateOfficialH3Prompt(prompt, spec).errors, []);
   assert.equal((prompt.match(/马上出发。/g) || []).length, 1);
-  assert.doesNotMatch(prompt, /ongoing spoken performance/);
 });
 
-test('runtime H3 compilation uses authoritative Chinese text without a second model rewrite', () => {
+test('Stage 3 builds authoritative Stage 2 spec excluding redundant Stage 1 description wrapper', () => {
   const timeline = [{
     ...timelineSegment(1, 2, [28, 29]),
     timestamp: null,
-    character_trajectories: [
-      {
-        character_id: 28,
-        name: '苏晚',
-        trajectory: '迅速俯身托住父亲肩背',
-        terminal_pose: '右掌贴住父亲胸口',
-        facial_expression: '眼睛睁大，眉头收紧',
-        facing: '正对苏承远',
-        head_pose: '下颌压低并朝向父亲嘴角',
-        gaze: '视线锁定苏承远嘴角血迹',
-        attention_target: '苏承远嘴角血迹',
-        gaze_motivation: '确认父亲伤势',
-        reaction_trigger: '苏承远突然咳血',
-        mouth_state: '双唇紧闭',
-      },
-      {
-        character_id: 29,
-        name: '苏承远',
-        trajectory: '咳血后身体失力',
-        terminal_pose: '肩背落入苏晚臂弯',
-        facial_expression: '痛苦虚弱',
-        facing: '侧身朝向苏晚',
-        head_pose: '头部低垂',
-        gaze: '目光失焦',
-        attention_target: '无稳定目标',
-        gaze_motivation: '高热导致意识涣散',
-        reaction_trigger: '自身突然咳血',
-        mouth_state: '双唇紧闭',
-      },
-    ],
+    camera: { shot_type: 'close_up', movement: 'static' },
   }];
-  const contract = h3.buildDirectH3TextContract({
-    location: '苏家破败窝棚内部',
-    description: '苏承远突然咳血，苏晚立即托扶',
-    action: '苏晚右掌按上父亲胸口',
-    semantic_slots: JSON.stringify({ sound_plan: { sound_effects: ['咳嗽声'], bgm_prompt: '低沉弦乐' } }),
-    character_visuals: JSON.stringify([{ character_id: 28, name: '苏晚', gaze: '视线锁定苏承远嘴角血迹' }]),
-  }, timeline);
-  assert.equal(contract.shot_descriptions.length, 1);
-  assert.deepEqual(contract.shot_descriptions[0].character_directions.map(item => item.character_id), [28, 29]);
-  assert.match(contract.shot_descriptions[0].character_directions[0].direction, /视线锁定苏承远嘴角血迹/);
-  const prompt = h3.compileFl2vaPrompt(contract, timeline, { allowChinese: true });
-  assert.match(prompt, /苏家破败窝棚内部/);
-  assert.match(prompt, /视线锁定苏承远嘴角血迹/);
-  assert.match(prompt, /低沉弦乐/);
+  const spec = h3Stage3.buildStage3PromptSpec(null, {
+    id: 2, storyboard_number: 1, duration: 4,
+    location: '破败屋棚',
+    description: '【镜头类型】特写\n【运镜】push\n【动作】旧拼接描述',
+    semantic_slots: {
+      h3_mode: 'fl2va',
+      sound_plan: { sound_effects: ['咳嗽声'], bgm_prompt: '低沉弦乐' },
+    },
+    video_slots: { camera: { shot_type: 'close_up', movement: 'static' }, shots_timeline: timeline },
+  }, {
+    executionPlan: { mode: 'fl2va' },
+    firstFramePresent: true,
+    duration: 4,
+  });
+  assert.equal(spec.mode, 'fl2va');
+  assert.equal(spec.authoritative_contract.video_slots.shots_timeline[0].camera.movement, 'static');
+  assert.equal(JSON.stringify(spec).includes('【运镜】push'), false);
 });
 
-test('silent ambient H3 contract seals every mouth and requests only nonverbal sound', () => {
+test('Stage 3 spec projects silent ambient audio settings cleanly without leaking speech tags', () => {
   const timeline = [{
     ...timelineSegment(1, 2, [1]),
     timestamp: null,
-    character_trajectories: [{
-      character_id: 1,
-      name: '红狼',
-      trajectory: '贴墙移动',
-      terminal_pose: '停在掩体后',
-      facial_expression: '屏息警觉',
-      facing: '侧身朝向通道',
-      head_pose: '头部转向通道口',
-      gaze: '目光锁定通道口',
-      attention_target: '通道口',
-      gaze_motivation: '确认敌情',
-      reaction_trigger: '远处脚步声',
-      mouth_state: '双唇紧闭无口型',
-    }],
   }];
-  const contract = h3.buildDirectH3TextContract({
+  const spec = h3Stage3.buildStage3PromptSpec(null, {
+    id: 3, storyboard_number: 1, duration: 4,
     location: '废弃仓库',
-    action: '红狼贴墙移动',
     semantic_slots: {
+      h3_mode: 'fl2va',
       audio_lip_sync: 'silent_ambient',
       speech_plan: { text: '' },
       sound_plan: { is_silent: false, sound_effects: ['远处脚步声'], acoustic_env: '空旷仓库回声', bgm_prompt: '' },
     },
-    video_slots: { audio_lip_sync: { mode: 'silent_ambient', dialogue_content: '' } },
-  }, timeline);
-  assert.match(contract.visual_description, /双唇自然闭合/);
-  assert.match(contract.overall_soundscape, /环境声和物理动作音效/);
-  assert.match(contract.overall_soundscape, /远处脚步声/);
-  assert.equal(contract.non_diegetic_music, 'N/A');
-  const prompt = h3.compileFl2vaPrompt(contract, timeline, { allowChinese: true, speech: { lines: [] } });
-  assert.doesNotMatch(prompt, /<d>/);
-  assert.match(prompt, /双唇自然闭合/);
+    video_slots: { shots_timeline: timeline },
+  }, { executionPlan: { mode: 'fl2va' }, firstFramePresent: true, duration: 4 });
+  assert.equal(spec.spoken_lines.length, 0);
+  const flPrompt = 'How the reference pictures align with the target video — <Picture 1> aligns with the 0.00-second mark.\n\nintegrated_multimodal_description: [Shot 1] Starting from <Picture 1>, the scout moves along the concrete wall with lips sealed and alert gaze toward the corridor exit.\n\noverall_soundscape:\nHollow warehouse room tone and distant footsteps.\n\nnon_diegetic_music:\nN/A';
+  assert.equal(h3Stage3.validateOfficialH3Prompt(flPrompt, spec).valid, true);
 });

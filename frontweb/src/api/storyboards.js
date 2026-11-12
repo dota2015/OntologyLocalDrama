@@ -82,6 +82,9 @@ export const storyboardsAPI = {
   rebuildImagePrompt(id) {
     return request.post(`/storyboards/${id}/rebuild-image-prompt`)
   },
+  compileH3Prompt(id, data = {}) {
+    return request.post(`/storyboards/${id}/compile-h3-prompt`, data)
+  },
   generateFramePrompt(id, data) {
     return request.post(`/storyboards/${id}/frame-prompt`, data)
   },

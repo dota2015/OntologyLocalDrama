@@ -145,10 +145,10 @@ describe('Director Boost Fixes Verification', () => {
       shot_descriptions: [],
     };
 
-    assert.throws(() => h3NativeService.compilePrompt(refs, speech, translated, {}, {
+    assert.throws(() => h3NativeService.assertTightFramingReferences(refs, {
       dialogueFraming: 'over_the_shoulder', shotType: '近景',
       backgroundCharacters: [{ character_id: 3, name: '背景角色C' }], duration: 5,
-    }), /未规划的背景人物/);
+    }, speech), /未规划的背景人物/);
   });
 
   it('prunes third character in tight OTS when background_characters is empty (Drama 5 Episode 17 clone scenario)', () => {
@@ -166,20 +166,14 @@ describe('Director Boost Fixes Verification', () => {
         { key: 'character:1', kind: 'dialogue', text: '你在说什么？' },
       ],
     };
-    const translated = {
-      visual_description: 'Two characters face each other over the shoulder in close dialogue.',
-      overall_soundscape: 'Tense room tone.',
-      non_diegetic_music: 'N/A',
-      shot_descriptions: [],
-    };
 
     // In Drama 5 / Episode 17, background_characters was [] (or cleared by agent),
     // but the 3rd character was present in refs (e.g. from episode assets).
-    // The compiler must prune character 3 because visible_characters only includes [1, 2].
-    assert.throws(() => h3NativeService.compilePrompt(refs, speech, translated, {}, {
+    // The compiler must reject character 3 because visible_characters only includes [1, 2].
+    assert.throws(() => h3NativeService.assertTightFramingReferences(refs, {
       dialogueFraming: 'over_the_shoulder', shotType: '近景', backgroundCharacters: [],
       visibleCharacters: [{ id: 1, name: '主角A' }, { id: 2, name: '主角B' }], duration: 5,
-    }), /未规划的背景人物/);
+    }, speech), /未规划的背景人物/);
   });
 
   it('prunes non-focal character in single close framing', () => {
@@ -191,17 +185,11 @@ describe('Director Boost Fixes Verification', () => {
       references: [{ key: 'character:1', kind: 'dialogue' }],
       lines: [{ key: 'character:1', kind: 'dialogue', text: '我不相信。' }],
     };
-    const translated = {
-      visual_description: 'Tight close-up of a character reacting.',
-      overall_soundscape: 'Quiet ambience.',
-      non_diegetic_music: 'N/A',
-      shot_descriptions: [],
-    };
 
-    assert.throws(() => h3NativeService.compilePrompt(refs, speech, translated, {}, {
+    assert.throws(() => h3NativeService.assertTightFramingReferences(refs, {
       dialogueFraming: 'single_close', shotType: '特写',
       visibleCharacters: [{ id: 1, name: '主角A' }], duration: 4,
-    }), /未规划的背景人物/);
+    }, speech), /未规划的背景人物/);
   });
 
   it('dynamic schema for last_frame_visuals restricts to maxItems 0 when last_frame_policy is not generate_tail', () => {
