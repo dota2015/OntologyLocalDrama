@@ -35,7 +35,7 @@ function getStoryboardSplitSystemPrompt() {
 【JSON 元素数据结构】
 [
   {
-    "title": "简短镜头标题（如：红狼挣扎撑起）",
+    "title": "简短镜头标题（如：角色挣扎撑起）",
     "duration": 时长整数（秒，4~30之间）,
     "shot_type": "特写|近景|中景|全景",
     "movement": "推镜|拉镜|摇镜|跟镜|手持|环绕|固定（严格少用固定镜头）",

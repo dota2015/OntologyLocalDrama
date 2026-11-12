@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const agentsRuntime = require('../src/services/agentsRuntime');
 const {
-  enrichSingleStoryboardSlots,
+  normalizeStoryboardForAgent,
 } = require('../src/ontology/directorEnrichmentService');
 const {
   ensureDirectorExecutionSlots,
@@ -20,7 +20,7 @@ test('directorTwoStageEnrichment: local normalizer does not invent execution sem
     characters: JSON.stringify([1, 2]),
     scene_id: 10,
   };
-  const normalized = enrichSingleStoryboardSlots(bareShot);
+  const normalized = normalizeStoryboardForAgent(bareShot);
   assert.deepEqual(normalized.characters, [1, 2]);
   assert.equal(normalized.semantic_slots, undefined);
   assert.equal(normalized.character_visuals, undefined);

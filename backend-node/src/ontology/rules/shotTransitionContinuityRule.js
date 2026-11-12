@@ -13,10 +13,28 @@ function parseObject(value) {
   } catch (_) { return null; }
 }
 
-function textOf(value) {
-  if (!value || typeof value !== 'object') return '';
-  return [value.relationship, value.previous_end_state, value.entry_state, value.causal_link, value.sound_bridge]
-    .filter(Boolean).join(' ');
+function parseArray(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) { return []; }
+}
+
+function hasStructuredGazeTarget(shot) {
+  const visuals = parseArray(shot?.character_visuals);
+  const video = parseObject(shot?.video_slots);
+  const trajectories = Array.isArray(video?.shots_timeline)
+    ? video.shots_timeline.flatMap((seg) => (Array.isArray(seg?.character_trajectories) ? seg.character_trajectories : []))
+    : [];
+  const entries = [...visuals, ...trajectories];
+  if (entries.length === 0) return true;
+  return entries.some((item) => {
+    const gazeType = String(item?.gaze_type || '').trim();
+    const hasTarget = item?.gaze_target_id != null || Boolean(String(item?.gaze_target_label || '').trim());
+    return Boolean(gazeType && gazeType !== 'none' && hasTarget);
+  });
 }
 
 class ShotTransitionContinuityRule extends BaseInvariantRule {
@@ -116,13 +134,13 @@ class ShotTransitionContinuityRule extends BaseInvariantRule {
               message: `分镜 ${shotNum} 的上一镜承接合同缺少 ${missing.join('、')}，无法确定本镜开头的角色、空间与因果状态。`,
             });
           }
-          if (String(incoming.relationship || '').trim() === 'eyeline_match' && !/(视线|目光|注视|看向|盯|gaze|look|eye)/iu.test(textOf(incoming))) {
+          if (String(incoming.relationship || '').trim() === 'eyeline_match' && !hasStructuredGazeTarget(shot)) {
             violations.push({
               rule: 'INVARIANT_EYELINE_MATCH_WITHOUT_EYE_TARGET',
               shot_number: shotNum,
               severity: 'error',
-              conflict_slots: ['semantic_slots.continuity_from_previous', 'character_visuals.gaze'],
-              message: `分镜 ${shotNum} 标记为 eyeline_match，但承接合同没有写明上一镜视线来源和本镜目标，不能使用视线匹配。`,
+              conflict_slots: ['semantic_slots.continuity_from_previous', 'character_visuals.gaze_type', 'character_visuals.gaze_target_label'],
+              message: `分镜 ${shotNum} 标记为 eyeline_match，但 character_visuals/character_trajectories 中未声明结构化视线类型（gaze_type != "none"）及具体目标（gaze_target_id 或 gaze_target_label），不能使用视线匹配。`,
             });
           }
         }

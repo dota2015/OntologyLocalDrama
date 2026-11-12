@@ -93,7 +93,7 @@ function planningFeasibilityViolations(shots, options = {}) {
     const shotNumber = Number(shot?.shot_number || shot?.storyboard_number || index + 1);
     // Stage-one drafts may still contain display names. Resolve those names
     // against the immutable catalog before applying the H3 two-person gate;
-    // otherwise a three-person draft can slip through because Number('露娜')
+    // otherwise a three-person draft can slip through because Number('角色B')
     // is NaN and only fails later in character_visuals.
     const chars = {
       ...shotCharacterIds(shot),

@@ -9,7 +9,7 @@ const {
 const agentsRuntime = require('../src/services/agentsRuntime');
 const h3NativeService = require('../src/services/h3NativeService');
 const { STRUCTURED_SCREEN_POSITIONS, validateCharacterVisualSlots } = require('../src/ontology/visualSlots');
-const { isGazeOnlyHold, mouthIsSealed, validateVideoSlots } = require('../src/ontology/videoSlots');
+const { isStaticGazeTrajectory, SEALED_MOUTH_STATES, validateVideoSlots } = require('../src/ontology/videoSlots');
 
 describe('Director Boost Fixes Verification', () => {
   it('auditDirectorDraftScoped does not retain stale violations after structural shot shifts', () => {
@@ -272,47 +272,40 @@ describe('Director Boost Fixes Verification', () => {
     assert.ok(invalid.some((v) => v.rule === 'INVARIANT_VISUAL_ENUM_INVALID'));
   });
 
-  it('isGazeOnlyHold correctly detects physical events vs gaze-only holds', () => {
-    // Physical verbs should NOT be considered gaze-only hold
-    assert.equal(isGazeOnlyHold(['迈步前行，警戒四周']), false);
-    assert.equal(isGazeOnlyHold(['起步跟随，保持警惕']), false);
-    assert.equal(isGazeOnlyHold(['转头注视说话人并聆听']), false);
-    assert.equal(isGazeOnlyHold(['转过头看向受话人']), false);
-    assert.equal(isGazeOnlyHold(['向门口走去']), false);
-    assert.equal(isGazeOnlyHold(['步入室内']), false);
+  it('isStaticGazeTrajectory detects structured actions vs passive gaze-only atoms', () => {
+    assert.equal(isStaticGazeTrajectory({
+      start_state: 'crouched',
+      result_state: 'walking',
+      action_atom: { action: 'walk', direction: 'forward', contact: 'ground', object_id: null },
+    }), false);
+    assert.equal(isStaticGazeTrajectory({
+      start_state: 'standing',
+      result_state: 'turned_to_target',
+      action_atom: { action: 'turn', direction: 'toward_target', contact: 'none', object_id: null },
+    }), false);
+    assert.equal(isStaticGazeTrajectory({
+      start_state: 'standing',
+      result_state: 'standing',
+      action_atom: { action: 'look', direction: 'none', contact: 'none', object_id: null },
+    }, { trajectory_action: 'react' }), false);
 
-    // Gaze-only hold without physical actions
-    assert.equal(isGazeOnlyHold(['保持视线，沉默不语']), true);
-    assert.equal(isGazeOnlyHold(['双眼注视前方，安静等待']), true);
+    assert.equal(isStaticGazeTrajectory({
+      start_state: 'standing',
+      result_state: 'standing',
+      action_atom: { action: 'look', direction: 'none', contact: 'none', object_id: null },
+    }), true);
+    assert.equal(isStaticGazeTrajectory({
+      start_state: 'sitting',
+      result_state: 'sitting',
+      action_atom: { action: 'listen', direction: 'none', contact: 'none', object_id: null },
+    }, { trajectory_action: 'none' }), true);
   });
 
-  it('mouthIsSealed accepts natural closed mouth descriptions', () => {
-    const sealedStates = [
-      '闭合',
-      '紧闭',
-      '自然闭合',
-      '自然闭合，嘴唇抿紧',
-      '抿紧闭合',
-      '安静闭合',
-      '微闭',
-      '双唇紧闭',
-      '双唇紧闭无口型',
-      '咬牙紧闭',
-      '无口型',
-      'strictly_sealed',
-    ];
-    for (const state of sealedStates) {
-      assert.ok(mouthIsSealed(state), `mouth state "${state}" should be recognized as sealed`);
-    }
-
-    const openStates = [
-      'speaker_synced',
-      '开口说话',
-      '微张',
-      '大声呼喊',
-    ];
-    for (const state of openStates) {
-      assert.ok(!mouthIsSealed(state), `mouth state "${state}" should NOT be recognized as sealed`);
+  it('SEALED_MOUTH_STATES strictly accepts closed/offscreen_sealed enums and rejects prose', () => {
+    assert.ok(SEALED_MOUTH_STATES.has('closed'));
+    assert.ok(SEALED_MOUTH_STATES.has('offscreen_sealed'));
+    for (const state of ['speaker_synced', '双唇紧闭', '开口说话', '微张', 'strictly_sealed']) {
+      assert.equal(SEALED_MOUTH_STATES.has(state), false, `mouth_state "${state}" must not be accepted via prose bypass`);
     }
   });
 
@@ -343,7 +336,7 @@ describe('Director Boost Fixes Verification', () => {
         result: '站定在露娜身旁',
         character_trajectories: [
           { character_id: 1, name: '蜂医', mouth_state: 'speaker_synced' },
-          { character_id: 2, name: '露娜', mouth_state: '自然闭合' },
+          { character_id: 2, name: '露娜', mouth_state: 'closed' },
         ],
         audio_lip_sync: {
           speaker_id: 1,
@@ -369,8 +362,8 @@ describe('Director Boost Fixes Verification', () => {
         action: '两人对视观察四周',
         result: '保持警戒',
         character_trajectories: [
-          { character_id: 1, name: '蜂医', mouth_state: '自然闭合' },
-          { character_id: 2, name: '露娜', mouth_state: '自然闭合' },
+          { character_id: 1, name: '蜂医', mouth_state: 'closed' },
+          { character_id: 2, name: '露娜', mouth_state: 'closed' },
         ],
         audio_lip_sync: {
           mode: 'silent_ambient',
@@ -387,7 +380,7 @@ describe('Director Boost Fixes Verification', () => {
         action: '露娜转头回应',
         result: '确认路线',
         character_trajectories: [
-          { character_id: 1, name: '蜂医', mouth_state: '自然闭合' },
+          { character_id: 1, name: '蜂医', mouth_state: 'closed' },
           { character_id: 2, name: '露娜', mouth_state: 'speaker_synced' },
         ],
         audio_lip_sync: {

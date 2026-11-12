@@ -1090,7 +1090,7 @@
               v-model="splitInstruction"
               type="textarea"
               :rows="3"
-              placeholder="例如：把红狼撑起上身和蜂医倒地抽搐分成两个独立镜头，突出两人危急状态；或特写关键道具等。"
+              placeholder="例如：把角色撑起上身和同伴倒地呼救分成两个独立镜头，突出两人危急状态；或特写关键道具等。"
             />
           </el-form-item>
         </el-form>

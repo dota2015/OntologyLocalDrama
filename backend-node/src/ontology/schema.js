@@ -308,8 +308,7 @@ function createSemanticSlots(data = {}) {
     background_characters: background.map(c => typeof c === 'object' ? c : { name: String(c) }),
     offscreen_characters: offscreen.map(c => {
       const entry = typeof c === 'object' && c !== null ? c : { name: String(c) };
-      const mode = Object.values(OFFSCREEN_PARTICIPATION_MODES).includes(entry.mode)
-        ? entry.mode : OFFSCREEN_PARTICIPATION_MODES.PRESENT_OFFSCREEN;
+      const mode = entry.mode != null ? String(entry.mode).trim() : '';
       return {
         character_id: entry.character_id != null ? entry.character_id : (entry.id != null ? entry.id : null),
         id: entry.id != null ? entry.id : (entry.character_id != null ? entry.character_id : null),

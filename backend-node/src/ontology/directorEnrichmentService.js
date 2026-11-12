@@ -7,7 +7,7 @@
  */
 
 const { compileDramaSemanticPackage } = require('./semanticPackage');
-const { validateAllInvariants, checkPlanningFeasibility } = require('./invariants');
+const { validateAllInvariants, planningFeasibilityViolations } = require('./invariants');
 const {
   ensureDirectorExecutionSlots,
   normalizeTimelineTimestamps,
@@ -45,14 +45,6 @@ function normalizeStoryboardForAgent(shot) {
 }
 
 /**
- * 兼容旧调用名，但不再“补齐”任何语义槽位。
- * 阶段二的完整执行合同必须由 director-execution-slots-planner 生成。
- */
-function enrichSingleStoryboardSlots(shot) {
-  return normalizeStoryboardForAgent(shot);
-}
-
-/**
  * 批量装配指定剧集的全集分镜视听本体槽位
  * @param {object} db - SQLite 数据库连接
  * @param {object} log - 日志记录器
@@ -80,7 +72,7 @@ async function enrichEpisodeOntologySlots(db, log, cfg, episodeId, options = {})
   onProgress(15, `已加载 ${rows.length} 个基础分镜，开始装配视听契约与镜内时间线...`);
 
   const normalizedShots = rows.map(normalizeStoryboardForAgent);
-  const planningViolations = checkPlanningFeasibility(normalizedShots, { catalogs: pkg.catalogs });
+  const planningViolations = planningFeasibilityViolations(normalizedShots, { catalogs: pkg.catalogs });
   if (planningViolations.length) {
     const error = new Error(`阶段二执行前的导演规划可行性门禁未通过：${planningViolations.map((item) => item.message).join('；')}`);
     error.status = 422;
@@ -406,7 +398,7 @@ async function runTwoStageDirectorPipeline(db, log, cfg, episodeId, options = {}
 }
 
 module.exports = {
-  enrichSingleStoryboardSlots,
+  normalizeStoryboardForAgent,
   enrichEpisodeOntologySlots,
   runTwoStageDirectorPipeline,
 };

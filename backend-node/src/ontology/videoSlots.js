@@ -20,14 +20,6 @@ const {
   isStructuredTrajectory,
 } = actionAtoms;
 
-// 物理现象与军事术语具象化字典
-const PHYSICAL_TRANSLATION_MAP = [
-  { regex: /连续弹着点/g, visual: '一连串密集子弹扫射在水泥地面上激起的飞溅碎石、烟尘与火花' },
-  { regex: /弹着火星/g, visual: '子弹击地迸发的飞溅火花与烟尘' },
-  { regex: /弹着点/g, visual: '子弹击中地面的飞溅碎石与火花' },
-  { regex: /弹着/g, visual: '子弹击地' },
-];
-
 // H3 的逻辑分镜为 4～30 秒；4～8 秒由普通 H3 执行，9～30 秒由 Continuum 执行。
 // Timeline entries are causal performance beats, not forced camera cuts.  The
 // Agent may use one continuous beat or several integer-second beats as needed.
@@ -266,38 +258,24 @@ function validateStructuredExecutionContract(shot, slots) {
   return violations;
 }
 
-function translatePhysicalPhenomena(text) {
-  if (!text) return '';
-  let str = String(text);
-  for (const item of PHYSICAL_TRANSLATION_MAP) {
-    str = str.replace(item.regex, item.visual);
-  }
-  return str;
-}
+const SEALED_MOUTH_STATES = new Set(['closed', 'offscreen_sealed']);
+const PASSIVE_HOLD_ACTIONS = new Set(['look', 'listen', 'none', '']);
+const ACTIVE_LISTENER_ACTIONS = new Set(['react', 'support', 'turn']);
 
-// A timeline may describe a quiet reaction, but a two-person dialogue cannot
-// spend the whole segment on an unmotivated stare.  This gate catches the
-// common "say one line, then look at each other" output while leaving real
-// actions (turning, handing, supporting, blocking, sitting, etc.) to the
-// Director's semantic plan.
-function isGazeOnlyHold(values) {
-  const text = values.filter(Boolean).map(value => String(value)).join('，').replace(/[\s\u3000]/gu, '');
-  if (!text) return false;
-  const hasGaze = /(?:互相|相互|彼此|两人|双方)?(?:看着|对视|凝视|注视|看向|盯着|望着)|保持(?:对视|注视|视线|姿势|安静|倾听|沉默)|视线保持|安静倾听|等待|无动作|保持不动|互看/u.test(text);
-  if (!hasGaze) return false;
-  // 只把会改变空间关系、身体状态或正在发生的发声/反应视为动作。
-  // “站着看”“坐着等待”属于静态姿态，不能用来填满时间段。
-  const hasPhysicalEvent = /(?:转身|回头|转头|转过头|抬手|抬眼|抬头|抬起|抬|低头|垂头|俯首|垂首|下沉|耸肩|沉肩|叹气|叹息|轻叹|吸气|吐气|低语|低声|轻声|开合|合上|挥手|伸手|递|接|扶|托|抓|握|按|搭|搭在|搭手|撑|靠|倚|倚靠|贴|指向|指|手指|推|拉|挡|躲|退|冲|跑|走向|走去|步入|迈步|前行|跟上|起步|跟随|同行|进发|坐下|坐起|站起|跪下|躺下|起身|直起|直身|挺直|挺立|俯身|靠近|跌|摔|咳|吐|捂|擦|打开|关闭|拿起|放下|移动|跨|闪身|躲开|收回|离开|皱眉|咬牙|张口|开口|闭眼|闭合|后退|前倾|后仰|点头|摇头|摇晃|颤抖|哭|笑|喊|喘|说|问|答|承认|倾诉|坦白|沉思|扫向|扫视|操作|点击|翻看|记录|滑动|触碰|轻触|整理|持枪|持械|握持|戒备)/u.test(text);
-  return !hasPhysicalEvent;
-}
-
-function mouthIsSealed(value) {
-  const str = String(value || '').trim();
-  if (!str) return false;
-  if (/(?:开口|张嘴|张口|说话|发声|喊话|大喊|低语|念诵|读出|朗读)/iu.test(str)) {
-    return /(?:闭合|紧闭|闭口|闭唇|strictly_sealed)$/iu.test(str);
-  }
-  return /(?:双唇紧闭|双唇自然闭合|双唇闭合|双唇微闭|双唇紧抿|闭唇|闭口|闭嘴|闭合|紧闭|抿紧|自然闭合|安静闭合|微闭|紧抿|咬牙紧闭|无口型|无说话口型|不说话|喘息|紧抿嘴唇|relaxed closed lips|strictly_sealed|closed(?:_non_speaking| lips)?)/iu.test(str);
+/**
+ * 纯结构化判定：当且仅当角色动作原子只做注视/倾听/无动作，且起终态一致、无方向位移、
+ * 无物体接触、听者对齐未声明实质反应动作时，判定为无效静态凝视占位。
+ */
+function isStaticGazeTrajectory(trajectory, listenerReaction = null) {
+  if (!trajectory || typeof trajectory !== 'object') return false;
+  const atom = trajectory.action_atom;
+  if (!atom || typeof atom !== 'object') return false;
+  const act = String(atom.action || '').trim().toLowerCase();
+  if (!PASSIVE_HOLD_ACTIONS.has(act)) return false;
+  const sameState = String(trajectory.start_state || '').trim() === String(trajectory.result_state || '').trim();
+  const noPhysicalContact = (!atom.contact || atom.contact === 'none') && atom.object_id == null;
+  const listenerAct = String(listenerReaction?.trajectory_action || '').trim().toLowerCase();
+  return sameState && noPhysicalContact && !ACTIVE_LISTENER_ACTIONS.has(listenerAct);
 }
 
 function parseTimelineTimestamp(value) {
@@ -542,11 +520,10 @@ function validateVideoSlots(shot, slots) {
   } else {
     violations.push(...validateStructuredExecutionContract(shot, slots));
   }
-  // 1. 画外音与口型契约校验（严格防止画内演员动嘴）
+  // 1. 画外音与口型契约校验（仅认闭集枚举，绝不放行自由文本旁路）
   const isVoiceover = audio.mode === 'offscreen_voiceover' || (Boolean(audio.dialogue_content) && !audio.speaker_in_frame);
   if (isVoiceover) {
-    const isLipStateSealed = audio.visible_characters_lip_state === 'strictly_sealed'
-      || /(?:双唇紧闭|双唇自然闭合|双唇闭合|闭唇|闭口|闭合|紧闭|无说话口型|无口型|strictly_sealed)/iu.test(String(audio.visible_characters_lip_state || ''));
+    const isLipStateSealed = audio.visible_characters_lip_state === 'strictly_sealed';
     if (audio.dialogue_content && !isLipStateSealed) {
       violations.push({
         rule: 'INVARIANT_OFFSCREEN_LIP_SYNC_VIOLATION',
@@ -558,12 +535,12 @@ function validateVideoSlots(shot, slots) {
 
     if (Array.isArray(slots.trajectories)) {
       slots.trajectories.forEach((traj) => {
-        if (traj?.mouth_state !== 'offscreen_sealed' && !mouthIsSealed(traj?.mouth_state)) {
+        if (!SEALED_MOUTH_STATES.has(String(traj?.mouth_state || '').trim())) {
           violations.push({
             rule: 'INVARIANT_CHARACTER_MOUTH_NOT_SEALED',
             shot_number: shotNum,
             severity: 'error',
-            message: `分镜 ${shotNum} 画外音模式下，角色「${traj.name}」的口型槽位必须明确声明双唇紧闭无口型！`,
+            message: `分镜 ${shotNum} 画外音模式下，角色「${traj.name}」的 mouth_state 必须为 closed 或 offscreen_sealed！`,
           });
         }
       });
@@ -762,22 +739,18 @@ function validateVideoSlots(shot, slots) {
             message: `分镜 ${shotNum} 的第 ${index + 1} 个时间段必须同时写明本段实际 action 和 result，不能只靠机位或台词填时长。`,
           });
         }
-        if (isGazeOnlyHold([
-          segment?.action,
-          segment?.result,
-          ...trajectories.flatMap(item => [
-            item?.action_detail, item?.action_atom?.action_detail,
-            item?.action_atom?.action,
-          ]),
-          ...(segment?.speech_action_alignment?.listener_reactions || []).map(item => item?.action),
-        ])) {
+        const segmentListenerReactions = segment?.speech_action_alignment?.listener_reactions || [];
+        if (trajectories.length > 0 && trajectories.every((t) => {
+          const lr = segmentListenerReactions.find(r => Number(r?.character_id) === Number(t?.character_id));
+          return isStaticGazeTrajectory(t, lr);
+        })) {
           violations.push({
             rule: 'INVARIANT_SHORT_DRAMA_INTERACTION_BEAT_EMPTY',
             shot_number: shotNum,
             severity: 'error',
             segment_index: index,
             conflict_slots: [`video_slots.shots_timeline[${index}].action`, `video_slots.shots_timeline[${index}].result`, `video_slots.shots_timeline[${index}].character_trajectories`],
-            message: `分镜 ${shotNum} 的第 ${index + 1} 段只有“互相看着/对视/等待”等静态描述，缺少可执行的剧情动作或反应。请把本段改成实际发生的物理动作、互动、移动或事件结果；没有后续事件就让该镜在事件结束处收束，不得用注视填时长。`,
+            message: `分镜 ${shotNum} 的第 ${index + 1} 段全员动作原子均无状态变化与实质动作（action_atom 仅注视/倾听且起终态一致）；请规划实际动作与终态跃迁。`,
           });
         }
         for (const id of expectedSegmentIds) {
@@ -807,14 +780,8 @@ function validateVideoSlots(shot, slots) {
             });
           }
           const isSpeakingInSegment = segmentDialogue && String(segment?.audio_lip_sync?.speaker_name || '').trim() === String(trajectory?.name || '').trim();
-          const listenerReaction = (segment?.speech_action_alignment?.listener_reactions || []).find(r => Number(r?.character_id) === id);
-          if (trajectory && !isSpeakingInSegment && isGazeOnlyHold([
-            trajectory.action_detail,
-            trajectory.action_atom?.action_detail,
-            trajectory.action_atom?.action,
-            trajectory.reaction_trigger?.source_label,
-            listenerReaction?.action,
-          ])) {
+          const listenerReaction = segmentListenerReactions.find(r => Number(r?.character_id) === id);
+          if (trajectory && !isSpeakingInSegment && isStaticGazeTrajectory(trajectory, listenerReaction)) {
             violations.push({
               rule: 'INVARIANT_SHORT_DRAMA_CHARACTER_ACTION_EMPTY',
               shot_number: shotNum,
@@ -822,23 +789,12 @@ function validateVideoSlots(shot, slots) {
               character_id: id,
               segment_index: index,
               conflict_slots: [`video_slots.shots_timeline[${index}].character_trajectories[character_id=${id}].action_atom`],
-              message: `分镜 ${shotNum} 的第 ${index + 1} 段中角色 ID ${id} 只有凝视、等待或静止描述，没有本段可执行的动作/反应；请写明与对白或事件同步的身体、表情或互动变化。`,
+              message: `分镜 ${shotNum} 的第 ${index + 1} 段中角色 ID ${id} 仅存在无状态跃迁的静态注视/倾听原子，缺乏实质动作或反应变化。`,
             });
           }
         }
       });
     }
-  }
-
-  // 4. 抽象军事术语排查（必须具象为视觉物理现象）
-  const fullText = JSON.stringify(slots);
-  if (/(?:连续弹着点|弹着火星|弹着点)/.test(fullText)) {
-    violations.push({
-      rule: 'INVARIANT_ABSTRACT_PHYSICAL_JARGON',
-      shot_number: shotNum,
-      severity: 'warning',
-      message: `分镜 ${shotNum} 包含未具象化的军事术语（如弹着点），视频模型无法理解抽象名词，必须具象化为“飞溅碎石、火花与烟尘”！`,
-    });
   }
 
   return violations;
@@ -950,7 +906,7 @@ function compileVideoPromptFromSlots(shot, slots, options = {}) {
       .filter(Boolean);
     if (trajLines.length) parts.push('角色动态与轨迹：' + trajLines.join('；'));
   } else if (shot.action) {
-    parts.push('动作：' + translatePhysicalPhenomena(stripChineseExclusions(shot.action)));
+    parts.push('动作：' + stripChineseExclusions(shot.action));
   }
 
   const alignedBeats = normSlots.shots_timeline
@@ -1007,7 +963,7 @@ function compileVideoPromptFromSlots(shot, slots, options = {}) {
   if (vfx.terminal_event) {
     parts.push('结果收束：' + vfx.terminal_event);
   } else if (shot.result) {
-    parts.push('结果：' + translatePhysicalPhenomena(stripChineseExclusions(shot.result)));
+    parts.push('结果：' + stripChineseExclusions(shot.result));
   }
 
   // 6.5 光影影调与明暗层次 (Lighting & Chiaroscuro)
@@ -1074,8 +1030,8 @@ function synthesizeH3MultimodalSlots(shot, options = {}) {
   const movement = shot.movement || 'tracking';
   const lightDesc = angleService.lightingToPrompt(shot.lighting_style) || '';
   const lightPhrase = lightDesc ? ` with ${lightDesc}` : '';
-  const actionText = translatePhysicalPhenomena(String(shot.action || ''));
-  const resultText = translatePhysicalPhenomena(String(shot.result || ''));
+  const actionText = String(shot.action || '');
+  const resultText = String(shot.result || '');
   const diagText = String(shot.dialogue || '');
 
   const h3Shots = [];
@@ -1182,9 +1138,8 @@ module.exports = {
   compileH3MultimodalPrompt,
   synthesizeH3MultimodalSlots,
   formatH3Timestamp,
-  translatePhysicalPhenomena,
   compileActionAtom,
   compileStructuredTrajectory,
-  isGazeOnlyHold,
-  mouthIsSealed,
+  isStaticGazeTrajectory,
+  SEALED_MOUTH_STATES,
 };

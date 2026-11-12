@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
-  checkPlanningFeasibility,
+  planningFeasibilityViolations: checkPlanningFeasibility,
   validateAllInvariants,
 } = require('../src/ontology/invariants');
 const { validateCharacterVisualSlots } = require('../src/ontology/visualSlots');

@@ -13,126 +13,13 @@ const { VisualSlotCompletenessRule, parseCharacterIds } = require('./rules/visua
 const VideoSlotsRule = require('./rules/videoSlotsRule');
 const CrowdControlRule = require('./rules/crowdControlRule');
 const H3ReferenceCapacityRule = require('./rules/h3ReferenceCapacityRule');
-const { PhysicalDescriptionRule, FORBIDDEN_METAPHORS, FORBIDDEN_UI_TEXT } = require('./rules/physicalDescriptionRule');
 const SpatialContinuityRule = require('./rules/spatialContinuityRule');
 const { PropEraAndScaleRule, MODERN_ANACHRONISMS } = require('./rules/propEraAndScaleRule');
 const ObsoleteAssetsRule = require('./rules/obsoleteAssetsRule');
-const SceneCoPresenceRule = require('./rules/sceneCoPresenceRule');
 const ShotTransitionContinuityRule = require('./rules/shotTransitionContinuityRule');
 const { CrossSlotInvariantsRule } = require('./rules/crossSlotRules');
 const { AssetReferenceRule, planningFeasibilityViolations } = require('./rules/assetReferenceRule');
 const { InvariantRuleEngine, defaultEngine } = require('./ruleEngine');
-
-// 实例化用于直接独立调用的单例规则
-const audioRule = defaultEngine.getRule('RULE_AUDIO_CONTRACT') || new AudioContractRule();
-const speechTimingRule = defaultEngine.getRule('RULE_SPEECH_TIMING') || new SpeechTimingRule();
-const visualSlotRule = defaultEngine.getRule('RULE_VISUAL_SLOT_COMPLETENESS') || new VisualSlotCompletenessRule();
-const videoSlotsRule = defaultEngine.getRule('RULE_VIDEO_SLOTS') || new VideoSlotsRule();
-const crowdRule = defaultEngine.getRule('RULE_CROWD_CONTROL') || new CrowdControlRule();
-const h3CapRule = defaultEngine.getRule('RULE_H3_REFERENCE_CAPACITY') || new H3ReferenceCapacityRule();
-const physicalDescRule = defaultEngine.getRule('RULE_PHYSICAL_DESCRIPTION') || new PhysicalDescriptionRule();
-const spatialRule = defaultEngine.getRule('RULE_SPATIAL_CONTINUITY') || new SpatialContinuityRule();
-const propRule = defaultEngine.getRule('RULE_PROP_ERA_AND_SCALE') || new PropEraAndScaleRule();
-const obsoleteRule = defaultEngine.getRule('RULE_OBSOLETE_ASSETS') || new ObsoleteAssetsRule();
-const sceneCoPresenceRule = defaultEngine.getRule('RULE_SCENE_CO_PRESENCE') || new SceneCoPresenceRule();
-const shotTransitionRule = defaultEngine.getRule('RULE_SHOT_TRANSITION_CONTINUITY') || new ShotTransitionContinuityRule();
-const crossSlotRule = defaultEngine.getRule('RULE_CROSS_SLOT_INVARIANTS') || new CrossSlotInvariantsRule();
-
-
-/**
- * 门禁 2：音频视听合同检查（无对白必配 BGM，供给 H3）
- * @param {Array<object>} shots
- * @returns {Array<object>} 违规列表
- */
-function checkAudioContract(shots) {
-  return audioRule.evaluate({ shots });
-}
-
-/**
- * 门禁：台词与旁白时长预算检查（Speech Timing Budget Hard Gate）
- * @param {Array<object>} shots
- * @param {object} options
- * @returns {Array<object>} 违规列表
- */
-function checkSpeechTiming(shots, options = {}) {
-  return speechTimingRule.evaluate({ shots, options });
-}
-
-/**
- * 门禁：生图构图槽位完整性检查（Visual Slots & Freeze-frame Posture Hard Gate）
- * @param {Array<object>} shots
- * @returns {Array<object>} 违规列表
- */
-function checkVisualSlotCompleteness(shots) {
-  return visualSlotRule.evaluate({ shots });
-}
-
-/**
- * 视听硬门禁：视频语义槽位契约与画外音口型审查
- * @param {Array<object>} shots
- * @returns {Array<object>} 违规列表
- */
-function checkVideoSlots(shots) {
-  return videoSlotsRule.evaluate({ shots });
-}
-
-/**
- * 门禁 3：群戏防人脸崩溃与防克隆人检查（单镜身份角色 <= 2）
- * @param {Array<object>} shots
- * @returns {Array<object>} 违规列表
- */
-function checkCrowdControl(shots) {
-  return crowdRule.evaluate({ shots });
-}
-
-/**
- * 门禁：H3视频参考图物理上限与复杂度审查（单镜身份角色<=2，核心道具<=2）
- * @param {Array<object>} shots
- * @returns {Array<object>} 违规列表
- */
-function checkH3ReferenceCapacity(shots) {
-  return h3CapRule.evaluate({ shots });
-}
-
-/**
- * 门禁 4：纯物理描写与禁止UI/文字交代剧情检查
- * @param {Array<object>} shots
- * @returns {Array<object>} 违规列表
- */
-function checkPhysicalVisualDescription(shots) {
-  return physicalDescRule.evaluate({ shots });
-}
-
-/**
- * 门禁 5：镜头间空间连续性检查（防跳切与瞬移）
- * @param {Array<object>} shots
- * @returns {Array<object>} 违规列表
- */
-function checkSpatialContinuity(shots) {
-  return spatialRule.evaluate({ shots });
-}
-
-/**
- * 门禁 6：道具时代与物理尺度硬约束检查
- * @param {Array<object>} props
- * @param {string} dramaEra - ancient, modern, sci_fi, etc.
- * @returns {Array<object>} 违规列表
- */
-function checkPropEraAndScale(props, dramaEra = 'modern') {
-  return propRule.evaluate({ props, dramaEra });
-}
-
-/**
- * 检验是否有不符合当前剧本且分镜未引用的过时/孤儿资产（角色、道具、场地）
- * @param {object} catalogs - { characters: [], props: [], scenes: [] }
- * @param {string} scriptContent - 当前集/全剧剧本
- * @param {Array<object>} shots - 分镜列表
- * @param {object} [options]
- * @returns {Array<object>} 警告项列表
- */
-function checkObsoleteAssets(catalogs = {}, scriptContent = '', shots = [], options = {}) {
-  return obsoleteRule.evaluate({ catalogs, scriptContent, shots, options });
-}
 
 /**
  * 运行全部视听本体质量门禁（统一由 InvariantRuleEngine 执行求值）
@@ -168,35 +55,16 @@ module.exports = {
   VideoSlotsRule,
   CrowdControlRule,
   H3ReferenceCapacityRule,
-  PhysicalDescriptionRule,
   SpatialContinuityRule,
   PropEraAndScaleRule,
   ObsoleteAssetsRule,
-  SceneCoPresenceRule,
   ShotTransitionContinuityRule,
   CrossSlotInvariantsRule,
   AssetReferenceRule,
 
-  // 词表与辅助函数
-  FORBIDDEN_METAPHORS,
-  FORBIDDEN_UI_TEXT,
+  // 词表与核心判定入口
   MODERN_ANACHRONISMS,
   parseCharacterIds,
-
-  // 向后兼容的标准门禁 API
-  checkAudioContract,
-  checkSpeechTiming,
-  checkVisualSlotCompleteness,
-  checkVideoSlots,
-  checkCrowdControl,
-  checkH3ReferenceCapacity,
-  checkPhysicalVisualDescription,
-  checkSpatialContinuity,
-  checkPropEraAndScale,
-  checkObsoleteAssets,
-  checkSceneCoPresence: (shots) => sceneCoPresenceRule.evaluate({ shots }),
-  checkShotTransitionContinuity: (shots) => shotTransitionRule.evaluate({ shots }),
-  checkCrossSlotInvariants: (shots) => crossSlotRule.evaluate({ shots }),
-  checkPlanningFeasibility: (shots, options = {}) => planningFeasibilityViolations(shots, options),
+  planningFeasibilityViolations,
   validateAllInvariants,
 };

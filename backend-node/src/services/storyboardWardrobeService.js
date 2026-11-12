@@ -13,9 +13,6 @@ function splitReason(shot) {
     if (ids.has(id) || Array.isArray(c.stage_id) || c.first_stage_id != null || c.last_stage_id != null) return '同一人物在一个镜头选择了多套造型';
     ids.add(id);
   }
-  const action = String(shot.action || '');
-  if (/(?:换上|脱下|穿上|更换).{0,8}(?:衣|服|装|外套|制服|鞋|帽|裤|裙|衫|披风)|变装|换装过程|(?:衣服|服装|衣着).{0,12}(?:变成|变为|渐变)|(?:puts? on|takes? off|changes? into).{0,35}(?:shirt|jacket|uniform|clothes|outfit)|costume transformation/iu.test(action)) return '动作包含穿脱或镜内变装';
-  if (change && /进入光门.*(?:走出|抵达|出现)|从现实.*(?:进入|来到|抵达).*三角洲/u.test(action)) return '一次换装跨越了旧造型与新造型两个场面';
   return '';
 }
 function assertSingleOutfit(shot) {

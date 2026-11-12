@@ -5,22 +5,22 @@ const {
   InvariantRuleEngine,
   defaultEngine,
   BaseInvariantRule,
-  checkAudioContract,
   validateAllInvariants,
 } = require('../src/ontology/invariants');
 
 describe('SHACL InvariantRuleEngine (Specification Pattern)', () => {
   it('defaultEngine contains all built-in rules', () => {
     const rules = defaultEngine.getRules();
-    assert.ok(rules.length >= 11, `Expected at least 11 rules, got ${rules.length}`);
+    assert.ok(rules.length >= 10, `Expected at least 10 rules, got ${rules.length}`);
     assert.ok(!defaultEngine.getRule('RULE_MOVEMENT_DYNAMISM'));
+    assert.ok(!defaultEngine.getRule('RULE_PHYSICAL_DESCRIPTION'));
+    assert.ok(!defaultEngine.getRule('RULE_SCENE_CO_PRESENCE'));
     assert.ok(defaultEngine.getRule('RULE_AUDIO_CONTRACT'));
     assert.ok(defaultEngine.getRule('RULE_SPEECH_TIMING'));
     assert.ok(defaultEngine.getRule('RULE_VISUAL_SLOT_COMPLETENESS'));
     assert.ok(defaultEngine.getRule('RULE_VIDEO_SLOTS'));
     assert.ok(defaultEngine.getRule('RULE_CROWD_CONTROL'));
     assert.ok(defaultEngine.getRule('RULE_H3_REFERENCE_CAPACITY'));
-    assert.ok(defaultEngine.getRule('RULE_PHYSICAL_DESCRIPTION'));
     assert.ok(defaultEngine.getRule('RULE_SPATIAL_CONTINUITY'));
     assert.ok(defaultEngine.getRule('RULE_PROP_ERA_AND_SCALE'));
     assert.ok(defaultEngine.getRule('RULE_OBSOLETE_ASSETS'));

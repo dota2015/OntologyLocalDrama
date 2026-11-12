@@ -11,10 +11,11 @@ const angleService = require('./angleService');
 const { timingInstructions, assessSpeechTiming } = require('../utils/speechTiming');
 const { shotSpeechTurns } = require('./dialogueDubbingService');
 const { enforceStoryboardSpeechTiming } = require('./storyboardSpeechService');
-const { checkPlanningFeasibility, checkSpeechTiming } = require('../ontology/invariants');
+const { planningFeasibilityViolations, SpeechTimingRule } = require('../ontology/invariants');
 
 function stageOnePlanningViolations(storyboards, { catalogs, narrativeStyle, durationRange } = {}) {
-  const violations = [...checkPlanningFeasibility(storyboards, { catalogs })];
+  const violations = [...planningFeasibilityViolations(storyboards, { catalogs })];
+  const speechTimingRule = new SpeechTimingRule();
   const delivery = require('./speechDeliveryService');
   for (let idx = 0; idx < (Array.isArray(storyboards) ? storyboards.length : 0); idx++) {
     const shot = storyboards[idx];
@@ -42,7 +43,7 @@ function stageOnePlanningViolations(storyboards, { catalogs, narrativeStyle, dur
     }
     const dur = durationRange ? Math.max(durationRange.min, Math.min(durationRange.max, rawDur)) : rawDur;
     const deliveryOptions = delivery.budgetOptions(delivery.resolve(narrativeStyle, shot, { duration: dur }));
-    violations.push(...checkSpeechTiming([{ ...shot, shot_number: shotNum, duration: dur }], { deliveryOptions }));
+    violations.push(...speechTimingRule.evaluate({ shots: [{ ...shot, shot_number: shotNum, duration: dur }], options: { deliveryOptions } }));
   }
   return violations;
 }
@@ -321,156 +322,7 @@ function getStoryboardsForEpisode(db, episodeId) {
   });
 }
 
-function extractStaticFreezeFramePose(action, sb = {}) {
-  if (!action || typeof action !== 'string') return '';
-  const { stripChineseExclusions } = require('../utils/framePromptSanitize');
-  let text = stripChineseExclusions(action).trim();
-
-  // 1. 过滤单纯的运镜描述（如：镜头从会议室上方缓缓下降。镜头缓推，）
-  text = text.replace(/镜头(?:从|沿|顺着|向|由|小幅|缓推|推进|拉开|横摇|横移|跟随|轻轻|微微|持续).*?[，。；]/g, '');
-  text = text.replace(/，?镜头(?:缓推|推近|靠近|推进|拉远|横摇|跟随|停在).*$/g, '');
-
-  // 2. 特殊多动作/复合剧本描述转译为决定性瞬间（通用化人物匹配，绝无写死角色名）
-  text = text.replace(/([^\s，,。；]{2,8})伏在低矮掩体后[，,]抬头观察([^，。；]+)[，,]右手按住通讯器位置/g, '$1身体紧贴低矮掩体俯伏，微仰起头目光警惕锁定$2，右手紧按在战术通讯耳机上');
-  text = text.replace(/([^\s，,。；]{2,8})没有停步[，,]从掩体后冲出[，,]沿([^，。；]+?)(?:快速)?奔向([^，。；]+)/g, '$1位于$2中央，屈膝大步奔冲，背向镜头动作迅猛，正对着前方$3');
-  text = text.replace(/([^\s，,。；]{2,8})缩在([^，。；]+?)后[，,]低头按住护甲弹痕并抬起通讯器位置/g, '$1屈膝蜷缩在$2内侧，一手按在胸前受创的护甲弹痕上，一手按住战术通讯耳机，低头咬牙隐蔽');
-  text = text.replace(/二层窗口连续闪出枪口火光[，,]([^\s，,。；]{2,8})急停后横向翻滚到一张倾倒金属桌后/g, '二层窗口枪火迸发，$1侧身蜷缩扑倒在倾倒的厚重金属桌后方，单臂护头，身体紧贴地面掩体躲避弹雨');
-  text = text.replace(/急停后横向翻滚到([^，。；]+?)(?:后|旁)/g, '侧身扑倒蜷缩在$1后方，单手撑地掩蔽');
-  text = text.replace(/先指向二层窗口[，,]再沿厂房侧面比出撤离方向/g, '单臂平举直指厂房侧面撤离方向，身体压低重心，侧脸神情严肃果断');
-  text = text.replace(/听完后停止翻找装备/g, '单膝跪地，双手停在装备包拉链处定格，侧头凝神倾听耳机中的通讯，神情严峻');
-  text = text.replace(/([^\s，,。；]{2,8})在另一张书桌前合上练习册[，,]转身看向([^，。；]+)[；;]([^\s，,。；]{2,8})先侧头回应.*$/g, '$1坐在书桌前侧身转头看向$2，双手按在合拢的书册上；$3侧头面向对方，神情专注，身子仍斜向桌前');
-  text = text.replace(/([^\s，,。；]{2,8})的操作速度(?:逐渐)?变慢[，,]但仍看着屏幕/g, '$1双手手指悬在按键上方停滞，双眼仍紧盯屏幕冷光');
-  text = text.replace(/([^\s，,。；]{2,8})嘴唇闭合[，,]右手停在鼠标上[；;]显示器冷光在眼镜镜片中重新映出([^，。；]+)/g, '$1紧抿嘴唇面容紧绷，右手停在鼠标上，镜片强烈反光映出$2');
-  text = text.replace(/救援装置上的数字从十秒连续下降/g, '胸前战术救援装置的荧光红字定格在紧急倒计时读数，目光焦急注视前方');
-  text = text.replace(/倒计时跳到五秒[，,]([^\s，,。；]{2,8})从断墙后冲向([^，。；]+?)[，,]连续弹着点从他身后追到脚边[；;]数字降至一秒时[，,]他伸手扑向\2/g, '$1身体凌空大幅前跃扑出，单臂竭力朝倒地的$2伸展手指，周围地面弹着点碎屑激射，决绝悲壮的定格瞬间');
-  text = text.replace(/间歇闪烁/g, '亮起微弱指示灯光');
-  text = text.replace(/两束标记光[，,]分别扫过高台和二层窗口/g, '两道醒目的战术激光标记光束直射向高台与二层窗口，照亮昏暗环境');
-  text = text.replace(/([^\s，,。；]{2,8})的游戏画面出现纵向像素断层[，,]工厂影像向两侧错位[，,]中央逐渐露出书房屏幕反光/g, '游戏画面定格出现纵向像素故障与撕裂断层，工厂影像向两侧撕裂错位，画面正中心隐约映出书房与少年眼镜的幽蓝冷光反影');
-
-  // 3. 统一替换时间过渡连接词为空间静态连接
-  text = text.replace(/(?:然后|紧接着|接着|随后重新|随后|接下来)/g, '，');
-  text = text.replace(/(?:开始|逐渐|慢慢)/g, '');
-
-  // 4. 动态时序动词 -> 静态决定性瞬间定格抓拍转换
-  // 4.1 视线与头部：快速看了一眼 -> 静态注视姿态
-  text = text.replace(/(?:快速|猛然|急忙|悄悄|顺势|侧头)?(?:向|朝|往)([^，。；]+?)(?:看了一眼|瞄了一眼|扫视一眼|望了一眼|看去)/g, '头微偏向$1，目光警惕专注地注视着$1');
-  text = text.replace(/(?:快速|猛然)?转头看向([^，。；]+?)(并|，|。|；|$)/g, '侧头面向$1，目光紧盯着$1$2');
-  text = text.replace(/(?:转头)?扫视([^，。；]+?)[，,](?:在两个岔口之间来回确认|目光在两个岔口之间警惕扫视锁定)/g, '头部转向$1，锐利的目光警惕锁定前方岔路口，双手持枪戒备');
-  text = text.replace(/在两个岔口之间来回确认/g, '目光警惕锁定岔路口');
-  text = text.replace(/快速查看([^，。；]+)/g, '侧头警惕注视$1');
-  text = text.replace(/又低头检查([^，。；]+)/g, '一手托起$1低头凝视');
-
-  // 4.2 走动位移：沿...走到... -> 静态到达站位
-  text = text.replace(/沿([^，。；]+?)(?:快步|低姿|慢慢)?走到([^，。；]+?)(?:右侧|左侧|身边|身旁|旁)/g, '半蹲停在$2旁，身体压低保持隐蔽');
-  text = text.replace(/快步走到([^，。；]+?)(?:身边|身旁|旁|左侧|右侧)?/g, '停在$1旁，身体重心前移');
-  text = text.replace(/走到([^，。；]+?)身边[，,]站在([^，。；]+?)旁[，,]低头看着([^，。；]+?)/g, '站在$2旁，身体微前倾，低头注视着$3');
-  text = text.replace(/走到([^，。；]+?)(?:左侧|右侧|旁)[，,]低头看向([^，。；]+?)/g, '站在$1侧旁微前倾上身，低头凝视$2');
-  text = text.replace(/(?:从走廊掩体后起身[，,])?压低上身(?:大步|向红狼所在方向快速)?冲出/g, '蜂医压低上身呈半俯冲奔跑姿态，单腿大步向前跨出，双手护持装备，头部微抬目光焦急注视红狼方向');
-  text = text.replace(/(?:快速|全力|奋力)?奔向([^，。；]+)/g, '屈膝大步冲向$1');
-  text = text.replace(/(?:向|朝)([^，。；]+?)(?:快速|全力)?冲出/g, '大步冲向$1');
-  text = text.replace(/压低(?:上身|身姿|身体|身形)压低(?:上身|身姿|身体|身形)/g, '压低身姿');
-
-  // 4.3 复合肢体互动：按下...准备起身的肩膀
-  text = text.replace(/按下([^，。；]+?)准备起身的肩膀[，,]两人保持低姿态/g, '单手按在$1肩头，两人身体紧贴掩体压低重心，维持低姿隐蔽警戒');
-  text = text.replace(/按下([^，。；]+?)的?肩膀/g, '单手按在$1肩头压低身形');
-  text = text.replace(/按住护甲弹痕并抬起通讯器位置/g, '一手按在胸前受创的护甲弹痕上，一手按住战术通讯耳机，低头咬牙隐蔽');
-  text = text.replace(/身体重心移向([^，。；]+)/g, '身体前倾蓄势待发，目光紧锁$1');
-  text = text.replace(/对着通讯器发问/g, '单手手指按在战术通讯器上，神情凝重');
-
-  // 4.4 身体失衡与跌倒：身体失去平衡
-  text = text.replace(/身体失去平衡[，,]?(?:(?:向前|向后|向左|向右|前倾)?(?:跪倒|摔向|跌向|倒向|侧翻)[^，。；]*)?/g, '身体大幅向侧方倾斜失衡，单手紧急撑向地面，重心倾倒翻落的惊险定格瞬间');
-  text = text.replace(/身体失去平衡[，,]?(?:前倾)?(?:摔向|跌向|倒向)?([^，。；]+)?/g, '身体大幅向侧方倾斜失衡，单手紧急撑向地面，重心倾倒翻落的惊险定格瞬间');
-
-  // 4.5 掩体躲避与探身
-  text = text.replace(/贴着断墙/g, '背靠断墙屈膝隐蔽');
-  text = text.replace(/先指向([^，。；]+?)[，,、]再指向([^，。；]+)/g, '抬手直指$1与$2，身体保持低伏警戒');
-  text = text.replace(/顺着两个方向快速转头/g, '侧头密切注视指引方向');
-  text = text.replace(/从断墙右缘探出半个上身[，,]墙角立即被连续子弹击中[，,]他迅速缩回并压低头部/g, '红狼侧身紧贴断墙内侧，屈膝蹲伏压低头部避开碎石，双手握紧武器保持隐蔽低姿，头微低咬牙警戒');
-  text = text.replace(/贴近断墙移动时[，,]前方爆炸掀起碎石[，,]一发子弹擦过头盔上沿[，,]他立即屈膝侧扑到墙后/g, '屈膝侧扑至断墙掩体后方，身体压低双手护住武器，周围碎石飞溅');
-  text = text.replace(/向前跨一步挡住([^，。；]+?)半条行进路线[，,]抬手指向([^，。；]+)/g, '侧身跨步停在$1身前挡住路线，单臂抬起直指$2，神情严肃戒备');
-
-  // 4.6 电脑书桌姿态（奕辰等）
-  text = text.replace(/身体(?:继续)?前倾[，,]目光不离屏幕[，,]手指(?:快速)?敲击键盘/g, '上身前倾坐在书桌前，双手手指搭在键盘按键上，双眼专注凝视正前方屏幕');
-  text = text.replace(/戴着耳机坐在书桌前[，,]右手手指连续敲击键盘[，,]身体前倾盯着电脑屏幕/g, '戴着耳机前倾坐在书桌前，右手搭在键盘上，目光专注凝视亮起的电脑屏幕');
-  text = text.replace(/坐在电脑前[，,]未打开的书包留在座椅旁[，,]数学作业本刚被放到桌边/g, '端坐在电脑椅上，双手置于桌前，书包留在座椅旁，桌边放着作业本，目光注视屏幕');
-
-  // 5. 清理破损结尾标点与冗余逗号
-  text = text.replace(/，[，\s、]+/g, '，');
-  text = text.replace(/^[，。；、\s]+|[，。；、\s]+$/g, '').trim();
-
-  // 6. 终极残片与无姿态拦截修复 (解决 奕辰身体、露娜、抬手指 等严重缺陷)
-  const isBareSubject = /^(?:[\u4e00-\u9fa5]{2,4}(?:与[\u4e00-\u9fa5]{2,4})?)(?:身体)?$/i.test(text);
-  const isTruncatedFragment = text.length < 5 || /(?:抬手指|贴着断墙|操作速度|先指)$/.test(text);
-
-  if (isBareSubject || isTruncatedFragment) {
-    if (sb.location && (sb.location.includes('书房') || sb.location.includes('室内') || sb.location.includes('电脑') || sb.location.includes('办公'))) {
-      text = '上身前倾坐在桌前，双手置于桌面，目光专注凝视前方';
-    } else if (sb.location && (sb.location.includes('掩体') || sb.location.includes('战场') || sb.location.includes('废墟') || sb.location.includes('通道'))) {
-      text = '屈膝压低重心隐蔽在掩体后，双手戒备，目光专注警惕注视前方';
-    } else {
-      text = text + '，身体保持稳定专注姿态，双手就位，目光注视前方';
-    }
-  }
-
-  return text;
-}
-
-function extractInitialPose(action, sb) {
-  return extractStaticFreezeFramePose(action, sb);
-}
-
-function isFlawedImagePrompt(prompt) {
-  if (!prompt || typeof prompt !== 'string') return true;
-  const p = prompt.trim();
-  if (!p) return true;
-
-  // 1. 包含被截断的残片或残缺短语
-  if (/，(?:[\u4e00-\u9fa5]{2,4}(?:与[\u4e00-\u9fa5]{2,4})?)(?:身体)?，/i.test(p)) return true;
-  if (/，(?:抬手指|贴着断墙|先指|操作速度|抬手指向|身体)[\s，]/i.test(p)) return true;
-  if (/，[^，。；]+?(?:抬手指|贴着断墙|先指|操作速度|身体)[，\s]/i.test(p)) return true;
-  if (/，(?:[^，。；]*?)(?:向[^，。；]+方向|沿[^，。；]+道路|沿[^，。；]+后方)[，\s]/i.test(p)) return true;
-  if (/压低(?:上身|身姿)压低/i.test(p)) return true;
-  if (/重心向向/i.test(p)) return true;
-  if (/侧身侧头/i.test(p)) return true;
-
-  // 2. 包含明显的动态/视频时序动词、多步时序动作或过程词（违背纯静态定格摄影抓拍原则）
-  if (/(?:镜头|分镜)[0-9一二三四五]/i.test(p)) return true;
-  if (/切到|切至/i.test(p)) return true;
-  if (/镜头(?:从|随|缓推|推进|侧向推进|后拉|下降|螺旋|向)/i.test(p)) return true;
-  if (/持续缓推/i.test(p)) return true;
-  if (/缓缓转身|缓缓抬眼|缓慢收拢|逐渐绷白/i.test(p)) return true;
-  if (/掌心猛地拍在|手指划过/i.test(p)) return true;
-  if (/冲昏了头脑|静静潜伏|灾难预感|不祥预感/i.test(p)) return true;
-  if (/(?:快速|猛然|顺势|急忙|回头)?向[^，。；]+?看了一眼/i.test(p)) return true;
-  if (/转头向[^，。；]+?看了一眼/i.test(p)) return true;
-  if (/沿[^，。；]+?走到[^，。；]+?/i.test(p)) return true;
-  if (/按下[^，。；]+?准备起身的肩膀/i.test(p)) return true;
-  if (/身体失去平衡[，,]/i.test(p)) return true;
-  if (/随后重新/i.test(p)) return true;
-  if (/先指向.+?再/i.test(p)) return true;
-  if (/急停后/i.test(p)) return true;
-  if (/翻滚到/i.test(p)) return true;
-  if (/停止翻找/i.test(p)) return true;
-  if (/间歇闪烁/i.test(p)) return true;
-  if (/连续下降/i.test(p)) return true;
-  if (/倒计时跳到/i.test(p)) return true;
-  if (/操作速度变慢/i.test(p)) return true;
-  if (/转向屏幕/i.test(p)) return true;
-  if (/抬起通讯器位置/i.test(p)) return true;
-  if (/抬头观察高台/i.test(p)) return true;
-
-  return false;
-}
-
-function sanitizeStaticImagePrompt(prompt, sb = {}, style = '') {
-  if (!prompt || typeof prompt !== 'string') return generateImagePrompt(sb, style);
-  if (isFlawedImagePrompt(prompt)) {
-    return generateImagePrompt(sb, style);
-  }
-  let text = prompt.trim();
-  text = extractStaticFreezeFramePose(text, sb);
-  return text;
-}
+// 生图提示词由结构化槽位直接编译；不做正则补写或静默改写导演动作文本。
 
 function generateImagePrompt(sb, style) {
   const { stripChineseExclusions } = require('../utils/framePromptSanitize');
@@ -503,9 +355,9 @@ function generateImagePrompt(sb, style) {
   if (angleLabel) {
     parts.push(`【机位景别】${angleLabel}`);
   }
-  // 画面动作（取定格瞬间的纯静态摄影姿态）
+  // 画面动作（直接保留去噪后的导演描述，不做自由文本补写）
   if (sb.action) {
-    const staticPose = extractStaticFreezeFramePose(stripChineseExclusions(sb.action), sb);
+    const staticPose = stripChineseExclusions(sb.action).trim();
     if (staticPose) parts.push(`【角色构图与姿态】${staticPose}`);
   }
   // 情绪与光影
@@ -1918,7 +1770,7 @@ async function runStageOneBaseGeneration(db, log, episodeId, taskId, options = {
   const stage1DurationLabel = ctx.durationRange
     ? `${ctx.durationRange.min}～${ctx.durationRange.max}秒整数秒，严禁超过上限 ${ctx.durationRange.max} 秒`
     : '4～30秒整数秒，超过30秒才按语义拆镜';
-  ctx.systemPrompt = `你是短剧基础分镜导演。只把本集剧本拆成完整、紧凑、可执行的剧情分镜，先保证剧情顺序和台词逐字覆盖。每镜${stage1DurationLabel}；每个分镜最多只允许 1 个说话人的单轮对白（或 1 段旁白），严禁两人轮流对话或对白与旁白混在同一镜，多人轮流对话必须按说话轮次拆成连续分镜；每镜对白/旁白字数必须能在本镜 duration 内按实际 TTS 速度（默认 1.25x，约 5 字/秒）自然说完，超长台词必须按语义拆镜；单镜最多2名有身份角色，群众/敌军写成环境事件。不要输出 semantic_slots、video_slots、character_visuals、动作原子、口型、视线枚举或 H3 提示词。只返回 JSON 对象 {"storyboards":[...]}，不要解释。每镜字段：shot_number,title,scene_id,characters,background_characters,props,duration,location,time,shot_type,angle_h,angle_v,angle_s,movement,action,result,dialogue,narration,emotion,start_framing,end_framing,transition_to_next。对白和旁白必须逐字保留，动作必须与对白同时发生，禁止用互相看着或静止等待填时长。可用场景目录：${JSON.stringify(ctx.scenes.map(s => ({ id: s.id, name: s.name, location: s.location })))}；可用角色目录：${JSON.stringify(ctx.characters.map(c => ({ id: c.id, name: c.name })))}；可用道具目录：${JSON.stringify(ctx.props.map(p => ({ id: p.id, name: p.name })))}。`;
+  ctx.systemPrompt = `你是短剧基础分镜导演。只把本集剧本拆成完整、紧凑、可执行的剧情分镜，先保证剧情顺序和台词逐字覆盖。每镜${stage1DurationLabel}；每个分镜最多只允许 1 个说话人的单轮对白（或 1 段旁白），严禁两人轮流对话或对白与旁白混在同一镜，多人轮流对话必须按说话轮次拆成连续分镜；每镜对白/旁白字数必须能在本镜 duration 内按实际 TTS 速度（默认 1.25x，约 5 字/秒）自然说完，超长台词必须按语义拆镜；单镜最多2名有身份角色，群众/敌军写成环境事件。动作与画面描写必须是可拍摄的纯写实物理动作，严禁文学心理隐喻及在画面中描述 UI 元素（如血条、准星、倒计时悬浮窗、屏幕小字）。不要输出 semantic_slots、video_slots、character_visuals、动作原子、口型、视线枚举或 H3 提示词。只返回 JSON 对象 {"storyboards":[...]}，不要解释。每镜字段：shot_number,title,scene_id,characters,background_characters,props,duration,location,time,shot_type,angle_h,angle_v,angle_s,movement,action,result,dialogue,narration,emotion,start_framing,end_framing,transition_to_next。对白和旁白必须逐字保留，动作必须与对白同时发生，禁止用互相看着或静止等待填时长。可用场景目录：${JSON.stringify(ctx.scenes.map(s => ({ id: s.id, name: s.name, location: s.location })))}；可用角色目录：${JSON.stringify(ctx.characters.map(c => ({ id: c.id, name: c.name })))}；可用道具目录：${JSON.stringify(ctx.props.map(p => ({ id: p.id, name: p.name })))}。`;
   ctx.userPrompt = `【本集剧本】\n${ctx.scriptContent}\n\n【规划目标】镜头数${ctx.storyboardCount || '自动'}；总时长${ctx.videoDuration || '自动'}秒；镜头时长范围${ctx.durationRange ? JSON.stringify(ctx.durationRange) : '4～30秒'}。按剧情节拍规划，不删台词、不重复内容。`;
   log.info('Running Stage 1 Base Storyboard Generation', {
     task_id: taskId,
@@ -2122,19 +1974,11 @@ function rebuildPromptsForStoryboard(db, log, storyboardId) {
     throw Object.assign(new Error(`角色视觉槽位未通过门禁：${charViolations.map(v => v.message).join('；')}`), { status: 422, violations: charViolations });
   }
 
-  // 1. 若 image_prompt 为空或存在截断残片/时序动态动词，按静态定格规则自动重构
-  let imagePrompt = (row.image_prompt || '').trim();
-  if (!imagePrompt || isFlawedImagePrompt(imagePrompt)) {
-    imagePrompt = generateImagePrompt(row, finalStyle);
-  } else {
-    imagePrompt = sanitizeStaticImagePrompt(imagePrompt, row, finalStyle);
-  }
-  let polishedPrompt = (row.polished_prompt || '').trim();
-  if (!polishedPrompt || isFlawedImagePrompt(polishedPrompt)) {
-    polishedPrompt = imagePrompt;
-  } else {
-    polishedPrompt = sanitizeStaticImagePrompt(polishedPrompt, row, finalStyle);
-  }
+  // 1. 若 image_prompt 为空，依据结构化角色视觉槽位直接编译；不静默改写既有提示词文本
+  const existingImagePrompt = (row.image_prompt || '').trim();
+  const imagePrompt = existingImagePrompt || generateImagePrompt(row, finalStyle);
+  const existingPolished = (row.polished_prompt || '').trim();
+  const polishedPrompt = existingPolished || imagePrompt;
 
   const now = new Date().toISOString();
   db.prepare(
@@ -2518,10 +2362,6 @@ module.exports = {
   dedupeStoryboardRowsByNumber,
   getStoryboardsForEpisode,
   generateStoryboard,
-  extractStaticFreezeFramePose,
-  extractInitialPose,
-  isFlawedImagePrompt,
-  sanitizeStaticImagePrompt,
   /** 与分镜入库时一致的「图片提示词」拼装 */
   composeStoryboardImagePrompt: generateImagePrompt,
   /** 尾帧确定性提示词拼装（首尾帧模式） */

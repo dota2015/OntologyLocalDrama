@@ -9,7 +9,7 @@
     <template v-else>
       <el-collapse>
         <el-collapse-item v-for="stage in stages" :key="stage.id" :name="stage.id" :title="stage.name || '未命名造型'">
-          <el-input v-model="stage.name" maxlength="80" placeholder="造型名称，例如：三角洲训练装" @input="commit" />
+          <el-input v-model="stage.name" maxlength="80" placeholder="造型名称，例如：日常装 / 工作服 / 古装常服" @input="commit" />
           <el-input v-model="stage.appearance" type="textarea" :rows="3" maxlength="1500" show-word-limit placeholder="描述这套造型的上衣、下装、颜色、鞋子和配饰，保持人物身份不变" @input="commit" />
           <div class="range-row">
             <el-checkbox :model-value="!!stage.episode_range" @change="toggleRange(stage,$event)">按集数默认使用</el-checkbox>

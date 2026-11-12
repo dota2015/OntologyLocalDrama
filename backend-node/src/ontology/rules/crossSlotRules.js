@@ -6,7 +6,10 @@
 
 const BaseInvariantRule = require('./baseRule');
 const { shotSpeechTurns } = require('../../services/dialogueDubbingService');
-const { mouthIsSealed } = require('../videoSlots');
+
+const SEALED_MOUTH_STATES = new Set(['closed', 'offscreen_sealed']);
+const CLOSE_DIALOGUE_FRAMINGS = new Set(['over_the_shoulder', 'ots_reverse', 'two_shot_face_to_face']);
+const WIDE_SHOT_TYPES = new Set(['全景', '大远景', '远景', 'wide', 'long_shot', 'extreme_wide', 'establishing']);
 
 function parseJsonValue(value) {
   if (typeof value !== 'string' || !value.trim()) return value;
@@ -65,7 +68,7 @@ function escapeRegExp(value) {
   return String(value || '').replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }
 
-// Database dialogue commonly stores a display label ("露娜：台词"), while
+// Database dialogue commonly stores a display label ("角色甲：台词"), while
 // semantic/video slots store only the spoken text. The label is formatting,
 // not spoken content, so normalize it only when it matches a known speaker.
 function comparableSpeech(value, speakerHints = []) {
@@ -233,20 +236,17 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
             conflict_slots: ['speech_plan.is_offscreen', 'audio_lip_sync'],
           });
         }
-        // 检查画内角色是否有开口/说话动作
-        const speakingLipRegex = /(?:说话|张嘴|张口|大喊|呐喊|高呼|冷笑开口|启齿|低语|诉说|念叨|口型同步|动唇|唇齿微动)/i;
-        for (const vc of visibleChars) {
-          const charDesc = typeof vc === 'string' ? vc : `${vc.name || ''} ${vc.expression || ''} ${vc.action || ''} ${vc.mouth_state || ''}`;
-          if (speakingLipRegex.test(charDesc)) {
-            violations.push({
-              rule: 'INVARIANT_OFFSCREEN_SPEECH_LIP_SYNC_CONFLICT',
-              shot_number: shotNum,
-              severity: this.defaultSeverity,
-              message: `分镜 #${shotNum} 标记为画外音/画外说话，但画内角色描写出现开口动嘴（「${charDesc.trim()}」），必须声明画内全员双唇闭合！`,
-              conflict_slots: ['speech_plan.is_offscreen', 'visible_characters.mouth_state'],
-            });
-            break;
-          }
+        const unsealedOffscreen = videoTrajectories(videoSlots).find(
+          (trajectory) => !SEALED_MOUTH_STATES.has(String(trajectory?.mouth_state || '').trim())
+        );
+        if (unsealedOffscreen) {
+          violations.push({
+            rule: 'INVARIANT_OFFSCREEN_SPEECH_LIP_SYNC_CONFLICT',
+            shot_number: shotNum,
+            severity: this.defaultSeverity,
+            message: `分镜 #${shotNum} 标记为画外音/画外说话，但画内角色「${unsealedOffscreen.name || unsealedOffscreen.character_id || '未命名'}」mouth_state 不是 closed/offscreen_sealed！`,
+            conflict_slots: ['speech_plan.is_offscreen', 'video_slots.shots_timeline.character_trajectories.mouth_state'],
+          });
         }
       }
 
@@ -287,13 +287,15 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
         });
       }
       if (isNoSpeech) {
-        const unsealed = videoTrajectories(videoSlots).find((trajectory) => !mouthIsSealed(trajectory?.mouth_state));
+        const unsealed = videoTrajectories(videoSlots).find(
+          (trajectory) => !SEALED_MOUTH_STATES.has(String(trajectory?.mouth_state || '').trim())
+        );
         if (unsealed) {
           violations.push({
             rule: 'INVARIANT_NONVERBAL_MOUTH_NOT_SEALED',
             shot_number: shotNum,
             severity: this.defaultSeverity,
-            message: `分镜 #${shotNum} 规划为无语言声音模式，但角色「${unsealed.name || unsealed.character_id || '未命名'}」未明确保持闭口非说话状态。`,
+            message: `分镜 #${shotNum} 规划为无语言声音模式，但角色「${unsealed.name || unsealed.character_id || '未命名'}」的 mouth_state 必须为 closed 或 offscreen_sealed。`,
             conflict_slots: ['semantic_slots.audio_lip_sync', 'video_slots.trajectories.mouth_state', 'video_slots.shots_timeline.character_trajectories.mouth_state'],
           });
         }
@@ -372,9 +374,10 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
       // duplicate person in a tight composition. Keep background presence for
       // wide establishing/joint-observation shots only; the Director must
       // choose a wide three-person composition or remove the background role.
-      const framingText = String(framing || '');
-      const isOverShoulderDialogue = /(?:over_the_shoulder|ots_reverse|two_shot_face_to_face|过肩|正反打|反打|双人对话)/iu.test(framingText);
-      const isWideComposition = /(?:全景|远景|大远景|wide|long\s*shot|establishing)/iu.test(`${shotType} ${framingText}`);
+      const framingEnum = String(framing || '').trim();
+      const shotTypeEnum = String(shotType || '').trim();
+      const isOverShoulderDialogue = CLOSE_DIALOGUE_FRAMINGS.has(framingEnum);
+      const isWideComposition = WIDE_SHOT_TYPES.has(shotTypeEnum) || WIDE_SHOT_TYPES.has(framingEnum);
       if (isOverShoulderDialogue && bgIds.length > 0 && !isWideComposition && visibleCount > 0 && visibleCount <= 2) {
         violations.push({
           rule: 'INVARIANT_CLOSE_DIALOGUE_BACKGROUND_CONFLICT',
@@ -385,22 +388,20 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
         });
       }
 
-      // 6. 清晰正脸与背影、剪影冲突
+      // 6. 清晰正脸与背影、剪影冲突（仅校验结构化朝向枚举）
       const identityVis = slots.identity_visibility || shot.identity_visibility || '';
       if (identityVis === 'clear_frontal') {
-        const backRegex = /(?:背影|背向|背对镜头|剪影|黑影|后脑勺|背身)/i;
         const allChars = [...visibleChars, ...characterVisuals];
         for (const vc of allChars) {
           const facing = typeof vc === 'object' ? (vc.facing || '') : '';
           const headPose = typeof vc === 'object' ? (vc.head_pose || '') : '';
-          const textDesc = typeof vc === 'object' ? `${vc.posture || ''} ${vc.action || ''}` : String(vc);
-          if (facing === 'away_from_camera' || headPose === 'head_look_back' || backRegex.test(textDesc)) {
+          if (facing === 'away_from_camera' || facing === 'back_camera' || headPose === 'head_look_back') {
             violations.push({
               rule: 'INVARIANT_IDENTITY_VISIBILITY_FACING_CONFLICT',
               shot_number: shotNum,
               severity: this.defaultSeverity,
-              message: `分镜 #${shotNum} 声明面部清晰正脸识别 (clear_frontal)，但角色描写为背向机位/剪影/后脑勺，导致人脸锁定失效！`,
-              conflict_slots: ['identity_visibility', 'facing', 'posture'],
+              message: `分镜 #${shotNum} 声明面部清晰正脸识别 (clear_frontal)，但结构化朝向枚举为 ${facing || headPose}，导致人脸锁定失效！`,
+              conflict_slots: ['identity_visibility', 'facing', 'head_pose'],
             });
             break;
           }

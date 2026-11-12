@@ -9,7 +9,7 @@
 
 const { safeParseAIJSON, extractFirstArray } = require('../utils/safeJson');
 const aiClient = require('../services/aiClient');
-const { checkPropEraAndScale } = require('./invariants');
+const { PropEraAndScaleRule } = require('./invariants');
 const { isAssetObsolete } = require('./assetMatcher');
 
 /**
@@ -42,7 +42,7 @@ async function extractAllEntitiesFromScript(db, log, cfg, episodeId) {
 ${ep.script_content}
 
 【抽取硬性规则】：
-1. **角色(characters)**：提取所有有台词或关键动作的具体人物。写出 name, gender(男/女), role(身份如干员/侦察兵/母亲), appearance(具体外貌特征，五官/发型/体型，不少于30字), personality(性格关键词)。
+1. **角色(characters)**：提取所有有台词或关键动作的具体人物。写出 name, gender(男/女), role(身份如医生/学生/警探/母亲等), appearance(具体外貌特征，五官/发型/体型，不少于30字), personality(性格关键词)。
 2. **道具(props)**：提取剧中有物理交互、关键情节作用的物体（如武器、情报箱、药剂包、信件、案几）。
    - **强制要求 physical_scale**：必须给出具体的真实物理尺度（如“长约45cm的手提密码箱”、“高度约75cm的木案”），并标明“次要环境小物件，绝不可夸大夺焦”。
    - **时空使用合同**：结合道具实际出现的剧情时空，输出 era_category、era_compatibility 与 era_reason。era_compatibility 只能是 compatible、intentional_cross_era、incompatible、uncertain。穿越、梦境、游戏世界、回忆或刻意反差中的跨时代道具应标记 intentional_cross_era 并说明剧情依据，禁止仅凭全剧题材关键词判定穿帮。
@@ -79,7 +79,7 @@ ${ep.script_content}
   const rawScenes = Array.isArray(parsed?.scenes) ? parsed.scenes : [];
 
   // 2. 运行道具结构化时空合同门禁；自然语言关键词不参与硬阻断。
-  const propViolations = checkPropEraAndScale(rawProps, dramaEra);
+  const propViolations = new PropEraAndScaleRule().evaluate({ props: rawProps, dramaEra });
   const fatalErrors = propViolations.filter(v => v.severity === 'error');
   if (fatalErrors.length > 0) {
     log.warn('[本体提取] 发现道具时代穿帮硬门禁违规', { violations: fatalErrors });

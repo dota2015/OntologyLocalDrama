@@ -15,9 +15,9 @@ When an important individual is identified only as Mother, Younger Sister or a s
 Keep real-world people and their game counterparts distinct unless the premise explicitly makes them the same identity: describe who controls an avatar or who resembles whom once, and label speech with the identity currently on screen. A resemblance does not justify merging two characters.
 Do not turn anonymous enemy forces, crowds or background gunfire into named individual characters, invent dialogue for them or expand their biographies merely to populate a cast. A genuinely individualized antagonist may be named when the story requires it. Silently check that all important dialogue speakers have consistent names; return only the required episode JSON, without a separate cast list.` : `
 【固定人物姓名——仅用于剧本创作】
-写作前内部确定每位重要个体的固定姓名与身份。优先复用用户梗概、本剧角色及前文已明确的姓名，逐字保持一致，不随意省姓、换字或另起名，除非用户明确要求更名。红狼、蜂医、露娜等已确定的游戏名或代号本身就是有效角色名，无须强行改成现实姓名。
+写作前内部确定每位重要个体的固定姓名与身份。优先复用用户梗概、本剧角色及前文已明确的姓名，逐字保持一致，不随意省姓、换字或另起名，除非用户明确要求更名。已确定的代号、网名或专有称呼本身就是有效角色名，无须强行改成常规现实姓名。
 重要人物若只以妈妈、妹妹等关系称谓出现，在新剧本中为其明确一个合适且固定的姓名（用户明确要求匿名时除外），首次出场以“姓名（某人的妈妈／妹妹）”交代关系，后续动作描述和对白说话人标签统一用该姓名，所有集次保持一致。台词正文仍可自然称呼“妈妈、哥哥”等。本剧旧角色若仅以称谓保存，首次介绍要明确新姓名对应这个已有身份，不另造一个人；已有确定姓名的角色不得重新起名。
-现实人物与游戏映射人物分别标名；仅在梗概明确同一身份时才作为同一人。说明操控或相貌映射关系一次即可，谁在当前场景实际说话就用谁的角色名，不能因长得像就把妈妈与蜂医、妹妹与露娜合并。
+现实人物与虚拟/映射人物分别标名；仅在梗概明确同一身份时才作为同一人。说明操控或相貌映射关系一次即可，谁在当前场景实际说话就用谁的角色名，不能仅因外貌相似就把现实人物与虚拟映射人物合并。
 敌人、敌军、围观者等未个体化的群体，以及背景枪声，不为凑角色而起名、添加独立对白或扩写成个人传记；确有独立身份与剧情需要的反派才建立固定姓名。输出前内部检查重要对白说话人姓名是否完整一致，只返回规定的分集JSON，不额外输出人物表。`);
   return common + (english(cfg) ? `
 [GENERAL SCRIPT COMPOSITION — before storyboard breakdown]

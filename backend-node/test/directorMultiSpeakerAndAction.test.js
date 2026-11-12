@@ -1,23 +1,19 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { isGazeOnlyHold, validateVideoSlots, PERFORMANCE_CONTRACT } = require('../src/ontology/videoSlots');
+const { isStaticGazeTrajectory, validateVideoSlots, PERFORMANCE_CONTRACT } = require('../src/ontology/videoSlots');
 
-test('isGazeOnlyHold recognizes domestic/subtle physical actions and speech', () => {
-  // Action with lowering head, hands on desk, shoulders dropping
-  const values = [
-    '继续低声承认，肩膀微微下沉',
-    '坐姿，双手搭在桌沿，肩膀下沉，嘴唇开合',
-    '被点破后的沉默与承认',
-    '丽霞的注视',
-  ];
-  assert.equal(isGazeOnlyHold(values), false, 'Should recognize physical actions like 下沉/低头/开合/搭在');
+test('isStaticGazeTrajectory relies on structured action_atom rather than prose regex', () => {
+  assert.equal(isStaticGazeTrajectory({
+    start_state: 'sitting',
+    result_state: 'turning_head',
+    action_atom: { action: 'react', direction: 'down', contact: 'none', object_id: null },
+  }), false);
 
-  // Pure gaze without physical event should still be true
-  const gazeValues = [
-    '两人互相看着，保持不动',
-    '坐着等待，眼神对视',
-  ];
-  assert.equal(isGazeOnlyHold(gazeValues), true, 'Pure gaze without physical action should be true');
+  assert.equal(isStaticGazeTrajectory({
+    start_state: 'sitting',
+    result_state: 'sitting',
+    action_atom: { action: 'look', direction: 'none', contact: 'none', object_id: null },
+  }), true);
 });
 
 test('validateVideoSlots accepts only structured_sync and rejects legacy contracts', () => {

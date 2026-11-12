@@ -87,8 +87,8 @@ describe('Three-Tier Architectural Evolution: Agent First, Ontology Gatekeeper, 
         },
         video_slots: {
           audio_lip_sync: { mode: 'silent_ambient', dialogue_content: '' },
-          trajectories: [{ character_id: 1, name: '红狼', mouth_state: '双唇紧闭无口型' }],
-          shots_timeline: [{ character_trajectories: [{ character_id: 1, name: '红狼', mouth_state: '双唇紧闭无口型' }] }],
+          trajectories: [{ character_id: 1, name: '红狼', mouth_state: 'closed' }],
+          shots_timeline: [{ character_trajectories: [{ character_id: 1, name: '红狼', mouth_state: 'closed' }] }],
         },
       };
       const ambientViolations = checkCrossSlotInvariants([ambient]);

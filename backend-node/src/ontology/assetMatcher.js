@@ -23,7 +23,7 @@ function isAssetMentionedInText(type, asset, text) {
     // 1. 完全包含
     if (script.includes(rawName)) return true;
 
-    // 2. 去除括号中的别名/角色定位：如 "蜂医（苏晴）" -> "蜂医"、"苏晴"
+    // 2. 去除括号中的别名/角色定位：如 "代号（别名）" -> "代号"、"别名"
     const cleaned = rawName.replace(/[\(（].*?[\)）]/g, '').trim();
     if (cleaned && cleaned.length >= 2 && script.includes(cleaned)) return true;
     const bracketMatches = rawName.match(/[\(（](.*?)[\)）]/);

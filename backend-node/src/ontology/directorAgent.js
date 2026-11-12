@@ -8,10 +8,10 @@
  */
 
 const { compileDramaSemanticPackage } = require('./semanticPackage');
-const { validateAllInvariants, checkSpeechTiming, checkPlanningFeasibility } = require('./invariants');
+const { validateAllInvariants, SpeechTimingRule, planningFeasibilityViolations } = require('./invariants');
 const actionAtoms = require('./actionAtoms');
 const { PERFORMANCE_CONTRACT } = actionAtoms;
-const { validateVideoSlots, formatH3Timestamp, isGazeOnlyHold, mouthIsSealed } = require('./videoSlots');
+const { validateVideoSlots, formatH3Timestamp } = require('./videoSlots');
 const { CONTINUUM_MIN_SECONDS } = require('../services/continuumPlan');
 const { validateCharacterVisualSlots, STRUCTURED_DEPTH_LAYERS, STRUCTURED_SCREEN_POSITIONS } = require('./visualSlots');
 const { extractAllEntitiesFromScript } = require('./extractionAgent');
@@ -1364,7 +1364,8 @@ function auditDirectorDraft(shots, invariantOptions) {
     for (const [index, shot] of shots.entries()) {
       const duration = Number(shot.duration);
       if (!Number.isInteger(duration) || duration < range.min || duration > range.max) {
-        const requiresSplit = duration > range.max && checkSpeechTiming([{ ...shot, duration: range.max }], invariantOptions).length > 0;
+        const requiresSplit = duration > range.max
+          && new SpeechTimingRule().evaluate({ shots: [{ ...shot, duration: range.max }], options: invariantOptions }).length > 0;
         candidates.push({ rule: 'INVARIANT_DIRECTOR_DURATION_RANGE', shot_number: shot.shot_number || index + 1,
           severity: 'error', conflict_slots: ['duration', 'semantic_slots.shot_duration', 'video_slots.timing.duration', 'video_slots.shots_timeline'],
           requires_split: requiresSplit, max_duration: range.max,
@@ -1465,7 +1466,7 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
   // shot_number.  Always resolve one display number so failures can be tied
   // back to the actual storyboard instead of being reported as #undefined.
   const shotNumber = shot?.shot_number || shot?.storyboard_number || shot?.id || '?';
-  const planningViolations = checkPlanningFeasibility([shot], { catalogs: retryOptions.catalogs || {} });
+  const planningViolations = planningFeasibilityViolations([shot], { catalogs: retryOptions.catalogs || {} });
   if (planningViolations.length) {
     const error = new Error(`分镜 #${shotNumber} 的导演规划不可执行：${planningViolations.map((item) => item.message).join('；')}`);
     error.status = 422;
@@ -1641,7 +1642,7 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
         name: 'director-execution-slots-planner',
         instructions: patchMode
           ? `你是短剧导演执行合同的局部修复节点。只修复门禁反馈列出的字段，禁止改写人物清单、场景、对白、旁白、总时长和其他已通过字段。h3_mode 固定 ref2va 时，semantic_slots.first_frame_policy 与 semantic_slots.last_frame_policy 必须固定填 'none'。${executionBackendContract}。当镜头已有角色对白（dialogue 非空且 narration 为空）时，speech_plan.is_narration 必须为 false、text 与 dialogue 台词逐字一致，严禁把角色台词标为旁白。character_visuals 必须精确覆盖权威人物且每人有实际定格、多人不得占用完全相同的 screen_position；video_slots.shots_timeline 必须让每位画内角色在该段有与事件同步的动作或反应。凡存在对白的 timeline 段，speech_action_alignment.mode 固定填 'concurrent'（禁止填 sync/deliberate_pause/none），画内说话人 character_trajectories[].mouth_state 固定填 'speaker_synced'。当【本体资产白名单】的 props 为空或不含目标物体时，动作 target_type 禁止填 'prop'（无有效 target_id 必被门禁拒绝），改用 'event' 或 'scene' 并填写 target_label。只返回指定 repairs JSON，不要解释。`
-          : `你是短剧导演执行合同节点。根据紧凑的当前镜头事实，一次输出完整 semantic_slots、character_visuals、last_frame_visuals 和 video_slots。禁止改写人物清单、场景、对白、旁白和总时长。semantic_slots.continuity_from_previous 必须完整；h3_mode 固定 ref2va，first_frame_policy 与 last_frame_policy 必须固定填 'none'；${executionBackendContract}；当镜头已有角色对白（dialogue 非空且 narration 为空）时，speech_plan.is_narration 必须为 false，严禁把角色台词标为旁白。performance_contract 固定 ${PERFORMANCE_CONTRACT}；多人同框时 character_visuals 的 screen_position 必须互相错开。动作与对白必须同步，所有画内人物都要有本段可执行动作或反应；有对白段 speech_action_alignment.mode 固定填 'concurrent'，画内说话人 character_trajectories[].mouth_state 固定填 'speaker_synced'。当【本体资产白名单】的 props 为空或不含目标物体时，动作 target_type 禁止填 'prop'（无有效 target_id 必被门禁拒绝），改用 'event' 或 'scene' 并填写 target_label。${durationPlanContract}。只返回指定 JSON，不要解释。`,
+          : `你是短剧导演执行合同节点。根据紧凑的当前镜头事实，一次输出完整 semantic_slots、character_visuals、last_frame_visuals 和 video_slots。禁止改写人物清单、场景、对白、旁白和总时长。semantic_slots.continuity_from_previous 必须完整；h3_mode 固定 ref2va，first_frame_policy 与 last_frame_policy 必须固定填 'none'；${executionBackendContract}；当镜头已有角色对白（dialogue 非空且 narration 为空）时，speech_plan.is_narration 必须为 false，严禁把角色台词标为旁白。performance_contract 固定 ${PERFORMANCE_CONTRACT}；多人同框时 character_visuals 的 screen_position 必须互相错开。动作与对白必须同步，所有画内人物都要有本段可执行动作或反应；有对白段 speech_action_alignment.mode 固定填 'concurrent'，画内说话人 character_trajectories[].mouth_state 固定填 'speaker_synced'。当【本体资产白名单】的 props 为空或不含目标物体时，动作 target_type 禁止填 'prop'（无有效 target_id 必被门禁拒绝），改用 'event' 或 'scene' 并填写 target_label。动作与画面描述必须是可拍摄的纯写实物理事件，严禁文学心理隐喻及在画面中描述 UI 元素（如血条、准星、倒计时悬浮窗、屏幕小字）。${durationPlanContract}。只返回指定 JSON，不要解释。`,
         input: requestInput,
         outputType: patchMode
           ? agentsRuntime.directorExecutionRepairOutputType(shotNumber)
@@ -1712,7 +1713,7 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
         if (!sameIds(lockedVisibleIds, plannedVisibleIds) || !sameIds(lockedBackgroundIds, plannedBackgroundIds) || (hasOffscreenContract && !sameIds(lockedOffscreenIds, plannedOffscreenIds))) {
           errors.push({ message: `阶段二不得改写阶段一锁定的人物清单：visible_characters 应为 ${JSON.stringify(lockedVisibleIds)}、background_characters 应为 ${JSON.stringify(lockedBackgroundIds)}、offscreen_characters 应为 ${JSON.stringify(lockedOffscreenIds)}，Agent 实际输出为 visible_characters=${JSON.stringify(plannedVisibleIds)}、background_characters=${JSON.stringify(plannedBackgroundIds)}、offscreen_characters=${JSON.stringify(plannedOffscreenIds)}` });
         }
-        const planningDrift = checkPlanningFeasibility([currentShot], { catalogs: retryOptions.catalogs || {} });
+        const planningDrift = planningFeasibilityViolations([currentShot], { catalogs: retryOptions.catalogs || {} });
         errors.push(...planningDrift.map(item => ({ message: item.message })));
       }
       if (requireSemantic) {

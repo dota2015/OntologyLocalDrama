@@ -9,18 +9,26 @@ const {
   CAMERA_MOVEMENTS,
 } = require('../src/ontology/schema');
 const {
-  checkAudioContract,
-  checkSpeechTiming,
-  checkVisualSlotCompleteness,
-  checkVideoSlots,
-  checkCrowdControl,
-  checkPhysicalVisualDescription,
-  checkSpatialContinuity,
-  checkPropEraAndScale,
-  checkCrossSlotInvariants,
-  checkObsoleteAssets,
+  AudioContractRule,
+  SpeechTimingRule,
+  VisualSlotCompletenessRule,
+  VideoSlotsRule,
+  CrowdControlRule,
+  SpatialContinuityRule,
+  PropEraAndScaleRule,
+  ObsoleteAssetsRule,
+  CrossSlotInvariantsRule,
   validateAllInvariants,
 } = require('../src/ontology/invariants');
+const checkAudioContract = (shots) => new AudioContractRule().evaluate({ shots });
+const checkSpeechTiming = (shots, options) => new SpeechTimingRule().evaluate({ shots, options });
+const checkVisualSlotCompleteness = (shots) => new VisualSlotCompletenessRule().evaluate({ shots });
+const checkVideoSlots = (shots) => new VideoSlotsRule().evaluate({ shots });
+const checkCrowdControl = (shots) => new CrowdControlRule().evaluate({ shots });
+const checkSpatialContinuity = (shots) => new SpatialContinuityRule().evaluate({ shots });
+const checkPropEraAndScale = (props, dramaEra) => new PropEraAndScaleRule().evaluate({ props, dramaEra });
+const checkCrossSlotInvariants = (shots) => new CrossSlotInvariantsRule().evaluate({ shots });
+const checkObsoleteAssets = (catalogs, scriptContent, shots, options) => new ObsoleteAssetsRule().evaluate({ catalogs, scriptContent, shots, options });
 const {
   validateCharacterVisualSlots,
   compileImagePromptFromSlots,
@@ -109,17 +117,6 @@ describe('Audiovisual Drama Ontology & Semantic Invariants', () => {
     assert.equal(violations.length, 1);
     assert.equal(violations[0].shot_number, 3);
     assert.equal(violations[0].rule, 'INVARIANT_CROWD_COLLAPSE_RISK');
-  });
-
-  it('Invariant checkPhysicalVisualDescription catches literary metaphors and UI countdowns', () => {
-    const badShots = [
-      { shot_number: 1, action: '红狼与蜂医形成高低对照，焦急凝结在空气中' },
-      { shot_number: 2, action: '画面右上角悬浮救援倒计时19秒' },
-    ];
-    const violations = checkPhysicalVisualDescription(badShots);
-    assert.ok(violations.length >= 2);
-    assert.ok(violations.some((v) => v.rule === 'INVARIANT_LITERARY_METAPHOR_FORBIDDEN'));
-    assert.ok(violations.some((v) => v.rule === 'INVARIANT_UI_TEXT_IN_PROMPT_FORBIDDEN'));
   });
 
   it('Invariant checkSpatialContinuity detects instant character jump cuts in same scene & angle', () => {
@@ -480,7 +477,6 @@ describe('Audiovisual Drama Ontology & Semantic Invariants', () => {
     assert.ok(violations.length >= 2);
     assert.ok(violations.some((v) => v.rule === 'INVARIANT_OFFSCREEN_LIP_SYNC_VIOLATION'));
     assert.ok(violations.some((v) => v.rule === 'INVARIANT_CHARACTER_MOUTH_NOT_SEALED'));
-    assert.ok(violations.some((v) => v.rule === 'INVARIANT_ABSTRACT_PHYSICAL_JARGON'));
   });
 
   it('autocompleteEntityFromScript extracts structured props, characters and scenes based on user name/hint and script context', async (t) => {

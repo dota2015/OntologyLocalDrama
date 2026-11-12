@@ -10,11 +10,9 @@ const { VisualSlotCompletenessRule } = require('./rules/visualSlotCompletenessRu
 const VideoSlotsRule = require('./rules/videoSlotsRule');
 const CrowdControlRule = require('./rules/crowdControlRule');
 const H3ReferenceCapacityRule = require('./rules/h3ReferenceCapacityRule');
-const { PhysicalDescriptionRule } = require('./rules/physicalDescriptionRule');
 const SpatialContinuityRule = require('./rules/spatialContinuityRule');
 const { PropEraAndScaleRule } = require('./rules/propEraAndScaleRule');
 const ObsoleteAssetsRule = require('./rules/obsoleteAssetsRule');
-const SceneCoPresenceRule = require('./rules/sceneCoPresenceRule');
 const ShotTransitionContinuityRule = require('./rules/shotTransitionContinuityRule');
 const { CrossSlotInvariantsRule } = require('./rules/crossSlotRules');
 const { AssetReferenceRule } = require('./rules/assetReferenceRule');
@@ -34,11 +32,9 @@ class InvariantRuleEngine {
     this.registerRule(new VideoSlotsRule());
     this.registerRule(new CrowdControlRule());
     this.registerRule(new H3ReferenceCapacityRule());
-    this.registerRule(new PhysicalDescriptionRule());
     this.registerRule(new SpatialContinuityRule());
     this.registerRule(new PropEraAndScaleRule());
     this.registerRule(new ObsoleteAssetsRule());
-    this.registerRule(new SceneCoPresenceRule());
     this.registerRule(new ShotTransitionContinuityRule());
     this.registerRule(new CrossSlotInvariantsRule());
     this.registerRule(new AssetReferenceRule());

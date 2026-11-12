@@ -748,7 +748,7 @@
         </el-form-item>
         <el-form-item label="名称" required>
           <div style="display:flex;gap:8px;width:100%">
-            <el-input v-model="editCharacterForm.name" placeholder="角色名称（如：红狼、蜂医、露娜）" />
+            <el-input v-model="editCharacterForm.name" placeholder="角色名称（如：林渊、苏晴）" />
             <el-button type="primary" plain :loading="aiCompletingCharacter" :disabled="!editCharacterForm.name?.trim()" @click="onAiCompleteCharacter">
               🪄 AI 结合剧本补全
             </el-button>

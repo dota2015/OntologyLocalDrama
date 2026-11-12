@@ -23,9 +23,6 @@ const { resolveEpisodeDurationSeconds } = require('../src/ontology/semanticPacka
 const {
   rebuildPromptsForStoryboard,
   rebuildPromptsForEpisode,
-  extractStaticFreezeFramePose,
-  isFlawedImagePrompt,
-  sanitizeStaticImagePrompt,
 } = require('../src/services/episodeStoryboardService');
 const agentsRuntime = require('../src/services/agentsRuntime');
 
@@ -473,46 +470,7 @@ describe('Director Agent Prompt Generation & Persistence', () => {
     assert.equal(row.video_prompt, null, 'Rejected rows must remain unchanged');
   });
 
-  it('transforms dynamic video actions into concrete static freeze-frame poses without truncation', () => {
-    // Case 1: Shot 21 bug (previously truncated to '奕辰身体')
-    const pose21 = extractStaticFreezeFramePose('奕辰身体继续前倾，目光不离屏幕，手指快速敲击键盘；丽霞站在他身后半步处。');
-    assert.ok(!pose21.includes('奕辰身体，'), 'Must not truncate to bare noun');
-    assert.match(pose21, /上身前倾坐在书桌前/);
-    assert.match(pose21, /双手手指搭在键盘按键上/);
-    assert.match(pose21, /双眼专注凝视正前方屏幕/);
-
-    // Case 2: Shot 17 bug (temporal glance action)
-    const pose17 = extractStaticFreezeFramePose('红狼靠住断墙，快速向右侧岔路看了一眼');
-    assert.ok(!pose17.includes('看了一眼'), 'Must not use temporal glance verb');
-    assert.match(pose17, /目光警惕专注地注视着右侧岔路/);
-
-    // Case 3: Shot 15 bug (abstract balance losing)
-    const pose15 = extractStaticFreezeFramePose('蜂医身体失去平衡，前倾摔向断墙外侧地面。');
-    assert.match(pose15, /身体大幅.*倾斜失衡/);
-    assert.match(pose15, /单手.*撑向地面/);
-    assert.match(pose15, /定格瞬间/);
-
-    // Case 4: Shot 10 bug (previously truncated to '露娜')
-    const pose10 = extractStaticFreezeFramePose('露娜向前跨一步挡住红狼半条行进路线，抬手指向黑暗厂房内部。');
-    assert.notEqual(pose10, '露娜');
-    assert.match(pose10, /侧身跨步停在红狼身前挡住路线/);
-    assert.match(pose10, /单臂抬起直指黑暗厂房内部/);
-
-    // Case 5: Shot 8 bug (video walking and sequence action)
-    const pose8 = extractStaticFreezeFramePose('蜂医沿掩体后方走到露娜右侧，按下露娜准备起身的肩膀，两人保持低姿态。');
-    assert.ok(!pose8.includes('走到'), 'Must not describe walking process');
-    assert.match(pose8, /半蹲停在露娜旁/);
-    assert.match(pose8, /单手按在露娜肩头/);
-    assert.match(pose8, /维持低姿隐蔽警戒/);
-  });
-
-  it('detects flawed prompts and rebuildPromptsForStoryboard repairs them with static freeze-frame poses', () => {
-    assert.equal(isFlawedImagePrompt('废弃工厂内部战斗区，夜晚，特写·平视·前左，奕辰身体，photorealistic，首帧静止画面'), true);
-    assert.equal(isFlawedImagePrompt('废弃工厂外围，阴天，中景·平视·前左，露娜，photorealistic，首帧静止画面'), true);
-    assert.equal(isFlawedImagePrompt('废弃工厂内部战斗区，阴天，特写·平视·正面，红狼靠住断墙，快速向右侧岔路看了一眼，photorealistic，首帧静止画面'), true);
-    assert.equal(isFlawedImagePrompt('废弃工厂内部战斗区，阴天，中景·平视·正面，蜂医沿掩体后方走到露娜右侧，按下露娜准备起身的肩膀，两人保持低姿态，photorealistic，首帧静止画面'), true);
-
-    // Insert flawed row into DB
+  it('rebuildPromptsForStoryboard keeps explicit image_prompt intact and compiles structured visuals deterministically', () => {
     const info = db.prepare(`
       INSERT INTO storyboards (
         episode_id, scene_id, storyboard_number, title, location, time, duration,
@@ -520,10 +478,9 @@ describe('Director Agent Prompt Generation & Persistence', () => {
         image_prompt, polished_prompt, character_visuals, video_slots, status, created_at, updated_at
       ) VALUES (
         10, 100, 4, '书桌前倾', '双人书房·书桌区', '夜晚', 5,
-        '奕辰身体继续前倾，目光不离屏幕，手指快速敲击键盘；丽霞站在他身后半步处。',
+        '角色前倾坐在书桌前敲击键盘。',
         '特写', 'front_left', 'eye_level', 'close_up',
-        '双人书房·书桌区，夜晚，特写·平视·前左，奕辰身体，photorealistic, ultra-detailed，首帧静止画面',
-        '双人书房·书桌区，夜晚，特写·平视·前左，奕辰身体，photorealistic, ultra-detailed，首帧静止画面',
+        '', '',
         ?, ?,
         'pending', '2026-01-01', '2026-01-01'
       )
@@ -550,14 +507,13 @@ describe('Director Agent Prompt Generation & Persistence', () => {
       }]),
       JSON.stringify(videoSlots({ characterId: 1, characterName: '奕辰', movement: 'push' }))
     );
-    const flawedId = info.lastInsertRowid;
+    const shotId = info.lastInsertRowid;
 
-    rebuildPromptsForStoryboard(db, console, flawedId);
+    rebuildPromptsForStoryboard(db, console, shotId);
 
-    const repaired = db.prepare('SELECT image_prompt, polished_prompt FROM storyboards WHERE id = ?').get(flawedId);
-    assert.ok(!repaired.image_prompt.includes('，奕辰身体，'), 'Must repair bare noun in image_prompt');
-    assert.match(repaired.image_prompt, /上身前倾坐在书桌前/);
-    assert.match(repaired.image_prompt, /正前方屏幕/);
-    assert.match(repaired.polished_prompt, /上身前倾坐在书桌前/);
+    const rebuilt = db.prepare('SELECT image_prompt, polished_prompt FROM storyboards WHERE id = ?').get(shotId);
+    assert.match(rebuilt.image_prompt, /上身前倾坐在书桌前/);
+    assert.match(rebuilt.image_prompt, /正前方屏幕/);
+    assert.match(rebuilt.polished_prompt, /上身前倾坐在书桌前/);
   });
 });

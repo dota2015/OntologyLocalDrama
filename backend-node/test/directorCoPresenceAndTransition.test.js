@@ -1,99 +1,42 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const SceneCoPresenceRule = require('../src/ontology/rules/sceneCoPresenceRule');
 const ShotTransitionContinuityRule = require('../src/ontology/rules/shotTransitionContinuityRule');
-const { validateAllInvariants } = require('../src/ontology/invariants');
+const { defaultEngine } = require('../src/ontology/invariants');
 
-describe('Director Scene Co-Presence and Shot Arc Transitions', () => {
-  it('SceneCoPresenceRule flags characters who suddenly speak without prior background presence or entrance action', () => {
-    const rule = new SceneCoPresenceRule();
-    const shots = [
-      {
-        shot_number: 1,
-        scene_id: 10,
-        characters: [1],
-        character_visuals: [{ character_id: 1, name: '奕宸', depth_layer: 'midground' }],
-        action: '奕宸坐在书桌前疯狂敲击键盘，专心致志打游戏',
-        dialogue: '奕宸: “马上就能通关了！”',
-      },
-      {
-        shot_number: 2,
-        scene_id: 10,
-        characters: [2], // 妹妹突然说话，但镜头1既无妹妹在场，本镜也无进门动作
-        character_visuals: [{ character_id: 2, name: '妹妹', depth_layer: 'midground' }],
-        action: '妹妹合上作业本抬头，语气带着不满',
-        dialogue: '妹妹: “哥，你答应帮我检查作业的，怎么还在玩？”',
-      },
-    ];
-
-    const violations = rule.evaluate({ shots });
-    assert.equal(violations.length, 1);
-    assert.equal(violations[0].rule, 'INVARIANT_SUDDEN_APPARITION');
-    assert.ok(violations[0].message.includes('妹妹'));
-    assert.ok(violations[0].message.includes('突然降临'));
+describe('Director Shot Arc Transitions', () => {
+  it('removed SceneCoPresenceRule is not registered in defaultEngine', () => {
+    assert.equal(defaultEngine.getRule('RULE_SCENE_CO_PRESENCE'), undefined);
   });
 
-  it('SceneCoPresenceRule passes when the character was pre-established as background_character in prior shot', () => {
-    const rule = new SceneCoPresenceRule();
-    const shots = [
-      {
-        shot_number: 1,
-        scene_id: 10,
-        characters: [1],
-        background_characters: [
-          {
-            character_id: 2,
-            name: '妹妹',
-            depth_layer: 'background',
-            screen_position: '画面右后方景深处书桌前',
-            activity: '低头安静写作业',
-          },
-        ],
-        character_visuals: [
-          { character_id: 1, name: '奕宸', depth_layer: 'midground' },
-          { character_id: 2, name: '妹妹', depth_layer: 'background' },
-        ],
-        action: '奕宸坐在书桌前疯狂敲击键盘，景深处妹妹低头写作业',
-        dialogue: '奕宸: “马上就能通关了！”',
+  it('ShotTransitionContinuityRule checks eyeline_match using structured gaze slots without text regex', () => {
+    const rule = new ShotTransitionContinuityRule();
+    const base = { shot_number: 1, scene_id: 10, action: '角色抬头望向门口', result: '视线停在门框', layout_description: '近景' };
+    const missingGaze = {
+      shot_number: 2,
+      scene_id: 10,
+      action: '反打镜头',
+      result: '角色回头',
+      start_framing: '近景',
+      character_visuals: [{ character_id: 2, gaze_type: 'none', gaze_target_id: null, gaze_target_label: '' }],
+      semantic_slots: {
+        continuity_from_previous: {
+          relationship: 'eyeline_match',
+          previous_end_state: '抬头',
+          entry_state: '对视',
+          causal_link: '反应',
+        },
       },
-      {
-        shot_number: 2,
-        scene_id: 10,
-        characters: [2], // 妹妹在第2镜成为焦点说话，因为第1镜已在场，合情合理不突兀
-        character_visuals: [{ character_id: 2, name: '妹妹', depth_layer: 'midground' }],
-        action: '妹妹合上作业本抬头说话',
-        dialogue: '妹妹: “哥，你答应帮我检查作业的。”',
-      },
-    ];
+    };
+    const bad = rule.evaluate({ shots: [base, missingGaze] });
+    assert.ok(bad.some((v) => v.rule === 'INVARIANT_EYELINE_MATCH_WITHOUT_EYE_TARGET'));
 
-    const violations = rule.evaluate({ shots });
-    assert.equal(violations.length, 0, 'Should have 0 sudden apparition violations when background presence is declared');
-  });
-
-  it('SceneCoPresenceRule passes when the newly appearing character has an explicit entrance action', () => {
-    const rule = new SceneCoPresenceRule();
-    const shots = [
-      {
-        shot_number: 1,
-        scene_id: 10,
-        characters: [1],
-        character_visuals: [{ character_id: 1, name: '奕宸', depth_layer: 'midground' }],
-        action: '奕宸坐在书桌前疯狂敲击键盘',
-        dialogue: '',
-      },
-      {
-        shot_number: 2,
-        scene_id: 10,
-        characters: [3],
-        character_visuals: [{ character_id: 3, name: '妈妈', depth_layer: 'midground' }],
-        action: '书房房门被推开，妈妈推门走入书房，皱眉注视着电脑屏幕',
-        dialogue: '妈妈: “奕宸，作业写完了吗？”',
-      },
-    ];
-
-    const violations = rule.evaluate({ shots });
-    assert.equal(violations.length, 0, 'Should pass when entrance action (推门走入) is present');
+    const validGaze = structuredClone(missingGaze);
+    validGaze.character_visuals[0].gaze_type = 'character';
+    validGaze.character_visuals[0].gaze_target_id = 1;
+    validGaze.character_visuals[0].gaze_target_label = '角色甲';
+    const good = rule.evaluate({ shots: [base, validGaze] });
+    assert.equal(good.some((v) => v.rule === 'INVARIANT_EYELINE_MATCH_WITHOUT_EYE_TARGET'), false);
   });
 
   it('ShotTransitionContinuityRule flags missing start_framing or transition logic in dialogue clashes', () => {

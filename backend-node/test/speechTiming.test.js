@@ -21,24 +21,26 @@ const pieces = [
 const h3 = { api_protocol: 'minimax_h3', model: ['MiniMax-H3'], default_model: 'MiniMax-H3' };
 
 test('director drafts and saved video submissions share the natural speech budget', t => {
-  const { checkSpeechTiming } = require('../src/ontology/invariants');
+  const { SpeechTimingRule } = require('../src/ontology/invariants');
+  const rule = new SpeechTimingRule();
   const db = videoDb(t);
   const line = '露娜：\"' + '字'.repeat(34) + '\"';
   db.prepare('UPDATE storyboards SET dialogue=?, duration=6 WHERE id=1').run(line);
   const draft = { shot_number: 2, duration: 6, dialogue: line };
-  const violation = checkSpeechTiming([draft])[0];
+  const violation = rule.evaluate({ shots: [draft] })[0];
   assert.equal(violation.rule, 'INVARIANT_SPEECH_OVER_BUDGET');
   assert.deepEqual(violation.assessment, validateVideoSpeech(db, { storyboard_id: 1 }, h3).assessment);
   assert.equal(violation.assessment.requiredSeconds, 6.8);
-  assert.equal(checkSpeechTiming([{ ...draft, duration: 8 }]).length, 0);
-  assert.equal(checkSpeechTiming([draft], { deliveryOptions: { speechRate: 1.44 } }).length, 0);
+  assert.equal(rule.evaluate({ shots: [{ ...draft, duration: 8 }] }).length, 0);
+  assert.equal(rule.evaluate({ shots: [draft], options: { deliveryOptions: { speechRate: 1.44 } } }).length, 0);
 });
 
 test('director budgets structured-only speech and ignores compiled prompt turns', () => {
-  const { checkSpeechTiming } = require('../src/ontology/invariants');
+  const { SpeechTimingRule } = require('../src/ontology/invariants');
+  const rule = new SpeechTimingRule();
   const shot = { duration: 6, semantic_slots: { speech_plan: { text: '字'.repeat(32) } } };
-  assert.equal(checkSpeechTiming([shot])[0].assessment.requiredSeconds, 6.4);
-  assert.equal(checkSpeechTiming({}) .length, 0);
+  assert.equal(rule.evaluate({ shots: [shot] })[0].assessment.requiredSeconds, 6.4);
+  assert.equal(rule.evaluate({ shots: {} }).length, 0);
   const delivery = require('../src/services/speechDeliveryService');
   const base = { duration: 5, dialogue: '甲：“你好。”' };
   assert.deepEqual(delivery.resolve({}, base), delivery.resolve({}, { ...base,
