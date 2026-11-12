@@ -28,7 +28,47 @@ const HANDS_REGEX = /(?:手|臂|指|握|按|托|撑|抱|搭|提|拿|拉|伸|扣|
 
 // 导致文生图模型产生克隆人/多角色的两地时序位移与动态过程正则
 const CLONE_TRIGGER_REGEX = /(?:从.+?到.+?|从.+?跑向|从.+?冲向|从.+?跨向|沿.+?走到|从.+?走到|从.+?探出.+?缩回|来回(?:看|确认|扫视))/;
-const DYNAMIC_REGEX = /(?:先指向.+?再|急停后|翻滚到|停止翻找|从.+?连续下降|倒计时跳到|操作速度.+?变慢|转向屏幕|抬起通讯器位置|抬头观察高台|红狼没有停步|看了一眼|随后|然后|逐渐|开始)/;
+const DYNAMIC_REGEX = /(?:先指向.+?再|急停后|翻滚到|停止翻找|从.+?连续下降|倒计时跳到|操作速度.+?变慢|转向屏幕|抬起通讯器位置|抬头观察高台|看了一眼|随后|然后|逐渐|开始)/;
+
+const actionAtoms = require('./actionAtoms');
+const STRUCTURED_DEPTH_LAYERS = Object.freeze(['foreground', 'midground', 'background']);
+const STRUCTURED_SCREEN_POSITIONS = Object.freeze([
+  'left_foreground', 'left_midground', 'left_background', 'center_foreground',
+  'center_midground', 'center_background', 'right_foreground', 'right_midground',
+  'right_background',
+]);
+
+function parseSlotObject(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function hasLegacyV1VisualShape(slot) {
+  return Boolean(
+    slot && typeof slot === 'object'
+    && !('gaze_type' in slot)
+    && !('hands_state' in slot)
+    && ('gaze' in slot || 'hands' in slot)
+  );
+}
+
+function isStructuredVisualContract(shot, slots = []) {
+  if (Array.isArray(slots) && slots.length > 0) {
+    if (slots.some((item) => item && typeof item === 'object' && ('gaze_type' in item || 'hands_state' in item))) {
+      return true;
+    }
+    if (slots.every(hasLegacyV1VisualShape)) {
+      return false;
+    }
+  }
+  return parseSlotObject(shot?.video_slots)?.performance_contract === 'sync_v2';
+}
 
 function createCharacterVisualSlot(data = {}) {
   const screenPos = String(data.screen_position || '').trim();
@@ -82,7 +122,84 @@ function createCharacterVisualSlot(data = {}) {
  * @param {Array<object>} slots
  * @returns {Array<object>} 违规列表
  */
+function validateStructuredVisualSlots(shot, slots = [], slotField = 'character_visuals') {
+  const violations = [];
+  const shotNum = shot?.shot_number || shot?.storyboard_number || 1;
+  const frameLabel = slotField === 'last_frame_visuals' ? '尾帧' : '首帧';
+  const frame = slotField === 'last_frame_visuals' ? 'last' : 'first';
+
+  if (!Array.isArray(slots) || slots.length === 0) {
+    violations.push({
+      rule: 'INVARIANT_SLOT_EMPTY',
+      shot_number: shotNum,
+      severity: 'error',
+      frame,
+      conflict_slots: [slotField],
+      message: `${frameLabel}：分镜 ${shotNum} 缺少角色视觉槽位定义 (${slotField})。`,
+    });
+    return violations;
+  }
+
+  const enumFields = [
+    ['depth_layer', STRUCTURED_DEPTH_LAYERS],
+    ['screen_position', STRUCTURED_SCREEN_POSITIONS],
+    ['facing', actionAtoms.FACING],
+    ['head_pose', actionAtoms.HEAD_POSES],
+    ['gaze_type', actionAtoms.GAZE_TYPES],
+    ['posture', actionAtoms.POSTURES],
+    ['hands_state', actionAtoms.HAND_STATES],
+    ['expression', actionAtoms.EXPRESSIONS],
+  ];
+
+  slots.forEach((slot, sIdx) => {
+    const cName = slot?.name || `出场人物${sIdx + 1}`;
+    const charId = slot?.character_id != null ? Number(slot.character_id) : null;
+    for (const [field, allowed] of enumFields) {
+      const value = String(slot?.[field] ?? '');
+      if (!allowed.includes(value)) {
+        violations.push({
+          rule: 'INVARIANT_VISUAL_ENUM_INVALID',
+          shot_number: shotNum,
+          severity: 'error',
+          frame,
+          character_id: charId,
+          character_name: cName,
+          conflict_slots: [`${slotField}[${sIdx}].${field}`],
+          message: `${frameLabel}：分镜 ${shotNum} ${slotField}[${sIdx}].${field} 必须使用结构化枚举值（当前为 '${value}'，允许值: ${allowed.join('/')}）`,
+        });
+      }
+    }
+  });
+
+  if (slots.length >= 2) {
+    const byPosition = new Map();
+    slots.forEach((slot, sIdx) => {
+      const pos = String(slot?.screen_position || '').trim();
+      if (!pos) return;
+      if (!byPosition.has(pos)) byPosition.set(pos, []);
+      byPosition.get(pos).push(sIdx);
+    });
+    for (const [pos, indices] of byPosition.entries()) {
+      if (indices.length < 2) continue;
+      const names = indices.map((i) => `「${slots[i]?.name || `角色${i + 1}`}」`).join('与');
+      violations.push({
+        rule: 'INVARIANT_SLOT_DUPLICATE_POSITION',
+        shot_number: shotNum,
+        severity: 'error',
+        frame,
+        conflict_slots: indices.map((i) => `${slotField}[${i}].screen_position`),
+        message: `${frameLabel}：分镜 ${shotNum} 中角色${names}被安排在完全相同的构图位置（${pos}），必须错开画面左右/纵深位置，禁止多人叠站在同一位置！`,
+      });
+    }
+  }
+
+  return violations;
+}
+
 function validateCharacterVisualSlots(shot, slots = [], slotField = 'character_visuals') {
+  if (isStructuredVisualContract(shot, slots)) {
+    return validateStructuredVisualSlots(shot, slots, slotField);
+  }
   const violations = [];
   const shotNum = shot.shot_number || shot.storyboard_number || 1;
 
@@ -751,6 +868,8 @@ module.exports = {
   CLONE_TRIGGER_REGEX,
   DYNAMIC_REGEX,
   createCharacterVisualSlot,
+  isStructuredVisualContract,
+  validateStructuredVisualSlots,
   validateCharacterVisualSlots,
   synthesizeLightingChiaroscuro,
   compileImagePromptFromSlots,

@@ -1,5 +1,6 @@
 const { planShotDuration, rangeTimingInstructions } = require('../utils/shotDurationRange');
 const { assessSpeechTiming, assessVideoSpeech, timingError, timingInstructions, speechFingerprint, hanCapacity } = require('../utils/speechTiming');
+const { shotSpeechTurns } = require('./dialogueDubbingService');
 const { safeParseAIJSON, extractFirstArray } = require('../utils/safeJson');
 
 function durationForShot(shot, target) {
@@ -81,7 +82,16 @@ function preservesSpeech(source, fragments) {
   return original.size === repaired.size && [...original].every(([speaker, speech]) => repaired.get(speaker) === speech);
 }
 
-async function enforceStoryboardSpeechTiming(storyboards, { targetDuration, durationRange, narrativeStyle, generate, onRepair = () => {} }) {
+async function enforceStoryboardSpeechTiming(storyboards, {
+  targetDuration,
+  durationRange,
+  narrativeStyle,
+  generate,
+  onRepair = () => {},
+  enforceSingleSpeaker = false,
+  keepUnresolvedForRepair = false,
+  onSplitFailure = () => {},
+}) {
   const delivery = require('./speechDeliveryService');
   const plan = shot => {
     if (!narrativeStyle) {
@@ -101,18 +111,38 @@ async function enforceStoryboardSpeechTiming(storyboards, { targetDuration, dura
     const planned=plan(source);
     const duration=planned.shot.duration;
     const assessment = assessVideoSpeech(planned.shot, source.universal_segment_text, duration, planned.options);
-    if (assessment.ok) {
+    const speechTurns = shotSpeechTurns(planned.shot);
+    const needsSpeakerSplit = enforceSingleSpeaker && speechTurns.length > 1;
+    if (assessment.ok && !needsSpeakerSplit) {
       result.push(planned.shot);
       continue;
     }
     onRepair(source, assessment);
     let fragments;
-    let lastError = timingError(source, assessment);
+    let lastError = needsSpeakerSplit && assessment.ok
+      ? `分镜包含 ${speechTurns.length} 个发言段，单镜最多只允许 1 个说话人的单轮对白或 1 段旁白`
+      : timingError(source, assessment);
+    const maxShotDur = Math.max(1, durationRange?.max || duration);
+    const perTurnCount = speechTurns.reduce((sum, turn) => {
+      const turnShot = turn.kind === 'narration' ? { narration: turn.text } : { dialogue: `${turn.speaker ? `${turn.speaker}：` : ''}${turn.text}` };
+      const turnReq = assessSpeechTiming(turnShot, duration, planned.options).requiredSeconds;
+      return sum + Math.max(1, Math.ceil(turnReq / maxShotDur));
+    }, 0);
     for (let attempt = 0; attempt < 2; attempt++) {
-      const minCount = Math.max(2, Math.ceil(assessment.requiredSeconds / Math.max(1, durationRange?.max || duration)));
+      const minCount = Math.max(
+        2,
+        Math.ceil(assessment.requiredSeconds / maxShotDur),
+        needsSpeakerSplit ? Math.max(speechTurns.length, perTurnCount) : 2,
+      );
       const maxBudgetPerShot = hanCapacity(durationRange?.max || duration, planned.options?.speechRate);
-      const userPrompt = `将此超出对白预算的分镜按语义拆分为至少 ${minCount} 个连续分镜（当前台词/旁白约需 ${assessment.requiredSeconds} 秒，单镜上限 ${durationRange?.max || duration} 秒）。
-【必须拆镜】严禁只返回 1 个分镜！拆分后每个新分镜的台词/旁白字数绝不能超过 ${maxBudgetPerShot} 个中文字！只返回 JSON 数组，每项保留原分镜的字段结构。
+      const speakerRuleLine = enforceSingleSpeaker
+        ? '每个新分镜最多只保留 1 个说话人的单轮台词（或 1 段旁白）；严禁同一镜内多名角色交替说话，也严禁把对白和旁白混在同一镜；对白放入 dialogue 并保留说话人前缀，旁白放入 narration。'
+        : '';
+      const reasonHeader = needsSpeakerSplit && assessment.ok
+        ? `将此包含 ${speechTurns.length} 个发言段的分镜按说话轮次拆分为至少 ${minCount} 个连续分镜。`
+        : `将此超出对白预算或包含多发言段的分镜按语义与说话轮次拆分为至少 ${minCount} 个连续分镜（当前约需 ${assessment.requiredSeconds} 秒，单镜上限 ${durationRange?.max || duration} 秒）。`;
+      const userPrompt = `${reasonHeader}
+【必须拆镜】严禁只返回 1 个分镜！${speakerRuleLine}拆分后每个新分镜的台词/旁白字数绝不能超过 ${maxBudgetPerShot} 个中文字！只返回 JSON 数组，每项保留原分镜的字段结构。
 对白和旁白必须逐字完整、按句号/逗号原顺序分配切分到各个分镜中，保留说话人，禁止增删改写；不得重复整段台词。保持人物、场景、道具及动作连续，合理分配动作与停顿。
 ${durationRange ? `每镜 duration 在 ${durationRange.min}–${durationRange.max} 秒内按动作与台词分别规划，不突破上限。` : `每镜 duration 固定为 ${duration} 秒，不通过增加 duration 逃避拆镜。`}允许空旁白。重写各镜头的动作、结果、标题；不要返回 universal_segment_text/video_prompt/image_prompt，它们由系统重建。
 原分镜：${JSON.stringify(source)}\n上次校验：${lastError}`;
@@ -141,13 +171,26 @@ ${durationRange ? `每镜 duration 在 ${durationRange.min}–${durationRange.ma
         const assessmentFor=s=>assessSpeechTiming(s,s.duration,narrativeStyle?delivery.budgetOptions(delivery.resolve(narrativeStyle,s)):{});
         const bad = fragments.find(s => !assessmentFor(s).ok);
         if (bad) throw new Error(timingError(bad, assessmentFor(bad)));
+        if (enforceSingleSpeaker) {
+          const multi = fragments.find((s) => shotSpeechTurns(s).length > 1);
+          if (multi) {
+            throw new Error(`拆分后仍有镜头包含 ${shotSpeechTurns(multi).length} 个发言段，必须按说话轮次进一步拆为单人单轮镜头`);
+          }
+        }
         break;
       } catch (err) {
         fragments = null;
         lastError = err.message;
       }
     }
-    if (!fragments) throw new Error(`对白拆镜校验失败，原分镜保持不变：${lastError}`);
+    if (!fragments) {
+      if (keepUnresolvedForRepair) {
+        onSplitFailure(planned.shot, lastError);
+        result.push(planned.shot);
+        continue;
+      }
+      throw new Error(`对白拆镜校验失败，原分镜保持不变：${lastError}`);
+    }
     result.push(...fragments);
   }
   return result.map((shot, index) => ({ ...shot, shot_number: index + 1, storyboard_number: index + 1 }));

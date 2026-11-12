@@ -14,9 +14,11 @@ function parseJson(value, fallback = {}) {
 function speakerName(value) {
   return String(value || '').replace(/[（(][^）)]*[）)]/gu, '').trim();
 }
+const NON_SPEECH_PLACEHOLDER_RE = /^(?:无|无对白|无对话|无台词|无旁白|无解说|none|null|n\/a|silent)[。.!！\s]*$/iu;
+
 function cleanText(value) {
   const s = String(value || '').trim();
-  if (/^(?:无|无对白|无对话|无台词|none|null|n\/a|silent)[。.!！\s]*$/iu.test(s)) return '';
+  if (NON_SPEECH_PLACEHOLDER_RE.test(s)) return '';
   return s.replace(/^[“”"「」『』']+|[“”"「」『』']+$/gu, '').trim();
 }
 // Split explicit speaker labels while keeping quoted punctuation/colons inside speech.
@@ -35,6 +37,22 @@ function dialogueSegments(value) {
     if (line) result.push({ speaker: speakerName(m[1]), text: line });
   }
   return result;
+}
+function shotSpeechTurns(shot = {}) {
+  const turns = dialogueSegments(shot?.dialogue || '')
+    .map((line) => ({
+      kind: /^(?:旁白|解说|解说旁白|画外音|narrator|narration|voice[- ]?over)$/iu.test(line.speaker || '')
+        ? 'narration'
+        : 'dialogue',
+      speaker: String(line.speaker || '').trim(),
+      text: String(line.text || '').trim(),
+    }))
+    .filter((line) => line.text && !NON_SPEECH_PLACEHOLDER_RE.test(line.text));
+  const narration = String(shot?.narration || '').trim();
+  if (narration && !NON_SPEECH_PLACEHOLDER_RE.test(narration)) {
+    turns.push({ kind: 'narration', speaker: '', text: narration });
+  }
+  return turns;
 }
 function dramaRow(db, id) {
   const row = db.prepare('SELECT id, metadata FROM dramas WHERE id = ? AND deleted_at IS NULL').get(Number(id));
@@ -469,4 +487,4 @@ function startSpeechBatch(db, log, dramaId, body) {
   });
   return task;
 }
-module.exports = { latestSpeechTask, startSpeechBatch, speechEditor, extractSpeech, saveSpeech, planForId, dialogueSegments, profilePanel, panel, getProfile, saveProfile, normalizedProfile, configFor, synthesizeShot, single, startBatch, runBatch };
+module.exports = { latestSpeechTask, startSpeechBatch, speechEditor, extractSpeech, saveSpeech, planForId, dialogueSegments, shotSpeechTurns, profilePanel, panel, getProfile, saveProfile, normalizedProfile, configFor, synthesizeShot, single, startBatch, runBatch };

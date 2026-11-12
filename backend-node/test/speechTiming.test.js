@@ -384,3 +384,33 @@ test('speechFromPrompt accurately delimits dialogue when followed by quote closi
   assert.equal(res.ok, true);
   assert.equal(res.han, 18);
 });
+
+test('authoritativeSpeech deduplicates identical utterances misclassified across dialogue and narration channels', () => {
+  const mislabeled = {
+    duration: 7,
+    dialogue: '角色甲：“我一直以为自己能够按时完成所有任务。”',
+    narration: '',
+    semantic_slots: {
+      speech_plan: { text: '我一直以为自己能够按时完成所有任务。', is_narration: true },
+    },
+    video_slots: {
+      audio_lip_sync: { mode: 'concurrent', dialogue_content: '我一直以为自己能够按时完成所有任务。' },
+    },
+  };
+  const resolved = timing.authoritativeSpeech(mislabeled);
+  assert.equal(resolved.narration, '');
+  assert.match(resolved.dialogue, /我一直以为/);
+  const assessed = timing.assessVideoSpeech(mislabeled, null, 7, { speechRate: 1.25 });
+  assert.equal(assessed.han, 17);
+  assert.equal(assessed.ok, true);
+
+  // Legitimate distinct dialogue and narration still sum both channels.
+  const distinct = {
+    dialogue: '角色甲：“快走！”',
+    narration: '夜幕降临。',
+    semantic_slots: { speech_plan: { text: '快走！', is_narration: false } },
+  };
+  const distinctResolved = timing.authoritativeSpeech(distinct);
+  assert.match(distinctResolved.dialogue, /快走/);
+  assert.match(distinctResolved.narration, /夜幕降临/);
+});

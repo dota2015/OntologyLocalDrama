@@ -423,9 +423,9 @@ function semanticSlotsSchema(assignedIds = null) {
       // Director planning is Ref2VA-only. FL2VA is a post-generation manual override.
       h3_mode: { const: 'ref2va' },
       h3_mode_reason: nonEmptyStringSchema(),
-      first_frame_policy: nonEmptyStringSchema(),
+      first_frame_policy: { const: 'none' },
       first_frame_reason: nonEmptyStringSchema(),
-      last_frame_policy: nonEmptyStringSchema(),
+      last_frame_policy: { const: 'none' },
       last_frame_reason: nonEmptyStringSchema(),
       required_references: {
         type: 'array', maxItems: 9,

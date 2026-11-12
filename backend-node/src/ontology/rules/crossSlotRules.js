@@ -5,7 +5,7 @@
  */
 
 const BaseInvariantRule = require('./baseRule');
-const { dialogueSegments } = require('../../services/dialogueDubbingService');
+const { shotSpeechTurns } = require('../../services/dialogueDubbingService');
 const { mouthIsSealed } = require('../videoSlots');
 
 function parseJsonValue(value) {
@@ -23,27 +23,36 @@ function asObject(value) {
   return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
 }
 
-function parseId(val) {
+function parseId(val, nameToId = null) {
   if (val == null) return null;
   if (typeof val === 'object') {
-    return val.character_id != null ? Number(val.character_id) : (val.id != null ? Number(val.id) : null);
+    const rawId = val.character_id != null ? val.character_id : val.id;
+    if (rawId != null && rawId !== '' && Number.isFinite(Number(rawId))) {
+      const n = Number(rawId);
+      return n > 0 ? n : null;
+    }
+    const name = String(val.name || '').trim();
+    return name && nameToId?.has(name) ? nameToId.get(name) : null;
   }
-  const n = Number(val);
-  return Number.isFinite(n) ? n : null;
+  const str = String(val).trim();
+  if (!str) return null;
+  const n = Number(str);
+  if (Number.isFinite(n) && n > 0) return n;
+  return nameToId?.has(str) ? nameToId.get(str) : null;
 }
 
-function parseIds(arr) {
+function parseIds(arr, nameToId = null) {
   if (!Array.isArray(arr)) return [];
-  return arr.map(parseId).filter(id => id != null);
+  return arr.map((item) => parseId(item, nameToId)).filter((id) => id != null);
 }
 
-function uniqueSortedIds(arr) {
-  return [...new Set(parseIds(arr))].sort((a, b) => a - b);
+function uniqueSortedIds(arr, nameToId = null) {
+  return [...new Set(parseIds(arr, nameToId))].sort((a, b) => a - b);
 }
 
-function sameIds(a, b) {
-  const left = uniqueSortedIds(a);
-  const right = uniqueSortedIds(b);
+function sameIds(a, b, nameToId = null) {
+  const left = uniqueSortedIds(a, nameToId);
+  const right = uniqueSortedIds(b, nameToId);
   return left.length === right.length && left.every((id, idx) => id === right[idx]);
 }
 
@@ -101,6 +110,11 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
     const violations = [];
     if (!Array.isArray(shots) || shots.length === 0) return violations;
 
+    const catalogs = context.catalogs || context.options?.catalogs || {};
+    const characterNameToId = new Map((catalogs.characters || [])
+      .filter((item) => item?.name != null && Number.isFinite(Number(item.id)))
+      .map((item) => [String(item.name).trim(), Number(item.id)]));
+
     shots.forEach((shot, idx) => {
       const shotNum = shot.shot_number || (idx + 1);
       const prevShot = idx > 0 ? shots[idx - 1] : null;
@@ -125,7 +139,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
           ? asArray(shot.characters)
           : asArray(shot.character_ids);
         const topBackground = asArray(shot.background_characters);
-        if (!sameIds(topVisible, slots.visible_characters)) {
+        if (!sameIds(topVisible, slots.visible_characters, characterNameToId)) {
           violations.push({
             rule: 'INVARIANT_CHARACTER_SLOT_DIVERGENCE',
             shot_number: shotNum,
@@ -134,7 +148,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
             conflict_slots: ['characters', 'semantic_slots.visible_characters'],
           });
         }
-        if (!sameIds(topBackground, slots.background_characters)) {
+        if (!sameIds(topBackground, slots.background_characters, characterNameToId)) {
           violations.push({
             rule: 'INVARIANT_CHARACTER_SLOT_DIVERGENCE',
             shot_number: shotNum,
@@ -144,8 +158,8 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
           });
         }
         if (shot.character_visuals != null && shot.character_visuals !== '') {
-          const expectedVisualIds = [...topVisible, ...topBackground];
-          if (!sameIds(characterVisuals, expectedVisualIds)) {
+          const expectedVisualIds = [...uniqueSortedIds(topVisible, characterNameToId), ...uniqueSortedIds(topBackground, characterNameToId)];
+          if (!sameIds(characterVisuals, expectedVisualIds, characterNameToId)) {
             violations.push({
               rule: 'INVARIANT_CHARACTER_VISUAL_SLOT_DIVERGENCE',
               shot_number: shotNum,
@@ -165,16 +179,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
           ? String(videoSpeech.dialogue_content).trim()
           : '';
         const isSemanticNarration = speechPlan.is_narration === true;
-        const dialogueParts = dialogueSegments(shot.dialogue || '').map((line) => ({
-          kind: /^(?:旁白|解说|解说旁白|画外音|narrator|narration|voice[- ]?over)$/iu.test(line.speaker || '')
-            ? 'narration'
-            : 'dialogue',
-          speaker: String(line.speaker || '').trim(),
-          text: String(line.text || '').trim(),
-        })).filter((line) => meaningfulSpeech(line.text));
-        if (meaningfulSpeech(shot.narration)) {
-          dialogueParts.push({ kind: 'narration', speaker: '', text: String(shot.narration).trim() });
-        }
+        const dialogueParts = shotSpeechTurns(shot);
         if (dialogueParts.length > 1) {
           violations.push({
             rule: 'INVARIANT_MULTI_SPEAKER_SHOT',
@@ -324,8 +329,8 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
       }
 
       // 4. 同一角色同时属于主角和背景人物
-      const visibleIds = parseIds(visibleChars);
-      const bgIds = parseIds(bgChars);
+      const visibleIds = parseIds(visibleChars, characterNameToId);
+      const bgIds = parseIds(bgChars, characterNameToId);
       const dualRoles = visibleIds.filter(id => bgIds.includes(id));
       if (dualRoles.length > 0) {
         violations.push({
@@ -671,7 +676,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
             .filter((ref) => String(ref?.type || ref?.asset_type || '').toLowerCase() === 'character')
             .map((ref) => Number(ref?.id ?? ref?.character_id))
             .filter(Number.isFinite));
-          const missingCharacterIds = [...new Set([...parseIds(visibleChars), ...parseIds(bgChars)])]
+          const missingCharacterIds = [...new Set([...parseIds(visibleChars, characterNameToId), ...parseIds(bgChars, characterNameToId)])]
             .filter((id) => !referencedCharacterIds.has(id));
           if (missingCharacterIds.length) {
             violations.push({

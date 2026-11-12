@@ -155,18 +155,38 @@ function authoritativeSpeech(shot = {}) {
   const s = shot || {};
   const semantic = parseSlotObject(s.semantic_slots);
   const video = parseSlotObject(s.video_slots);
-  const dialogue = [s.dialogue];
-  const narration = [s.narration];
 
+  const dbDialogue = longestSpeech([s.dialogue]);
+  const dbNarration = longestSpeech([s.narration]);
+  const dialogue = dbDialogue ? [dbDialogue] : [];
+  const narration = dbNarration ? [dbNarration] : [];
+  const dbDialogueFp = dbDialogue ? speechFingerprint(dbDialogue) : '';
+  const dbNarrationFp = dbNarration ? speechFingerprint(dbNarration) : '';
+
+  // An identical utterance mirrored across dialogue and narration channels by
+  // a misclassified slot must be counted once in its authoritative channel.
   const speechPlan = semantic?.speech_plan;
-  if (speechPlan && typeof speechPlan === 'object' && speechPlan.text) {
-    (speechPlan.is_narration === true ? narration : dialogue).push(speechPlan.text);
+  const planText = speechPlan && typeof speechPlan === 'object' ? cleanExtractedSpeech(speechPlan.text) : '';
+  const planFp = planText ? speechFingerprint(planText) : '';
+  const planIsNarration = speechPlan?.is_narration === true;
+  const planBlocked = (planIsNarration && !dbNarrationFp && dbDialogueFp && planFp === dbDialogueFp)
+    || (!planIsNarration && !dbDialogueFp && dbNarrationFp && planFp === dbNarrationFp);
+  let claimedPlanFp = '';
+  if (planText && !planBlocked) {
+    claimedPlanFp = planFp;
+    (planIsNarration ? narration : dialogue).push(speechPlan.text);
   }
 
   const lipSync = video?.audio_lip_sync;
-  if (lipSync && typeof lipSync === 'object' && lipSync.dialogue_content) {
-    (String(lipSync.mode || '').toLowerCase() === 'narration' ? narration : dialogue)
-      .push(lipSync.dialogue_content);
+  const lipText = lipSync && typeof lipSync === 'object' ? cleanExtractedSpeech(lipSync.dialogue_content) : '';
+  const lipFp = lipText ? speechFingerprint(lipText) : '';
+  const lipIsNarration = String(lipSync?.mode || '').toLowerCase() === 'narration';
+  const lipBlocked = (lipIsNarration && !dbNarrationFp
+      && ((dbDialogueFp && lipFp === dbDialogueFp) || (!planIsNarration && claimedPlanFp && lipFp === claimedPlanFp)))
+    || (!lipIsNarration && !dbDialogueFp
+      && ((dbNarrationFp && lipFp === dbNarrationFp) || (planIsNarration && claimedPlanFp && lipFp === claimedPlanFp)));
+  if (lipText && !lipBlocked) {
+    (lipIsNarration ? narration : dialogue).push(lipSync.dialogue_content);
   }
 
   return {

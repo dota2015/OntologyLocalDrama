@@ -31,7 +31,15 @@ class VisualSlotCompletenessRule extends BaseInvariantRule {
     const violations = [];
     if (!Array.isArray(shots)) return violations;
 
-    const { validateCharacterVisualSlots, FACING_REGEX, POSTURE_REGEX, HANDS_REGEX, GAZE_REGEX, DYNAMIC_REGEX } = require('../visualSlots');
+    const {
+      isStructuredVisualContract,
+      validateCharacterVisualSlots,
+      FACING_REGEX,
+      POSTURE_REGEX,
+      HANDS_REGEX,
+      GAZE_REGEX,
+      DYNAMIC_REGEX,
+    } = require('../visualSlots');
 
     shots.forEach((shot, idx) => {
       const shotNum = shot.shot_number || shot.storyboard_number || (idx + 1);
@@ -47,18 +55,22 @@ class VisualSlotCompletenessRule extends BaseInvariantRule {
         const slotViolations = validateCharacterVisualSlots(shot, visuals);
         violations.push(...slotViolations);
 
-        // 检查是否存在千篇一律的模板化死板套话
-        visuals.forEach((v) => {
-          const postureAndHands = `${v.posture || ''} ${v.hands || ''}`;
-          if (/(?:身体保持戒备低姿[，,\s]*重心稳固隐蔽|双手紧握装备保持待发状态)/.test(postureAndHands)) {
-            violations.push({
-              rule: 'INVARIANT_SLOT_BOILERPLATE_DETECTED',
-              shot_number: shotNum,
-              severity: this.defaultSeverity,
-              message: `分镜 ${shotNum} 视觉槽位检测到机械模板套话（“身体保持戒备低姿”或“双手紧握装备”），必须根据本镜剧本实际动作描写具体的肢体定格姿态、手部接触与微表情！`,
-            });
-          }
-        });
+        // Under sync_v2, posture and hands_state are closed actionAtoms enums
+        // rather than legacy prose, so the sync_v1 boilerplate check applies
+        // only to legacy sync_v1 visual slots.
+        if (!isStructuredVisualContract(shot, visuals)) {
+          visuals.forEach((v) => {
+            const postureAndHands = `${v.posture || ''} ${v.hands || ''}`;
+            if (/(?:身体保持戒备低姿[，,\s]*重心稳固隐蔽|双手紧握装备保持待发状态)/.test(postureAndHands)) {
+              violations.push({
+                rule: 'INVARIANT_SLOT_BOILERPLATE_DETECTED',
+                shot_number: shotNum,
+                severity: this.defaultSeverity,
+                message: `分镜 ${shotNum} 视觉槽位检测到机械模板套话（“身体保持戒备低姿”或“双手紧握装备”），必须根据本镜剧本实际动作描写具体的肢体定格姿态、手部接触与微表情！`,
+              });
+            }
+          });
+        }
       } else {
         const p = String(shot.image_prompt || shot.action || '');
         const hasFacing = FACING_REGEX.test(p);

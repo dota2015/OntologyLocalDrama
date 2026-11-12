@@ -13,7 +13,19 @@ const { validateVideoSlots, formatH3Timestamp, isGazeOnlyHold, mouthIsSealed } =
 const { validateCharacterVisualSlots, SCREEN_POSITION_REGEX, FACING_REGEX, HEAD_POSE_REGEX, GAZE_REGEX, POSTURE_REGEX, HANDS_REGEX, CLONE_TRIGGER_REGEX, DYNAMIC_REGEX } = require('./visualSlots');
 const { extractAllEntitiesFromScript } = require('./extractionAgent');
 const { isAssetObsolete } = require('./assetMatcher');
-const actionAtoms = require('./actionAtoms');
+const { CrossSlotInvariantsRule } = require('./rules/crossSlotRules');
+
+const singleShotCrossSlotRule = new CrossSlotInvariantsRule();
+const STAGE2_SKIPPED_CROSS_SLOT_RULES = new Set([
+  'INVARIANT_MULTI_SPEAKER_SHOT',
+  'INVARIANT_MID_SHOT_WARDROBE_MUTATION',
+]);
+
+function crossSlotStage2Violations(shot, catalogs = {}) {
+  return singleShotCrossSlotRule
+    .evaluate({ shots: [shot], catalogs })
+    .filter((item) => item?.severity === 'error' && !STAGE2_SKIPPED_CROSS_SLOT_RULES.has(item.rule));
+}
 
 function normalizeTimelineTimestamps(timeline) {
   if (!Array.isArray(timeline)) return timeline;
@@ -1472,46 +1484,42 @@ function directorCharacterIds(shot) {
   return ids;
 }
 
-function visualSlotErrors(shot, characterVisuals, lastFrameVisuals) {
+function visualSlotViolations(shot, characterVisuals, lastFrameVisuals) {
   const expected = directorCharacterIds(shot).sort((a, b) => a - b);
   const actual = (Array.isArray(characterVisuals) ? characterVisuals : [])
     .map((item) => Number(item?.character_id)).filter((id) => id > 0).sort((a, b) => a - b);
-  const errors = [];
-  if (!Array.isArray(characterVisuals)) errors.push('character_visuals 必须由 Agent 显式输出为数组，无人镜头输出 []，不能省略或填 null');
+  const violations = [];
+  const push = (message, conflictSlots = ['character_visuals'], rule = 'INVARIANT_VISUAL_SLOT') => {
+    violations.push({ rule, severity: 'error', conflict_slots: conflictSlots, message });
+  };
+  if (!Array.isArray(characterVisuals)) push('character_visuals 必须由 Agent 显式输出为数组，无人镜头输出 []，不能省略或填 null');
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-    errors.push(`character_visuals 角色 ID 必须精确为 ${JSON.stringify(expected)}，实际为 ${JSON.stringify(actual)}`);
+    push(`character_visuals 角色 ID 必须精确为 ${JSON.stringify(expected)}，实际为 ${JSON.stringify(actual)}`);
   }
   const policy = String(shot?.semantic_slots?.last_frame_policy || shot?.last_frame_policy || 'none');
-  if (policy === 'generate_tail' && !Array.isArray(lastFrameVisuals)) errors.push('需要尾帧时 last_frame_visuals 必须由 Agent 显式输出为数组');
+  if (policy === 'generate_tail' && !Array.isArray(lastFrameVisuals)) {
+    push('需要尾帧时 last_frame_visuals 必须由 Agent 显式输出为数组', ['last_frame_visuals']);
+  }
   const lastIds = (Array.isArray(lastFrameVisuals) ? lastFrameVisuals : [])
     .map((item) => Number(item?.character_id)).filter((id) => id > 0).sort((a, b) => a - b);
   if (policy === 'generate_tail' && JSON.stringify(lastIds) !== JSON.stringify(expected)) {
-    errors.push(`last_frame_policy=generate_tail 时 last_frame_visuals 必须覆盖 ${JSON.stringify(expected)}`);
+    push(`last_frame_policy=generate_tail 时 last_frame_visuals 必须覆盖 ${JSON.stringify(expected)}`, ['last_frame_visuals']);
   }
-  if (policy !== 'generate_tail' && lastIds.length) errors.push(`last_frame_policy=${policy} 时 last_frame_visuals 必须为空数组`);
+  if (policy !== 'generate_tail' && lastIds.length) {
+    push(`last_frame_policy=${policy} 时 last_frame_visuals 必须为空数组`, ['last_frame_visuals']);
+  }
 
-  const structured = shot?.video_slots?.performance_contract === 'sync_v2';
-  if (structured && Array.isArray(characterVisuals)) {
-    const enumFields = {
-      facing: actionAtoms.FACING,
-      head_pose: actionAtoms.HEAD_POSES,
-      gaze_type: actionAtoms.GAZE_TYPES,
-      posture: actionAtoms.POSTURES,
-      hands_state: actionAtoms.HAND_STATES,
-      expression: actionAtoms.EXPRESSIONS,
-    };
-    characterVisuals.forEach((visual, index) => Object.entries(enumFields).forEach(([field, allowed]) => {
-      const value = String(visual?.[field] ?? '');
-      if (!allowed.includes(value)) errors.push(`character_visuals[${index}].${field} 必须使用结构化枚举值（当前为 '${value}'，允许值: ${allowed.join('/')}）`);
-    }));
-  } else if (expected.length > 0 && Array.isArray(characterVisuals) && characterVisuals.length > 0) {
-    const visualViolations = validateCharacterVisualSlots(shot, characterVisuals, 'character_visuals')
-      .filter((item) => item.severity === 'error');
-    for (const v of visualViolations) {
-      errors.push(v.message);
-    }
+  if (expected.length > 0 && Array.isArray(characterVisuals) && characterVisuals.length > 0) {
+    violations.push(...validateCharacterVisualSlots(shot, characterVisuals, 'character_visuals').filter((item) => item.severity === 'error'));
   }
-  return errors;
+  if (policy === 'generate_tail' && expected.length > 0 && Array.isArray(lastFrameVisuals) && lastFrameVisuals.length > 0) {
+    violations.push(...validateCharacterVisualSlots(shot, lastFrameVisuals, 'last_frame_visuals').filter((item) => item.severity === 'error'));
+  }
+  return violations;
+}
+
+function visualSlotErrors(shot, characterVisuals, lastFrameVisuals) {
+  return visualSlotViolations(shot, characterVisuals, lastFrameVisuals).map((item) => item.message);
 }
 
 async function ensureDirectorCharacterVisuals(db, log, shot, retryOptions = {}) {
@@ -1619,7 +1627,7 @@ function autoPatchDirectorExecutionSlots(shot, targetDuration) {
     let s = String(txt || '').trim();
     if (!s) return fallbackText;
     s = s.replace(/(?:从.+?到.+?|从.+?跑向|从.+?冲向|从.+?跨向|沿.+?走到|从.+?走到|从.+?探出.+?缩回|来回(?:看|确认|扫视))/g, '')
-         .replace(/(?:先指向.+?再|急停后|翻滚到|停止翻找|从.+?连续下降|倒计时跳到|操作速度.+?变慢|转向屏幕|抬起通讯器位置|抬头观察高台|红狼没有停步|看了一眼|随后|然后|逐渐|开始|冲向|冲出|跑向|跨向|走到)/g, '')
+         .replace(/(?:先指向.+?再|急停后|翻滚到|停止翻找|从.+?连续下降|倒计时跳到|操作速度.+?变慢|转向屏幕|抬起通讯器位置|抬头观察高台|看了一眼|随后|然后|逐渐|开始|冲向|冲出|跑向|跨向|走到)/g, '')
          .replace(/^[，,\s、]+|[，,\s、]+$/g, '')
          .trim();
     return s || fallbackText;
@@ -2703,7 +2711,7 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
   let errors = [
     ...(requireSemantic ? semanticRequired.filter(([, valid]) => !valid).map(([field]) => ({ message: `缺少 Agent 规划的 semantic_slots.${field}` })) : []),
     ...(requireSemantic ? continuityErrors(semantic.continuity_from_previous) : []),
-    ...visualSlotErrors(shot, shot.character_visuals, shot.last_frame_visuals).map(message => ({ message })),
+    ...visualSlotViolations(shot, shot.character_visuals, shot.last_frame_visuals),
     ...(shot.video_slots && typeof shot.video_slots === 'object'
       ? shortDramaTimelineViolations(shot, shot.video_slots.shots_timeline)
       : [{ message: '缺少 video_slots，必须与人物定格和动作时间轴一起规划' }]),
@@ -2713,7 +2721,9 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
   }
   if (retryOptions.forceAgent) errors.push({ message: '按阶段二合同要求重新由导演 Agent 完整规划 semantic_slots、character_visuals、last_frame_visuals 和 video_slots' });
   if (Array.isArray(retryOptions.invariantViolations) && retryOptions.invariantViolations.length) {
-    errors.push(...retryOptions.invariantViolations.map((item) => ({ message: item.message || String(item) })));
+    errors.push(...retryOptions.invariantViolations.map((item) => (
+      item && typeof item === 'object' ? item : { message: String(item) }
+    )));
   }
   if (errors.length === 0) return shot;
 
@@ -2773,16 +2783,20 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
         if (!s) return;
         if (s.startsWith('character_visuals')) targetSet.add('character_visuals');
         else if (s.startsWith('last_frame_visuals')) targetSet.add('last_frame_visuals');
-        else if (s.startsWith('semantic_slots') || /^(?:characters|background_characters|offscreen_characters|scene_id|props|required_references)$/.test(s)) targetSet.add('semantic_slots');
-        else if (s.startsWith('video_slots') || /^(?:shots_timeline|audio_lip_sync|speech_action_alignment|timing)/.test(s)) targetSet.add('video_slots');
+        else if (s.startsWith('semantic_slots') || /^(?:characters|background_characters|offscreen_characters|visible_characters|scene_id|props|required_references|h3_mode|first_frame_policy|last_frame_policy|identity_visibility|dialogue_framing|wardrobe_id|speech_plan|sound_plan|continuity_)/.test(s)) targetSet.add('semantic_slots');
+        else if (s.startsWith('video_slots') || /^(?:shots_timeline|audio_lip_sync|speech_action_alignment|timing|trajectories|video_prompt)/.test(s)) {
+          targetSet.add('video_slots');
+          if (s === 'audio_lip_sync') targetSet.add('semantic_slots');
+        }
       };
       const classifyRule = (rule, targetSet) => {
         const r = String(rule || '');
         if (!r) return;
-        if (/CHARACTER_VISUAL|FACING|GAZE|POSTURE|FRAME_VISUAL/.test(r)) targetSet.add('character_visuals');
+        if (/CHARACTER_VISUAL|FACING|GAZE|POSTURE|FRAME_VISUAL|DUPLICATE_POSITION|VISUAL_ENUM/.test(r)) targetSet.add('character_visuals');
         if (/LAST_FRAME|TAIL/.test(r)) targetSet.add('last_frame_visuals');
-        if (/CHARACTER|OFFSCREEN|SPEAKER_NOT_DECLARED|OFFSCREEN_SPEAKER_LIP_SYNC|CONTINUITY|REQUIRED_REF|UNKNOWN_.*REFERENCE|EYELINE/.test(r)) targetSet.add('semantic_slots');
-        if (/TIMELINE|TRAJECTORY|LISTENER|ACTION_|SPEAKER_|SHORT_DRAMA_|VIDEO|SPEECH_ACTION|PACING/.test(r)) targetSet.add('video_slots');
+        if (/CHARACTER|OFFSCREEN|SPEAKER_NOT_DECLARED|OFFSCREEN_SPEAKER_LIP_SYNC|CONTINUITY|REQUIRED_REF|UNKNOWN_.*REFERENCE|EYELINE|REF2VA_|FL2VA_|NARRATION_SPEAKER|FRAMING_CHARACTER|CLOSE_DIALOGUE_BACKGROUND|DUAL_ROLE|IDENTITY_VISIBILITY/.test(r)) targetSet.add('semantic_slots');
+        if (/TIMELINE|TRAJECTORY|LISTENER|ACTION_|SPEAKER_|SHORT_DRAMA_|VIDEO|SPEECH_ACTION|PACING|SPEECH_SLOT|NONVERBAL_/.test(r)) targetSet.add('video_slots');
+        if (/NARRATION_SPEAKER|SPEECH_SLOT|SPEAKER_SLOT|NONVERBAL_SHOT_SPEECH/.test(r)) targetSet.add('semantic_slots');
       };
       for (const item of errors) {
         const matchedForItem = new Set();
@@ -2834,8 +2848,8 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
       const planned = await agentsRuntime.runAgent(db, log, {
         name: 'director-execution-slots-planner',
         instructions: patchMode
-          ? `你是短剧导演执行合同的局部修复节点。只修复门禁反馈列出的字段，禁止改写人物清单、场景、对白、旁白、总时长和其他已通过字段。character_visuals 必须精确覆盖权威人物且每人有实际定格；video_slots.shots_timeline 必须让每位画内角色在该段有与事件同步的动作或反应。凡存在对白的 timeline 段，speech_action_alignment.mode 固定填 'concurrent'（禁止填 sync/deliberate_pause/none），画内说话人 character_trajectories[].mouth_state 固定填 'speaker_synced'。当【本体资产白名单】的 props 为空或不含目标物体时，动作 target_type 禁止填 'prop'（无有效 target_id 必被门禁拒绝），改用 'event' 或 'scene' 并填写 target_label。只返回指定 repairs JSON，不要解释。`
-          : `你是短剧导演执行合同节点。根据紧凑的当前镜头事实，一次输出完整 semantic_slots、character_visuals、last_frame_visuals 和 video_slots。禁止改写人物清单、场景、对白、旁白和总时长。semantic_slots.continuity_from_previous 必须完整；h3_mode 固定 ref2va；performance_contract 固定 sync_v2。动作与对白必须同步，所有画内人物都要有本段可执行动作或反应；有对白段 speech_action_alignment.mode 固定填 'concurrent'，画内说话人 character_trajectories[].mouth_state 固定填 'speaker_synced'。当【本体资产白名单】的 props 为空或不含目标物体时，动作 target_type 禁止填 'prop'（无有效 target_id 必被门禁拒绝），改用 'event' 或 'scene' 并填写 target_label。${durationPlanContract}。只返回指定 JSON，不要解释。`,
+          ? `你是短剧导演执行合同的局部修复节点。只修复门禁反馈列出的字段，禁止改写人物清单、场景、对白、旁白、总时长和其他已通过字段。h3_mode 固定 ref2va 时，semantic_slots.first_frame_policy 与 semantic_slots.last_frame_policy 必须固定填 'none'。当镜头已有角色对白（dialogue 非空且 narration 为空）时，speech_plan.is_narration 必须为 false、text 与 dialogue 台词逐字一致，严禁把角色台词标为旁白。character_visuals 必须精确覆盖权威人物且每人有实际定格、多人不得占用完全相同的 screen_position；video_slots.shots_timeline 必须让每位画内角色在该段有与事件同步的动作或反应。凡存在对白的 timeline 段，speech_action_alignment.mode 固定填 'concurrent'（禁止填 sync/deliberate_pause/none），画内说话人 character_trajectories[].mouth_state 固定填 'speaker_synced'。当【本体资产白名单】的 props 为空或不含目标物体时，动作 target_type 禁止填 'prop'（无有效 target_id 必被门禁拒绝），改用 'event' 或 'scene' 并填写 target_label。只返回指定 repairs JSON，不要解释。`
+          : `你是短剧导演执行合同节点。根据紧凑的当前镜头事实，一次输出完整 semantic_slots、character_visuals、last_frame_visuals 和 video_slots。禁止改写人物清单、场景、对白、旁白和总时长。semantic_slots.continuity_from_previous 必须完整；h3_mode 固定 ref2va，first_frame_policy 与 last_frame_policy 必须固定填 'none'；当镜头已有角色对白（dialogue 非空且 narration 为空）时，speech_plan.is_narration 必须为 false，严禁把角色台词标为旁白。performance_contract 固定 sync_v2；多人同框时 character_visuals 的 screen_position 必须互相错开。动作与对白必须同步，所有画内人物都要有本段可执行动作或反应；有对白段 speech_action_alignment.mode 固定填 'concurrent'，画内说话人 character_trajectories[].mouth_state 固定填 'speaker_synced'。当【本体资产白名单】的 props 为空或不含目标物体时，动作 target_type 禁止填 'prop'（无有效 target_id 必被门禁拒绝），改用 'event' 或 'scene' 并填写 target_label。${durationPlanContract}。只返回指定 JSON，不要解释。`,
         input: requestInput,
         outputType: patchMode
           ? agentsRuntime.directorExecutionRepairOutputType(shotNumber)
@@ -2891,7 +2905,7 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
           ['continuity_from_previous', plannedSemantic.continuity_from_previous && typeof plannedSemantic.continuity_from_previous === 'object'],
         ].filter(([, valid]) => !valid).map(([field]) => ({ message: `Agent 未输出 semantic_slots.${field}` })) : []),
         ...(requireSemantic ? continuityErrors(plannedSemantic.continuity_from_previous) : []),
-        ...visualSlotErrors(currentShot, currentShot.character_visuals, currentShot.last_frame_visuals).map(message => ({ message })),
+        ...visualSlotViolations(currentShot, currentShot.character_visuals, currentShot.last_frame_visuals),
         ...shortDramaTimelineViolations(currentShot, currentShot.video_slots?.shots_timeline),
       ];
       // Stage one owns the story structure.  Stage two may fill execution
@@ -2908,6 +2922,15 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
         }
         const planningDrift = checkPlanningFeasibility([currentShot], { catalogs: retryOptions.catalogs || {} });
         errors.push(...planningDrift.map(item => ({ message: item.message })));
+      }
+      if (requireSemantic) {
+        const existingMsgs = new Set(errors.map((item) => String(item?.message || item || '')));
+        for (const v of crossSlotStage2Violations(currentShot, retryOptions.catalogs || {})) {
+          if (!existingMsgs.has(v.message)) {
+            errors.push(v);
+            existingMsgs.add(v.message);
+          }
+        }
       }
       if (requireSemantic && typeof semantic.source_script_excerpt === 'string'
         && plannedSemantic.source_script_excerpt !== semantic.source_script_excerpt) {

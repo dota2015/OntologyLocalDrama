@@ -9,8 +9,43 @@ const { safeParseAIJSON, extractJsonCandidate, repairTruncatedJsonArray, extract
 const loadConfig = require('../config').loadConfig;
 const angleService = require('./angleService');
 const { timingInstructions, assessSpeechTiming } = require('../utils/speechTiming');
+const { shotSpeechTurns } = require('./dialogueDubbingService');
 const { enforceStoryboardSpeechTiming } = require('./storyboardSpeechService');
-const { checkPlanningFeasibility } = require('../ontology/invariants');
+const { checkPlanningFeasibility, checkSpeechTiming } = require('../ontology/invariants');
+
+function stageOnePlanningViolations(storyboards, { catalogs, narrativeStyle, durationRange } = {}) {
+  const violations = [...checkPlanningFeasibility(storyboards, { catalogs })];
+  const delivery = require('./speechDeliveryService');
+  for (let idx = 0; idx < (Array.isArray(storyboards) ? storyboards.length : 0); idx++) {
+    const shot = storyboards[idx];
+    const shotNum = Number(shot?.shot_number || shot?.storyboard_number || idx + 1);
+    const turns = shotSpeechTurns(shot);
+    if (turns.length > 1) {
+      const speakers = turns.map((t) => t.speaker || (t.kind === 'narration' ? '旁白' : '对白')).join('、');
+      violations.push({
+        rule: 'INVARIANT_MULTI_SPEAKER_SHOT',
+        shot_number: shotNum,
+        severity: 'error',
+        conflict_slots: ['dialogue', 'narration'],
+        message: `分镜 #${shotNum} 包含 ${turns.length} 个发言段（${speakers}）；阶段一必须按说话轮次拆成至少 ${turns.length} 个连续镜头，保证每镜最多 1 个说话人的单轮对白或 1 段旁白，并逐字保留全部台词。`,
+      });
+    }
+    const rawDur = Number(shot?.duration) > 0 ? Number(shot.duration) : 5;
+    if (durationRange && (rawDur < durationRange.min || rawDur > durationRange.max)) {
+      violations.push({
+        rule: 'INVARIANT_SHOT_DURATION_RANGE',
+        shot_number: shotNum,
+        severity: 'error',
+        conflict_slots: ['duration'],
+        message: `分镜 #${shotNum} 的 duration=${rawDur}s 超出配置范围 ${durationRange.min}～${durationRange.max} 秒；必须通过拆镜解决超长台词，禁止拉长单镜 duration！`,
+      });
+    }
+    const dur = durationRange ? Math.max(durationRange.min, Math.min(durationRange.max, rawDur)) : rawDur;
+    const deliveryOptions = delivery.budgetOptions(delivery.resolve(narrativeStyle, shot, { duration: dur }));
+    violations.push(...checkSpeechTiming([{ ...shot, shot_number: shotNum, duration: dur }], { deliveryOptions }));
+  }
+  return violations;
+}
 
 /**
  * 分镜专用 generateText 包装：
@@ -396,9 +431,7 @@ function isFlawedImagePrompt(prompt) {
   if (/，(?:[^，。；]*?)(?:向[^，。；]+方向|沿[^，。；]+道路|沿[^，。；]+后方)[，\s]/i.test(p)) return true;
   if (/压低(?:上身|身姿)压低/i.test(p)) return true;
   if (/重心向向/i.test(p)) return true;
-  if (/露娜半蹲在掩体边缘，露娜/i.test(p)) return true;
-  if (/红狼没有停步/i.test(p)) return true;
-  if (/侧身侧头面向哥哥/i.test(p)) return true;
+  if (/侧身侧头/i.test(p)) return true;
 
   // 2. 包含明显的动态/视频时序动词、多步时序动作或过程词（违背纯静态定格摄影抓拍原则）
   if (/(?:镜头|分镜)[0-9一二三四五]/i.test(p)) return true;
@@ -1227,10 +1260,11 @@ ${messages}
 
 【修复要求】
 - 只修改违规镜头 ${JSON.stringify(targetNumbers)} 以及因拆镜必须顺延的镜号；其他镜头保持不变。
+- 若门禁提示「包含 N 个发言段」或「对白与旁白超出时长预算」：必须把该镜按说话轮次与句意拆成多个连续镜头！拆分后每个新镜最多只允许 1 个说话人的单轮对白（或 1 段旁白），严禁同一镜内多人交替发言或对白与旁白混镜；每镜 duration 必须在允许范围内并能完整容纳该镜台词（按 TTS 1.25x 约 5 字/秒），逐字保留全部对白/旁白、不得删字或重复，并为拆出的新镜补全标题、动作、结果与当前可见人物。
 - 动作、结果、起幅和构图中明确实际出场的剧库角色，必须加入该镜 characters 或 background_characters；如果只是环境事件、敌军或群众，不得挂载身份角色。
 - 每镜最多包含 2 个有身份的剧库角色；若加入后超过2人，必须按剧情拆成连续镜头，不能静默删除或选择性遗漏。
 - 保留原剧本对白、旁白和剧情因果，不得删字、改写台词或把角色动作改成无依据的环境事件。
-- 返回修复后的完整 storyboards 数组，不要返回补丁或解释文字。
+- 返回修复后的完整 storyboards 数组（连续重排 shot_number），不要返回补丁或解释文字。
 【可用角色目录】
 ${JSON.stringify(characterCatalog)}
 【当前完整候选】
@@ -1479,21 +1513,26 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
       generate:(user,system)=>generateTextForStoryboard(db,log,user,system,{model:model || undefined,temperature:0.2}),
       onRepair:(shot,reason)=>log.info('Splitting costume transition',{task_id:taskId,shot_number:normalizeStoryboardShotNumber(shot),reason}),
     });
-    taskService.updateTaskStatus(db, taskId, 'processing', 65, '正在校验对白时长，必要时按语义拆镜...');
+    taskService.updateTaskStatus(db, taskId, 'processing', 65, '正在校验对白时长与单镜单发言人规则，必要时按语义拆镜...');
     try {
       storyboards = await enforceStoryboardSpeechTiming(storyboards, {
         targetDuration: deriveOpts.targetClipDuration,
         durationRange: deriveOpts.durationRange,
         narrativeStyle: cfg.narrative_style,
+        enforceSingleSpeaker: Boolean(pipelineOptions?.chainEnrichment),
+        keepUnresolvedForRepair: Boolean(pipelineOptions?.chainEnrichment),
         generate: (user, system) => generateTextForStoryboard(db, log, user, system, { model: model || undefined, temperature: 0.2 }),
-        onRepair: (shot, assessment) => log.info('Splitting over-budget storyboard', {
+        onRepair: (shot, assessment) => log.info('Splitting over-budget or multi-speaker storyboard', {
           task_id: taskId, shot_number: normalizeStoryboardShotNumber(shot),
           duration: assessment.duration, estimated_seconds: assessment.requiredSeconds,
+        }),
+        onSplitFailure: (shot, reason) => log.warn('Storyboard local speech split deferred to stage 1 planning repair', {
+          task_id: taskId, shot_number: normalizeStoryboardShotNumber(shot), reason,
         }),
       });
     } catch (splitErr) {
       if (pipelineOptions?.chainEnrichment) {
-        log.warn('Storyboard speech timing split failed, preserving base shots for stage 2 auto-patching', {
+        log.warn('Storyboard speech timing split encountered error, handing over to stage 1 planning gate', {
           task_id: taskId,
           error: splitErr.message,
         });
@@ -1504,23 +1543,36 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
 
     storyboards.forEach(shot=>{wardrobePlanner.assertSingleOutfit(shot);wardrobePlanner.validateChoices(db,streamEpisode.drama_id,shot,episodeIdNum);});
 
-    // 规划门禁属于阶段一：人物数量、角色集合和镜头拆分会改变基础剧情结构，
-    // 必须在入库前反馈给生成模型，不能等阶段二开始后才直接拒绝。
+    // 规划门禁属于阶段一：人物数量、角色集合、单镜单说话人与台词时长拆镜会改变基础剧情结构，
+    // 必须在入库前通过规划修复环拆清，绝不能把超长或多说话人镜头带病放行给阶段二。
     if (pipelineOptions?.chainEnrichment && pipelineOptions.planningCatalogs) {
       const planningAttempts = Math.max(1, Math.min(5, Number(pipelineOptions.planningRepairAttempts || 5)));
-      let planningViolations = checkPlanningFeasibility(storyboards, { catalogs: pipelineOptions.planningCatalogs });
+      const checkStage1 = (boards) => stageOnePlanningViolations(boards, {
+        catalogs: pipelineOptions.planningCatalogs,
+        narrativeStyle: cfg.narrative_style,
+        durationRange: deriveOpts.durationRange,
+      });
+      let planningViolations = checkStage1(storyboards);
       for (let attempt = 1; planningViolations.length && attempt <= planningAttempts; attempt++) {
         taskService.updateTaskStatus(db, taskId, 'processing', 66,
-          `阶段一规划门禁发现 ${planningViolations.length} 项问题，正在反馈导演 Agent 修复（第${attempt}次）...`);
+          `阶段一规划门禁发现 ${planningViolations.length} 项问题，正在反馈导演 Agent 拆镜/修复（第${attempt}次）...`);
         const repairText = await generateTextForStoryboard(
           db,
           log,
           buildPlanningRepairPrompt(userPrompt, storyboards, planningViolations, attempt, pipelineOptions.planningCatalogs),
-          `你是阶段一基础分镜的规划修复节点。只修复门禁反馈指定的镜头人物集合与结构问题，保持其他镜头和全部台词、旁白不变。每镜最多2名有身份角色；环境事件、敌军和群众不得挂载角色 ID。通过通讯器/对讲机/电话远程参与或同场画外的角色不要加入 characters/background_characters（其画外参与方式由阶段二登记），本层只保证入画人物集合正确。只返回完整 JSON：{"storyboards":[...]}，不要解释。`,
+          `你是阶段一基础分镜的规划修复节点。只修复门禁反馈指定的镜头人物集合、超长台词或多人对白问题：
+1) 遇到「包含多个发言段」或「对白与旁白超出时长预算」时，必须把该镜头按说话轮次与句意拆成多个连续镜头，每镜最多 1 个说话人的单轮台词（或 1 段旁白），严禁两人轮流对白或对白与旁白混在同一镜，并保证每镜台词能在 duration 预算内说完（约 5 字/秒）；
+2) 逐字完整保留原剧本台词与旁白，重排连续 shot_number，保持其他无问题镜头内容不变；
+3) 每镜最多 2 名有身份角色；环境事件、敌军和群众不得挂载角色 ID；通过通讯器/对讲机/电话远程参与或同场画外的角色不要加入 characters/background_characters。
+只返回完整 JSON：{"storyboards":[...]}，不要解释。`,
           { model: model || undefined, temperature: 0.1 }
         );
-        storyboards = parseStoryboardArray(repairText, log);
-        planningViolations = checkPlanningFeasibility(storyboards, { catalogs: pipelineOptions.planningCatalogs });
+        storyboards = parseStoryboardArray(repairText, log).map((item, idx) => ({
+          ...item,
+          shot_number: idx + 1,
+          storyboard_number: idx + 1,
+        }));
+        planningViolations = checkStage1(storyboards);
       }
       if (planningViolations.length) {
         const planningError = new Error(`阶段一规划门禁经过 ${planningAttempts} 轮 Agent 修复仍未通过：${planningViolations.map((item) => item.message).join('；')}`);
@@ -1860,7 +1912,10 @@ async function runStageOneBaseGeneration(db, log, episodeId, taskId, options = {
   // Stage 1 is deliberately a small, fast narrative pass.  The execution
   // contract Agent owns semantic/video slots in Stage 2; sending those low
   // level fields here made the first response huge and caused truncation.
-  ctx.systemPrompt = `你是短剧基础分镜导演。只把本集剧本拆成完整、紧凑、可执行的剧情分镜，先保证剧情顺序和台词逐字覆盖。每镜4～30秒整数秒，超过30秒才按语义拆镜；单镜最多2名有身份角色，群众/敌军写成环境事件。不要输出 semantic_slots、video_slots、character_visuals、动作原子、口型、视线枚举或 H3 提示词。只返回 JSON 对象 {"storyboards":[...]}，不要解释。每镜字段：shot_number,title,scene_id,characters,background_characters,props,duration,location,time,shot_type,angle_h,angle_v,angle_s,movement,action,result,dialogue,narration,emotion,start_framing,end_framing,transition_to_next。对白和旁白必须逐字保留，动作必须与对白同时发生，禁止用互相看着或静止等待填时长。可用场景目录：${JSON.stringify(ctx.scenes.map(s => ({ id: s.id, name: s.name, location: s.location })))}；可用角色目录：${JSON.stringify(ctx.characters.map(c => ({ id: c.id, name: c.name })))}；可用道具目录：${JSON.stringify(ctx.props.map(p => ({ id: p.id, name: p.name })))}。`;
+  const stage1DurationLabel = ctx.durationRange
+    ? `${ctx.durationRange.min}～${ctx.durationRange.max}秒整数秒，严禁超过上限 ${ctx.durationRange.max} 秒`
+    : '4～30秒整数秒，超过30秒才按语义拆镜';
+  ctx.systemPrompt = `你是短剧基础分镜导演。只把本集剧本拆成完整、紧凑、可执行的剧情分镜，先保证剧情顺序和台词逐字覆盖。每镜${stage1DurationLabel}；每个分镜最多只允许 1 个说话人的单轮对白（或 1 段旁白），严禁两人轮流对话或对白与旁白混在同一镜，多人轮流对话必须按说话轮次拆成连续分镜；每镜对白/旁白字数必须能在本镜 duration 内按实际 TTS 速度（默认 1.25x，约 5 字/秒）自然说完，超长台词必须按语义拆镜；单镜最多2名有身份角色，群众/敌军写成环境事件。不要输出 semantic_slots、video_slots、character_visuals、动作原子、口型、视线枚举或 H3 提示词。只返回 JSON 对象 {"storyboards":[...]}，不要解释。每镜字段：shot_number,title,scene_id,characters,background_characters,props,duration,location,time,shot_type,angle_h,angle_v,angle_s,movement,action,result,dialogue,narration,emotion,start_framing,end_framing,transition_to_next。对白和旁白必须逐字保留，动作必须与对白同时发生，禁止用互相看着或静止等待填时长。可用场景目录：${JSON.stringify(ctx.scenes.map(s => ({ id: s.id, name: s.name, location: s.location })))}；可用角色目录：${JSON.stringify(ctx.characters.map(c => ({ id: c.id, name: c.name })))}；可用道具目录：${JSON.stringify(ctx.props.map(p => ({ id: p.id, name: p.name })))}。`;
   ctx.userPrompt = `【本集剧本】\n${ctx.scriptContent}\n\n【规划目标】镜头数${ctx.storyboardCount || '自动'}；总时长${ctx.videoDuration || '自动'}秒；镜头时长范围${ctx.durationRange ? JSON.stringify(ctx.durationRange) : '4～30秒'}。按剧情节拍规划，不删台词、不重复内容。`;
   log.info('Running Stage 1 Base Storyboard Generation', {
     task_id: taskId,
@@ -2482,4 +2537,5 @@ module.exports = {
   clearStoryboardMedia,
   prepareStoryboardGenerationContext,
   runStageOneBaseGeneration,
+  stageOnePlanningViolations,
 };

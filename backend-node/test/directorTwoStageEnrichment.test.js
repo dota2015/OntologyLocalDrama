@@ -300,3 +300,180 @@ test('directorTwoStageEnrichment: speaker_synced feedback pinpoints mouth_state,
     agentsRuntime.runAgent = originalRunAgent;
   }
 });
+
+test('directorTwoStageEnrichment: sync_v2 visuals pass VisualSlotCompletenessRule, resolve catalog names in CrossSlot, and lock Ref2VA none policies', () => {
+  const { VisualSlotCompletenessRule } = require('../src/ontology/rules/visualSlotCompletenessRule');
+  const { CrossSlotInvariantsRule } = require('../src/ontology/rules/crossSlotRules');
+  const { directorExecutionSlotsOutputType } = agentsRuntime;
+
+  const semanticProps = directorExecutionSlotsOutputType(6, {}).schema.properties.semantic_slots.properties;
+  assert.deepEqual(semanticProps.first_frame_policy, { const: 'none' });
+  assert.deepEqual(semanticProps.last_frame_policy, { const: 'none' });
+
+  const shot = {
+    shot_number: 2,
+    duration: 6,
+    scene_id: 10,
+    characters: ['角色甲', '角色乙'],
+    background_characters: ['群众'],
+    dialogue: '角色甲：“现在出发。”',
+    narration: '',
+    semantic_slots: {
+      visible_characters: [{ id: 101, name: '角色甲' }, { id: 102, name: '角色乙' }],
+      background_characters: [],
+      speech_plan: { speaker_id: 101, speaker_name: '角色甲', is_offscreen: false, is_narration: false, text: '现在出发。', speed: 1, emotion: 'calm', audio_references: [] },
+      sound_plan: { sound_effects: ['脚步声'], bgm_prompt: '', acoustic_env: '室内', is_silent: false },
+      h3_mode: 'ref2va',
+      first_frame_policy: 'none',
+      last_frame_policy: 'none',
+      required_references: [{ type: 'scene', id: 10 }, { type: 'character', id: 101 }, { type: 'character', id: 102 }],
+      audio_lip_sync: 'in_frame_dialogue',
+      shot_duration: 6,
+    },
+    character_visuals: [
+      {
+        character_id: 101, name: '角色甲', depth_layer: 'foreground', screen_position: 'left_foreground',
+        environmental_anchor: '门边', facing: 'front_camera', facing_target_id: null, head_pose: 'lowered',
+        gaze_type: 'character', gaze_target_id: 102, gaze_target_label: '角色乙', posture: 'standing',
+        hands_state: 'clenched', hands_object_id: null, hands_target_id: null, expression: 'focused',
+        expression_detail: '神情沉着', appearance_details: '深色外套',
+      },
+      {
+        character_id: 102, name: '角色乙', depth_layer: 'midground', screen_position: 'right_midground',
+        environmental_anchor: '桌旁', facing: 'toward_character', facing_target_id: 101, head_pose: 'neutral',
+        gaze_type: 'character', gaze_target_id: 101, gaze_target_label: '角色甲', posture: 'sitting',
+        hands_state: 'relaxed', hands_object_id: null, hands_target_id: null, expression: 'alert',
+        expression_detail: '注视对方', appearance_details: '浅色衬衫',
+      },
+    ],
+    video_slots: {
+      performance_contract: 'sync_v2',
+      audio_lip_sync: { mode: 'in_frame_dialogue', speaker_name: '角色甲', speaker_in_frame: true, dialogue_content: '现在出发。', lip_sync_rule: '口型同步' },
+    },
+  };
+  const catalogs = { characters: [{ id: 101, name: '角色甲' }, { id: 102, name: '角色乙' }], scenes: [{ id: 10 }], props: [] };
+  const visualViolations = new VisualSlotCompletenessRule().evaluate({ shots: [shot] }).filter((v) => v.severity === 'error');
+  assert.deepEqual(visualViolations, []);
+  const crossViolations = new CrossSlotInvariantsRule().evaluate({ shots: [shot], catalogs }).filter((v) => v.severity === 'error');
+  assert.deepEqual(crossViolations, []);
+});
+
+test('directorTwoStageEnrichment: stage one enforces single-speaker splits and flags unresolved multi-speaker/budget shots for repair', async () => {
+  const { enforceStoryboardSpeechTiming } = require('../src/services/storyboardSpeechService');
+  const { stageOnePlanningViolations } = require('../src/services/episodeStoryboardService');
+
+  const multiSpeakerShort = [{
+    shot_number: 1,
+    duration: 7,
+    characters: ['角色甲', '角色乙'],
+    scene_id: 10,
+    dialogue: '角色甲：“先走。”角色乙：“等等我！”',
+  }];
+  let splitCalls = 0;
+  const split = await enforceStoryboardSpeechTiming(multiSpeakerShort, {
+    durationRange: { min: 4, max: 8 },
+    enforceSingleSpeaker: true,
+    keepUnresolvedForRepair: true,
+    generate: async () => {
+      splitCalls += 1;
+      return JSON.stringify([
+        { shot_number: 1, duration: 4, dialogue: '角色甲：“先走。”', narration: '', action: '角色甲迈步', result: '角色甲起身' },
+        { shot_number: 2, duration: 4, dialogue: '角色乙：“等等我！”', narration: '', action: '角色乙伸手呼喊', result: '角色乙追上' },
+      ]);
+    },
+  });
+  assert.equal(splitCalls, 1);
+  assert.equal(split.length, 2);
+
+  const unresolved = stageOnePlanningViolations(multiSpeakerShort, {
+    catalogs: { characters: [{ id: 101, name: '角色甲' }, { id: 102, name: '角色乙' }], scenes: [{ id: 10 }], props: [] },
+    durationRange: { min: 4, max: 8 },
+  });
+  assert.ok(unresolved.some((v) => v.rule === 'INVARIANT_MULTI_SPEAKER_SHOT'));
+});
+
+test('directorTwoStageEnrichment: stage-two per-shot gate catches duplicate screen_position and narration mislabeling cleanly', async () => {
+  const originalRunAgent = agentsRuntime.runAgent;
+  const seenInputs = [];
+  agentsRuntime.runAgent = async (_db, _log, options) => {
+    seenInputs.push(options.input);
+    const attempt = seenInputs.length;
+    const visual = (id, name, pos) => ({
+      character_id: id, name, depth_layer: 'foreground', screen_position: pos,
+      environmental_anchor: '通道旁', facing: 'front_camera', facing_target_id: null, head_pose: 'neutral',
+      gaze_type: 'character', gaze_target_id: id === 101 ? 102 : 101, gaze_target_label: '对方',
+      posture: 'standing', hands_state: 'free', hands_object_id: null, hands_target_id: null,
+      expression: 'focused', expression_detail: '专注', appearance_details: '深色装束',
+    });
+    const makeSeg = () => ({
+      shot_number: 1, timestamp: null, duration: 4,
+      camera: { shot_type: 'medium', movement: 'static', movement_description: '固定机位' },
+      action: '角色甲边转身看角色乙边开口说话，角色乙随之点头反应',
+      result: '双方完成确认',
+      visible_characters: [{ character_id: 101, name: '角色甲' }, { character_id: 102, name: '角色乙' }],
+      character_trajectories: [
+        {
+          character_id: 101, name: '角色甲', start_state: 'standing',
+          action_atom: { action: 'speak', action_detail: '开口回应对方', body_part: 'head', object_id: null, target_type: 'character', target_id: 102, target_label: '角色乙', direction: 'toward_target', contact: 'none' },
+          result_state: 'standing', reaction_trigger: { type: 'dialogue', source_id: 101, source_label: '角色甲' },
+          facing: 'front_camera', facing_target_id: null, head_pose: 'neutral', gaze_type: 'character', gaze_target_id: 102, gaze_target_label: '角色乙',
+          posture: 'standing', hands_state: 'free', hands_object_id: null, hands_target_id: null, expression: 'focused', expression_detail: '认真', mouth_state: 'speaker_synced',
+        },
+        {
+          character_id: 102, name: '角色乙', start_state: 'standing',
+          action_atom: { action: 'react', action_detail: '抬眼看向角色甲并轻点头', body_part: 'head', object_id: null, target_type: 'character', target_id: 101, target_label: '角色甲', direction: 'toward_target', contact: 'none' },
+          result_state: 'standing', reaction_trigger: { type: 'dialogue', source_id: 101, source_label: '角色甲' },
+          facing: 'toward_character', facing_target_id: 101, head_pose: 'turned_to_target', gaze_type: 'character', gaze_target_id: 101, gaze_target_label: '角色甲',
+          posture: 'standing', hands_state: 'relaxed', hands_object_id: null, hands_target_id: null, expression: 'focused', expression_detail: '倾听', mouth_state: 'closed',
+        },
+      ],
+      audio_lip_sync: { mode: 'in_frame_dialogue', speaker_name: '角色甲', speaker_in_frame: true, dialogue_content: '按原计划推进。', lip_sync_rule: '口型同步' },
+      speech_action_alignment: { mode: 'concurrent', speech_window: { start: 0, end: 4 }, speaker_action_window: { start: 0, end: 4 }, speaker_character_id: 101, listener_reactions: [{ character_id: 102, action_window: { start: 0, end: 4 }, trajectory_action: 'react' }], pause_reason: '' },
+    });
+    const contract = {
+      semantic_slots: {
+        visible_characters: [{ id: 101, name: '角色甲' }, { id: 102, name: '角色乙' }],
+        background_characters: [], offscreen_characters: [], identity_visibility: 'full',
+        speech_plan: { speaker_id: 101, speaker_name: '角色甲', is_offscreen: false, is_narration: attempt === 1, text: '按原计划推进。', speed: 1, emotion: 'steady', audio_references: [] },
+        sound_plan: { sound_effects: [], bgm_prompt: '', acoustic_env: '通道', is_silent: false },
+        continuity_type: 'opening',
+        continuity_from_previous: { relationship: 'opening', previous_end_state: '', entry_state: '同框站立', causal_link: '开场', sound_bridge: '', requires_previous_tail: false },
+        source_script_excerpt: '角色甲: 按原计划推进。',
+        h3_mode: 'ref2va', h3_mode_reason: '多参考一致性',
+        first_frame_policy: attempt === 1 ? 'match' : 'none', first_frame_reason: 'Ref2VA不用首帧',
+        last_frame_policy: 'none', last_frame_reason: '自然收束',
+        required_references: [{ type: 'scene', id: 10 }, { type: 'character', id: 101 }, { type: 'character', id: 102 }],
+        audio_lip_sync: 'in_frame_dialogue', shot_duration: 4, execution_backend: 'h3_single', continuum_plan: null,
+      },
+      character_visuals: [
+        visual(101, '角色甲', attempt === 1 ? 'center_foreground' : 'left_foreground'),
+        visual(102, '角色乙', attempt === 1 ? 'center_foreground' : 'right_foreground'),
+      ],
+      last_frame_visuals: [],
+      video_slots: {
+        timing: { duration: 4, pacing: 'medium' },
+        performance_contract: 'sync_v2',
+        camera: { shot_type: 'medium', movement: 'static', movement_description: '固定' },
+        audio_lip_sync: { mode: 'in_frame_dialogue', speaker_name: '角色甲', speaker_in_frame: true, dialogue_content: '按原计划推进。', lip_sync_rule: '口型同步' },
+        shots_timeline: [makeSeg()],
+      },
+    };
+    return attempt === 1 ? contract : { repairs: [{ shot_number: 1, patch: { semantic_slots: contract.semantic_slots, character_visuals: contract.character_visuals } }] };
+  };
+  try {
+    const source = { id: 20, storyboard_number: 1, duration: 4, dialogue: '角色甲：“按原计划推进。”', action: '两人交谈', characters: [101, 102], scene_id: 10 };
+    const planned = await ensureDirectorExecutionSlots({}, { info() {}, warn() {} }, source, {
+      forceAgent: true, maxAttempts: 2,
+      catalogs: { characters: [{ id: 101, name: '角色甲' }, { id: 102, name: '角色乙' }], scenes: [{ id: 10, name: '通道' }], props: [] },
+    });
+    assert.equal(seenInputs.length, 2);
+    assert.match(seenInputs[1], /完全相同的构图位置/);
+    assert.match(seenInputs[1], /first_frame_policy 必须为 none/);
+    assert.match(seenInputs[1], /旁白解说/);
+    assert.equal(planned.semantic_slots.first_frame_policy, 'none');
+    assert.equal(planned.semantic_slots.speech_plan.is_narration, false);
+    assert.notEqual(planned.character_visuals[0].screen_position, planned.character_visuals[1].screen_position);
+  } finally {
+    agentsRuntime.runAgent = originalRunAgent;
+  }
+});
