@@ -29,6 +29,51 @@ test('directorTwoStageEnrichment: local normalizer does not invent execution sem
   assert.equal(normalized.dialogue, bareShot.dialogue);
 });
 
+test('directorTwoStageEnrichment: stage-two whitelist carries the full drama cast and the lock carries offscreen participants', async () => {
+  const originalRunAgent = agentsRuntime.runAgent;
+  let received;
+  agentsRuntime.runAgent = async (_db, _log, options) => {
+    received = options;
+    return {
+      semantic_slots: {
+        visible_characters: [{ id: 25, name: '红狼' }],
+        background_characters: [],
+        offscreen_characters: [{ character_id: 27, name: '露娜', mode: 'remote_voice' }],
+      },
+    };
+  };
+  try {
+    const source = {
+      id: 8, storyboard_number: 12, duration: 4,
+      dialogue: '红狼: 收到。', action: '红狼伏在掩体后，耳机里传来露娜的声音',
+      characters: [25], scene_id: 10,
+      semantic_slots: {
+        visible_characters: [{ id: 25, name: '红狼' }],
+        background_characters: [],
+        offscreen_characters: [{ character_id: 27, name: '露娜', mode: 'remote_voice' }],
+        speech_plan: { speaker_id: 25, speaker_name: '红狼', text: '收到。' },
+        source_script_excerpt: '红狼: 收到。',
+      },
+    };
+    await assert.rejects(() => ensureDirectorExecutionSlots({}, { info() {}, warn() {} }, source, {
+      forceAgent: true,
+      maxAttempts: 1,
+      catalogs: {
+        characters: [{ id: 25, name: '红狼' }, { id: 26, name: '蜂医' }, { id: 27, name: '露娜' }],
+        scenes: [{ id: 10, name: '峡谷掩体' }],
+        props: [],
+      },
+    }));
+    // 蜂医 (26) plays no part in this shot, but his real ID must still be
+    // visible to the Agent; a cropped whitelist is what made it guess 28.
+    const whitelistLine = received.input.split('\n').find((line) => line.startsWith('【本体资产白名单】'));
+    assert.ok(whitelistLine && whitelistLine.includes('"id":26'), `whitelist must carry the full cast: ${whitelistLine}`);
+    assert.ok(received.input.includes('offscreen=[27]'), 'stage-two prompt must carry the locked offscreen participants');
+  } finally {
+    agentsRuntime.runAgent = originalRunAgent;
+  }
+});
+
 test('directorTwoStageEnrichment: execution contract is authored by the Agent and preserves source fields', async () => {
   const originalRunAgent = agentsRuntime.runAgent;
   let received;

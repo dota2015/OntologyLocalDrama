@@ -170,6 +170,14 @@ const DELIVERY_MEDIUMS = {
   NARRATION: 'narration',         // 第三人称客观旁白解说
 };
 
+// ── 画外参与方式枚举 ──
+// 参与本镜事件但不入画的角色必须由导演显式声明参与方式，门禁只校验结构化声明，
+// 绝不从动作/台词自由文本中猜测在场状态。仅被台词提及的人物不属于参与者，不登记。
+const OFFSCREEN_PARTICIPATION_MODES = {
+  PRESENT_OFFSCREEN: 'present_offscreen', // 人在现场空间内、镜头外：可成为视线目标、可发出画外声响、参与空间连续性
+  REMOTE_VOICE: 'remote_voice',           // 人不在现场，经通讯设备连接：只产生声音/对话关系，不参与本场空间连续性
+};
+
 // ── 长镜头接力角色枚举 ──
 const LONG_TAKE_ROLES = {
   HEAD: 'head',                 // 长镜头组首（必须由文生图根据槽位生成高保真首帧图）
@@ -292,11 +300,23 @@ const LAST_FRAME_POLICIES = {
 function createSemanticSlots(data = {}) {
   const visible = Array.isArray(data.visible_characters) ? data.visible_characters : (Array.isArray(data.characters) ? data.characters : []);
   const background = Array.isArray(data.background_characters) ? data.background_characters : [];
+  const offscreen = Array.isArray(data.offscreen_characters) ? data.offscreen_characters : [];
   const refs = Array.isArray(data.required_references) ? data.required_references : [];
 
   return {
     visible_characters: visible.map(c => typeof c === 'object' ? c : { name: String(c) }),
     background_characters: background.map(c => typeof c === 'object' ? c : { name: String(c) }),
+    offscreen_characters: offscreen.map(c => {
+      const entry = typeof c === 'object' && c !== null ? c : { name: String(c) };
+      const mode = Object.values(OFFSCREEN_PARTICIPATION_MODES).includes(entry.mode)
+        ? entry.mode : OFFSCREEN_PARTICIPATION_MODES.PRESENT_OFFSCREEN;
+      return {
+        character_id: entry.character_id != null ? entry.character_id : (entry.id != null ? entry.id : null),
+        id: entry.id != null ? entry.id : (entry.character_id != null ? entry.character_id : null),
+        name: entry.name || '',
+        mode,
+      };
+    }),
     identity_visibility: data.identity_visibility || IDENTITY_VISIBILITIES.THREE_QUARTER,
     wardrobe_id: data.wardrobe_id != null ? data.wardrobe_id : null,
     speech_plan: {
@@ -587,6 +607,7 @@ module.exports = {
   HANDS_ACTIONS,
   AUDIO_LIP_SYNC_MODES,
   DELIVERY_MEDIUMS,
+  OFFSCREEN_PARTICIPATION_MODES,
   LONG_TAKE_ROLES,
   CINEMATIC_LENSES,
   AUDIOTISUAL_DATA_DICTIONARY,

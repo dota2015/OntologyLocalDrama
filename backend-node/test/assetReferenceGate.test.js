@@ -57,7 +57,10 @@ test('planning gate rejects divergent top-level and semantic character lists', (
   assert.ok(violations.some((item) => item.rule === 'INVARIANT_CHARACTER_SLOT_DIVERGENCE'));
 });
 
-test('planning gate rejects identity names mentioned in action but missing from the roster', () => {
+test('planning gate never infers roster membership from narrative text', () => {
+  // Names appearing in free text prove nothing about participation: a named
+  // character may be offscreen, remote, or merely mentioned. The gate must
+  // not scan narrative text at all; participation is declared structurally.
   const violations = checkPlanningFeasibility([{
     shot_number: 12,
     characters: ['红狼'],
@@ -70,10 +73,140 @@ test('planning gate rejects identity names mentioned in action but missing from 
       characters: [{ id: 25, name: '红狼' }, { id: 27, name: '露娜' }, { id: 28, name: '蜂医' }],
     },
   });
-  assert.deepEqual(
-    violations.filter((item) => item.rule === 'INVARIANT_CHARACTER_NARRATIVE_ROSTER_MISMATCH').map((item) => item.asset_id).sort((a, b) => a - b),
-    [27, 28]
-  );
+  assert.deepEqual(violations, []);
+});
+
+const drama5Catalogs = {
+  characters: [
+    { id: 25, name: '红狼' }, { id: 26, name: '蜂医' }, { id: 27, name: '露娜' },
+  ],
+  scenes: [{ id: 100 }],
+  props: [],
+};
+
+test('episode 17 shot 20: remote addressee declared offscreen passes with a single visible character', () => {
+  const violations = checkPlanningFeasibility([{
+    shot_number: 20,
+    scene_id: 100,
+    characters: [27],
+    background_characters: [],
+    action: '露娜靠在墙上，通过通讯器向红狼解释备用路线',
+    dialogue: '露娜: 红狼，备用路线从西侧走。',
+    semantic_slots: {
+      visible_characters: [{ id: 27, name: '露娜' }],
+      background_characters: [],
+      offscreen_characters: [{ character_id: 25, name: '红狼', mode: 'remote_voice' }],
+      speech_plan: { speaker_id: 27, speaker_name: '露娜', is_offscreen: false, text: '红狼，备用路线从西侧走。' },
+      audio_lip_sync: 'in_frame_dialogue',
+      required_references: [],
+    },
+  }], { catalogs: drama5Catalogs });
+  assert.deepEqual(violations, []);
+});
+
+test('episode 17 shot 14: offscreen participant does not consume the two-person visual capacity', () => {
+  const violations = checkPlanningFeasibility([{
+    shot_number: 14,
+    scene_id: 100,
+    characters: [27, 26],
+    background_characters: [],
+    action: '露娜在枪林弹雨中向红狼喊话，蜂医在旁掩护',
+    semantic_slots: {
+      visible_characters: [{ id: 27, name: '露娜' }, { id: 26, name: '蜂医' }],
+      background_characters: [],
+      offscreen_characters: [{ character_id: 25, name: '红狼', mode: 'remote_voice' }],
+      speech_plan: { speaker_id: 27, speaker_name: '露娜', is_offscreen: false, text: '北侧被封锁！红狼，立刻转备用路线！' },
+      audio_lip_sync: 'in_frame_dialogue',
+      required_references: [],
+    },
+  }], { catalogs: drama5Catalogs });
+  assert.deepEqual(violations, []);
+});
+
+test('offscreen speaker is valid with offscreen_voiceover and rejected with in-frame lip sync', () => {
+  const base = {
+    shot_number: 21,
+    scene_id: 100,
+    characters: [27],
+    background_characters: [],
+    semantic_slots: {
+      visible_characters: [{ id: 27, name: '露娜' }],
+      background_characters: [],
+      offscreen_characters: [{ character_id: 25, name: '红狼', mode: 'remote_voice' }],
+      speech_plan: { speaker_id: 25, speaker_name: '红狼', is_offscreen: true, text: '收到，正在转向。' },
+      required_references: [],
+    },
+  };
+  const okShot = structuredClone(base);
+  okShot.semantic_slots.audio_lip_sync = 'offscreen_voiceover';
+  assert.deepEqual(checkPlanningFeasibility([okShot], { catalogs: drama5Catalogs }), []);
+  const badShot = structuredClone(base);
+  badShot.semantic_slots.audio_lip_sync = 'in_frame_dialogue';
+  const violations = checkPlanningFeasibility([badShot], { catalogs: drama5Catalogs });
+  assert.ok(violations.some((item) => item.rule === 'INVARIANT_OFFSCREEN_SPEAKER_LIP_SYNC'));
+});
+
+test('planning gate rejects an undeclared speaker instead of guessing from text', () => {
+  const violations = checkPlanningFeasibility([{
+    shot_number: 22,
+    scene_id: 100,
+    characters: [27],
+    background_characters: [],
+    semantic_slots: {
+      visible_characters: [{ id: 27, name: '露娜' }],
+      background_characters: [],
+      offscreen_characters: [],
+      speech_plan: { speaker_id: 25, speaker_name: '红狼', is_offscreen: true, text: '收到。' },
+      audio_lip_sync: 'offscreen_voiceover',
+      required_references: [],
+    },
+  }], { catalogs: drama5Catalogs });
+  assert.ok(violations.some((item) => item.rule === 'INVARIANT_SPEAKER_NOT_DECLARED' && item.asset_id === 25));
+});
+
+test('planning gate rejects participation overlap, visualized offscreen characters, and unknown offscreen IDs', () => {
+  const overlap = checkPlanningFeasibility([{
+    shot_number: 23,
+    scene_id: 100,
+    characters: [25],
+    background_characters: [],
+    semantic_slots: {
+      visible_characters: [{ id: 25, name: '红狼' }],
+      background_characters: [],
+      offscreen_characters: [{ character_id: 25, name: '红狼', mode: 'present_offscreen' }],
+      required_references: [],
+    },
+  }], { catalogs: drama5Catalogs });
+  assert.ok(overlap.some((item) => item.rule === 'INVARIANT_CHARACTER_PARTICIPATION_CONFLICT'));
+
+  const visualized = checkPlanningFeasibility([{
+    shot_number: 24,
+    scene_id: 100,
+    characters: [27],
+    background_characters: [],
+    character_visuals: [{ character_id: 25, name: '红狼' }],
+    semantic_slots: {
+      visible_characters: [{ id: 27, name: '露娜' }],
+      background_characters: [],
+      offscreen_characters: [{ character_id: 25, name: '红狼', mode: 'remote_voice' }],
+      required_references: [],
+    },
+  }], { catalogs: drama5Catalogs });
+  assert.ok(visualized.some((item) => item.rule === 'INVARIANT_OFFSCREEN_CHARACTER_VISUALIZED'));
+
+  const unknown = checkPlanningFeasibility([{
+    shot_number: 25,
+    scene_id: 100,
+    characters: [27],
+    background_characters: [],
+    semantic_slots: {
+      visible_characters: [{ id: 27, name: '露娜' }],
+      background_characters: [],
+      offscreen_characters: [{ character_id: 999, name: '幽灵' }],
+      required_references: [],
+    },
+  }], { catalogs: drama5Catalogs });
+  assert.ok(unknown.some((item) => item.rule === 'INVARIANT_UNKNOWN_CHARACTER_REFERENCE' && item.asset_id === 999));
 });
 
 test('planning gate rejects unknown scene, prop, and required reference IDs', () => {

@@ -352,6 +352,7 @@ function compactExecutionShot(shot, options = {}) {
     semantic_slots: {
       visible_characters: semantic.visible_characters || [],
       background_characters: semantic.background_characters || [],
+      offscreen_characters: semantic.offscreen_characters || [],
       identity_visibility: semantic.identity_visibility || '',
       speech_plan: semantic.speech_plan || {},
       sound_plan: semantic.sound_plan || {},
@@ -398,7 +399,13 @@ function compactExecutionCatalogs(catalogs = {}, shot = {}) {
     .filter((item) => ids.has(Number(item?.id)) || names.has(String(item?.name || '').trim()))
     .map((item) => ({ id: item.id, name: item.name, location: item.location, role: item.role }));
   return {
-    characters: pick(catalogs.characters),
+    // Characters are NEVER cropped to the current shot: a drama has only a
+    // handful of identity characters, and an Agent that cannot see a real ID
+    // will invent one (e.g. guessing 28 for a character whose ID is 26),
+    // which the gate then rejects forever. The catalog is drama-scoped, so
+    // the full compact list is cheap and cannot leak other dramas' casts.
+    characters: (Array.isArray(catalogs.characters) ? catalogs.characters : [])
+      .map((item) => ({ id: item.id, name: item.name, location: item.location, role: item.role })),
     scenes: (catalogs.scenes || []).filter((item) => Number(item?.id) === Number(shot.scene_id))
       .map((item) => ({ id: item.id, name: item.name, location: item.location, time: item.time })),
     props: pick(catalogs.props),
@@ -641,6 +648,10 @@ function directorAtomicRepairHint(violation) {
     INVARIANT_EYELINE_MATCH_WITHOUT_EYE_TARGET: '修正 continuity_from_previous 与对应 character_visuals/video_slots 的视线目标，明确上一镜视线来源、本镜目标和注意力落点。',
     INVARIANT_SPEECH_SLOT_DIVERGENCE: '先修复台词槽位冲突，再重新评估时长：以当前镜头数据库 dialogue/narration 为不可变原文，逐字同步 semantic_slots.speech_plan.text 与 video_slots.audio_lip_sync.dialogue_content；禁止因为派生的超时结果直接拆镜或把下一镜台词带入本镜。',
     INVARIANT_CLOSE_DIALOGUE_BACKGROUND_CONFLICT: '近景/过肩/正反打双人对话构图中，背景角色容易造成面部融合或克隆人：必须将 background_characters 设为 []，semantic_slots.background_characters 设为 []；并从 character_visuals、semantic_slots.required_references 中移除背景角色（或将 dialogue_framing 改为宽景三人构图 wide_group/group_blocking）。',
+    INVARIANT_CHARACTER_PARTICIPATION_CONFLICT: '同一角色在同一镜只能有一种参与方式：入画列入 visible_characters/background_characters，不入画列入 semantic_slots.offscreen_characters，必须二选一并保持顶层与 semantic_slots 一致。',
+    INVARIANT_OFFSCREEN_CHARACTER_VISUALIZED: '画外参与者（semantic_slots.offscreen_characters）不入画：必须从 character_visuals、last_frame_visuals 与角色类 required_references 中移除，不得为其生成视觉定格或参考图；若该角色实际入画，改列入 visible_characters/background_characters 并确保单镜最多2人。',
+    INVARIANT_SPEAKER_NOT_DECLARED: '说话人必须先声明参与方式：入画列入 visible_characters/background_characters，不入画（通讯器、画外喊话）列入 semantic_slots.offscreen_characters 并注明 mode（present_offscreen/remote_voice），再同步 speech_plan.speaker_id。',
+    INVARIANT_OFFSCREEN_SPEAKER_LIP_SYNC: '说话人是画外参与者时，semantic_slots.audio_lip_sync 必须改为 offscreen_voiceover，画内全员双唇紧闭；不得把画外说话人改列入画人物清单来迁就口型模式。',
   };
   const exact = fieldRules[item.rule] || '';
   const speechExtension = item.rule === 'INVARIANT_SPEECH_OVER_BUDGET'
@@ -2733,6 +2744,9 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
   const lockedBackgroundIds = Array.isArray(semantic.background_characters)
     ? semanticCharacterIds(semantic.background_characters, true)
     : resolveRosterIds(shot.background_characters);
+  const lockedOffscreenIds = Array.isArray(semantic.offscreen_characters)
+    ? semanticCharacterIds(semantic.offscreen_characters, true)
+    : [];
   const hasLockedCharacterContract = Array.isArray(semantic.visible_characters)
     || Array.isArray(shot.characters);
   let lastFatalError = null;
@@ -2744,20 +2758,26 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
       const candidateBase = currentShot;
       const patchMode = attempt > 1;
       const patchFields = new Set();
+      let hasUnclassifiedViolation = false;
       for (const item of errors) {
         const message = String(item?.message || item || '');
+        const before = patchFields.size;
         if (/character_visuals/.test(message)) patchFields.add('character_visuals');
         if (/last_frame_visuals/.test(message)) patchFields.add('last_frame_visuals');
-        if (/semantic_slots|continuity|source_script_excerpt|h3_mode|人物清单/.test(message)) patchFields.add('semantic_slots');
-        if (/video_slots|时间轴|动作|角色 ID .*第 .*段|trajectory|audio_lip_sync|对白/.test(message)) patchFields.add('video_slots');
+        if (/semantic_slots|continuity|source_script_excerpt|h3_mode|人物清单|offscreen|画外参与/.test(message)) patchFields.add('semantic_slots');
+        if (/video_slots|时间轴|时间线|动作|轨迹|听者|target_id|shots_timeline|visible_characters|未入画|角色 ID .*第 .*段|trajectory|audio_lip_sync|对白/.test(message)) patchFields.add('video_slots');
+        // A partial match must never narrow the Agent out of the field it
+        // actually needs: any violation this classifier cannot place widens
+        // the whole round to full repair permission instead of deadlocking.
+        if (patchFields.size === before) hasUnclassifiedViolation = true;
       }
-      if (!patchFields.size) ['semantic_slots', 'character_visuals', 'last_frame_visuals', 'video_slots'].forEach(field => patchFields.add(field));
+      if (!patchFields.size || hasUnclassifiedViolation) ['semantic_slots', 'character_visuals', 'last_frame_visuals', 'video_slots'].forEach(field => patchFields.add(field));
       const compactCandidate = compactExecutionShot(candidateBase, { includeExecution: patchMode });
       const compactNeighbours = [retryOptions.previousShot, retryOptions.nextShot]
         .filter(Boolean).map(item => compactExecutionShot(item));
       const compactCatalogs = compactExecutionCatalogs(retryOptions.catalogs || {}, candidateBase);
       const requestInput = patchMode
-        ? `【阶段一锁定人物】visible=${JSON.stringify(lockedVisibleIds)}，background=${JSON.stringify(lockedBackgroundIds)}。不得新增、删除或改角色归属。
+        ? `【阶段一锁定人物】visible=${JSON.stringify(lockedVisibleIds)}，background=${JSON.stringify(lockedBackgroundIds)}，offscreen=${JSON.stringify(lockedOffscreenIds)}。不得新增、删除或在三类之间挪动角色。offscreen 是画外参与者（同场画外/通讯远程），不入画：不得为其生成 character_visuals、轨迹或参考图，只影响声音与画内人物的视线/反应。
 【权威镜头事实】${JSON.stringify(compactExecutionShot(candidateBase))}
 【当前已有执行槽位】${JSON.stringify(compactCandidate)}
 【允许修复字段】${JSON.stringify([...patchFields])}
@@ -2765,7 +2785,7 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
 【本体资产白名单】${JSON.stringify(compactCatalogs)}
 【门禁反馈】${errors.map(item => item.message).join('；')}
 只返回 {"repairs":[{"shot_number":${Number(shotNumber) || 0},"patch":{...}}]}。patch 只能包含允许修复字段；character_visuals 和 video_slots.shots_timeline 必须返回该字段的完整新值，其他字段保持不变。`
-        : `【阶段一锁定人物】visible=${JSON.stringify(lockedVisibleIds)}，background=${JSON.stringify(lockedBackgroundIds)}。不得新增、删除或改角色归属。
+        : `【阶段一锁定人物】visible=${JSON.stringify(lockedVisibleIds)}，background=${JSON.stringify(lockedBackgroundIds)}，offscreen=${JSON.stringify(lockedOffscreenIds)}。不得新增、删除或在三类之间挪动角色。offscreen 是画外参与者（同场画外/通讯远程），不入画：不得为其生成 character_visuals、轨迹或参考图，只影响声音与画内人物的视线/反应。
 【权威镜头事实】${JSON.stringify(compactExecutionShot(candidateBase))}
 【相邻镜头连续性摘要】${JSON.stringify(compactNeighbours)}
 【本体资产白名单】${JSON.stringify(compactCatalogs)}
@@ -2842,8 +2862,9 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
       if (requireSemantic && hasLockedCharacterContract) {
         const plannedVisibleIds = semanticCharacterIds(plannedSemantic.visible_characters);
         const plannedBackgroundIds = semanticCharacterIds(plannedSemantic.background_characters, true);
-        if (!sameIds(lockedVisibleIds, plannedVisibleIds) || !sameIds(lockedBackgroundIds, plannedBackgroundIds)) {
-          errors.push({ message: `阶段二不得改写阶段一锁定的人物清单：visible_characters 应为 ${JSON.stringify(lockedVisibleIds)}、background_characters 应为 ${JSON.stringify(lockedBackgroundIds)}，Agent 实际输出为 visible_characters=${JSON.stringify(plannedVisibleIds)}、background_characters=${JSON.stringify(plannedBackgroundIds)}` });
+        const plannedOffscreenIds = semanticCharacterIds(plannedSemantic.offscreen_characters, true);
+        if (!sameIds(lockedVisibleIds, plannedVisibleIds) || !sameIds(lockedBackgroundIds, plannedBackgroundIds) || !sameIds(lockedOffscreenIds, plannedOffscreenIds)) {
+          errors.push({ message: `阶段二不得改写阶段一锁定的人物清单：visible_characters 应为 ${JSON.stringify(lockedVisibleIds)}、background_characters 应为 ${JSON.stringify(lockedBackgroundIds)}、offscreen_characters 应为 ${JSON.stringify(lockedOffscreenIds)}，Agent 实际输出为 visible_characters=${JSON.stringify(plannedVisibleIds)}、background_characters=${JSON.stringify(plannedBackgroundIds)}、offscreen_characters=${JSON.stringify(plannedOffscreenIds)}` });
         }
         const planningDrift = checkPlanningFeasibility([currentShot], { catalogs: retryOptions.catalogs || {} });
         errors.push(...planningDrift.map(item => ({ message: item.message })));
@@ -3148,6 +3169,7 @@ ${DIRECTOR_ACTION_COMPLETION_CONTRACT}
       在过肩对视、近景或正反打双人对话构图（over_the_shoulder、ots_reverse、two_shot_face_to_face、近景、特写等非全景构图）中，**严禁声明背景在场人物**（background_characters 必须填 []，semantic_slots.background_characters 也必须为 []）！因为紧凑对话构图中挂载第三人背景参考会导致 H3 模型分配额外 Subject 生成克隆人或脸部融合；背景在场人物只适用于大远景、全景或三人及以上宽构图。
     - **数据结构输出**：
       * background_characters: 数组，填写本镜中处于背景的在场角色（如 [{"character_id": 2, "name": "妹妹", "depth_layer": "background", "screen_position": "画面右后方景深处书架旁", "activity": "低头安静翻看作业本", "mouth_state": "双唇紧闭，无台词口型，后景虚焦"}]）；近景/过肩对话或无背景角色必须填 []。
+      * **画外参与人物 (semantic_slots.offscreen_characters)**：参与本镜事件但**不入画**的角色，必须在此显式登记，不得写入 characters/background_characters，也不得只写在动作文本里指望后端识别。两种参与方式：mode="present_offscreen"（人在现场空间内、镜头外，如门外、画外站位，可成为视线目标）；mode="remote_voice"（人不在现场，通过通讯器/对讲机/电话连接，如露娜通过通讯器向红狼喊话，红狼填 [{"character_id": 25, "name": "红狼", "mode": "remote_voice"}]）。画外参与者不计入单镜2人上限、不生成画面与参考图；只在台词里被**提及**、与本镜事件无关的角色（如"红狼昨天说过…"）不登记。同一角色在同一镜只能有一种参与方式（主体/背景/画外三选一）。
       * character_visuals 内部：出场身份角色（主体 + 背景角色）总计不超过 2 人，背景角色必须指定 depth_layer: "background"。
 
 12. **单镜头时序运动弧线（起幅态 ➔ 动作推进 ➔ 落幅态）与镜头过渡法则（Shot Arc & Transitions）**：
@@ -3230,7 +3252,7 @@ ${scriptContent}
   无角色填 [])
 - last_frame_visuals: 尾帧人物视觉槽位数组；需要尾帧时按 character_visuals 的同一完整结构规划动作收束状态，不需要尾帧时显式填 []
 - video_slots: Agent 规划的视频执行语义对象，必须完整包含 performance_contract:"sync_v2"、camera、audio_lip_sync、trajectories、environment_vfx、timing、shots_timeline 七个键。含对白的镜内段还必须包含 speech_action_alignment，明确语音与动作的重叠时间。trajectories 及每个 shots_timeline.character_trajectories 必须统一使用 terminal_pose、facial_expression、facing、head_pose、gaze、attention_target、gaze_motivation、reaction_trigger 与 mouth_state 字段。每个镜内剪辑段必须是正整数秒的连续动作节拍（1～30 秒），先填写本段 camera 和 visible_characters，再让 character_trajectories 精确覆盖本段实际入画人物；特写、过肩和画外音可以只列当前可见人物，未入画人物不写视觉轨迹。每个可见人物必须明确该窗口内发生的动作、表情或因果反应，以及“什么事件使他反应、头转向哪里、眼睛实际落在谁或什么东西上”。说话者口型与台词对应，听者不能用静止互看填充整段；安静倾听必须伴随具体反应。示例中每位角色必须像这样给出视线字段：{"character_id":1,"trajectory":"抬手施压","terminal_pose":"食指停在门框方向","facial_expression":"冷笑收紧","facing":"四分之三侧身朝向受话人","head_pose":"头部微俯转向受话人面部","gaze":"双眼锁定受话人眼睛","attention_target":"受话人面部","gaze_motivation":"直接施压对话","reaction_trigger":"自己开口说出威胁","mouth_state":"speaker_synced"}。突发事件后下一拍必须更新 reaction_trigger、attention_target、head_pose 和 gaze，不得沿用无关的旧视线。
-- semantic_slots: Agent 的跨层权威语义对象，必须完整包含 visible_characters、background_characters、identity_visibility、speech_plan、sound_plan、continuity_type、continuity_from_previous、h3_mode、h3_mode_reason、first_frame_policy、first_frame_reason、last_frame_policy、last_frame_reason、required_references、audio_lip_sync、shot_duration。长剧本分批规划时还必须包含 source_script_unit_ids，由当前批次协议给出的不可变原文单元 ID 连续分配；后端会据此恢复只读 source_script_excerpt。上面列出的同名语义决策必须写入此对象，不得只散落在顶层。例如 {"visible_characters":[{"id":1,"name":"角色名"}],"background_characters":[],"identity_visibility":"three_quarter","speech_plan":{"speaker_id":1,"speaker_name":"角色名","is_offscreen":false,"is_narration":false,"text":"实际台词","speed":1.25,"emotion":"坚定","audio_references":[]},"sound_plan":{"sound_effects":["脚步声"],"bgm_prompt":"","acoustic_env":"室内","is_silent":false},"continuity_type":"continuation","continuity_from_previous":{"relationship":"opening","previous_end_state":"","entry_state":"角色位于画面左侧掩体后，身体前倾","causal_link":"开场直接建立任务现场","sound_bridge":"","requires_previous_tail":false},"h3_mode":"ref2va","h3_mode_reason":"本镜为角色对白近景，需要人物卡与音色参考保持身份一致","first_frame_policy":"none","first_frame_reason":"人物卡与场景卡直接约束 Ref2VA，本镜无需额外首帧","last_frame_policy":"none","last_frame_reason":"对白结束后的表情允许模型自然收束，无需锁定尾帧","required_references":[{"type":"character","id":1,"character_id":1,"name":"角色名"}],"audio_lip_sync":"in_frame_dialogue","shot_duration":5,"source_script_unit_ids":["B1U1"]}
+- semantic_slots: Agent 的跨层权威语义对象，必须完整包含 visible_characters、background_characters、offscreen_characters、identity_visibility、speech_plan、sound_plan、continuity_type、continuity_from_previous、h3_mode、h3_mode_reason、first_frame_policy、first_frame_reason、last_frame_policy、last_frame_reason、required_references、audio_lip_sync、shot_duration。长剧本分批规划时还必须包含 source_script_unit_ids，由当前批次协议给出的不可变原文单元 ID 连续分配；后端会据此恢复只读 source_script_excerpt。上面列出的同名语义决策必须写入此对象，不得只散落在顶层。例如 {"visible_characters":[{"id":1,"name":"角色名"}],"background_characters":[],"offscreen_characters":[],"identity_visibility":"three_quarter","speech_plan":{"speaker_id":1,"speaker_name":"角色名","is_offscreen":false,"is_narration":false,"text":"实际台词","speed":1.25,"emotion":"坚定","audio_references":[]},"sound_plan":{"sound_effects":["脚步声"],"bgm_prompt":"","acoustic_env":"室内","is_silent":false},"continuity_type":"continuation","continuity_from_previous":{"relationship":"opening","previous_end_state":"","entry_state":"角色位于画面左侧掩体后，身体前倾","causal_link":"开场直接建立任务现场","sound_bridge":"","requires_previous_tail":false},"h3_mode":"ref2va","h3_mode_reason":"本镜为角色对白近景，需要人物卡与音色参考保持身份一致","first_frame_policy":"none","first_frame_reason":"人物卡与场景卡直接约束 Ref2VA，本镜无需额外首帧","last_frame_policy":"none","last_frame_reason":"对白结束后的表情允许模型自然收束，无需锁定尾帧","required_references":[{"type":"character","id":1,"character_id":1,"name":"角色名"}],"audio_lip_sync":"in_frame_dialogue","shot_duration":5,"source_script_unit_ids":["B1U1"]}
 图片与视频提示词由执行器从上述已通过门禁的槽位确定性编译，禁止输出或手写 <imageN>/<Picture N> 管线占位标签。
 
 只返回纯 JSON，不要 markdown。`;

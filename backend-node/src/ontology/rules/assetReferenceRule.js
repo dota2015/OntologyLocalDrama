@@ -51,6 +51,7 @@ function shotCharacterIds(shot) {
   const background = ids(shot?.background_characters, ['character_id', 'id']);
   const semanticVisible = ids(semantic.visible_characters, ['id', 'character_id']);
   const semanticBackground = ids(semantic.background_characters, ['character_id', 'id']);
+  const semanticOffscreen = ids(semantic.offscreen_characters, ['character_id', 'id']);
   const visuals = ids(shot?.character_visuals, ['character_id', 'id']);
   const lastVisuals = ids(shot?.last_frame_visuals, ['character_id', 'id']);
   return {
@@ -58,6 +59,12 @@ function shotCharacterIds(shot) {
     background,
     semanticVisible,
     semanticBackground,
+    semanticOffscreen,
+    visuals,
+    lastVisuals,
+    // Only depicted characters belong in `all`: offscreen participants are
+    // registered identities but must never count toward the visual capacity
+    // or be treated as if they needed character_visuals.
     all: [...new Set([...visible, ...background, ...semanticVisible, ...semanticBackground, ...visuals, ...lastVisuals])],
   };
 }
@@ -66,10 +73,6 @@ function sameIds(left, right) {
   const a = [...new Set(left)].sort((x, y) => x - y);
   const b = [...new Set(right)].sort((x, y) => x - y);
   return a.length === b.length && a.every((id, index) => id === b[index]);
-}
-
-function escapedNamePattern(name) {
-  return new RegExp(String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
 }
 
 function planningFeasibilityViolations(shots, options = {}) {
@@ -100,6 +103,7 @@ function planningFeasibilityViolations(shots, options = {}) {
     const semantic = semanticObject(shot);
     chars.semanticVisible = ids(semantic.visible_characters, ['id', 'character_id'], characterNameToId);
     chars.semanticBackground = ids(semantic.background_characters, ['character_id', 'id'], characterNameToId);
+    chars.semanticOffscreen = ids(semantic.offscreen_characters, ['character_id', 'id'], characterNameToId);
     chars.visuals = chars.visuals || [];
     chars.lastVisuals = chars.lastVisuals || [];
     chars.all = [...new Set([
@@ -128,6 +132,66 @@ function planningFeasibilityViolations(shots, options = {}) {
         message: `分镜 #${shotNumber} 的角色 ID [${dualRoles.join(', ')}] 同时被列为主体和背景人物，必须由导演明确唯一定位。`,
       });
     }
+    // Participation is declared, never guessed: a character takes part in a
+    // shot in exactly one way — depicted (visible/background) or offscreen
+    // (present_offscreen / remote_voice in semantic_slots.offscreen_characters).
+    // Offscreen participants are real identities (their IDs must exist and
+    // they may speak), but they are not depicted: no capacity cost, no
+    // character_visuals, no visual references.
+    const depictedIds = [...new Set([...chars.visible, ...chars.background, ...chars.semanticVisible, ...chars.semanticBackground])];
+    const participationOverlap = chars.semanticOffscreen.filter((id) => depictedIds.includes(id));
+    if (participationOverlap.length) {
+      violations.push({
+        rule: 'INVARIANT_CHARACTER_PARTICIPATION_CONFLICT', shot_number: shotNumber, severity: 'error',
+        character_ids: participationOverlap,
+        conflict_slots: ['semantic_slots.offscreen_characters', 'semantic_slots.visible_characters', 'semantic_slots.background_characters'],
+        message: `分镜 #${shotNumber} 的角色 ID [${participationOverlap.join(', ')}] 同时被声明为画内人物和画外参与者，同一角色在同一镜只能有一种参与方式，必须由导演明确唯一定位。`,
+      });
+    }
+    const visualizedOffscreen = chars.semanticOffscreen.filter((id) => chars.visuals.includes(id) || chars.lastVisuals.includes(id));
+    if (visualizedOffscreen.length) {
+      violations.push({
+        rule: 'INVARIANT_OFFSCREEN_CHARACTER_VISUALIZED', shot_number: shotNumber, severity: 'error',
+        character_ids: visualizedOffscreen,
+        conflict_slots: ['semantic_slots.offscreen_characters', 'character_visuals', 'last_frame_visuals'],
+        message: `分镜 #${shotNumber} 的画外参与者 ID [${visualizedOffscreen.join(', ')}] 被写入了 character_visuals/last_frame_visuals。画外参与者不入画，不得生成视觉定格；若该角色实际入画，必须由导演将其改列入 visible_characters/background_characters 并确保单镜最多2人。`,
+      });
+    }
+    const offscreenReferenceIds = arrayValue(semantic.required_references)
+      .filter((ref) => String(ref?.type || 'character').toLowerCase() === 'character')
+      .map((ref) => idOf(ref, ['character_id', 'id'], characterNameToId))
+      .filter((id) => id != null && chars.semanticOffscreen.includes(id));
+    if (offscreenReferenceIds.length) {
+      violations.push({
+        rule: 'INVARIANT_OFFSCREEN_CHARACTER_VISUALIZED', shot_number: shotNumber, severity: 'error',
+        character_ids: [...new Set(offscreenReferenceIds)],
+        conflict_slots: ['semantic_slots.offscreen_characters', 'semantic_slots.required_references'],
+        message: `分镜 #${shotNumber} 的画外参与者 ID [${[...new Set(offscreenReferenceIds)].join(', ')}] 被列入 required_references 的角色视觉参考。画外参与者不需要参考图；若该角色实际入画，必须由导演将其改列入 visible_characters/background_characters。`,
+      });
+    }
+    const speechPlan = semantic.speech_plan && typeof semantic.speech_plan === 'object' ? semantic.speech_plan : null;
+    const speakerId = Number(speechPlan?.speaker_id);
+    const hasParticipantLists = Array.isArray(semantic.visible_characters)
+      || Array.isArray(semantic.background_characters) || Array.isArray(semantic.offscreen_characters);
+    if (speechPlan && Number.isInteger(speakerId) && speakerId > 0 && hasParticipantLists) {
+      const participantIds = [...new Set([...depictedIds, ...chars.semanticOffscreen])];
+      if (!participantIds.includes(speakerId)) {
+        violations.push({
+          rule: 'INVARIANT_SPEAKER_NOT_DECLARED', shot_number: shotNumber, severity: 'error',
+          asset_id: speakerId,
+          conflict_slots: ['semantic_slots.speech_plan', 'semantic_slots.visible_characters', 'semantic_slots.offscreen_characters'],
+          message: `分镜 #${shotNumber} 的说话人 ID ${speakerId} 未出现在任何人物清单中。说话人必须由导演声明参与方式：入画列入 visible_characters/background_characters，不入画列入 semantic_slots.offscreen_characters；后端不会根据文本猜测说话人的在场状态。`,
+        });
+      } else if (chars.semanticOffscreen.includes(speakerId)
+        && String(semantic.audio_lip_sync || '') === 'in_frame_dialogue') {
+        violations.push({
+          rule: 'INVARIANT_OFFSCREEN_SPEAKER_LIP_SYNC', shot_number: shotNumber, severity: 'error',
+          asset_id: speakerId,
+          conflict_slots: ['semantic_slots.speech_plan', 'semantic_slots.offscreen_characters', 'semantic_slots.audio_lip_sync'],
+          message: `分镜 #${shotNumber} 的说话人 ID ${speakerId} 是画外参与者，但 audio_lip_sync 仍为 in_frame_dialogue。画外说话必须使用 offscreen_voiceover，画内全员双唇紧闭。`,
+        });
+      }
+    }
     const reportUnknown = (set, values, rule, label, slots) => {
       if (!set.size) return;
       for (const id of [...new Set(values)]) {
@@ -148,6 +212,9 @@ function planningFeasibilityViolations(shots, options = {}) {
       if (hasCharacterCatalog) reportUnknown(knownCharacters, chars.all, 'INVARIANT_UNKNOWN_CHARACTER_REFERENCE', '角色', [
         'characters', 'background_characters', 'semantic_slots.visible_characters',
         'semantic_slots.background_characters', 'character_visuals', 'last_frame_visuals',
+      ]);
+      if (hasCharacterCatalog) reportUnknown(knownCharacters, chars.semanticOffscreen, 'INVARIANT_UNKNOWN_CHARACTER_REFERENCE', '角色', [
+        'semantic_slots.offscreen_characters',
       ]);
       const sceneId = idOf(shot.scene_id, ['scene_id', 'id']);
       if (hasSceneCatalog && sceneId != null && !knownScenes.has(sceneId)) {
@@ -193,28 +260,12 @@ function planningFeasibilityViolations(shots, options = {}) {
         message: `分镜 #${shotNumber} 的有身份主体与背景人物去重后共有 ${chars.all.length} 人，超过短剧单镜最多 2 个角色的制作上限。路人/敌军群体必须写成环境事件，或按剧情拆成连续镜头；禁止后端静默删除人物。`,
       });
     }
-    // A stage-one shot cannot mention an identity character in its physical
-    // action or framing while leaving that character out of the roster. That
-    // omission later makes stage two invent a background character, which can
-    // exceed H3's two-person contract. Return it to the Director while the
-    // story structure is still editable; never add the person silently.
-    if (characterNameToId.size) {
-      const narrative = [
-        shot.action, shot.result, shot.start_framing, shot.end_framing,
-        shot.transition_to_next, shot.layout_description,
-      ].filter(Boolean).join('；');
-      for (const [name, id] of characterNameToId.entries()) {
-        if (!name || !escapedNamePattern(name).test(narrative) || chars.all.includes(id)) continue;
-        violations.push({
-          rule: 'INVARIANT_CHARACTER_NARRATIVE_ROSTER_MISMATCH',
-          shot_number: shotNumber,
-          severity: 'error',
-          asset_id: id,
-          conflict_slots: ['action', 'result', 'start_framing', 'end_framing', 'characters', 'background_characters'],
-          message: `分镜 #${shotNumber} 的动作/构图文本提及角色「${name}」，但人物清单未包含该角色。请由导演加入该角色并确保单镜最多2人，或将其改写为无身份环境事件/拆成连续镜头；后端不会静默补充人物。`,
-        });
-      }
-    }
+    // Deliberately no free-text name scanning here. Whether a character is
+    // present, offscreen, remote, or merely mentioned is a semantic decision
+    // the Director declares in the participant lists; this gate only checks
+    // that the declared structure is consistent (existence, exclusivity,
+    // capacity, speaker registration). Inferring presence from narrative
+    // wording made legitimate offscreen/remote participation unsatisfiable.
     const refs = arrayValue(semanticObject(shot).required_references);
     if (refs.length > 9) {
       violations.push({

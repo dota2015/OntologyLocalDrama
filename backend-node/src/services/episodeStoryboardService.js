@@ -1499,14 +1499,13 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
       const planningAttempts = Math.max(1, Math.min(3, Number(pipelineOptions.planningRepairAttempts || 3)));
       let planningViolations = checkPlanningFeasibility(storyboards, { catalogs: pipelineOptions.planningCatalogs });
       for (let attempt = 1; planningViolations.length && attempt <= planningAttempts; attempt++) {
-        if (attempt === planningAttempts) break;
         taskService.updateTaskStatus(db, taskId, 'processing', 66,
           `阶段一规划门禁发现 ${planningViolations.length} 项问题，正在反馈导演 Agent 修复（第${attempt}次）...`);
         const repairText = await generateTextForStoryboard(
           db,
           log,
           buildPlanningRepairPrompt(userPrompt, storyboards, planningViolations, attempt),
-          `${systemPrompt}\n\n【阶段一规划修复模式】只输出修复后的基础分镜数组；每镜最多2个有身份角色，路人/群众只能写环境事件。`,
+          `${systemPrompt}\n\n【阶段一规划修复模式】只输出修复后的基础分镜数组；每镜最多2个有身份角色，路人/群众只能写环境事件。参与本镜事件但不入画的角色（同场画外、或通过通讯器/对讲机/电话远程参与）必须登记在 semantic_slots.offscreen_characters 并注明 mode（present_offscreen/remote_voice），不得加入 characters/background_characters；只在台词或动作中被提及、与本镜事件无关的角色不登记。`,
           { model: model || undefined, temperature: 0.2 }
         );
         storyboards = parseStoryboardArray(repairText, log);
