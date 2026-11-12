@@ -423,6 +423,18 @@ describe('Three-Tier Architectural Evolution: Agent First, Ontology Gatekeeper, 
       const violations = checkCrossSlotInvariants([shot]);
       assert.equal(violations.filter((v) => v.rule === 'INVARIANT_SPEECH_SLOT_DIVERGENCE').length, 0);
     });
+
+    it('preserves invalid offscreen mode in createSemanticSlots and flags it in CrossSlotInvariantsRule', () => {
+      const semantic = createSemanticSlots({
+        visible_characters: [{ id: 1, name: '角色甲' }],
+        offscreen_characters: [{ character_id: 2, name: '角色乙', mode: 'off_screen' }],
+      });
+      assert.equal(semantic.offscreen_characters[0].mode, 'off_screen');
+      const violations = checkCrossSlotInvariants([{ shot_number: 1, characters: [1], semantic_slots: semantic }]);
+      const warn = violations.find((v) => v.rule === 'INVARIANT_OFFSCREEN_MODE_INVALID');
+      assert.ok(warn);
+      assert.equal(warn.severity, 'warning');
+    });
   });
 
   describe('Tier 3: Execution Layer H3 Agent-Plan Compiler', () => {

@@ -6,7 +6,9 @@
 
 const BaseInvariantRule = require('./baseRule');
 const { shotSpeechTurns } = require('../../services/dialogueDubbingService');
+const { OFFSCREEN_PARTICIPATION_MODES } = require('../schema');
 
+const VALID_OFFSCREEN_MODES = new Set(Object.values(OFFSCREEN_PARTICIPATION_MODES));
 const SEALED_MOUTH_STATES = new Set(['closed', 'offscreen_sealed']);
 const CLOSE_DIALOGUE_FRAMINGS = new Set(['over_the_shoulder', 'ots_reverse', 'two_shot_face_to_face']);
 const WIDE_SHOT_TYPES = new Set(['全景', '大远景', '远景', 'wide', 'long_shot', 'extreme_wide', 'establishing']);
@@ -127,6 +129,20 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
       const slots = persistedSemantic || shot;
       const visibleChars = slots.visible_characters != null ? asArray(slots.visible_characters) : asArray(shot.characters);
       const bgChars = slots.background_characters != null ? asArray(slots.background_characters) : asArray(shot.background_characters);
+      const offscreenChars = asArray(slots.offscreen_characters);
+      const invalidOffscreenModes = offscreenChars.filter((c) => {
+        const mode = String(c?.mode || '').trim();
+        return Boolean(mode) && !VALID_OFFSCREEN_MODES.has(mode);
+      });
+      if (invalidOffscreenModes.length > 0) {
+        violations.push({
+          rule: 'INVARIANT_OFFSCREEN_MODE_INVALID',
+          shot_number: shotNum,
+          severity: 'warning',
+          conflict_slots: ['semantic_slots.offscreen_characters'],
+          message: `分镜 #${shotNum} 的画外参与者 mode 非法（${invalidOffscreenModes.map((c) => c.mode).join('、')}），只能为 ${[...VALID_OFFSCREEN_MODES].join(' / ')}。`,
+        });
+      }
       const characterVisuals = asArray(shot.character_visuals);
       const speechPlan = slots.speech_plan || {};
       const soundPlan = slots.sound_plan || {};
