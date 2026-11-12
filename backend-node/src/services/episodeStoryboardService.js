@@ -1216,21 +1216,28 @@ ${lastCtx}
 ${originalUserPrompt}`;
 }
 
-function buildPlanningRepairPrompt(originalUserPrompt, storyboards, violations, attempt) {
-  const messages = (violations || []).map((item) => `- ${item.message}`).join('\n');
-  return `[阶段一规划修复 - 第${attempt}次]\n
-下面是导演刚刚生成的完整基础分镜候选。它还没有入库，因为违反了基础物理规划规则。\n
-【必须修复的门禁反馈】\n${messages}\n
-【修复要求】\n
-- 只修复人物集合、场景层级、镜头拆分和由此产生的镜号衔接；保留原剧本对白、旁白和剧情因果，不得删字或改写台词。\n
-- 每个镜头最多包含 2 个有身份的剧库角色。路人、敌军群体和群众不要创建或挂载角色 ID，改写为环境事件。\n
-- 现实人物与游戏角色不能在同一镜头作为身份人物同时出现；需要时拆成连续镜头。\n
-- 如果拆镜，必须保持原对白逐字完整、镜号连续、前后镜头因果衔接清楚。\n
-- 返回修复后的完整 storyboards 数组，不要只返回补丁，不要解释文字。\n
-【当前完整候选】\n${JSON.stringify(storyboards)}\n
-【原始任务说明】\n${originalUserPrompt}`;
-}
+function buildPlanningRepairPrompt(originalUserPrompt, storyboards, violations, attempt, catalogs = {}) {
+  const messages = (violations || []).map((item) => `- 分镜#${item.shot_number || '?'} · ${item.message} · 冲突字段=${JSON.stringify(item.conflict_slots || [])}`).join('\n');
+  const targetNumbers = [...new Set((violations || []).map((item) => Number(item.shot_number)).filter(Number.isFinite))];
+  const characterCatalog = (catalogs.characters || []).map((item) => ({ id: item.id, name: item.name }));
+  return `[阶段一规划修复 - 第${attempt}次]
 
+【必须修复的门禁反馈】
+${messages}
+
+【修复要求】
+- 只修改违规镜头 ${JSON.stringify(targetNumbers)} 以及因拆镜必须顺延的镜号；其他镜头保持不变。
+- 动作、结果、起幅和构图中明确实际出场的剧库角色，必须加入该镜 characters 或 background_characters；如果只是环境事件、敌军或群众，不得挂载身份角色。
+- 每镜最多包含 2 个有身份的剧库角色；若加入后超过2人，必须按剧情拆成连续镜头，不能静默删除或选择性遗漏。
+- 保留原剧本对白、旁白和剧情因果，不得删字、改写台词或把角色动作改成无依据的环境事件。
+- 返回修复后的完整 storyboards 数组，不要返回补丁或解释文字。
+【可用角色目录】
+${JSON.stringify(characterCatalog)}
+【当前完整候选】
+${JSON.stringify(storyboards)}
+【原始任务说明】
+${originalUserPrompt}`;
+}
 function parseStoryboardArray(text, log) {
   const meta = {};
   const parsed = safeParseAIJSON(text, null, log, meta);
@@ -1500,7 +1507,7 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
     // 规划门禁属于阶段一：人物数量、角色集合和镜头拆分会改变基础剧情结构，
     // 必须在入库前反馈给生成模型，不能等阶段二开始后才直接拒绝。
     if (pipelineOptions?.chainEnrichment && pipelineOptions.planningCatalogs) {
-      const planningAttempts = Math.max(1, Math.min(3, Number(pipelineOptions.planningRepairAttempts || 3)));
+      const planningAttempts = Math.max(1, Math.min(5, Number(pipelineOptions.planningRepairAttempts || 5)));
       let planningViolations = checkPlanningFeasibility(storyboards, { catalogs: pipelineOptions.planningCatalogs });
       for (let attempt = 1; planningViolations.length && attempt <= planningAttempts; attempt++) {
         taskService.updateTaskStatus(db, taskId, 'processing', 66,
@@ -1508,15 +1515,15 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
         const repairText = await generateTextForStoryboard(
           db,
           log,
-          buildPlanningRepairPrompt(userPrompt, storyboards, planningViolations, attempt),
-          `${systemPrompt}\n\n【阶段一规划修复模式】只输出修复后的基础分镜数组；每镜最多2个有身份角色，路人/群众只能写环境事件。参与本镜事件但不入画的角色（同场画外、或通过通讯器/对讲机/电话远程参与）必须登记在 semantic_slots.offscreen_characters 并注明 mode（present_offscreen/remote_voice），不得加入 characters/background_characters；只在台词或动作中被提及、与本镜事件无关的角色不登记。`,
-          { model: model || undefined, temperature: 0.2 }
+          buildPlanningRepairPrompt(userPrompt, storyboards, planningViolations, attempt, pipelineOptions.planningCatalogs),
+          `你是阶段一基础分镜的规划修复节点。只修复门禁反馈指定的镜头人物集合与结构问题，保持其他镜头和全部台词、旁白不变。每镜最多2名有身份角色；环境事件、敌军和群众不得挂载角色 ID。通过通讯器/对讲机/电话远程参与或同场画外的角色不要加入 characters/background_characters（其画外参与方式由阶段二登记），本层只保证入画人物集合正确。只返回完整 JSON：{"storyboards":[...]}，不要解释。`,
+          { model: model || undefined, temperature: 0.1 }
         );
         storyboards = parseStoryboardArray(repairText, log);
         planningViolations = checkPlanningFeasibility(storyboards, { catalogs: pipelineOptions.planningCatalogs });
       }
       if (planningViolations.length) {
-        const planningError = new Error(`阶段一规划门禁未通过：${planningViolations.map((item) => item.message).join('；')}`);
+        const planningError = new Error(`阶段一规划门禁经过 ${planningAttempts} 轮 Agent 修复仍未通过：${planningViolations.map((item) => item.message).join('；')}`);
         planningError.stage = 'stage1';
         planningError.partial_shot_count = storyboards.length;
         planningError.violations = planningViolations;
