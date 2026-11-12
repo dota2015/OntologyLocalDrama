@@ -100,7 +100,7 @@ test('storyboardService supports creating, updating and retrieving dialogue_fram
         shot_duration: 5,
       }),
       JSON.stringify({
-        performance_contract: 'sync_v2',
+        performance_contract: 'structured_sync',
         execution_backend: 'h3_single',
         camera: { shot_type: '中景', movement: 'push' },
         audio_lip_sync: { mode: 'silent_ambient', speaker_name: '', speaker_in_frame: false, dialogue_content: '', visible_characters_lip_state: 'strictly_sealed' },

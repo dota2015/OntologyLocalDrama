@@ -231,15 +231,15 @@ test('general composition reaches every narrative style, both languages and cust
 
 test('public frame task loads Director slots and never invokes a second text model', async t => {
  const db=setup(t),frames=require('../src/services/framePromptService');
- const visual={character_id:5,name:'王奕宸',screen_position:'画面左侧',facing:'侧向右方',head_pose:'头部朝右微低',gaze:'看向桌上课本',posture:'坐在椅子上',hands:'右手翻开书页'};
- db.prepare('UPDATE storyboards SET semantic_slots=?, character_visuals=?, last_frame_visuals=? WHERE id=80').run(JSON.stringify({visible_characters:[{id:5}]}),JSON.stringify([visual]),JSON.stringify([{...visual,gaze:'看向妈妈双眼'}]));
+ const visual={character_id:5,name:'王奕宸',depth_layer:'midground',screen_position:'left_midground',environmental_anchor:'书桌前',facing:'three_quarter_right',facing_target_id:null,head_pose:'lowered',gaze_type:'prop',gaze_target_id:null,gaze_target_label:'桌上课本',posture:'sitting',hands_state:'holding_object',hands_object_id:null,hands_target_id:null,expression:'focused',expression_detail:'专注翻页',appearance_details:'日常居家服'};
+ db.prepare('UPDATE storyboards SET semantic_slots=?, character_visuals=?, last_frame_visuals=? WHERE id=80').run(JSON.stringify({visible_characters:[{id:5}]}),JSON.stringify([visual]),JSON.stringify([{...visual,gaze_type:'character',gaze_target_label:'妈妈双眼'}]));
  let calls=0;
  t.mock.method(ai,'generateText',async()=>{calls++;throw new Error('Unexpected text rewrite');});
  for(const kind of ['first','last']){
   const result=await completedTask(db,frames.generateFramePrompt(db,log,80,kind));
   const saved=frames.getFramePrompts(db,80).find(p=>p.frame_type===kind);
   assert.equal(result.response.single_frame.prompt,saved.prompt);
-  assert.ok(saved.prompt.includes(kind==='first'?'看向桌上课本':'看向妈妈双眼'));
+  assert.ok(saved.prompt.includes(kind==='first'?'桌上课本':'妈妈双眼'));
  }
  assert.equal(calls,0);
 });

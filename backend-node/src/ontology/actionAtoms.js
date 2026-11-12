@@ -5,6 +5,8 @@
  * JSON shape directly; videoSlots compiles it into natural language.
  */
 
+const PERFORMANCE_CONTRACT = 'structured_sync';
+
 const ACTIONS = Object.freeze([
   'hold', 'grasp', 'release', 'reach', 'touch', 'support', 'lift', 'push', 'pull',
   'turn', 'walk', 'run', 'crouch', 'stand_up', 'sit_down', 'fall', 'look',
@@ -188,6 +190,7 @@ function isStructuredVisual(value) {
 }
 
 module.exports = {
+  PERFORMANCE_CONTRACT,
   ACTIONS,
   BODY_PARTS,
   TARGET_TYPES,

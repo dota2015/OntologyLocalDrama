@@ -16,6 +16,7 @@ const { CONTINUUM_MAX_SECONDS, SINGLE_MAX_SECONDS, CONTINUUM_MIN_SECONDS } = req
 const actionAtoms = require('./actionAtoms');
 const {
   ACTIONS,
+  PERFORMANCE_CONTRACT,
   isStructuredTrajectory,
 } = actionAtoms;
 
@@ -324,8 +325,7 @@ function createVideoSemanticSlots(data = {}) {
   const timing = data.timing || {};
 
   return {
-    // sync_v2 is emitted by the current Director contract. Legacy rows remain
-    // readable as raw data but are rejected when submitted for new H3 work.
+    // structured_sync is the single canonical execution contract.
     performance_contract: String(data.performance_contract || '').trim(),
     execution_backend: String(data.execution_backend || (Number(timing.duration || 0) >= CONTINUUM_MIN_SECONDS ? 'h3_continuum' : 'h3_single')).trim(),
     continuum_plan: data.continuum_plan && typeof data.continuum_plan === 'object' ? data.continuum_plan : null,
@@ -378,7 +378,9 @@ function createVideoSemanticSlots(data = {}) {
             source_id: t.reaction_trigger.source_id != null ? Number(t.reaction_trigger.source_id) : null,
             source_label: String(t.reaction_trigger.source_label || '').trim(),
           } : null,
+          facing: String(t.facing || '').trim(),
           facing_target_id: t.facing_target_id != null ? Number(t.facing_target_id) : null,
+          head_pose: String(t.head_pose || '').trim(),
           gaze_type: String(t.gaze_type || '').trim(),
           gaze_target_id: t.gaze_target_id != null ? Number(t.gaze_target_id) : null,
           gaze_target_label: String(t.gaze_target_label || '').trim(),
@@ -388,18 +390,7 @@ function createVideoSemanticSlots(data = {}) {
           hands_target_id: t.hands_target_id != null ? Number(t.hands_target_id) : null,
           expression: String(t.expression || '').trim(),
           expression_detail: String(t.expression_detail || '').trim(),
-          start_anchor: String(t.start_anchor || '').trim(),
-          trajectory: String(t.trajectory || '').trim(),
-          end_anchor: String(t.end_anchor || '').trim(),
-          terminal_pose: String(t.terminal_pose || t.end_action || '').trim(),
-          facial_expression: String(t.facial_expression || t.expression_change || '').trim(),
-          facing: String(t.facing || '').trim(),
-          head_pose: String(t.head_pose || '').trim(),
-          gaze: String(t.gaze || '').trim(),
-          attention_target: String(t.attention_target || '').trim(),
-          gaze_motivation: String(t.gaze_motivation || '').trim(),
-          reaction_trigger: String(t.reaction_trigger || '').trim(),
-          mouth_state: String(t.mouth_state || '双唇自然闭合，保持安静倾听状态').trim(),
+          mouth_state: String(t.mouth_state || 'closed').trim(),
         }))
       : [],
     environment_vfx: {
@@ -459,7 +450,9 @@ function createVideoSemanticSlots(data = {}) {
                   source_id: t.reaction_trigger.source_id != null ? Number(t.reaction_trigger.source_id) : null,
                   source_label: String(t.reaction_trigger.source_label || '').trim(),
                 } : null,
+                facing: String(t.facing || '').trim(),
                 facing_target_id: t.facing_target_id != null ? Number(t.facing_target_id) : null,
+                head_pose: String(t.head_pose || '').trim(),
                 gaze_type: String(t.gaze_type || '').trim(),
                 gaze_target_id: t.gaze_target_id != null ? Number(t.gaze_target_id) : null,
                 gaze_target_label: String(t.gaze_target_label || '').trim(),
@@ -469,18 +462,7 @@ function createVideoSemanticSlots(data = {}) {
                 hands_target_id: t.hands_target_id != null ? Number(t.hands_target_id) : null,
                 expression: String(t.expression || '').trim(),
                 expression_detail: String(t.expression_detail || '').trim(),
-                start_anchor: String(t.start_anchor || '').trim(),
-                trajectory: String(t.trajectory || '').trim(),
-                end_anchor: String(t.end_anchor || '').trim(),
-                terminal_pose: String(t.terminal_pose || t.end_action || '').trim(),
-                facial_expression: String(t.facial_expression || t.expression_change || '').trim(),
-                facing: String(t.facing || '').trim(),
-                head_pose: String(t.head_pose || '').trim(),
-                gaze: String(t.gaze || '').trim(),
-                attention_target: String(t.attention_target || '').trim(),
-                gaze_motivation: String(t.gaze_motivation || '').trim(),
-                reaction_trigger: String(t.reaction_trigger || '').trim(),
-                mouth_state: String(t.mouth_state || '双唇自然闭合，保持安静倾听状态').trim(),
+                mouth_state: String(t.mouth_state || 'closed').trim(),
                 shot_number: s.shot_number || (idx + 1),
               }))
             : [],
@@ -549,21 +531,16 @@ function validateVideoSlots(shot, slots) {
 
   const audio = slots.audio_lip_sync || {};
 
-  // sync_v2 is the structured second-stage contract. It is validated by
-  // enums, IDs and state transitions; no Chinese keyword completeness check
-  // is used for these execution fields.
-  if (slots.performance_contract === 'sync_v2') {
-    violations.push(...validateStructuredExecutionContract(shot, slots));
-  }
-
-  if (slots.performance_contract && slots.performance_contract !== 'sync_v2') {
+  if (slots.performance_contract !== PERFORMANCE_CONTRACT) {
     violations.push({
       rule: 'INVARIANT_H3_PERFORMANCE_CONTRACT_VERSION',
       shot_number: shotNum,
       severity: 'error',
       conflict_slots: ['video_slots.performance_contract'],
-      message: `分镜 ${shotNum} 的 H3 执行合同必须为 sync_v2，当前为 ${slots.performance_contract}；旧合同不再兼容，请重新生成或手动修订本镜。`,
+      message: `分镜 ${shotNum} 的 H3 执行合同必须为 ${PERFORMANCE_CONTRACT}，当前为 ${slots.performance_contract || '空'}；旧合同不再兼容，请重新生成或手动修订本镜。`,
     });
+  } else {
+    violations.push(...validateStructuredExecutionContract(shot, slots));
   }
   // 1. 画外音与口型契约校验（严格防止画内演员动嘴）
   const isVoiceover = audio.mode === 'offscreen_voiceover' || (Boolean(audio.dialogue_content) && !audio.speaker_in_frame);
@@ -596,12 +573,12 @@ function validateVideoSlots(shot, slots) {
   // 2. 轨迹完整性校验
   if (Array.isArray(slots.trajectories)) {
     slots.trajectories.forEach((traj) => {
-      if (!traj.start_anchor || !traj.trajectory) {
+      if (!traj?.start_state || (!traj?.action_atom?.action && !traj?.action_atom?.action_detail)) {
         violations.push({
           rule: 'INVARIANT_TRAJECTORY_INCOMPLETE',
           shot_number: shotNum,
           severity: 'warning',
-          message: `分镜 ${shotNum} 角色「${traj.name}」的物理轨迹槽位不完整（需包含起止点与运动过程）。`,
+          message: `分镜 ${shotNum} 角色「${traj?.name || traj?.character_id || '未知'}」的结构化轨迹槽位不完整（需包含 start_state 与 action_atom）。`,
         });
       }
     });
@@ -614,7 +591,6 @@ function validateVideoSlots(shot, slots) {
   }
   const isH3Planned = semantic && ['fl2va', 'ref2va'].includes(semantic.h3_mode);
   if (isH3Planned) {
-    const hasTimedPerformanceContract = slots.performance_contract !== 'legacy';
     const duration = Number(slots.timing?.duration || semantic.shot_duration || shot.duration || 0);
     if (!Number.isInteger(duration) || duration < 4 || duration > CONTINUUM_MAX_SECONDS) {
       violations.push({ rule: 'INVARIANT_SHORT_DRAMA_TIMELINE_DURATION', shot_number: shotNum, severity: 'error', message: `分镜 ${shotNum} 总时长必须为4～${CONTINUUM_MAX_SECONDS}整数秒，当前为 ${duration} 秒。` });
@@ -635,17 +611,13 @@ function validateVideoSlots(shot, slots) {
     const backgroundIds = (Array.isArray(semantic.background_characters) ? semantic.background_characters : [])
       .map(c => Number(c && typeof c === 'object' ? (c.character_id ?? c.id) : c)).filter(id => id > 0);
     const allowedSegmentIds = new Set([...visibleIds, ...backgroundIds]);
-    const minSegments = hasTimedPerformanceContract
-      ? Math.ceil(duration / MAX_SHORT_DRAMA_TIMELINE_SEGMENT_SECONDS)
-      : 1;
+    const minSegments = Math.ceil(duration / MAX_SHORT_DRAMA_TIMELINE_SEGMENT_SECONDS);
     if (timeline.length < minSegments) {
       violations.push({
         rule: 'INVARIANT_SHORT_DRAMA_TIMELINE_MISSING',
         shot_number: shotNum,
         severity: 'error',
-        message: hasTimedPerformanceContract
-          ? `分镜 ${shotNum} 为 ${duration || '未知'} 秒片段，必须由导演 Agent 提供至少一个连续动作节拍；每段使用整数秒并覆盖完整时长，禁止留出未约束时长或由执行层自动均分。`
-          : `分镜 ${shotNum} 缺少导演 Agent 规划的镜内时间线，必须至少提供一个时间段。`,
+        message: `分镜 ${shotNum} 为 ${duration || '未知'} 秒片段，必须由导演 Agent 提供至少一个连续动作节拍；每段使用整数秒并覆盖完整时长，禁止留出未约束时长或由执行层自动均分。`,
       });
     } else {
       const total = timeline.reduce((sum, segment) => sum + Number(segment?.duration || 0), 0);
@@ -660,36 +632,29 @@ function validateVideoSlots(shot, slots) {
       let expectedStart = 0;
       timeline.forEach((segment, index) => {
         const segmentDuration = Number(segment?.duration || 0);
-        const maxSegmentDuration = hasTimedPerformanceContract
-          ? MAX_SHORT_DRAMA_TIMELINE_SEGMENT_SECONDS
-          : duration;
-        if (!Number.isInteger(segmentDuration) || segmentDuration < 1 || segmentDuration > maxSegmentDuration) {
+        if (!Number.isInteger(segmentDuration) || segmentDuration < 1 || segmentDuration > MAX_SHORT_DRAMA_TIMELINE_SEGMENT_SECONDS) {
           violations.push({
             rule: 'INVARIANT_SHORT_DRAMA_SEGMENT_PACING',
             shot_number: shotNum,
             severity: 'error',
-            message: hasTimedPerformanceContract
-              ? `分镜 ${shotNum} 的镜内剪辑段 ${index + 1} 时长为 ${segmentDuration} 秒，必须是 1～30 个整数秒；按真实动作节拍规划。`
-              : `分镜 ${shotNum} 的镜内剪辑段 ${index + 1} 时长为 ${segmentDuration} 秒，必须是正整数秒且不超过本镜总时长。`,
+            message: `分镜 ${shotNum} 的镜内剪辑段 ${index + 1} 时长为 ${segmentDuration} 秒，必须是 1～30 个整数秒；按真实动作节拍规划。`,
           });
         }
-        if (hasTimedPerformanceContract) {
-          const actualStart = parseTimelineTimestamp(segment?.timestamp);
-          const timestampValid = index === 0
-            ? (actualStart == null || Math.abs(actualStart) < 0.001)
-            : (actualStart != null && Math.abs(actualStart - expectedStart) < 0.001);
-          if (!timestampValid) {
-            violations.push({
-              rule: 'INVARIANT_SHORT_DRAMA_TIMELINE_TIMESTAMP',
-              shot_number: shotNum,
-              severity: 'error',
-              segment_index: index,
-              conflict_slots: [`video_slots.shots_timeline[${index}].timestamp`],
-              message: index === 0
-                ? `分镜 ${shotNum} 的第 1 段必须从 0 秒开始（timestamp 可为 null 或 00:00.000）。`
-                : `分镜 ${shotNum} 的第 ${index + 1} 段 timestamp 必须为 ${formatH3Timestamp(expectedStart)}，与前面动作段连续，不能留空或跳时。`,
-            });
-          }
+        const actualStart = parseTimelineTimestamp(segment?.timestamp);
+        const timestampValid = index === 0
+          ? (actualStart == null || Math.abs(actualStart) < 0.001)
+          : (actualStart != null && Math.abs(actualStart - expectedStart) < 0.001);
+        if (!timestampValid) {
+          violations.push({
+            rule: 'INVARIANT_SHORT_DRAMA_TIMELINE_TIMESTAMP',
+            shot_number: shotNum,
+            severity: 'error',
+            segment_index: index,
+            conflict_slots: [`video_slots.shots_timeline[${index}].timestamp`],
+            message: index === 0
+              ? `分镜 ${shotNum} 的第 1 段必须从 0 秒开始（timestamp 可为 null 或 00:00.000）。`
+              : `分镜 ${shotNum} 的第 ${index + 1} 段 timestamp 必须为 ${formatH3Timestamp(expectedStart)}，与前面动作段连续，不能留空或跳时。`,
+          });
         }
         expectedStart += Number.isFinite(segmentDuration) ? segmentDuration : 0;
         const trajectories = Array.isArray(segment?.character_trajectories) ? segment.character_trajectories : [];
@@ -699,7 +664,7 @@ function validateVideoSlots(shot, slots) {
             ? (character.character_id ?? character.id)
             : character)).filter(id => id > 0)
           : [];
-        if (hasTimedPerformanceContract && !segmentVisible) {
+        if (!segmentVisible) {
           violations.push({
             rule: 'INVARIANT_SHORT_DRAMA_VISIBLE_CHARACTERS_MISSING',
             shot_number: shotNum,
@@ -710,7 +675,7 @@ function validateVideoSlots(shot, slots) {
           });
         }
         const uniqueSegmentVisibleIds = [...new Set(segmentVisibleIds)];
-        if (hasTimedPerformanceContract && uniqueSegmentVisibleIds.length !== segmentVisibleIds.length) {
+        if (uniqueSegmentVisibleIds.length !== segmentVisibleIds.length) {
           violations.push({
             rule: 'INVARIANT_SHORT_DRAMA_VISIBLE_CHARACTERS_DUPLICATE',
             shot_number: shotNum,
@@ -731,10 +696,10 @@ function validateVideoSlots(shot, slots) {
             message: `分镜 ${shotNum} 的第 ${index + 1} 段声明了不在本镜人物清单中的画内角色 ID：${unknownVisibleIds.join('、')}。`,
           });
         }
-        const expectedSegmentIds = hasTimedPerformanceContract ? uniqueSegmentVisibleIds : (segmentVisible ? uniqueSegmentVisibleIds : visibleIds);
+        const expectedSegmentIds = uniqueSegmentVisibleIds;
         const trajectoryIds = [...new Set(trajectories.map(item => Number(item?.character_id)).filter(id => id > 0))];
         const extraTrajectoryIds = trajectoryIds.filter(id => !expectedSegmentIds.includes(id));
-        if (hasTimedPerformanceContract && extraTrajectoryIds.length) {
+        if (extraTrajectoryIds.length) {
           violations.push({
             rule: 'INVARIANT_SHORT_DRAMA_TRAJECTORY_NOT_VISIBLE',
             shot_number: shotNum,
@@ -745,7 +710,7 @@ function validateVideoSlots(shot, slots) {
           });
         }
         const segmentDialogue = String(segment?.audio_lip_sync?.dialogue_content || '').trim();
-        if (hasTimedPerformanceContract && (!String(segment?.action || '').trim() || !String(segment?.result || '').trim())) {
+        if (!String(segment?.action || '').trim() || !String(segment?.result || '').trim()) {
           violations.push({
             rule: 'INVARIANT_SHORT_DRAMA_BEAT_CONTRACT_MISSING',
             shot_number: shotNum,
@@ -755,11 +720,10 @@ function validateVideoSlots(shot, slots) {
             message: `分镜 ${shotNum} 的第 ${index + 1} 个时间段必须同时写明本段实际 action 和 result，不能只靠机位或台词填时长。`,
           });
         }
-        if (hasTimedPerformanceContract && isGazeOnlyHold([
+        if (isGazeOnlyHold([
           segment?.action,
           segment?.result,
           ...trajectories.flatMap(item => [
-            item?.trajectory, item?.terminal_pose, item?.facial_expression,
             item?.action_detail, item?.action_atom?.action_detail,
             item?.action_atom?.action,
           ]),
@@ -776,18 +740,15 @@ function validateVideoSlots(shot, slots) {
         }
         for (const id of expectedSegmentIds) {
           const trajectory = trajectories.find(t => Number(t?.character_id) === id);
-          const structuredMode = slots.performance_contract === 'sync_v2';
-          const requiredFields = structuredMode
-            ? ['action_atom', 'start_state', 'result_state', 'reaction_trigger', 'facing', 'head_pose', 'gaze_type', 'posture', 'hands_state', 'expression', 'mouth_state']
-            : ['trajectory', 'terminal_pose', 'facial_expression', 'facing', 'head_pose', 'gaze', 'attention_target', 'gaze_motivation', 'reaction_trigger'];
+          const requiredFields = ['action_atom', 'start_state', 'result_state', 'reaction_trigger', 'facing', 'head_pose', 'gaze_type', 'posture', 'hands_state', 'expression', 'mouth_state'];
           const missingFields = requiredFields.filter(field => {
-            if (structuredMode && field === 'action_atom') {
+            if (field === 'action_atom') {
               return !trajectory?.action_atom || (!String(trajectory.action_atom.action || '').trim() && !String(trajectory.action_atom.action_detail || '').trim());
             }
-            const value = trajectory?.[field]
-              || (field === 'terminal_pose' ? trajectory?.end_action : '')
-              || (field === 'facial_expression' ? trajectory?.expression_change : '')
-              || (structuredMode && field === 'gaze_type' ? trajectory?.gaze_target_label : '');
+            if (field === 'reaction_trigger') {
+              return !trajectory?.reaction_trigger || !String(trajectory.reaction_trigger.type || '').trim();
+            }
+            const value = trajectory?.[field] || (field === 'gaze_type' ? trajectory?.gaze_target_label : '');
             return !String(value || '').trim();
           });
           if (missingFields.length) {
@@ -800,21 +761,16 @@ function validateVideoSlots(shot, slots) {
               segment_index: index,
               missing_fields: missingFields,
               conflict_slots: missingFields.map(field => `${targetPath}.${field}`),
-              message: structuredMode
-                ? `分镜 ${shotNum} 的镜内剪辑段 ${index + 1} 未给画内角色 ID ${id} 补齐结构化执行字段：${missingFields.join('、')}。请修复 ${targetPath}，不要退回自由文本动作。`
-                : `分镜 ${shotNum} 的镜内剪辑段 ${index + 1} 未给画内角色 ID ${id} 补齐执行字段：${missingFields.join('、')}。必须修复 ${targetPath} 下的这些确切字段；动作字段名是 trajectory，不是 visible_action，也不是顶层 video_slots.trajectories。其他已有字段保留。`,
+              message: `分镜 ${shotNum} 的镜内剪辑段 ${index + 1} 未给画内角色 ID ${id} 补齐结构化执行字段：${missingFields.join('、')}。请修复 ${targetPath}，不要退回自由文本动作。`,
             });
           }
           const isSpeakingInSegment = segmentDialogue && String(segment?.audio_lip_sync?.speaker_name || '').trim() === String(trajectory?.name || '').trim();
           const listenerReaction = (segment?.speech_action_alignment?.listener_reactions || []).find(r => Number(r?.character_id) === id);
-          if (hasTimedPerformanceContract && trajectory && !isSpeakingInSegment && isGazeOnlyHold([
-            trajectory.trajectory,
-            trajectory.terminal_pose,
-            trajectory.facial_expression,
+          if (trajectory && !isSpeakingInSegment && isGazeOnlyHold([
             trajectory.action_detail,
             trajectory.action_atom?.action_detail,
             trajectory.action_atom?.action,
-            trajectory.reaction_trigger,
+            trajectory.reaction_trigger?.source_label,
             listenerReaction?.action,
           ])) {
             violations.push({
@@ -823,7 +779,7 @@ function validateVideoSlots(shot, slots) {
               severity: 'error',
               character_id: id,
               segment_index: index,
-              conflict_slots: [`video_slots.shots_timeline[${index}].character_trajectories[character_id=${id}].trajectory`],
+              conflict_slots: [`video_slots.shots_timeline[${index}].character_trajectories[character_id=${id}].action_atom`],
               message: `分镜 ${shotNum} 的第 ${index + 1} 段中角色 ID ${id} 只有凝视、等待或静止描述，没有本段可执行的动作/反应；请写明与对白或事件同步的身体、表情或互动变化。`,
             });
           }
@@ -917,29 +873,18 @@ function compileVideoPromptFromSlots(shot, slots, options = {}) {
   }
   if (Array.isArray(characterVisuals) && characterVisuals.length) {
     const visualContracts = characterVisuals.map((v) => {
-      if (v.gaze_type || v.hands_state || v.posture) {
-        const gazeTarget = v.gaze_target_label || resolveAtomRef({ target_id: v.gaze_target_id }, 'target_id', options);
-        const facingTarget = v.facing_target_id != null ? resolveAtomRef({ target_id: v.facing_target_id }, 'target_id', options) : '';
-        const items = [
-          v.screen_position ? `站位：${v.screen_position}` : '',
-          v.facing ? `身体朝向：${v.facing}${facingTarget ? `（目标：${facingTarget}）` : ''}` : '',
-          v.head_pose ? `头部：${v.head_pose}` : '',
-          v.gaze_type ? `视线：${v.gaze_type}${gazeTarget ? `（${gazeTarget}）` : ''}` : '',
-          v.posture ? `体态：${v.posture}` : '',
-          v.hands_state ? `手部：${v.hands_state}` : '',
-          v.expression ? `表情：${v.expression}` : '',
-          v.expression_detail || '',
-        ].filter(Boolean);
-        return `「${v.name || '人物'}」${items.join('，')}`;
-      }
-      const items = [];
-      if (v.screen_position) items.push(`站位：${v.screen_position}`);
-      if (v.facing) items.push(`身体朝向：${v.facing}`);
-      if (v.head_pose) items.push(`头部：${v.head_pose}`);
-      if (v.gaze) items.push(`视线：${v.gaze}`);
-      if (v.posture) items.push(`体态：${v.posture}`);
-      if (v.hands) items.push(`手部：${v.hands}`);
-      if (v.expression) items.push(`表情：${v.expression}`);
+      const gazeTarget = v.gaze_target_label || resolveAtomRef({ target_id: v.gaze_target_id }, 'target_id', options);
+      const facingTarget = v.facing_target_id != null ? resolveAtomRef({ target_id: v.facing_target_id }, 'target_id', options) : '';
+      const items = [
+        v.screen_position ? `站位：${v.screen_position}` : '',
+        v.facing ? `身体朝向：${v.facing}${facingTarget ? `（目标：${facingTarget}）` : ''}` : '',
+        v.head_pose ? `头部：${v.head_pose}` : '',
+        v.gaze_type ? `视线：${v.gaze_type}${gazeTarget ? `（${gazeTarget}）` : ''}` : '',
+        v.posture ? `体态：${v.posture}` : '',
+        v.hands_state ? `手部：${v.hands_state}` : '',
+        v.expression ? `表情：${v.expression}` : '',
+        v.expression_detail || '',
+      ].filter(Boolean);
       return `「${v.name || '人物'}」${items.join('，')}`;
     });
     parts.push('角色站位与视线合同：' + visualContracts.join('；'));
@@ -956,26 +901,12 @@ function compileVideoPromptFromSlots(shot, slots, options = {}) {
   const moveDesc = cam.movement_description ? `（${cam.movement_description}）` : '';
   parts.push(`运镜：${cam.movement}${moveDesc}`);
 
-  // 4. 角色动态与物理轨迹（明确起点、动作、终态与口型）
+  // 4. 角色动态与物理轨迹（结构化原子动作）
   if (normSlots.trajectories.length > 0) {
-    const trajLines = normSlots.trajectories.map((t) => {
-      if (isStructuredTrajectory(t)) return compileStructuredTrajectory(t, options);
-      const items = [];
-      if (t.start_anchor) items.push(`起点：${t.start_anchor}`);
-      if (t.trajectory) items.push(`动作轨迹：${t.trajectory}`);
-      if (t.end_anchor) items.push(`终点：${t.end_anchor}`);
-      if (t.terminal_pose) items.push(`终态姿态：${t.terminal_pose}`);
-      if (t.facial_expression) items.push(`面部神态：${t.facial_expression}`);
-      if (t.facing) items.push(`身体朝向：${t.facing}`);
-      if (t.head_pose) items.push(`头部姿态：${t.head_pose}`);
-      if (t.gaze) items.push(`视线落点：${t.gaze}`);
-      if (t.attention_target) items.push(`注意对象：${t.attention_target}`);
-      if (t.gaze_motivation) items.push(`视线动机：${t.gaze_motivation}`);
-      if (t.reaction_trigger) items.push(`反应触发：${t.reaction_trigger}`);
-      if (t.mouth_state) items.push(`口型状态：${t.mouth_state}`);
-      return `「${t.name}」` + items.join('，');
-    });
-    parts.push('角色动态与轨迹：' + trajLines.join('；'));
+    const trajLines = normSlots.trajectories
+      .map((t) => compileStructuredTrajectory(t, options))
+      .filter(Boolean);
+    if (trajLines.length) parts.push('角色动态与轨迹：' + trajLines.join('；'));
   } else if (shot.action) {
     parts.push('动作：' + translatePhysicalPhenomena(stripChineseExclusions(shot.action)));
   }
@@ -1150,45 +1081,15 @@ function synthesizeH3MultimodalSlots(shot, options = {}) {
       });
     });
   } else {
-    // 判断是否具备镜头切分条件 (时长 >= 6s 且有转折/对话/结果动作)
-    const needsCut = dur >= 6 && (resultText.trim().length > 0 || diagText.trim().length > 0);
-
-    if (!needsCut) {
-      // 单镜头连续画面: [Shot 1] 从 0 秒开始，不加时间戳
-      let desc1 = `Live-action, cinematic. A ${shotType} frames the scene${lightPhrase}. The camera moves with ${movement}.`;
-      if (diagText) desc1 += ` From the opening frame (00:00.000), dialogue immediately begins concurrently: ${diagText}.`;
-      desc1 += ` ${actionText}`;
-      if (resultText) desc1 += ` ${resultText}`;
-      h3Shots.push({
-        shot_number: 1,
-        timestamp: null,
-        description: desc1.trim(),
-      });
-    } else {
-      // 多镜头时间线切分: [Shot 1] (0秒开始) + [Shot 2] At 00:0X.XXX
-      const cutSec = Math.max(1, Math.floor(dur / 2));
-      const timecode = formatH3Timestamp(cutSec);
-
-      // [Shot 1] 开头第一段画面 (建构机位与主体起始动作，台词在第0秒立即开口并发进行)
-      let desc1 = `Live-action, cinematic. A ${shotType} establishes the scene${lightPhrase}. The camera begins with ${movement} as ${actionText || 'the action initiates'}.`;
-      if (diagText) {
-        desc1 += ` CRITICAL TIMING: Speech delivery starts at the opening frame (00:00.000), concurrent with the physical movement: ${diagText}.`;
-      }
-      h3Shots.push({
-        shot_number: 1,
-        timestamp: null,
-        description: desc1.trim(),
-      });
-
-      // [Shot 2] At 00:XX.XXX 按时间切过去的后续反应/反打/终态镜头
-      const secondaryShotType = shotType === '特写' || shotType === '近景' ? 'medium shot' : 'close-up shot';
-      let desc2 = `At ${timecode}, the continuous action develops into a ${secondaryShotType} view, where ${resultText || actionText || 'the movement resolves'}. The speaker concludes speech and settles with sealed lips.`;
-      h3Shots.push({
-        shot_number: 2,
-        timestamp: timecode,
-        description: desc2.trim(),
-      });
-    }
+    let desc1 = `Live-action, cinematic. A ${shotType} frames the scene${lightPhrase}. The camera moves with ${movement}.`;
+    if (diagText) desc1 += ` From the opening frame (00:00.000), dialogue immediately begins concurrently: ${diagText}.`;
+    desc1 += ` ${actionText}`;
+    if (resultText) desc1 += ` ${resultText}`;
+    h3Shots.push({
+      shot_number: 1,
+      timestamp: null,
+      description: desc1.trim(),
+    });
   }
 
   // 拼接 integrated_multimodal_description
@@ -1214,260 +1115,6 @@ function synthesizeH3MultimodalSlots(shot, options = {}) {
   };
 }
 
-/**
- * 视频语义槽位智能合成器：从 shot 现有数据、实体目录与首尾帧中提取高内聚强结构槽位
- * @param {object} shot
- * @param {Array<object>} catalogCharacters
- * @returns {object} video_slots
- */
-function synthesizeVideoSlots(shot, catalogCharacters = [], options = {}) {
-  if (shot.video_slots && !options.forceRebuild) {
-    let existing = shot.video_slots;
-    if (typeof existing === 'string') {
-      try { existing = JSON.parse(existing); } catch (_) { existing = null; }
-    }
-    const isLegacyHallucinated = JSON.stringify(existing || '').includes('凌空飞扑') &&
-      !/(?:扑向|飞扑|凌空扑|跃起|扑倒)/.test(String(shot.action || '') + ' ' + String(shot.result || ''));
-    if (!isLegacyHallucinated && existing && typeof existing === 'object' && existing.camera && existing.audio_lip_sync && Array.isArray(existing.shots_timeline) && existing.shots_timeline.length > 0) {
-      if (!existing.h3_multimodal || !existing.h3_multimodal.integrated_multimodal_description) {
-        existing.h3_multimodal = synthesizeH3MultimodalSlots(shot, { camera: existing.camera, shots_timeline: existing.shots_timeline });
-      }
-      return createVideoSemanticSlots(existing);
-    }
-  }
-
-  const charMap = new Map();
-  (catalogCharacters || []).forEach((c) => {
-    if (c && c.id != null) charMap.set(Number(c.id), c);
-  });
-
-  const charIds = [];
-  if (Array.isArray(shot.characters)) {
-    charIds.push(...shot.characters.map((x) => (typeof x === 'object' && x != null ? x.id : x)).map(Number).filter(Number.isFinite));
-  } else if (typeof shot.characters === 'string') {
-    try {
-      const p = JSON.parse(shot.characters);
-      if (Array.isArray(p)) charIds.push(...p.map(Number).filter(Number.isFinite));
-    } catch (_) {}
-  }
-
-  const actionText = translatePhysicalPhenomena(String(shot.action || ''));
-  const resultText = translatePhysicalPhenomena(String(shot.result || ''));
-  const dialogueText = String(shot.dialogue || '').trim();
-  const narrationText = String(shot.narration || '').trim();
-
-  // 1. 推断音频与口型契约 (Audio Lip Sync)
-  let speakerName = '';
-  let diagContent = dialogueText;
-  let speakerMatch = dialogueText.match(/^([^:：\s]+)\s*[:：]\s*(.*)$/s);
-  if (speakerMatch) {
-    speakerName = speakerMatch[1].trim();
-    diagContent = speakerMatch[2].trim().replace(/^["“](.*)["”]$/, '$1');
-  }
-
-  const visibleNames = charIds.map((cid) => charMap.get(cid)?.name).filter(Boolean);
-  const isSpeakerInVisibleList = speakerName ? visibleNames.includes(speakerName) : false;
-
-  const isExplicitOffscreen =
-    /(?:画外|不入画|不在画中|无线电|战术耳机|通讯器|隔空|对讲机)/i.test(actionText) ||
-    /(?:画外|不入画|不在画中|无线电|耳机|对讲机)/i.test(dialogueText);
-
-  let audioMode = 'silent_ambient';
-  let speakerInFrame = false;
-  let deliveryMedium = 'direct_speech';
-  let lipState = 'strictly_sealed';
-  let lipRule = '画面内全员保持双唇自然闭合与安静专注状态。';
-
-  if (dialogueText) {
-    if (!isSpeakerInVisibleList || isExplicitOffscreen) {
-      audioMode = 'offscreen_voiceover';
-      speakerInFrame = false;
-      deliveryMedium = /(?:战术耳机|耳机)/i.test(actionText + dialogueText) ? 'radio_headset' : 'voiceover';
-      lipState = 'strictly_sealed';
-      lipRule = `战术耳机传来画外角色${speakerName || '画外'}的急促呼喊，画面内人物保持双唇自然闭合与专注倾听状态`;
-    } else {
-      audioMode = 'in_frame_dialogue';
-      speakerInFrame = true;
-      deliveryMedium = 'direct_speech';
-      lipState = 'synchronized_lip';
-      lipRule = `仅限说话人${speakerName}开口说话，其余画内人物双唇紧闭保持倾听`;
-    }
-  } else if (narrationText) {
-    audioMode = 'narration';
-    speakerInFrame = false;
-    deliveryMedium = 'narration';
-    lipState = 'strictly_sealed';
-    lipRule = '解说旁白播放，画内全员双唇紧闭无口型动作';
-    diagContent = narrationText;
-  } else if (shot.bgm_prompt) {
-    audioMode = 'bgm_only';
-  }
-
-  // 2. 推断角色动态轨迹 (Trajectories) - 完全通用化推演，绝无写死角色名与固定角色启发
-  const trajectories = [];
-  const firstSlots = Array.isArray(shot.character_visuals) ? shot.character_visuals : [];
-  const lastSlots = Array.isArray(shot.last_frame_visuals) ? shot.last_frame_visuals : [];
-
-  charIds.forEach((cid, idx) => {
-    const cObj = charMap.get(cid) || {};
-    const name = cObj.name || `角色${idx + 1}`;
-    const fSlot = firstSlots.find((s) => s.character_id === cid || s.name === name) || firstSlots[idx] || {};
-    const lSlot = lastSlots.find((s) => s.character_id === cid || s.name === name) || lastSlots[idx] || {};
-
-    const defaultAnchor = idx === 0 ? '画面左侧' : (idx === 1 ? '画面右侧' : '画面中央');
-    let startAnchor = fSlot.spatial_anchor || defaultAnchor;
-    let endAnchor = lSlot.spatial_anchor || startAnchor;
-    let trajDesc = '';
-    let termPose = lSlot.posture || '';
-    let facial = '神情专注严肃';
-    let mouth = (speakerInFrame && name === speakerName)
-      ? '开口说话并同步口型'
-      : '双唇自然闭合，保持安静倾听状态';
-
-    // 针对当前角色提取动作与终态关键词
-    const charMentionRegex = new RegExp(`(?:${name})[^，。；]*`, 'g');
-    const matchedMentions = ((actionText + ' ' + resultText).match(charMentionRegex) || []).join('，');
-    const isTargetBeingApproached = name
-      ? new RegExp('(?:冲向|扑向|赶到|走向|跑向|接近)\\s*' + name).test(actionText + ' ' + resultText)
-      : false;
-    const isSpeaker = speakerInFrame && name === speakerName;
-    const isListener = speakerInFrame && speakerName && name !== speakerName;
-    const activeText = matchedMentions || (idx === 0 ? actionText : resultText) || actionText;
-
-    if (isListener && !matchedMentions) {
-      trajDesc = `在${startAnchor}保持警惕戒备，专注倾听${speakerName}发言`;
-      facial = '神情冷静专注，目光锐利保持倾听';
-      if (!termPose) termPose = '身姿沉稳微收下颌，维持警戒姿态，等待做出决断';
-    } else if (isTargetBeingApproached || /(?:倒卧|倒在|倒地|负伤|虚弱|昏迷|起不来|重伤)/.test(activeText)) {
-      trajDesc = '侧卧倒在地面掩体旁，因伤势身体虚弱隐忍，无大幅位移';
-      facial = '双目微阖神色虚弱隐忍，双唇紧闭';
-      if (!termPose) termPose = '侧卧倒地，单手虚弱护在身前';
-    } else if (/(?:扑向|飞扑|凌空扑|跃起|扑倒|伸手扑)/.test(activeText)) {
-      trajDesc = '全力爆发疾速前扑冲向目标';
-      facial = '咬紧牙关，神情焦灼决绝';
-      if (!termPose) termPose = '身体大幅前倾凌空飞扑，单臂向前竭力伸手抓向目标';
-      if (!lSlot.spatial_anchor && endAnchor === startAnchor) endAnchor = '距离目标半米处';
-    } else if (/(?:冲向|奔跑|狂奔|疾冲|冲出|大步走|大步奔)/.test(activeText)) {
-      trajDesc = '大步疾速奔跑冲刺向前推进';
-      facial = '目光专注坚定，神情严峻';
-      if (!termPose) termPose = '身体前倾大步冲刺，重心前移定格';
-    } else if (/(?:操作|展开|点击|调出|标记|简报|屏幕|键盘|界面)/.test(activeText)) {
-      trajDesc = '在场景中操作交互界面，动作利落专注';
-      facial = '目光专注锐利，神情冷静沉着';
-      if (!termPose) termPose = '身体微前倾，专注操作与审视前方界面';
-    } else if (/(?:掩体|躲避|隐蔽|蹲伏|单膝|防守|戒备)/.test(activeText)) {
-      trajDesc = '在掩体后保持警戒防护';
-      facial = '目光警惕，神情严肃戒备';
-      if (!termPose) termPose = '屈膝蹲伏压低身姿，保持隐蔽警戒';
-    } else {
-      trajDesc = actionText ? actionText.slice(0, 35) : '动作敏捷，保持稳定姿态推进';
-      facial = '神情沉着专注，保持戒备';
-      if (!termPose) termPose = resultText ? resultText.slice(0, 35) : '身体站定收步，目光专注重心稳固';
-    }
-
-    if (termPose) {
-      const isMale = /男性|男|male/i.test(cObj.appearance || cObj.description || '');
-      const isFemale = /女性|女|female/i.test(cObj.appearance || cObj.description || '');
-      if (isMale && termPose.includes('她')) {
-        termPose = termPose.replace(/她/g, '他');
-      } else if (isFemale && termPose.includes('他')) {
-        termPose = termPose.replace(/他/g, '她');
-      }
-    }
-
-    trajectories.push({
-      character_id: cid,
-      name,
-      start_anchor: startAnchor,
-      trajectory: trajDesc,
-      end_anchor: endAnchor,
-      terminal_pose: termPose,
-      facial_expression: facial,
-      mouth_state: mouth,
-    });
-  });
-
-  // 3. 具象化环境与物理特效 (Environment VFX)
-  let physical = '';
-  if (/(?:弹着|子弹|扫射|枪声|火星)/.test(actionText + resultText)) {
-    physical = '密集子弹高速扫射在水泥地面上，激起一连串飞溅碎石、烟尘与火花，紧随冲刺轨迹追逐至脚边';
-  }
-
-  let terminalEvent = translatePhysicalPhenomena(resultText);
-  if (!terminalEvent && actionText) {
-    terminalEvent = '动作瞬间定格，飞溅火花与烟尘在空中微粒悬停';
-  }
-
-  // 4. 摄影参数
-  const camera = {
-    shot_type: shot.shot_type || '全景',
-    angle_h: shot.angle_h || 'front_right',
-    angle_v: shot.angle_v || 'low',
-    angle_s: shot.angle_s || 'wide',
-    movement: shot.movement || 'tracking',
-    movement_description: shot.movement === 'tracking' ? '摄影机贴地平稳跟随主体冲刺轨迹同步移动' : '',
-  };
-
-  const durationSec = normalizeDuration(shot.duration) || 5;
-
-  // 5. 合成多镜头时间线切分 (shots_timeline)
-  const shotsTimeline = [];
-  const timelineVisibleCharacters = trajectories.map((t) => ({ character_id: Number(t.character_id), name: t.name })).filter((c) => c.character_id > 0);
-  // A derived preview must never invent a cut merely because a shot is long
-  // or contains dialogue.  Only an Agent-authored `shot_change` in an
-  // explicit timeline may create a cut; otherwise keep one continuous beat.
-  shotsTimeline.push({
-      shot_number: 1,
-      timestamp: null,
-      duration: durationSec,
-      camera: {
-        shot_type: camera.shot_type,
-        movement: camera.movement,
-        movement_description: camera.movement_description,
-      },
-      visible_characters: timelineVisibleCharacters,
-      action: actionText || '场景主体动作稳健推进',
-      result: resultText || '',
-      character_trajectories: trajectories.map((t) => ({ ...t, shot_number: 1 })),
-      audio_lip_sync: {
-        mode: audioMode,
-        speaker_name: speakerName,
-        speaker_in_frame: speakerInFrame,
-        dialogue_content: diagContent,
-        lip_sync_rule: lipRule,
-      },
-    });
-
-  return createVideoSemanticSlots({
-    camera,
-    audio_lip_sync: {
-      mode: audioMode,
-      speaker_name: speakerName,
-      speaker_in_frame: speakerInFrame,
-      delivery_medium: deliveryMedium,
-      dialogue_content: diagContent,
-      visible_characters_lip_state: lipState,
-      lip_sync_rule: lipRule,
-    },
-    trajectories,
-    shots_timeline: shotsTimeline,
-    environment_vfx: {
-      lighting_style: shot.lighting_style || 'natural',
-      lighting_atmosphere: shot.atmosphere ? `${shot.lighting_style ? shot.lighting_style + '，' : ''}${shot.atmosphere}` : (shot.lighting_style || ''),
-      physical_phenomena: physical,
-      terminal_event: terminalEvent,
-    },
-    timing: {
-      duration: durationSec,
-      pacing: '急促高潮',
-    },
-    h3_multimodal: synthesizeH3MultimodalSlots(shot, {
-      camera,
-      shots_timeline: shotsTimeline,
-    }),
-  });
-}
-
 function compileH3MultimodalPrompt(slots = {}) {
   const norm = createVideoSemanticSlots(slots);
   return {
@@ -1486,11 +1133,11 @@ function normalizeDuration(dur) {
 }
 
 module.exports = {
+  PERFORMANCE_CONTRACT,
   createVideoSemanticSlots,
   validateVideoSlots,
   compileVideoPromptFromSlots,
   compileH3MultimodalPrompt,
-  synthesizeVideoSlots,
   synthesizeH3MultimodalSlots,
   formatH3Timestamp,
   translatePhysicalPhenomena,

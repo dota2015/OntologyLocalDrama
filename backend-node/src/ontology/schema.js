@@ -390,9 +390,7 @@ function createBeatEntity({ beatNumber, title = '', eventSummary = '', preCondit
 }
 
 const {
-  createCharacterVisualSlot,
   compileImagePromptFromSlots,
-  synthesizeCharacterVisualSlots,
 } = require('./visualSlots');
 
 // ── 影视视听本体统一数据字典 (Audiovisual Slot Data Dictionary) ──
@@ -622,7 +620,5 @@ module.exports = {
   createShotEntity,
   createPropEntity,
   createBeatEntity,
-  createCharacterVisualSlot,
   compileImagePromptFromSlots,
-  synthesizeCharacterVisualSlots,
 };

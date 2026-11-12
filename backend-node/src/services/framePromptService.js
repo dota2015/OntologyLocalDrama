@@ -441,13 +441,17 @@ function frameKindSuffix(cfg, frameKind) {
 
 function buildFallbackPrompt(cfg, scene, frameKind, sb = null) {
   if (frameKind === 'last' && sb) {
-    const { compileLastFramePromptFromSlots, synthesizeLastFrameVisualSlots } = require('../ontology/visualSlots');
+    const { compileLastFramePromptFromSlots } = require('../ontology/visualSlots');
     let lastVisuals = sb.last_frame_visuals;
     if (typeof lastVisuals === 'string') {
       try { lastVisuals = JSON.parse(lastVisuals); } catch (_) { lastVisuals = null; }
     }
     if (!Array.isArray(lastVisuals) || lastVisuals.length === 0) {
-      lastVisuals = synthesizeLastFrameVisualSlots(sb, []);
+      if (sb.last_frame_prompt && String(sb.last_frame_prompt).trim()) {
+        return String(sb.last_frame_prompt).trim();
+      }
+      const style = (cfg?.style?.default_style || '').toString().trim();
+      return compileLastFramePromptFromSlots(sb, [], { style });
     }
     const style = (cfg?.style?.default_style || '').toString().trim();
     return compileLastFramePromptFromSlots(sb, lastVisuals, { style });

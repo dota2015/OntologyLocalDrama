@@ -244,23 +244,27 @@ test('runtime crowd and H3 capacity use semantic background characters', () => {
   assert.ok(audit.violations.some((item) => item.rule === 'INVARIANT_H3_CROWD_OVERLOAD'));
 });
 
-test('facing gate rejects a target direction without a body orientation', () => {
+test('facing gate rejects invalid facing enum without allowing prose bypass', () => {
   const base = {
     character_id: 25,
     name: '红狼',
     depth_layer: 'midground',
-    screen_position: '画面左侧中景',
+    screen_position: 'left_midground',
     environmental_anchor: '山坡下',
-    expression: '警觉',
-    head_pose: '头部转向山坡',
-    gaze: '目光锁定山坡方向',
-    posture: '半蹲低伏',
-    hands: '双手握枪',
-    prop_interaction: '无道具接触',
+    head_pose: 'turned_to_target',
+    gaze_type: 'scene',
+    gaze_target_id: null,
+    gaze_target_label: '山坡方向',
+    posture: 'crouching',
+    hands_state: 'holding_object',
+    hands_object_id: null,
+    hands_target_id: null,
+    expression: 'alert',
+    expression_detail: '警觉',
     appearance_details: '战术服',
   };
   const bad = validateCharacterVisualSlots({ shot_number: 10 }, [{ ...base, facing: '画面上方（山坡方向）' }]);
-  assert.ok(bad.some((item) => item.rule === 'INVARIANT_SLOT_MISSING_FACING'));
-  const good = validateCharacterVisualSlots({ shot_number: 10 }, [{ ...base, facing: '侧身朝向画面左侧' }]);
-  assert.equal(good.some((item) => item.rule === 'INVARIANT_SLOT_MISSING_FACING'), false);
+  assert.ok(bad.some((item) => item.rule === 'INVARIANT_VISUAL_ENUM_INVALID'));
+  const good = validateCharacterVisualSlots({ shot_number: 10 }, [{ ...base, facing: 'three_quarter_left' }]);
+  assert.equal(good.some((item) => item.rule === 'INVARIANT_VISUAL_ENUM_INVALID'), false);
 });

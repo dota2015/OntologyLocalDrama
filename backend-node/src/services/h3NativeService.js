@@ -554,21 +554,29 @@ function trajectoryContractText(item = {}) {
   const atomText = item.action_atom && typeof item.action_atom === 'object'
     ? compileActionAtom(item.action_atom, { actorName: item.name || `角色${item.character_id || ''}` })
     : '';
+  const triggerText = item.reaction_trigger && typeof item.reaction_trigger === 'object'
+    ? [item.reaction_trigger.type, item.reaction_trigger.source_label].filter(Boolean).join('：')
+    : item.reaction_trigger;
+  const gazeText = item.gaze_type
+    ? `${item.gaze_type}${item.gaze_target_label ? `（${item.gaze_target_label}）` : ''}`
+    : item.gaze;
   return labelledContractText([
     ['人物', item.name || (item.character_id != null ? `角色${item.character_id}` : '')],
-    ['画面位置', item.screen_position || item.start_anchor],
-    ['动作', atomText || item.trajectory || item.action],
+    ['画面位置', item.screen_position],
+    ['物理依托', item.environmental_anchor],
+    ['起始状态', item.start_state],
+    ['动作', atomText || item.action],
     ['动作细节', item.action_detail || item.expression_detail],
-    ['终态', item.terminal_pose || item.end_action],
-    ['表情', item.facial_expression || item.expression_change],
+    ['终态', item.result_state],
+    ['表情', item.expression],
     ['姿态', item.posture],
-    ['双手', item.hands],
+    ['双手', item.hands_state],
     ['身体朝向', item.facing],
     ['头部姿态', item.head_pose],
-    ['视线', item.gaze],
-    ['注意目标', item.attention_target],
-    ['视线动机', item.gaze_motivation],
-    ['反应触发', item.reaction_trigger],
+    ['视线', gazeText],
+    ['注意目标', item.gaze_target_label],
+    ['反应触发', triggerText],
+    ['造型细节', item.appearance_details],
     ['口型状态', item.mouth_state],
   ]);
 }

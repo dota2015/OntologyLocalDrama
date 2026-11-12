@@ -2,7 +2,6 @@ const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
 const {
-  runDirectorAgent,
   auditDirectorDraft,
   planDirectorSourceAssignments,
   validTimelineDurationPlans,
@@ -19,6 +18,7 @@ const {
   directorAtomicPatchSchema,
   requiresDirectorStructuralRepair,
 } = require('../src/ontology/directorAgent');
+const directorPacing = require('../src/ontology/directorPacing');
 const { resolveEpisodeDurationSeconds } = require('../src/ontology/semanticPackage');
 const {
   rebuildPromptsForStoryboard,
@@ -275,7 +275,7 @@ describe('Director Agent Prompt Generation & Persistence', () => {
 
   it('gives atomic visual-slot repairs an exact character path and full-array contract', () => {
     const hint = directorAtomicRepairHint({
-      rule: 'INVARIANT_SLOT_MISSING_HEAD_POSE',
+      rule: 'INVARIANT_VISUAL_ENUM_INVALID',
       character_id: 17,
       character_name: '蜂医',
       conflict_slots: ['character_visuals[1].head_pose'],
@@ -283,7 +283,7 @@ describe('Director Agent Prompt Generation & Persistence', () => {
     assert.match(hint, /character_visuals\[1\]\.head_pose/);
     assert.match(hint, /蜂医/);
     assert.match(hint, /完整的 character_visuals 数组/);
-    assert.match(hint, /头部/);
+    assert.match(hint, /actionAtoms/);
   });
 
   it('restricts universal-mode repair to the one deterministic top-level field', () => {
@@ -299,11 +299,11 @@ describe('Director Agent Prompt Generation & Persistence', () => {
 
   it('locks every visual-array value except the one Agent-owned invalid field', () => {
     const visuals = [
-      { character_id: 25, name: '红狼', posture: '身体', gaze: '目光锁定蜂医' },
-      { character_id: 26, name: '蜂医', posture: '单膝跪地', gaze: '目光看向红狼' },
+      { character_id: 25, name: '红狼', posture: 'invalid_posture', gaze_type: 'character' },
+      { character_id: 26, name: '蜂医', posture: 'kneeling', gaze_type: 'character' },
     ];
     const schema = directorAtomicPatchSchema({
-      rule: 'INVARIANT_SLOT_MISSING_POSTURE',
+      rule: 'INVARIANT_VISUAL_ENUM_INVALID',
       character_id: 25,
       character_name: '红狼',
       conflict_slots: ['character_visuals[0].posture'],
@@ -311,8 +311,8 @@ describe('Director Agent Prompt Generation & Persistence', () => {
     const items = schema.properties.character_visuals.prefixItems;
     assert.equal(items.length, 2);
     assert.equal(items[0].properties.character_id.const, 25);
-    assert.ok(items[0].properties.posture.enum.some((value) => value.includes('站')));
-    assert.deepEqual(items[1].properties.posture, { const: '单膝跪地' });
+    assert.ok(items[0].properties.posture.enum.includes('standing'));
+    assert.deepEqual(items[1].properties.posture, { const: 'kneeling' });
     assert.equal(schema.additionalProperties, false);
   });
 
@@ -438,9 +438,10 @@ describe('Director Agent Prompt Generation & Persistence', () => {
       assert.equal(options.name, 'director-episode-pacing');
       return {feasible:false, reason:'一个镜头无法完整表达换弹和撤离及对白', shots:[{duration:5,purpose:'换弹'},{duration:4,purpose:'撤离'}]};
     });
-    await assert.rejects(runDirectorAgent(db, console, {}, 10, {storyboard_count:1,video_duration:100}), /无法同时满足/);
+    assert.throws(() => directorPacing.constraints({storyboard_count:1,video_duration:100}), /无法同时满足/);
     assert.equal(calls,0);
-    await assert.rejects(runDirectorAgent(db, console, {}, 10, {storyboard_count:1}), /建议 2 镜、共 9 秒/);
+    const req2 = directorPacing.constraints({storyboard_count:1});
+    await assert.rejects(directorPacing.planEpisodePacing(db, console, '剧情文本', req2, { maxAttempts: 1 }), /建议 2 镜、共 9 秒/);
     assert.equal(calls,1);
     assert.deepEqual(db.prepare('SELECT * FROM storyboards ORDER BY id').all(), before);
   });
@@ -531,15 +532,21 @@ describe('Director Agent Prompt Generation & Persistence', () => {
         character_id: 1,
         name: '奕辰',
         depth_layer: 'midground',
-        screen_position: '画面左侧中景',
+        screen_position: 'left_midground',
         environmental_anchor: '书桌前',
-        facing: '四分之三侧身面朝屏幕',
-        head_pose: '头部微低朝向屏幕',
-        gaze: '双眼专注凝视正前方屏幕',
-        posture: '上身前倾坐在书桌前',
-        hands: '双手手指搭在键盘按键上',
+        facing: 'three_quarter_right',
+        facing_target_id: null,
+        head_pose: 'tilted_down',
+        gaze_type: 'prop',
+        gaze_target_id: null,
+        gaze_target_label: '正前方屏幕',
+        posture: 'sitting',
+        hands_state: 'on_surface',
+        hands_object_id: null,
+        hands_target_id: null,
+        expression: 'focused',
+        expression_detail: '上身前倾坐在书桌前，双手手指搭在键盘按键上',
         appearance_details: '居家服装',
-        prop_interaction: '双手接触键盘',
       }]),
       JSON.stringify(videoSlots({ characterId: 1, characterName: '奕辰', movement: 'push' }))
     );
@@ -550,7 +557,7 @@ describe('Director Agent Prompt Generation & Persistence', () => {
     const repaired = db.prepare('SELECT image_prompt, polished_prompt FROM storyboards WHERE id = ?').get(flawedId);
     assert.ok(!repaired.image_prompt.includes('，奕辰身体，'), 'Must repair bare noun in image_prompt');
     assert.match(repaired.image_prompt, /上身前倾坐在书桌前/);
-    assert.match(repaired.image_prompt, /双手手指搭在键盘按键上/);
+    assert.match(repaired.image_prompt, /正前方屏幕/);
     assert.match(repaired.polished_prompt, /上身前倾坐在书桌前/);
   });
 });

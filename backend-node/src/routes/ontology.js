@@ -11,7 +11,7 @@ const response = require('../response');
 const { compileDramaSemanticPackage } = require('../ontology/semanticPackage');
 const { validateAllInvariants } = require('../ontology/invariants');
 const { extractAllEntitiesFromScript, autocompleteEntityFromScript } = require('../ontology/extractionAgent');
-const { runDirectorAgent, runFullDramaDirectorAgent, refineSingleStoryboard } = require('../ontology/directorAgent');
+const { runFullDramaDirectorAgent, refineSingleStoryboard } = require('../ontology/directorAgent');
 const { enrichEpisodeOntologySlots, runTwoStageDirectorPipeline } = require('../ontology/directorEnrichmentService');
 const taskService = require('../services/taskService');
 const directorCheckpoint = require('../services/directorCheckpoint');
@@ -140,10 +140,16 @@ function ontologyRoutes(db, log) {
           AND status IN ('pending','processing') AND deleted_at IS NULL`).get(String(episodeId));
         if (active) return response.error(res, 409, 'DIRECTOR_ACTIVE', '当前集已有导演任务运行，请等待完成或停止后再操作', { task_id: active.id });
         let requestOptions = req.body || {};
+        if (requestOptions.mode === 'deep_react') {
+          return response.badRequest(res, '旧版 deep_react 模式已下线，请使用标准两阶段导演流水线');
+        }
         if (requestOptions.resume_task_id) {
           const saved = directorCheckpoint.requireResume(db, requestOptions.resume_task_id, episodeId, cfg);
           // Resume uses the original creative inputs, never silently the current form.
           requestOptions = { ...saved.options, resume_task_id: requestOptions.resume_task_id };
+          if (requestOptions.mode === 'deep_react') {
+            return response.badRequest(res, '该检查点来自已下线的 deep_react 模式，无法继续执行，请重新发起标准两阶段生成');
+          }
         }
         const task = taskService.createTask(db, log, 'director_storyboard_generation', String(episodeId));
         const taskId = task.id;
@@ -160,10 +166,7 @@ function ontologyRoutes(db, log) {
                 taskService.updateTaskStatus(db, taskId, 'processing', pct, msg);
               },
             };
-            const runner = options.mode === 'deep_react'
-              ? () => runDirectorAgent(db, log, cfg, episodeId, options)
-              : () => runTwoStageDirectorPipeline(db, log, cfg, episodeId, options);
-            const result = await runDirectorTask(db, taskId, runner);
+            const result = await runDirectorTask(db, taskId, () => runTwoStageDirectorPipeline(db, log, cfg, episodeId, options));
             taskService.updateTaskStatus(db, taskId, 'completed', 100, '视听本体硬门禁审查与自纠完毕，分镜已入库。');
             taskService.updateTaskResult(db, taskId, result);
           } catch (agentErr) {

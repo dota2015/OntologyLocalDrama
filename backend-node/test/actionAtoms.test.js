@@ -37,9 +37,9 @@ function trajectory(id, name, action, startState, resultState, speaker = false) 
   };
 }
 
-function buildSyncV2() {
+function buildStructuredSync() {
   return {
-    performance_contract: 'sync_v2',
+    performance_contract: 'structured_sync',
     camera: { shot_type: 'medium', angle_h: 'front', angle_v: 'eye_level', angle_s: 'medium', movement: 'static', movement_description: '' },
     audio_lip_sync: { mode: 'in_frame_dialogue', speaker_name: '红狼', speaker_in_frame: true, dialogue_content: '撤退！', visible_characters_lip_state: 'synchronized_lip', lip_sync_rule: '' },
     trajectories: [],
@@ -68,10 +68,10 @@ function buildSyncV2() {
   };
 }
 
-test('execution schema uses sync_v2 structured action atoms', () => {
+test('execution schema uses structured_sync action atoms', () => {
   const schema = runtime.directorExecutionSlotsOutputType(4).schema;
   const video = schema.properties.video_slots;
-  assert.deepEqual(video.properties.performance_contract, { const: 'sync_v2' });
+  assert.deepEqual(video.properties.performance_contract, { const: 'structured_sync' });
   const trajectory = video.properties.shots_timeline.items.properties.character_trajectories.items;
   assert.ok(trajectory.required.includes('action_atom'));
   const actionSchema = trajectory.properties.action_atom.properties.action;
@@ -80,7 +80,7 @@ test('execution schema uses sync_v2 structured action atoms', () => {
   assert.equal(trajectory.properties.trajectory, undefined);
 });
 
-test('sync_v2 validates enums and compiles atoms into natural language', () => {
+test('structured_sync validates enums, compiles atoms into natural language, and rejects legacy contracts', () => {
   const shot = {
     shot_number: 1,
     duration: 4,
@@ -91,7 +91,7 @@ test('sync_v2 validates enums and compiles atoms into natural language', () => {
       background_characters: [],
     },
   };
-  const slots = buildSyncV2();
+  const slots = buildStructuredSync();
   assert.deepEqual(videoSlots.validateVideoSlots(shot, slots), []);
   const prompt = videoSlots.compileVideoPromptFromSlots({ ...shot, characters: [25, 26] }, slots);
   assert.match(prompt, /红狼.*握住/);
@@ -99,4 +99,9 @@ test('sync_v2 validates enums and compiles atoms into natural language', () => {
   const invalid = structuredClone(slots);
   invalid.shots_timeline[0].character_trajectories[0].action_atom.action = 'dance';
   assert.ok(videoSlots.validateVideoSlots(shot, invalid).some((item) => item.rule === 'INVARIANT_ACTION_ENUM_INVALID'));
+  for (const legacyName of ['sync_v1', 'sync_v2', '']) {
+    const legacy = structuredClone(slots);
+    legacy.performance_contract = legacyName;
+    assert.ok(videoSlots.validateVideoSlots(shot, legacy).some((item) => item.rule === 'INVARIANT_H3_PERFORMANCE_CONTRACT_VERSION'));
+  }
 });

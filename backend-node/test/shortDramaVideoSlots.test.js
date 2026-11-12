@@ -7,43 +7,58 @@ function timelineSegment(shotNumber, duration, ids) {
   return {
     shot_number: shotNumber,
     duration,
-    camera: { shot_type: shotNumber === 1 ? '中景' : '反应近景', movement: shotNumber === 1 ? 'push' : 'static' },
-    visible_characters: ids.map((id) => ({ character_id: id, name: id === 1 ? '甲' : '乙' })),
+    camera: { shot_type: shotNumber === 1 ? '中景' : '反应近景', movement: shotNumber === 1 ? 'push' : 'static', movement_description: '稳定跟踪' },
+    visible_characters: ids.map((id) => ({ character_id: id, name: id === 1 ? '甲' : (id === 28 ? '苏晚' : '乙') })),
     action: shotNumber === 1 ? '说话者抬手施压' : '听者攥紧衣角并抬眼',
     result: shotNumber === 1 ? '手臂抬到对方肩旁' : '听者完成侧身并保持戒备',
     character_trajectories: ids.map((id) => ({
       character_id: id,
-      trajectory: id === 1 ? '抬手并继续说话' : '攥紧衣角并调整重心',
-      terminal_pose: '动作收束',
-      facial_expression: id === 1 ? '冷笑加深' : '目光由克制转为戒备',
-      facing: id === 1 ? '四分之三侧身朝向苏晚' : '四分之三侧身朝向赵虎',
-      head_pose: id === 1 ? '头部微俯朝向苏晚面部' : '抬头朝向赵虎面部',
-      gaze: id === 1 ? '双眼锁定苏晚眼睛' : '目光锁定赵虎眼睛',
-      attention_target: id === 1 ? '苏晚面部' : '赵虎面部',
-      gaze_motivation: id === 1 ? '开口施压' : '直接听取威胁',
-      reaction_trigger: id === 1 ? '自己开口说话' : '赵虎开口威胁',
+      name: id === 1 ? '赵虎' : (id === 28 ? '苏晚' : '苏承远'),
+      start_state: 'standing',
+      action_atom: {
+        action: id === 1 ? 'point' : 'react',
+        action_detail: id === 1 ? '抬手并继续说话' : '攥紧衣角并调整重心',
+        body_part: id === 1 ? 'right_hand' : 'whole_body',
+        object_id: null,
+        target_type: 'character',
+        target_id: id === 1 ? 2 : 1,
+        target_label: id === 1 ? '苏晚面部' : '赵虎面部',
+        direction: 'toward_target',
+        contact: 'none',
+      },
+      result_state: 'turned_to_target',
+      reaction_trigger: { type: 'dialogue', source_id: 1, source_label: id === 1 ? '自己开口说话' : '赵虎开口威胁' },
+      facing: 'toward_character',
+      facing_target_id: id === 1 ? 2 : 1,
+      head_pose: 'turned_to_target',
+      gaze_type: 'character',
+      gaze_target_id: id === 1 ? 2 : 1,
+      gaze_target_label: id === 1 ? '苏晚眼睛' : '赵虎眼睛',
+      posture: 'standing',
+      hands_state: id === 1 ? 'pointing' : 'clenched',
+      hands_object_id: null,
+      hands_target_id: null,
+      expression: id === 1 ? 'angry' : 'alert',
+      expression_detail: id === 1 ? '冷笑加深' : '目光由克制转为戒备',
       mouth_state: id === 1 ? 'speaker_synced' : 'closed',
     })),
     audio_lip_sync: { mode: 'in_frame_dialogue', speaker_name: '赵虎', speaker_in_frame: true },
   };
 }
 
-test('missing timeline action feedback names the exact field without silently renaming it', () => {
+test('missing timeline action_atom feedback names the exact structured field', () => {
   const shot = { storyboard_number: 29, duration: 5,
     semantic_slots: { h3_mode: 'ref2va', shot_duration: 5, visible_characters: [{ id: 1 }, { id: 2 }] } };
   const segment = timelineSegment(1, 5, [1, 2]);
   const character = segment.character_trajectories[0];
-  character.visible_action = character.trajectory;
-  delete character.trajectory;
-  const video = { camera: {}, audio_lip_sync: {}, trajectories: [], environment_vfx: {}, timing: { duration: 5 }, shots_timeline: [segment] };
-  const before = structuredClone(video);
+  delete character.action_atom;
+  const video = { performance_contract: 'structured_sync', camera: {}, audio_lip_sync: {}, trajectories: [], environment_vfx: {}, timing: { duration: 5 }, shots_timeline: [segment] };
   const [error] = slots.validateVideoSlots(shot, video).filter(v => v.rule === 'INVARIANT_SHORT_DRAMA_CHARACTER_REACTION_MISSING');
-  assert.deepEqual(error.missing_fields, ['trajectory']);
-  assert.deepEqual(error.conflict_slots, ['video_slots.shots_timeline[0].character_trajectories[character_id=1].trajectory']);
+  assert.ok(error.missing_fields.includes('action_atom'));
+  assert.ok(error.conflict_slots.includes('video_slots.shots_timeline[0].character_trajectories[character_id=1].action_atom'));
   assert.equal(error.character_id, 1);
-  assert.match(error.message, /不是 visible_action/);
-  assert.deepEqual(video, before);
-  character.trajectory = character.visible_action;
+  assert.match(error.message, /action_atom/);
+  segment.character_trajectories[0].action_atom = timelineSegment(1, 5, [1, 2]).character_trajectories[0].action_atom;
   assert.equal(slots.validateVideoSlots(shot, video).filter(v => v.rule === 'INVARIANT_SHORT_DRAMA_CHARACTER_REACTION_MISSING').length, 0);
 });
 
@@ -60,20 +75,44 @@ test('structural director repairs use compact patches over the original shot', (
   assert.equal(item.properties.character_visuals, undefined);
 });
 
-test('legacy Agent trajectory aliases survive deterministic compilation', () => {
-  const normalized = slots.createVideoSemanticSlots({ trajectories: [{
-    character_id: 2,
-    name: '苏晚',
-    start_anchor: '画面左侧',
-    trajectory: '左臂护住身后',
-    end_action: '身体封住门口',
-    expression_change: '由安抚转为戒备',
-  }] });
-  assert.equal(normalized.trajectories[0].terminal_pose, '身体封住门口');
-  assert.equal(normalized.trajectories[0].facial_expression, '由安抚转为戒备');
+test('structured trajectory compiles deterministically into natural language', () => {
+  const normalized = slots.createVideoSemanticSlots({
+    performance_contract: 'structured_sync',
+    trajectories: [{
+      character_id: 2,
+      name: '苏晚',
+      start_state: 'standing',
+      action_atom: {
+        action: 'block',
+        action_detail: '左臂护住身后并封住门口',
+        body_part: 'left_arm',
+        object_id: null,
+        target_type: 'scene',
+        target_id: null,
+        target_label: '门口',
+        direction: 'none',
+        contact: 'none',
+      },
+      result_state: 'standing_alert',
+      reaction_trigger: { type: 'character_action', source_id: null, source_label: '门外脚步声' },
+      facing: 'front_camera',
+      facing_target_id: null,
+      head_pose: 'neutral',
+      gaze_type: 'scene',
+      gaze_target_id: null,
+      gaze_target_label: '门口方向',
+      posture: 'standing',
+      hands_state: 'free',
+      hands_object_id: null,
+      hands_target_id: null,
+      expression: 'alert',
+      expression_detail: '由安抚转为戒备',
+      mouth_state: 'closed',
+    }],
+  });
   const prompt = slots.compileVideoPromptFromSlots({ title: '堵门', duration: 5 }, normalized);
-  assert.match(prompt, /终态姿态：身体封住门口/);
-  assert.match(prompt, /面部神态：由安抚转为戒备/);
+  assert.match(prompt, /苏晚挡住门口/);
+  assert.match(prompt, /由安抚转为戒备/);
 });
 
 test('video prompt deterministically preserves static and timed eyeline contracts', () => {
@@ -82,22 +121,33 @@ test('video prompt deterministically preserves static and timed eyeline contract
     duration: 5,
     characters: [1, 2],
     character_visuals: [
-      { character_id: 1, name: '苏晚', screen_position: '画面左侧前景', facing: '侧身朝右', head_pose: '头部微仰朝向赵虎', gaze: '目光锁定赵虎眼睛' },
-      { character_id: 2, name: '赵虎', screen_position: '画面右侧中景', facing: '侧身朝左', head_pose: '头部微低朝向苏晚', gaze: '目光审视苏晚面部' },
+      {
+        character_id: 1, name: '苏晚', depth_layer: 'foreground', screen_position: 'left_foreground',
+        environmental_anchor: '堂下', facing: 'three_quarter_right', facing_target_id: 2,
+        head_pose: 'tilted_up', gaze_type: 'character', gaze_target_id: 2, gaze_target_label: '赵虎眼睛',
+        posture: 'kneeling', hands_state: 'clenched', expression: 'determined',
+      },
+      {
+        character_id: 2, name: '赵虎', depth_layer: 'midground', screen_position: 'right_midground',
+        environmental_anchor: '案前', facing: 'three_quarter_left', facing_target_id: 1,
+        head_pose: 'tilted_down', gaze_type: 'character', gaze_target_id: 1, gaze_target_label: '苏晚面部',
+        posture: 'standing', hands_state: 'on_surface', expression: 'alert',
+      },
     ],
   };
   const normalized = slots.createVideoSemanticSlots({
+    performance_contract: 'structured_sync',
     camera: {}, audio_lip_sync: {}, environment_vfx: {}, timing: { duration: 5 },
     trajectories: timelineSegment(1, 2, [1, 2]).character_trajectories,
   });
   const prompt = slots.compileVideoPromptFromSlots(shot, normalized);
   assert.match(prompt, /角色站位与视线合同/);
-  assert.match(prompt, /目光锁定赵虎眼睛/);
-  assert.match(prompt, /注意对象：苏晚面部/);
-  assert.match(prompt, /反应触发：赵虎开口威胁/);
+  assert.match(prompt, /赵虎眼睛/);
+  assert.match(prompt, /苏晚面部/);
+  assert.match(prompt, /赵虎开口威胁|赵虎指向苏晚面部/);
 });
 
-test('sync_v1 rejects a dialogue segment that only holds an eye-line', () => {
+test('structured_sync rejects a dialogue segment that only holds an eye-line', () => {
   const shot = {
     storyboard_number: 31,
     duration: 4,
@@ -109,13 +159,19 @@ test('sync_v1 rejects a dialogue segment that only holds an eye-line', () => {
     },
   };
   const staticTrajectory = (id, name) => ({
-    character_id: id, name, trajectory: '保持姿态看着对方', terminal_pose: '保持原姿态',
-    facial_expression: '平静', facing: '朝向对方', head_pose: '转向对方',
-    gaze: '看向对方眼睛', attention_target: '对方', gaze_motivation: '对话',
-    reaction_trigger: '对白发生', mouth_state: id === 1 ? 'speaker_synced' : 'closed',
+    character_id: id, name,
+    start_state: 'standing',
+    action_atom: { action: 'look', action_detail: '保持姿态看着对方', body_part: 'eyes', object_id: null, target_type: 'character', target_id: id === 1 ? 2 : 1, target_label: '对方', direction: 'toward_target', contact: 'none' },
+    result_state: 'standing',
+    reaction_trigger: { type: 'dialogue', source_id: 1, source_label: '对白发生' },
+    facing: 'toward_character', facing_target_id: id === 1 ? 2 : 1,
+    head_pose: 'turned_to_target', gaze_type: 'character', gaze_target_id: id === 1 ? 2 : 1, gaze_target_label: '对方眼睛',
+    posture: 'standing', hands_state: 'relaxed', hands_object_id: null, hands_target_id: null,
+    expression: 'neutral', expression_detail: '平静',
+    mouth_state: id === 1 ? 'speaker_synced' : 'closed',
   });
   const video = {
-    performance_contract: 'sync_v1', camera: {}, trajectories: [], environment_vfx: {}, timing: { duration: 4 },
+    performance_contract: 'structured_sync', camera: {}, trajectories: [], environment_vfx: {}, timing: { duration: 4 },
     audio_lip_sync: { mode: 'in_frame_dialogue', speaker_name: '甲', speaker_in_frame: true },
     shots_timeline: [{
       shot_number: 1, duration: 2, camera: {}, visible_characters: [{ character_id: 1, name: '甲' }, { character_id: 2, name: '乙' }], action: '两人对视', result: '对白结束后保持对视',
@@ -125,7 +181,7 @@ test('sync_v1 rejects a dialogue segment that only holds an eye-line', () => {
         mode: 'concurrent', speech_window: { start: 0, end: 1 }, speaker_action_window: { start: 0, end: 1 },
         speaker_action: '甲边看着乙边说话', listener_reactions: [{ character_id: 2, action_window: { start: 0, end: 1 }, action: '乙看着甲' }], pause_reason: '',
       },
-    }, { shot_number: 2, duration: 2, camera: {}, action: '无意义特写', result: '继续等待', character_trajectories: [staticTrajectory(1, '甲'), staticTrajectory(2, '乙')], audio_lip_sync: { mode: 'silent_ambient', speaker_name: '', speaker_in_frame: false, dialogue_content: '' }, speech_action_alignment: { mode: 'none', speech_window: null, speaker_action_window: null, speaker_action: '', listener_reactions: [], pause_reason: '' } }],
+    }, { shot_number: 2, duration: 2, camera: {}, visible_characters: [{ character_id: 1, name: '甲' }, { character_id: 2, name: '乙' }], action: '无意义特写', result: '继续等待', character_trajectories: [staticTrajectory(1, '甲'), staticTrajectory(2, '乙')], audio_lip_sync: { mode: 'silent_ambient', speaker_name: '', speaker_in_frame: false, dialogue_content: '' }, speech_action_alignment: { mode: 'none', speech_window: null, speaker_action_window: null, speaker_action: '', listener_reactions: [], pause_reason: '' } }],
   };
   const violations = slots.validateVideoSlots(shot, video);
   assert.ok(violations.some(v => v.rule === 'INVARIANT_SHORT_DRAMA_INTERACTION_BEAT_EMPTY'));
@@ -148,7 +204,7 @@ test('timeline validates only the characters visible in each local shot segment'
   twoShot.timestamp = '00:02.000';
   twoShot.visible_characters = [{ character_id: 1, name: '赵虎' }, { character_id: 2, name: '沈清岚' }];
   const video = {
-    performance_contract: 'sync_v1', camera: {}, trajectories: [], environment_vfx: {}, timing: { duration: 4 },
+    performance_contract: 'structured_sync', camera: {}, trajectories: [], environment_vfx: {}, timing: { duration: 4 },
     audio_lip_sync: {}, shots_timeline: [closeup, twoShot],
   };
   const validViolations = slots.validateVideoSlots(shot, video);
@@ -166,16 +222,23 @@ test('compiled H3 prompt states that speech and movement overlap', () => {
     audio_lip_sync: { mode: 'in_frame_dialogue', speaker_name: '红狼', speaker_in_frame: true, dialogue_content: '哪条路？' },
     speech_action_alignment: { mode: 'concurrent', speech_window: { start: 0, end: 2 }, speaker_action_window: { start: 0, end: 3 }, speaker_action: '边转身边抬手指向北侧通道', listener_reactions: [{ character_id: 2, action_window: { start: 0, end: 2 }, action: '边听边抬眼看向红狼' }] },
   }];
-  const normalized = slots.createVideoSemanticSlots({ performance_contract: 'sync_v1', camera: {}, audio_lip_sync: {}, trajectories: [], environment_vfx: {}, timing: { duration: 5 }, shots_timeline: timeline });
+  const normalized = slots.createVideoSemanticSlots({ performance_contract: 'structured_sync', camera: {}, audio_lip_sync: {}, trajectories: [], environment_vfx: {}, timing: { duration: 5 }, shots_timeline: timeline });
   const prompt = slots.compileVideoPromptFromSlots({ duration: 5, action: '询问路线' }, normalized);
   assert.match(prompt, /同步视听事件/);
   assert.match(prompt, /边转身边抬手指向北侧通道/);
 });
 
-test('legacy video slots stay readable until regenerated under sync_v1', () => {
+test('legacy sync_v1 and sync_v2 video slots are rejected immediately by validateVideoSlots', () => {
   const shot = { storyboard_number: 1, duration: 5, semantic_slots: { h3_mode: 'ref2va', shot_duration: 5, visible_characters: [{ id: 1 }] } };
-  const legacy = { timing: { duration: 5 }, audio_lip_sync: { dialogue_content: '你好', speaker_in_frame: true }, shots_timeline: [{ duration: 5, audio_lip_sync: { dialogue_content: '你好', speaker_in_frame: true }, character_trajectories: [{ character_id: 1, trajectory: '说话', terminal_pose: '站定', facial_expression: '平静', facing: '正面', head_pose: '抬头', gaze: '看前方', attention_target: '前方', gaze_motivation: '说话', reaction_trigger: '开口' }] }] };
-  assert.equal(slots.validateVideoSlots(shot, legacy).some(v => v.rule === 'INVARIANT_SPEECH_ACTION_OVERLAP_MISSING'), false);
+  for (const contract of ['sync_v1', 'sync_v2', '']) {
+    const legacy = {
+      performance_contract: contract,
+      timing: { duration: 5 },
+      audio_lip_sync: { dialogue_content: '你好', speaker_in_frame: true },
+      shots_timeline: [{ duration: 5, character_trajectories: [] }],
+    };
+    assert.ok(slots.validateVideoSlots(shot, legacy).some(v => v.rule === 'INVARIANT_H3_PERFORMANCE_CONTRACT_VERSION'));
+  }
 });
 
 test('Ref2VA does not claim speech crosses every cut when no exact event timing exists', () => {

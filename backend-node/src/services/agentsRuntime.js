@@ -2,6 +2,7 @@ const aiConfigService = require('./aiConfigService');
 const { instrumentClient } = require('./agentTokenUsage');
 const { flattenModelIds, pickModelId, remapArkModelId } = require('./modelId');
 const {
+  PERFORMANCE_CONTRACT,
   structuredTrajectorySchema,
   structuredVisualSchema,
 } = require('../ontology/actionAtoms');
@@ -130,31 +131,8 @@ function nullableStringSchema(maxLength = 500) {
   return { anyOf: [stringSchema(maxLength), { type: 'null' }] };
 }
 
-function characterVisualSchema(options = {}) {
-  if (options.structured) return structuredVisualSchema();
-  const fields = [
-    'character_id', 'name', 'depth_layer', 'screen_position', 'environmental_anchor',
-    'facing', 'expression', 'head_pose', 'gaze', 'posture', 'hands',
-    'prop_interaction', 'appearance_details',
-  ];
-  return {
-    type: 'object', additionalProperties: false, required: fields,
-    properties: {
-      character_id: { type: 'integer', minimum: 1 },
-      name: stringSchema(80),
-      depth_layer: stringSchema(80),
-      screen_position: stringSchema(240),
-      environmental_anchor: stringSchema(240),
-      facing: stringSchema(160),
-      expression: stringSchema(240),
-      head_pose: stringSchema(160),
-      gaze: stringSchema(240),
-      posture: stringSchema(240),
-      hands: stringSchema(240),
-      prop_interaction: stringSchema(240),
-      appearance_details: stringSchema(300),
-    },
-  };
+function characterVisualSchema() {
+  return structuredVisualSchema();
 }
 
 function backgroundCharacterSchema() {
@@ -172,37 +150,11 @@ function backgroundCharacterSchema() {
   };
 }
 
-function characterTrajectorySchema(options = {}) {
-  if (options.structured) return structuredTrajectorySchema();
-  return {
-    type: 'object',
-    additionalProperties: false,
-    required: [
-      'character_id', 'trajectory', 'terminal_pose', 'facial_expression', 'facing',
-      'head_pose', 'gaze', 'attention_target', 'gaze_motivation', 'reaction_trigger',
-      'mouth_state',
-    ],
-    properties: {
-      character_id: { type: 'integer', minimum: 1 },
-      name: { type: 'string' },
-      start_anchor: { type: 'string' },
-      trajectory: { ...nonEmptyStringSchema(), description: '按剧情写出本段实际动作过程及与对方的配合，包括说完后的行动；有依据的保持状态也合法，不默认安静倾听。' },
-      end_anchor: { type: 'string' },
-      terminal_pose: { ...nonEmptyStringSchema(), description: '上述动作或受阻结果实际到达的结束姿态，与本段 result 一致；不是默认复制初始姿态。' },
-      facial_expression: nonEmptyStringSchema(),
-      facing: nonEmptyStringSchema(),
-      head_pose: nonEmptyStringSchema(),
-      gaze: nonEmptyStringSchema(),
-      attention_target: nonEmptyStringSchema(),
-      gaze_motivation: nonEmptyStringSchema(),
-      reaction_trigger: nonEmptyStringSchema(),
-      mouth_state: nonEmptyStringSchema(),
-    },
-  };
+function characterTrajectorySchema() {
+  return structuredTrajectorySchema();
 }
 
-function timelineSegmentSchema(options = {}) {
-  const structured = Boolean(options.structured);
+function timelineSegmentSchema() {
   return {
     type: 'object',
     additionalProperties: false,
@@ -227,7 +179,7 @@ function timelineSegmentSchema(options = {}) {
         },
       },
       action: { type: 'string', minLength: 1, maxLength: 120 },
-      result: { type: 'string', minLength: 1, maxLength: 120, description: '本段事件的实际结果，与参与人物的 terminal_pose 一致；未完成或被打断须按剧情明确结果。' },
+      result: { type: 'string', minLength: 1, maxLength: 120, description: '本段事件的实际结果，与参与人物的 result_state 一致；未完成或被打断须按剧情明确结果。' },
       visible_characters: {
         type: 'array', maxItems: 2,
         description: '本段构图中实际入画的人物；特写、过肩和画外音可只列出当前可见人物，不得把未入画人物塞入轨迹。',
@@ -238,7 +190,7 @@ function timelineSegmentSchema(options = {}) {
       },
       character_trajectories: {
         type: 'array',
-        items: characterTrajectorySchema({ structured }),
+        items: characterTrajectorySchema(),
       },
       audio_lip_sync: {
         type: 'object',
@@ -254,9 +206,7 @@ function timelineSegmentSchema(options = {}) {
       },
       speech_action_alignment: {
         type: 'object', additionalProperties: false,
-        required: structured
-          ? ['mode', 'speech_window', 'speaker_character_id', 'speaker_action_window', 'listener_reactions', 'pause_reason']
-          : ['mode', 'speech_window', 'speaker_action_window', 'speaker_action', 'listener_reactions', 'pause_reason'],
+        required: ['mode', 'speech_window', 'speaker_character_id', 'speaker_action_window', 'listener_reactions', 'pause_reason'],
         properties: {
           mode: { enum: ['concurrent', 'deliberate_pause', 'none'] },
           speech_window: {
@@ -267,14 +217,12 @@ function timelineSegmentSchema(options = {}) {
             type: 'object', additionalProperties: false, required: ['start', 'end'],
             properties: { start: { type: 'number', minimum: 0 }, end: { type: 'number', minimum: 0 } },
           },
-          speaker_character_id: structured
-            ? { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] }
-            : { type: 'integer', minimum: 1 },
+          speaker_character_id: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] },
           speaker_action: { type: 'string', maxLength: 300 },
           listener_reactions: {
             type: 'array', maxItems: 3, items: {
               type: 'object', additionalProperties: false,
-              required: structured ? ['character_id', 'action_window', 'trajectory_action'] : ['character_id', 'action_window', 'action'],
+              required: ['character_id', 'action_window', 'trajectory_action'],
               properties: {
                 character_id: { type: 'integer', minimum: 1 },
                 action_window: {
@@ -293,14 +241,13 @@ function timelineSegmentSchema(options = {}) {
   };
 }
 
-function videoSlotsSchema(options = {}) {
-  const structured = Boolean(options.structured);
+function videoSlotsSchema() {
   return {
     type: 'object',
     additionalProperties: false,
     required: ['performance_contract', 'camera', 'audio_lip_sync', 'trajectories', 'environment_vfx', 'timing', 'shots_timeline'],
     properties: {
-      performance_contract: { const: 'sync_v2' },
+      performance_contract: { const: PERFORMANCE_CONTRACT },
       camera: {
         type: 'object', additionalProperties: false,
         required: ['shot_type', 'angle_h', 'angle_v', 'angle_s', 'movement', 'movement_description'],
@@ -318,7 +265,7 @@ function videoSlotsSchema(options = {}) {
           visible_characters_lip_state: stringSchema(160), lip_sync_rule: stringSchema(300),
         },
       },
-      trajectories: { type: 'array', items: characterTrajectorySchema({ structured }) },
+      trajectories: { type: 'array', items: characterTrajectorySchema() },
       environment_vfx: {
         type: 'object', additionalProperties: false,
         required: ['lighting_atmosphere', 'physical_phenomena', 'terminal_event'],
@@ -341,7 +288,7 @@ function videoSlotsSchema(options = {}) {
         // A 30-second Continuum shot is still one logical shot, but its
         // executable timeline can contain up to thirty one-second windows.
         maxItems: 30,
-        items: timelineSegmentSchema({ structured }),
+        items: timelineSegmentSchema(),
       },
     },
   };
@@ -455,48 +402,6 @@ function semanticSlotsSchema(assignedIds = null) {
   };
 }
 
-function storyboardItemSchema(assignedIds = null) {
-  const properties = {
-    shot_number: { type: 'integer', minimum: 1 },
-    dialogue_framing: stringSchema(240),
-    long_take_group_id: { type: 'null' },
-    long_take_role: { type: 'null' },
-    long_take_sequence: { type: 'null' },
-    title: stringSchema(80), scene_id: { type: 'integer', minimum: 1 },
-    characters: { type: 'array', maxItems: 2, items: { type: 'integer', minimum: 1 } },
-    background_characters: { type: 'array', maxItems: 2, items: backgroundCharacterSchema() },
-    identity_visibility: stringSchema(80),
-    wardrobe_id: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] },
-    speech_plan: { type: 'object' }, sound_plan: { type: 'object' }, continuity_type: stringSchema(80),
-    h3_mode: { const: 'ref2va' }, h3_mode_reason: stringSchema(300),
-    first_frame_policy: stringSchema(80), first_frame_reason: stringSchema(300),
-    last_frame_policy: stringSchema(80), last_frame_reason: stringSchema(300),
-    required_references: { type: 'array', maxItems: 9 }, audio_lip_sync: stringSchema(80),
-    shot_duration: { type: 'integer', minimum: 4, maximum: 30 },
-    execution_backend: { enum: ['h3_single', 'h3_continuum'] },
-    continuum_plan: { anyOf: [{ type: 'null' }, { type: 'object', additionalProperties: true }] },
-    start_framing: stringSchema(500), end_framing: stringSchema(500), transition_to_next: stringSchema(400),
-    props: { type: 'array', maxItems: 2, items: { type: 'integer', minimum: 1 } },
-    shot_type: stringSchema(80), angle_h: stringSchema(80), angle_v: stringSchema(80), angle_s: stringSchema(80),
-    movement: stringSchema(80), lighting_style: stringSchema(80), lighting_chiaroscuro: stringSchema(400),
-    environment_depth: stringSchema(400), cinematic_lens: stringSchema(240), depth_of_field: stringSchema(80),
-    duration: { type: 'integer', minimum: 4, maximum: 30 }, action: stringSchema(500), result: stringSchema(400),
-    dialogue: stringSchema(500), narration: stringSchema(500), bgm_prompt: stringSchema(300), sound_effect: stringSchema(300),
-    layout_description: stringSchema(500), emotion: stringSchema(120),
-    character_visuals: { type: 'array', maxItems: 2, items: characterVisualSchema() },
-    last_frame_visuals: { type: 'array', maxItems: 2, items: characterVisualSchema() },
-    video_slots: videoSlotsSchema(), semantic_slots: semanticSlotsSchema(assignedIds),
-    creation_mode: stringSchema(80), universal_segment_text: stringSchema(1200),
-    image_prompt: stringSchema(1200), last_frame_prompt: stringSchema(1200),
-  };
-  return {
-    type: 'object',
-    additionalProperties: false,
-    required: ['shot_number', 'character_visuals', 'video_slots', 'semantic_slots'],
-    properties,
-  };
-}
-
 function storyboardDraftItemSchema(assignedIds = null) {
   return {
     type: 'object',
@@ -586,13 +491,13 @@ function directorCharacterVisualsOutputType() {
 
 function directorExecutionSlotsOutputType(duration = 5, options = {}) {
   const seconds = Math.max(4, Math.min(30, Number(duration) || 5));
-  const timeline = videoSlotsSchema({ structured: true });
+  const timeline = videoSlotsSchema();
   timeline.properties.shots_timeline.minItems = 1;
   timeline.properties.shots_timeline.maxItems = Math.floor(seconds);
   const allowTailVisuals = options?.allowTailVisuals ?? (options?.lastFramePolicy === 'generate_tail');
   const tailVisualsSchema = allowTailVisuals
-    ? { type: 'array', maxItems: 2, items: characterVisualSchema({ structured: true }) }
-    : { type: 'array', maxItems: 0, items: characterVisualSchema({ structured: true }) };
+    ? { type: 'array', maxItems: 2, items: characterVisualSchema() }
+    : { type: 'array', maxItems: 0, items: characterVisualSchema() };
   // Do not leave this object open-ended.  The execution agent is the author of
   // the semantic contract, so the structured-output schema must reject an
   // incomplete contract before it reaches the invariant gate.  In particular,
@@ -611,7 +516,7 @@ function directorExecutionSlotsOutputType(duration = 5, options = {}) {
       properties: {
         // 语义槽位由导演 Agent 明确规划；本地编译器不得根据对白或动作自行猜测。
         semantic_slots: semantic,
-        character_visuals: { type: 'array', maxItems: 2, items: characterVisualSchema({ structured: true }) },
+        character_visuals: { type: 'array', maxItems: 2, items: characterVisualSchema() },
         last_frame_visuals: tailVisualsSchema,
         video_slots: timeline,
       },
@@ -843,7 +748,7 @@ function directorStructuralRepairOutputType(shotNumber) {
       video_slots: {
         type: 'object', additionalProperties: false,
         properties: {
-          performance_contract: { type: 'string', maxLength: 40 },
+          performance_contract: { const: PERFORMANCE_CONTRACT },
           audio_lip_sync: { type: 'object', additionalProperties: true },
           timing: { type: 'object', additionalProperties: true },
           shots_timeline: { type: 'array', items: { type: 'object', additionalProperties: true } },

@@ -2,8 +2,32 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { applyGeneralChatOptions, applyVolcChatOptions } = require('../src/services/aiClient');
-const { compileImagePromptFromSlots, createCharacterVisualSlot } = require('../src/ontology/visualSlots');
+const { compileImagePromptFromSlots, validateCharacterVisualSlots } = require('../src/ontology/visualSlots');
 const { VisualSlotCompletenessRule } = require('../src/ontology/rules/visualSlotCompletenessRule');
+
+function structuredSlot(overrides = {}) {
+  return {
+    character_id: 1,
+    name: '红狼',
+    depth_layer: 'midground',
+    screen_position: 'left_midground',
+    environmental_anchor: '碎石掩体后',
+    facing: 'left_profile',
+    facing_target_id: null,
+    head_pose: 'neutral',
+    gaze_type: 'scene',
+    gaze_target_id: null,
+    gaze_target_label: '通道入口',
+    posture: 'kneeling',
+    hands_state: 'holding_object',
+    hands_object_id: null,
+    hands_target_id: null,
+    expression: 'alert',
+    expression_detail: '咬肌紧绷，瞳孔警惕聚焦',
+    appearance_details: '额角渗出冷汗浸湿碎发，抗撕裂战术背心布满泥痕',
+    ...overrides,
+  };
+}
 
 test('applyGeneralChatOptions injects reasoning_effort for enabled thinking', () => {
   const config = {
@@ -60,100 +84,47 @@ test('compileImagePromptFromSlots preserves explicitly planned cinematic layers'
     lighting_chiaroscuro: '高反差冷色天光自天窗斜射，荧光屏在面颊勾勒出幽蓝侧轮廓光',
   };
 
-  const slot = createCharacterVisualSlot({
-    name: '红狼',
-    screen_position: '画面左侧',
-    facing: '侧身朝向画面左侧',
-    expression: '咬肌紧绷，瞳孔警惕聚焦',
-    posture: '双膝半跪在碎石地面上身体压低',
-    hands: '右手五指微张紧握战术匕首，左手护住胸前',
-    prop_interaction: '食指按在刀柄防滑纹路边缘',
-    appearance_details: '额角渗出冷汗浸湿碎发，抗撕裂战术背心布满泥痕',
-    head_pose: '头部微侧正对前方',
-    gaze: '目光锁定通道入口',
-  });
+  const slot = structuredSlot();
 
   const prompt = compileImagePromptFromSlots(shot, [slot], { style: 'photorealistic, ultra-detailed' });
   assert.ok(prompt.includes('峡谷信号塔残破控制室；任务进行中·阴天白昼'));
   assert.ok(prompt.includes('前景右侧虚化遮挡'));
   assert.ok(prompt.includes('35mm宽银幕电影镜头'));
   assert.ok(prompt.includes('咬肌紧绷，瞳孔警惕聚焦'));
-  assert.ok(prompt.includes('食指按在刀柄防滑纹路边缘'));
+  assert.ok(prompt.includes('通道入口'));
   assert.ok(prompt.includes('高反差冷色天光自天窗斜射'));
   assert.ok(prompt.includes('首帧静止画面'));
 });
 
-test('VisualSlotCompletenessRule detects boilerplate template phrases', () => {
+test('VisualSlotCompletenessRule requires structured visual slots and rejects empty visuals or V1 strings', () => {
   const rule = new VisualSlotCompletenessRule();
-  const badShot = {
-    shot_number: 1,
-    characters: [1],
-    character_visuals: [
-      {
-        character_id: 1,
-        name: '红狼',
-        screen_position: '画面左侧',
-        facing: '正面面对镜头',
-        head_pose: '头部正对前方',
-        gaze: '目光专注注视前方',
-        posture: '身体保持戒备低姿，重心稳固隐蔽',
-        hands: '双手紧握装备保持待发状态',
-      },
-    ],
-  };
+  const missingVisuals = { shot_number: 1, characters: [1], character_visuals: [] };
+  assert.ok(rule.evaluate({ shots: [missingVisuals] }).some((v) => v.rule === 'INVARIANT_CHARACTER_VISUAL_SLOTS_REQUIRED'));
 
-  const violations = rule.evaluate({ shots: [badShot] });
-  assert.ok(violations.some((v) => v.rule === 'INVARIANT_SLOT_BOILERPLATE_DETECTED'));
+  const v1Shot = {
+    shot_number: 2,
+    characters: [1],
+    character_visuals: [{ character_id: 1, name: '红狼', screen_position: '画面左侧', facing: '正面', head_pose: '正对', gaze: '看前', posture: '站立', hands: '握枪' }],
+  };
+  assert.ok(rule.evaluate({ shots: [v1Shot] }).some((v) => v.rule === 'INVARIANT_VISUAL_ENUM_INVALID'));
 });
 
-test('validateCharacterVisualSlots checks multi-character depth staging (near vs far)', () => {
-  const { validateCharacterVisualSlots, synthesizeCharacterVisualSlots } = require('../src/ontology/visualSlots');
-
-  // 1. 两角色处于完全相同坐标点 -> INVARIANT_SLOT_DUPLICATE_POSITION
-  const duplicatePosShot = {
-    shot_number: 38,
-    characters: [1, 2],
-  };
+test('validateCharacterVisualSlots checks multi-character duplicate screen_position under structured_sync', () => {
+  const duplicatePosShot = { shot_number: 38, characters: [1, 2] };
   const dupSlots = [
-    createCharacterVisualSlot({ name: '露娜', screen_position: '画面左侧', facing: '正面', head_pose: '正对', gaze: '看前', posture: '靠桌站立', hands: '双手抱胸' }),
-    createCharacterVisualSlot({ name: '红狼', screen_position: '画面左侧', facing: '正面', head_pose: '正对', gaze: '看前', posture: '半蹲低位', hands: '单手扶膝' }),
+    structuredSlot({ character_id: 1, name: '露娜', screen_position: 'left_foreground', depth_layer: 'foreground' }),
+    structuredSlot({ character_id: 2, name: '红狼', screen_position: 'left_foreground', depth_layer: 'foreground' }),
   ];
   const dupViolations = validateCharacterVisualSlots(duplicatePosShot, dupSlots);
   assert.ok(dupViolations.some((v) => v.rule === 'INVARIANT_SLOT_DUPLICATE_POSITION'));
 
-  // 2. 两角色仅有横向左右（无任何前景/后景等纵深） -> INVARIANT_SLOT_MISSING_DEPTH_STAGING
-  const flatShot = {
-    shot_number: 39,
-    characters: [1, 2],
-  };
-  const flatSlots = [
-    createCharacterVisualSlot({ name: '露娜', screen_position: '画面左侧', facing: '面对', head_pose: '正对', gaze: '看前', posture: '靠桌站立', hands: '双手抱胸' }),
-    createCharacterVisualSlot({ name: '红狼', screen_position: '画面右侧', facing: '面对', head_pose: '正对', gaze: '看前', posture: '半蹲低位', hands: '单手扶膝' }),
-  ];
-  const flatViolations = validateCharacterVisualSlots(flatShot, flatSlots);
-  assert.ok(flatViolations.some((v) => v.rule === 'INVARIANT_SLOT_MISSING_DEPTH_STAGING'));
-
-  // 3. 正确的 Z 轴前后纵深构图（前景过肩 vs 中景面对） -> 0 违规
-  const depthShot = {
-    shot_number: 40,
-    characters: [1, 2],
-  };
+  const depthShot = { shot_number: 40, characters: [1, 2] };
   const depthSlots = [
-    createCharacterVisualSlot({ name: '红狼', depth_layer: 'foreground', screen_position: '画面左侧前景近景过肩', facing: '背向镜头', head_pose: '正对', gaze: '看前', posture: '半蹲低姿', hands: '手扶掩体' }),
-    createCharacterVisualSlot({ name: '露娜', depth_layer: 'midground', screen_position: '画面右侧中景', facing: '正面面对镜头', head_pose: '微仰', gaze: '看前', posture: '身体前倾', hands: '按在控制台' }),
+    structuredSlot({ character_id: 1, name: '红狼', depth_layer: 'foreground', screen_position: 'left_foreground', facing: 'back_camera' }),
+    structuredSlot({ character_id: 2, name: '露娜', depth_layer: 'midground', screen_position: 'right_midground', facing: 'front_camera' }),
   ];
   const depthViolations = validateCharacterVisualSlots(depthShot, depthSlots);
-  assert.equal(depthViolations.filter((v) => v.rule === 'INVARIANT_SLOT_MISSING_DEPTH_STAGING' || v.rule === 'INVARIANT_SLOT_DUPLICATE_POSITION').length, 0);
-
-  // 4. synthesizeCharacterVisualSlots 自动分配错落纵深层级且不含模板套话
-  const autoSlots = synthesizeCharacterVisualSlots({ characters: [1, 2], action: '两人双手握持战术步枪在废弃工厂控制室商议撤离路线。' }, [{ id: 1, name: '红狼' }, { id: 2, name: '露娜' }]);
-  assert.equal(autoSlots[0].depth_layer, 'foreground');
-  assert.equal(autoSlots[1].depth_layer, 'midground');
-  assert.ok(!autoSlots[0].posture.includes('身体保持戒备低姿，重心稳固隐蔽'));
-  assert.ok(!autoSlots[0].hands.includes('双手紧握装备保持待发状态'));
-  assert.ok(autoSlots[0].expression);
-  assert.ok(autoSlots[0].prop_interaction);
-  assert.ok(autoSlots[0].appearance_details);
+  assert.equal(depthViolations.length, 0);
 });
 
 test('compileImagePromptFromSlots does not invent missing lens, depth or lighting details', () => {
@@ -165,19 +136,11 @@ test('compileImagePromptFromSlots does not invent missing lens, depth or lightin
     angle_h: 'front_left',
     lighting_style: 'side',
   };
-  const slot = createCharacterVisualSlot({
-    name: '红狼',
-    screen_position: '画面中央',
-    facing: '正面面对镜头',
-    head_pose: '微仰起头',
-    gaze: '目光警惕如炬',
-    posture: '双膝半跪身体压低机动待发',
-    hands: '双手紧握战术武器贴腮瞄准',
-  });
+  const slot = structuredSlot({ gaze_target_label: '高窗火力点' });
   const compiled = compileImagePromptFromSlots(minimalShot, [slot]);
   assert.doesNotMatch(compiled, /前景微虚|85mm|电影定焦/);
   assert.match(compiled, /side/);
-  assert.ok(compiled.includes(slot.gaze));
+  assert.ok(compiled.includes('高窗火力点'));
   assert.ok(compiled.includes('首帧静止画面'));
 });
 

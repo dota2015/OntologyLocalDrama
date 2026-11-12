@@ -22,18 +22,14 @@ const {
   validateAllInvariants,
 } = require('../src/ontology/invariants');
 const {
-  createCharacterVisualSlot,
   validateCharacterVisualSlots,
   compileImagePromptFromSlots,
   compileLastFramePromptFromSlots,
-  synthesizeCharacterVisualSlots,
-  synthesizeLastFrameVisualSlots,
 } = require('../src/ontology/visualSlots');
 const {
   createVideoSemanticSlots,
   validateVideoSlots,
   compileVideoPromptFromSlots,
-  synthesizeVideoSlots,
 } = require('../src/ontology/videoSlots');
 const { compileDramaSemanticPackage } = require('../src/ontology/semanticPackage');
 const { refineSingleStoryboard, applySingleStoryboardPatch } = require('../src/ontology/directorAgent');
@@ -295,8 +291,7 @@ describe('Audiovisual Drama Ontology & Semantic Invariants', () => {
     assert.equal(goodViolations.length, 0);
   });
 
-  it('Invariant checkVisualSlotCompleteness flags missing facing, posture, hands, gaze, and clone trajectory', () => {
-    // 1. 槽位缺失测试
+  it('Invariant checkVisualSlotCompleteness enforces structured visual enums and rejects V1 slots', () => {
     const incompleteSlotShot = {
       shot_number: 1,
       characters: '[101]',
@@ -304,46 +299,25 @@ describe('Audiovisual Drama Ontology & Semantic Invariants', () => {
         {
           character_id: 101,
           name: '红狼',
-          facing: '', // 缺少朝向
+          depth_layer: 'midground',
+          screen_position: 'left_midground',
+          facing: '',
           head_pose: '',
-          gaze: '',
-          posture: '站立',
-          hands: '空手',
+          gaze_type: '',
+          posture: 'standing',
+          hands_state: 'free',
+          expression: 'focused',
         },
       ],
     };
     const v1 = checkVisualSlotCompleteness([incompleteSlotShot]);
-    assert.ok(v1.some((v) => v.rule === 'INVARIANT_SLOT_MISSING_FACING'));
-    const missingHeadPose = v1.find((v) => v.rule === 'INVARIANT_SLOT_MISSING_HEAD_POSE');
+    const invalidFacing = v1.find((v) => v.rule === 'INVARIANT_VISUAL_ENUM_INVALID' && v.conflict_slots?.includes('character_visuals[0].facing'));
+    assert.ok(invalidFacing);
+    const missingHeadPose = v1.find((v) => v.rule === 'INVARIANT_VISUAL_ENUM_INVALID' && v.conflict_slots?.includes('character_visuals[0].head_pose'));
     assert.ok(missingHeadPose);
     assert.equal(missingHeadPose.character_id, 101);
     assert.equal(missingHeadPose.character_name, '红狼');
-    assert.deepEqual(missingHeadPose.conflict_slots, ['character_visuals[0].head_pose']);
 
-    // 2. 轨迹位移导致的克隆人风险测试（“从A点跑到了B点”）
-    const cloneRiskShot = {
-      shot_number: 4,
-      characters: '[101]',
-      character_visuals: [
-        {
-          character_id: 101,
-          name: '红狼',
-          screen_position: '画面中央',
-          facing: '背向镜头',
-          spatial_anchor: '画面中央从掩体后冲出跑向工厂侧门', // 多位置轨迹！
-          head_pose: '头部正对前方',
-          gaze: '目光注视前方',
-          posture: '大步奔冲',
-          hands: '双手紧握武器',
-        },
-      ],
-    };
-    const v2 = checkVisualSlotCompleteness([cloneRiskShot]);
-    const cloneViolation = v2.find((v) => v.rule === 'INVARIANT_MULTI_POSITION_CLONE_RISK');
-    assert.ok(cloneViolation);
-    assert.match(cloneViolation.message, /克隆人/);
-
-    // 3. 完整合法的单一静态槽位
     const goodShot = {
       shot_number: 5,
       characters: '[101]',
@@ -351,37 +325,30 @@ describe('Audiovisual Drama Ontology & Semantic Invariants', () => {
         {
           character_id: 101,
           name: '红狼',
-          facing: '侧身朝向画面右侧',
-          spatial_anchor: '画面中央装卸道路前',
-          head_pose: '头部微侧向右',
-          gaze: '锐利目光警惕锁定前方通道',
-          posture: '单膝跪地压低重心隐蔽',
-          hands: '双手握持战术武器呈戒备姿态',
+          depth_layer: 'midground',
+          screen_position: 'center_midground',
+          environmental_anchor: '装卸道路前',
+          facing: 'right_profile',
+          facing_target_id: null,
+          head_pose: 'turned_right',
+          gaze_type: 'scene',
+          gaze_target_id: null,
+          gaze_target_label: '前方通道',
+          posture: 'kneeling',
+          hands_state: 'holding_object',
+          hands_object_id: null,
+          hands_target_id: null,
+          expression: 'alert',
+          expression_detail: '警惕锁定前方通道',
+          appearance_details: '深色战术服',
         },
       ],
     };
     const v3 = checkVisualSlotCompleteness([goodShot]);
     assert.equal(v3.length, 0);
-
-    // Natural but valid Agent wording must not be rejected as a missing slot.
-    const naturalShot = {
-      shot_number: 6,
-      characters: '[101]',
-      character_visuals: [{
-        character_id: 101,
-        name: '红狼',
-        screen_position: '画面中央偏下',
-        facing: '四分之三侧身朝向画面右侧',
-        head_pose: '微微前倾，下巴略收',
-        gaze: '直视画面右侧深处',
-        posture: '身体前倾呈冲锋姿态',
-        hands: '双手紧握武器',
-      }],
-    };
-    assert.equal(checkVisualSlotCompleteness([naturalShot]).length, 0);
   });
 
-  it('compileImagePromptFromSlots and synthesizeCharacterVisualSlots assemble complete static frame prompts', () => {
+  it('compileImagePromptFromSlots and compileLastFramePromptFromSlots assemble complete static frame prompts', () => {
     const shot = {
       shot_number: 1,
       location: '废弃工厂内部战斗区',
@@ -391,128 +358,99 @@ describe('Audiovisual Drama Ontology & Semantic Invariants', () => {
       angle_v: 'eye_level',
       characters: [102],
       action: '露娜伏在低矮掩体后，抬头观察高台与仓库二层窗口，右手按住通讯器位置。',
+      result: '右手松开通讯器，转身望向右侧通道。',
     };
 
-    const slots = synthesizeCharacterVisualSlots(shot, [{ id: 102, name: '露娜' }]);
-    assert.equal(slots.length, 1);
-    assert.equal(slots[0].name, '露娜');
-    assert.ok(slots[0].facing.includes('朝向画面左侧') || slots[0].facing.includes('正面'));
-    assert.ok(slots[0].head_pose.includes('仰') || slots[0].head_pose.includes('头'));
-    assert.ok(slots[0].gaze.includes('锁定') || slots[0].gaze.includes('目光'));
-    assert.ok(slots[0].hands.includes('通讯') || slots[0].hands.includes('手'));
-
-    const prompt = compileImagePromptFromSlots(shot, slots, { style: 'photorealistic, ultra-detailed, 8k uhd' });
+    const firstSlots = [{
+      character_id: 102, name: '露娜', depth_layer: 'midground', screen_position: 'left_midground',
+      environmental_anchor: '低矮掩体后', facing: 'three_quarter_left', facing_target_id: null,
+      head_pose: 'tilted_up', gaze_type: 'scene', gaze_target_id: null, gaze_target_label: '二层窗口',
+      posture: 'crouching', hands_state: 'holding_object', expression: 'alert',
+      expression_detail: '目光警惕锁定窗口', appearance_details: '侦察装束',
+    }];
+    const prompt = compileImagePromptFromSlots(shot, firstSlots, { style: 'photorealistic, ultra-detailed, 8k uhd' });
     assert.ok(prompt.includes('【露娜】'));
+    assert.ok(prompt.includes('二层窗口'));
     assert.ok(prompt.includes('首帧静止画面'));
-    assert.ok(!prompt.includes('从走廊掩体后冲出')); // 无两点动态位移
-  });
 
-  it('synthesizeLastFrameVisualSlots and compileLastFramePromptFromSlots produce deterministic tail frame slots', () => {
-    const shot = {
-      shot_number: 29,
-      location: '废弃工厂内部战斗区',
-      time: '任务进行中·阴天白昼',
-      shot_type: '全景',
-      angle_h: 'front_right',
-      angle_v: 'low',
-      characters: [1, 2],
-      action: '倒计时跳到五秒，红狼从断墙后拼尽全力冲向蜂医，连续弹着点从他身后追到脚边；数字降至一秒时，他伸手扑向蜂医。',
-      result: '红狼的手停在距离蜂医约半米处，画面在弹着火星中骤然冻结。',
-    };
-
-    const catalog = [
-      { id: 1, name: '红狼' },
-      { id: 2, name: '蜂医' },
-    ];
-
-    const firstSlots = synthesizeCharacterVisualSlots(shot, catalog);
-    const lastSlots = synthesizeLastFrameVisualSlots(shot, catalog, firstSlots);
-
-    assert.equal(lastSlots.length, 2);
-    const wolfLast = lastSlots.find((s) => s.name === '红狼');
-    const docLast = lastSlots.find((s) => s.name === '蜂医');
-
-    assert.ok(wolfLast);
-    assert.ok(docLast);
-
-    // 终态物理站位：红狼冲到蜂医身旁半米处
-    assert.ok(wolfLast.spatial_anchor.includes('半米处') || wolfLast.spatial_anchor.includes('画面右侧'));
-    // 终态姿态：飞扑伸展定格
-    assert.ok(wolfLast.posture.includes('扑') || wolfLast.posture.includes('倾'));
-    assert.ok(wolfLast.hands.includes('伸') || wolfLast.hands.includes('手停在'));
-
-    // 蜂医：卧倒在掩体地面
-    assert.ok(docLast.spatial_anchor.includes('地面') || docLast.spatial_anchor.includes('掩体'));
-    assert.ok(docLast.posture.includes('卧') || docLast.posture.includes('倒'));
-
+    const lastSlots = [{
+      ...firstSlots[0],
+      facing: 'three_quarter_right',
+      head_pose: 'turned_right',
+      gaze_target_label: '右侧通道',
+      hands_state: 'free',
+    }];
     const lastPrompt = compileLastFramePromptFromSlots(shot, lastSlots, { style: 'photorealistic, RAW' });
     assert.ok(lastPrompt.includes('尾帧静止画面'));
-    assert.ok(lastPrompt.includes(wolfLast.posture));
-    assert.ok(lastPrompt.includes(docLast.posture));
-    assert.ok(!lastPrompt.includes('连续弹着点')); // 具象化排查
+    assert.ok(lastPrompt.includes('右侧通道'));
   });
 
-  it('Video Semantic Slots enforce Audio Lip-Sync contract and translate physical jargon (Shot 29 scenario)', () => {
-    const shot29 = {
+  it('Video Semantic Slots enforce structured_sync Audio Lip-Sync contract (Shot 29 scenario)', () => {
+    const validShot = {
       shot_number: 29,
-      title: '一秒冲刺',
+      title: '掩体警报',
       location: '废弃工厂内部战斗区',
-      time: '任务进行中·阴天白昼',
-      shot_type: '全景',
-      angle_h: 'front_right',
-      angle_v: 'low',
-      angle_s: 'wide',
-      movement: 'tracking',
+      duration: 5,
       characters: [1, 2],
-      action: '倒计时跳到五秒，红狼从断墙后拼尽全力冲向蜂医，连续弹着点从他身后追到脚边；数字降至一秒时，他伸手扑向蜂医。',
-      result: '红狼的手停在距离蜂医约半米处，画面在弹着火星中骤然冻结。',
-      dialogue: '露娜: "红狼！你再不做决定，就来不及了！"',
-      atmosphere: '孤注一掷',
-      sound_effect: '耳机无线电急促呼叫杂音、密集枪声、子弹击地',
-      duration: 8,
+      semantic_slots: { h3_mode: 'ref2va', shot_duration: 5, visible_characters: [{ id: 1, name: '红狼' }, { id: 2, name: '蜂医' }] },
+      character_visuals: [
+        { character_id: 1, name: '红狼', depth_layer: 'foreground', screen_position: 'left_foreground', facing: 'front_camera', head_pose: 'neutral', gaze_type: 'offscreen', gaze_target_label: '无线电声源', posture: 'crouching', hands_state: 'holding_object', expression: 'alert' },
+        { character_id: 2, name: '蜂医', depth_layer: 'midground', screen_position: 'right_midground', facing: 'back_camera', head_pose: 'turned_right', gaze_type: 'character', gaze_target_label: '红狼', posture: 'crouching', hands_state: 'clenched', expression: 'worried' },
+      ],
     };
 
-    const catalog = [
-      { id: 1, name: '红狼' },
-      { id: 2, name: '蜂医' },
-    ];
-
-    // 1. 槽位智能合成
-    const slots = synthesizeVideoSlots(shot29, catalog);
-
-    assert.equal(slots.audio_lip_sync.mode, 'offscreen_voiceover');
-    assert.equal(slots.audio_lip_sync.speaker_name, '露娜');
-    assert.equal(slots.audio_lip_sync.speaker_in_frame, false);
-    assert.equal(slots.audio_lip_sync.visible_characters_lip_state, 'strictly_sealed');
-
-    // 画内可见人物全员嘴型闭合审查
-    slots.trajectories.forEach((t) => {
-      assert.ok(t.mouth_state.includes('双唇自然闭合'));
+    const slots = createVideoSemanticSlots({
+      performance_contract: 'structured_sync',
+      camera: { shot_type: '全景', angle_h: 'front_right', angle_v: 'low', angle_s: 'wide', movement: 'tracking' },
+      audio_lip_sync: {
+        mode: 'offscreen_voiceover',
+        speaker_name: '露娜',
+        speaker_in_frame: false,
+        delivery_medium: 'radio_headset',
+        dialogue_content: '红狼！你再不做决定，就来不及了！',
+        visible_characters_lip_state: 'strictly_sealed',
+        lip_sync_rule: '画内人物保持双唇自然闭合',
+      },
+      trajectories: [],
+      environment_vfx: {
+        physical_phenomena: '一连串密集子弹击地激起飞溅碎石、烟尘与火花',
+        terminal_event: '红狼停在半米处掩体旁',
+      },
+      timing: { duration: 5, pacing: '紧凑' },
+      shots_timeline: [{
+        shot_number: 1, timestamp: null, duration: 5,
+        camera: { shot_type: '全景', movement: 'tracking', movement_description: '跟拍推进' },
+        visible_characters: [{ character_id: 1, name: '红狼' }, { character_id: 2, name: '蜂医' }],
+        action: '红狼冲到掩体旁蹲下',
+        result: '红狼停在掩体旁持械戒备',
+        character_trajectories: [
+          {
+            character_id: 1, name: '红狼', start_state: 'running',
+            action_atom: { action: 'crouch', action_detail: '急停蹲下护住队友', body_part: 'whole_body', object_id: null, target_type: 'scene', target_id: null, target_label: '掩体', direction: 'forward', contact: 'none' },
+            result_state: 'crouched', reaction_trigger: { type: 'dialogue', source_id: null, source_label: '无线电催促' },
+            facing: 'front_camera', facing_target_id: null, head_pose: 'neutral', gaze_type: 'offscreen', gaze_target_id: null, gaze_target_label: '无线电方向',
+            posture: 'crouching', hands_state: 'holding_object', hands_object_id: null, hands_target_id: null,
+            expression: 'alert', expression_detail: '紧张戒备', mouth_state: 'offscreen_sealed',
+          },
+          {
+            character_id: 2, name: '蜂医', start_state: 'crouched',
+            action_atom: { action: 'turn', action_detail: '侧身抬头看向红狼', body_part: 'head', object_id: null, target_type: 'character', target_id: 1, target_label: '红狼', direction: 'toward_target', contact: 'none' },
+            result_state: 'turned_to_target', reaction_trigger: { type: 'character_action', source_id: 1, source_label: '红狼抵达掩体' },
+            facing: 'toward_character', facing_target_id: 1, head_pose: 'turned_to_target', gaze_type: 'character', gaze_target_id: 1, gaze_target_label: '红狼',
+            posture: 'crouching', hands_state: 'clenched', hands_object_id: null, hands_target_id: null,
+            expression: 'worried', expression_detail: '屏息倾听', mouth_state: 'offscreen_sealed',
+          },
+        ],
+        audio_lip_sync: { mode: 'offscreen_voiceover', speaker_name: '露娜', speaker_in_frame: false, dialogue_content: '红狼！你再不做决定，就来不及了！', lip_sync_rule: '画内闭口' },
+        speech_action_alignment: { mode: 'concurrent', speech_window: { start: 0, end: 2 }, speaker_character_id: null, speaker_action_window: { start: 0, end: 5 }, listener_reactions: [{ character_id: 1, action_window: { start: 0, end: 5 }, trajectory_action: 'react' }, { character_id: 2, action_window: { start: 0, end: 5 }, trajectory_action: 'react' }], pause_reason: '' },
+      }],
     });
 
-    // 物理特效具象化（连续弹着点 -> 碎石与火花）
-    assert.ok(slots.environment_vfx.physical_phenomena.includes('飞溅碎石'));
-    assert.ok(!slots.environment_vfx.physical_phenomena.includes('连续弹着点'));
-
-    // 2. 槽位硬门禁校验
-    const violations = validateVideoSlots(shot29, slots);
-    assert.equal(violations.length, 0);
-
-    // 3. 确定性提示词编译
-    const videoPrompt = compileVideoPromptFromSlots(shot29, slots, {
-      style: 'photorealistic, ultra-detailed',
-      videoRatio: '16:9',
-    });
-
-    // 验证三大核心保障：
-    // A. 画外音与全员闭口明确标注
+    assert.equal(validateVideoSlots(validShot, slots).length, 0);
+    const videoPrompt = compileVideoPromptFromSlots(validShot, slots, { style: 'photorealistic, ultra-detailed', videoRatio: '16:9' });
     assert.match(videoPrompt, /画外无线电呼叫.*画内人物保持双唇自然闭合/);
     assert.doesNotMatch(videoPrompt, /绝对不开口|严禁张嘴|strictly no lip movement/);
-    // B. 英文画面与口型采用纯正向状态描述
     assert.ok(videoPrompt.includes('(the voice comes from off screen; every visible character maintains relaxed closed lips and attentive listening expressions)'));
-    // C. 角色轨迹口型使用自然闭合状态
-    assert.ok(videoPrompt.includes('口型状态：双唇自然闭合'));
-    // D. 比例标签
     assert.ok(videoPrompt.includes('=VideoRatio: 16:9'));
   });
 
@@ -520,6 +458,7 @@ describe('Audiovisual Drama Ontology & Semantic Invariants', () => {
     const badShot = {
       shot_number: 10,
       video_slots: {
+        performance_contract: 'structured_sync',
         camera: { shot_type: '全景', angle_h: 'front', angle_v: 'eye_level', movement: 'tracking' },
         audio_lip_sync: {
           mode: 'offscreen_voiceover',

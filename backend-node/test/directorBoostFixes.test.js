@@ -5,13 +5,10 @@ const {
   directorAtomicRepairHint,
   directorAtomicPatchSchema,
   normalizeTimelineTimestamps,
-  autoPatchDirectorExecutionSlots,
-  autoPatchShotViolations,
-  autoPatchWholeEpisodeViolations,
 } = require('../src/ontology/directorAgent');
 const agentsRuntime = require('../src/services/agentsRuntime');
 const h3NativeService = require('../src/services/h3NativeService');
-const { SCREEN_POSITION_REGEX, validateCharacterVisualSlots } = require('../src/ontology/visualSlots');
+const { STRUCTURED_SCREEN_POSITIONS, validateCharacterVisualSlots } = require('../src/ontology/visualSlots');
 const { isGazeOnlyHold, mouthIsSealed, validateVideoSlots } = require('../src/ontology/videoSlots');
 
 describe('Director Boost Fixes Verification', () => {
@@ -258,28 +255,21 @@ describe('Director Boost Fixes Verification', () => {
     assert.ok(schema.properties.universal_segment_text, 'universal_segment_text should be allowed in patch schema');
   });
 
-  it('SCREEN_POSITION_REGEX matches direction + depth combinations', () => {
-    const validPositions = [
-      '画面左后方',
-      '画面右后方景深处',
-      '画面左前方',
-      '画面右前',
-      '画面左侧前景',
-      '画面右侧中景',
-      '画面中央',
-      '画面正中',
-      '画面左后',
-      '画面右后',
-      '画面中景',
-      '画面前景',
-      '画面后景',
-    ];
-    for (const pos of validPositions) {
-      assert.ok(SCREEN_POSITION_REGEX.test(pos), `Position "${pos}" should match SCREEN_POSITION_REGEX`);
+  it('validateCharacterVisualSlots enforces closed structured screen_position enums', () => {
+    for (const pos of STRUCTURED_SCREEN_POSITIONS) {
+      const violations = validateCharacterVisualSlots({ shot_number: 1 }, [{
+        character_id: 1, name: '角色甲', depth_layer: 'midground', screen_position: pos,
+        facing: 'front_camera', head_pose: 'neutral', gaze_type: 'scene',
+        posture: 'standing', hands_state: 'free', expression: 'focused',
+      }]);
+      assert.equal(violations.length, 0, `Structured screen_position "${pos}" should be valid`);
     }
-
-    // Invalid position
-    assert.ok(!SCREEN_POSITION_REGEX.test('站在桌子旁'), 'Position without screen anchor should fail');
+    const invalid = validateCharacterVisualSlots({ shot_number: 1 }, [{
+      character_id: 1, name: '角色甲', depth_layer: 'midground', screen_position: '站在桌子旁',
+      facing: 'front_camera', head_pose: 'neutral', gaze_type: 'scene',
+      posture: 'standing', hands_state: 'free', expression: 'focused',
+    }]);
+    assert.ok(invalid.some((v) => v.rule === 'INVARIANT_VISUAL_ENUM_INVALID'));
   });
 
   it('isGazeOnlyHold correctly detects physical events vs gaze-only holds', () => {
@@ -420,7 +410,7 @@ describe('Director Boost Fixes Verification', () => {
     const violations = validateVideoSlots(
       shot,
       {
-        performance_contract: 'sync_v1',
+        performance_contract: 'structured_sync',
         camera: { shot_type: '中景' },
         audio_lip_sync: { mode: 'in_frame_dialogue' },
         timing: { duration: 6 },
@@ -435,337 +425,4 @@ describe('Director Boost Fixes Verification', () => {
     assert.equal(listenerViolations.length, 0, 'Should not complain about missing listener reaction for the segment speaker');
   });
 
-  it('autoPatchDirectorExecutionSlots creates valid visual and video slots for a bare shot', () => {
-    const shot = {
-      shot_number: 1,
-      duration: 4,
-      characters: [1],
-      character_visuals: [],
-      semantic_slots: {
-        visible_characters: [{ id: 1, name: '主角' }],
-        shot_duration: 4,
-        speech_plan: { text: '' },
-      },
-    };
-
-    const patched = autoPatchDirectorExecutionSlots(shot, 4);
-    assert.ok(Array.isArray(patched.character_visuals));
-    assert.equal(patched.character_visuals.length, 1);
-    assert.ok(SCREEN_POSITION_REGEX.test(patched.character_visuals[0].screen_position));
-    assert.ok(Array.isArray(patched.video_slots?.shots_timeline));
-    assert.equal(patched.video_slots.shots_timeline.length, 1);
-    assert.equal(patched.video_slots.timing.duration, 4);
-  });
-
-  it('autoPatchShotViolations deterministically repairs mouth and divergence violations', () => {
-    const rawShot = {
-      shot_number: 5,
-      duration: 4,
-      characters: [1, 2],
-      character_visuals: [
-        {
-          character_id: 1,
-          name: '主角',
-          screen_position: '画面中央中景',
-          facing: '正面面对镜头',
-          head_pose: '头部正对前方',
-          gaze: '目光直视前方',
-          posture: '端正站立',
-          hands: '双手自然下垂',
-        },
-      ],
-      video_slots: {
-        audio_lip_sync: { mode: 'silent_ambient' },
-        trajectories: [{ mouth_state: 'open' }],
-        shots_timeline: [
-          {
-            shot_number: 1,
-            timestamp: '00:00.000',
-            duration: 2,
-            character_trajectories: [{ mouth_state: 'open' }],
-          },
-          {
-            shot_number: 2,
-            timestamp: '00:02.000',
-            duration: 2,
-            character_trajectories: [{ mouth_state: 'open' }],
-          },
-        ],
-      },
-      semantic_slots: {
-        visible_characters: [{ id: 1, name: '主角' }],
-        shot_duration: 4,
-      },
-    };
-
-    const violations = [
-      { rule: 'INVARIANT_CHARACTER_MOUTH_NOT_SEALED', shot_number: 5 },
-      { rule: 'INVARIANT_CHARACTER_SLOT_DIVERGENCE', shot_number: 5 },
-    ];
-
-    const result = autoPatchShotViolations([rawShot], 5, violations);
-    assert.ok(result && result.shots);
-    const patched = result.shots[0];
-
-    // characters should now match semantic_slots.visible_characters: [1]
-    assert.deepEqual(patched.characters, [1]);
-    // mouth states should be sealed
-    assert.ok(mouthIsSealed(patched.video_slots.trajectories[0].mouth_state));
-    assert.ok(mouthIsSealed(patched.video_slots.shots_timeline[0].character_trajectories[0].mouth_state));
-  });
-
-  it('autoPatchDirectorExecutionSlots expands 2-char posture and disambiguates duplicate positions', () => {
-    const rawShot = {
-      shot_number: 8,
-      duration: 5,
-      characters: [1, 2],
-      character_visuals: [
-        {
-          character_id: 1,
-          name: '主角A',
-          screen_position: '画面中央',
-          posture: '站立', // length 2: would fail validateCharacterVisualSlots
-          facing: '正面',
-        },
-        {
-          character_id: 2,
-          name: '主角B',
-          screen_position: '画面中央', // duplicate position: would fail validateCharacterVisualSlots
-          posture: '坐着', // length 2
-          facing: '侧身',
-        },
-      ],
-      semantic_slots: {
-        visible_characters: [{ id: 1, name: '主角A' }, { id: 2, name: '主角B' }],
-        shot_duration: 5,
-      },
-    };
-
-    const patched = autoPatchDirectorExecutionSlots(rawShot, 5);
-    // Both postures should be length >= 3
-    assert.ok(patched.character_visuals[0].posture.length >= 3, 'posture must be at least 3 characters');
-    assert.ok(patched.character_visuals[1].posture.length >= 3, 'posture must be at least 3 characters');
-    // Positions must be disambiguated
-    assert.notEqual(
-      patched.character_visuals[0].screen_position.trim(),
-      patched.character_visuals[1].screen_position.trim(),
-      'positions should not be identical'
-    );
-    // Visual slot validator should have zero errors on these character visuals
-    const violations = validateCharacterVisualSlots(patched, patched.character_visuals, 'character_visuals')
-      .filter(v => v.severity === 'error');
-    assert.equal(violations.length, 0, `Auto-patched visuals should pass validation: ${JSON.stringify(violations)}`);
-  });
-
-  it('autoPatchDirectorExecutionSlots sanitizes dynamic and clone triggers from existing fields', () => {
-    const rawShot = {
-      shot_number: 9,
-      duration: 4,
-      characters: [1],
-      character_visuals: [
-        {
-          character_id: 1,
-          name: '主角',
-          screen_position: '画面中央',
-          spatial_anchor: '从门口跑到窗边', // clone trigger!
-          appearance_details: '随后转身走向敌人', // dynamic trigger!
-          prop_interaction: '开始翻找按键', // dynamic trigger!
-          posture: '半蹲低伏姿态',
-          facing: '正面面对镜头',
-          head_pose: '头部正对前方',
-          gaze: '目光注视前方',
-          hands: '双手持枪',
-        },
-      ],
-      semantic_slots: {
-        visible_characters: [{ id: 1, name: '主角' }],
-        shot_duration: 4,
-      },
-    };
-
-    const patched = autoPatchDirectorExecutionSlots(rawShot, 4);
-    const violations = validateCharacterVisualSlots(patched, patched.character_visuals, 'character_visuals')
-      .filter(v => v.severity === 'error');
-    assert.equal(violations.length, 0, `Sanitized visuals should pass validation: ${JSON.stringify(violations)}`);
-  });
-
-  it('prioritizes structural repair when multi-speaker violation is present even with speech divergence', () => {
-    const violations = [
-      { rule: 'INVARIANT_SPEECH_SLOT_DIVERGENCE', shot_number: 13 },
-      { rule: 'INVARIANT_MULTI_SPEAKER_SHOT', shot_number: 13 },
-      { rule: 'INVARIANT_SPEECH_OVER_BUDGET', shot_number: 13 },
-    ];
-    const hasMultiSpeaker = violations.some((v) => v.rule === 'INVARIANT_MULTI_SPEAKER_SHOT');
-    const hasSpeechDivergence = !hasMultiSpeaker && violations.some((v) => v.rule === 'INVARIANT_SPEECH_SLOT_DIVERGENCE');
-    const requiresStructural = hasMultiSpeaker || (!hasSpeechDivergence && violations.some(v => v.rule === 'INVARIANT_MULTI_SPEAKER_SHOT'));
-
-    assert.equal(hasMultiSpeaker, true);
-    assert.equal(hasSpeechDivergence, false, 'Multi-speaker shots must not be trapped in single-utterance speech divergence patch mode');
-    assert.equal(requiresStructural, true, 'Multi-speaker shots must trigger structural repair');
-  });
-
-  it('autoPatchWholeEpisodeViolations only performs deterministic structural splitting', () => {
-    const { autoPatchWholeEpisodeViolations, auditDirectorDraft, autoPatchDirectorExecutionSlots } = require('../src/ontology/directorAgent');
-    const dramaChars = [
-      { id: 25, name: '红狼' },
-      { id: 26, name: '蜂医' },
-      { id: 27, name: '露娜' },
-    ];
-    // Shot 1: multi-speaker excerpt that needs splitting (1 action + 2 dialogue)
-    const excerpt1 = '红狼还在寻找方向，蜂医为了保护携带设备的露娜，被爆炸掀倒在地。\n蜂医：“红狼，别过来！先把露娜送出去。”\n露娜：“控制室撑不了多久。”';
-    // Shot 2: excerpt has 1 speaker line, but dialogue has hallucinated multi-speaker line
-    const excerpt2 = '红狼：“哪条是备用路线？”';
-
-    function makeFullShot(num, title, excerpt, dialogue, spk, text, chars) {
-      const isFirst = num === 1;
-      return {
-        shot_number: num,
-        title,
-        duration: 6,
-        dialogue,
-        narration: '',
-        action: '行动',
-        result: '结果',
-        characters: chars,
-        background_characters: [],
-        props: [],
-        shot_type: '中景',
-        angle_h: 'front_left',
-        angle_v: 'eye_level',
-        angle_s: 'medium',
-        movement: 'push',
-        movement_description: '平推',
-        lighting_style: 'daylight',
-        depth_of_field: 'shallow',
-        dialogue_framing: chars.length === 1 ? 'solo_action' : 'two_shot_face_to_face',
-        start_framing: '起幅',
-        end_framing: '落幅',
-        transition_to_next: 'cut',
-        continuity_from_previous: isFirst ? { relationship: 'opening', entry_state: '开场', causal_link: '开局' } : { relationship: 'continuation', previous_end_state: '前态', entry_state: '现态', causal_link: '承接' },
-        semantic_slots: {
-          source_script_excerpt: excerpt,
-          shot_duration: 6,
-          visible_characters: chars.map(id => ({ id, name: dramaChars.find(c=>c.id===id)?.name || '人物' })),
-          background_characters: [],
-          identity_visibility: 'three_quarter',
-          h3_mode: 'ref2va',
-          h3_mode_reason: '多参考',
-          first_frame_policy: 'none',
-          first_frame_reason: '无需',
-          last_frame_policy: 'none',
-          last_frame_reason: '无需',
-          continuity_type: 'continuation',
-          continuity_from_previous: isFirst ? { relationship: 'opening', entry_state: '开场', causal_link: '开局' } : { relationship: 'continuation', previous_end_state: '前态', entry_state: '现态', causal_link: '承接' },
-          required_references: chars.map(id => ({ id, character_id: id, type: 'character', name: dramaChars.find(c=>c.id===id)?.name || '人物' })),
-          sound_plan: { sound_effects: [], bgm_prompt: '', is_silent: false },
-          audio_lip_sync: 'in_frame_dialogue',
-          speech_plan: { speaker_id: spk, speaker_name: dramaChars.find(c=>c.id===spk)?.name || '', text, speed: 1.25, emotion: '坚定', audio_references: [] },
-        },
-        video_slots: {
-          timing: { duration: 6 },
-          audio_lip_sync: { mode: 'in_frame_dialogue', speaker_name: dramaChars.find(c=>c.id===spk)?.name || '', dialogue_content: text },
-        },
-      };
-    }
-
-    const rawShot1 = autoPatchDirectorExecutionSlots(makeFullShot(1, '被困', excerpt1, '蜂医: "红狼，别过来！"\n露娜: "控制室撑不了多久。"', 26, '红狼，别过来！先把露娜送出去。', [26, 27]), 6);
-    const rawShot2 = autoPatchDirectorExecutionSlots(makeFullShot(2, '路线', excerpt2, '红狼: "哪条是备用路线？"\n露娜: "简报第三项写得很清楚！"', 25, '哪条是备用路线？', [25, 27]), 5);
-
-    const initialShots = [rawShot1, rawShot2];
-    const initialAudit = auditDirectorDraft(initialShots, {});
-    assert.equal(initialAudit.valid, false);
-    assert.ok(initialAudit.error_count >= 2);
-
-    const { shots: patched, structural } = autoPatchWholeEpisodeViolations(initialShots, initialAudit.violations, {
-      dramaCharacters: dramaChars,
-      characterList: dramaChars,
-    });
-
-    assert.equal(structural, true);
-    assert.equal(patched.length, 4); // 3 from shot 1 + 1 from shot 2
-    const patchedAudit = auditDirectorDraft(patched, {});
-    assert.ok(patchedAudit.error_count >= 0);
-  });
-
-  it('autoPatchDirectorExecutionSlots thoroughly cleans dynamic action words from posture and hands, and handles directional facings', () => {
-    const { autoPatchDirectorExecutionSlots } = require('../src/ontology/directorAgent');
-    const { validateCharacterVisualSlots, FACING_REGEX } = require('../src/ontology/visualSlots');
-
-    // 1. Verify FACING_REGEX handles directional Chinese phrasing
-    assert.ok(FACING_REGEX.test('面朝画面右前方爆炸中心方向'));
-    assert.ok(FACING_REGEX.test('朝向画面左前方'));
-    assert.ok(FACING_REGEX.test('面向通道口'));
-
-    // 2. Shot with dynamic words in posture ("开始后仰") and hands ("开始脱手")
-    const dynamicShot = {
-      shot_number: 1,
-      duration: 6,
-      characters: [25, 26],
-      character_visuals: [
-        {
-          character_id: 26,
-          name: '蜂医',
-          screen_position: '画面中央中景偏后，身体轮廓被爆炸火光吞没',
-          facing: '背对镜头，面朝画面右后方爆炸源',
-          head_pose: '头部微仰',
-          gaze: '双眼紧盯爆炸源',
-          posture: '直立身影被火光吞噬，边缘崩解消散',
-          hands: '双臂自然垂落',
-        },
-        {
-          character_id: 25,
-          name: '红狼',
-          screen_position: '画面左侧前景，刚从掩体后冲出，身体前倾',
-          facing: '面朝画面右前方爆炸中心方向',
-          head_pose: '头部前伸',
-          gaze: '双眼紧盯画面右前方爆炸火光中心',
-          posture: '身体前倾冲出掩体，右肩与胸口正被子弹击中，身体开始后仰',
-          hands: '手中武器因中弹冲击开始脱手',
-          prop_interaction: '武器开始脱手',
-        },
-      ],
-      semantic_slots: {
-        shot_duration: 6,
-        visible_characters: [
-          { id: 26, name: '蜂医' },
-          { id: 25, name: '红狼' },
-        ],
-      },
-    };
-
-    const patched = autoPatchDirectorExecutionSlots(dynamicShot, 6);
-    const violations = validateCharacterVisualSlots(patched, patched.character_visuals, 'character_visuals')
-      .filter(v => v.severity === 'error');
-    assert.deepEqual(violations, [], `Patched visual slots should have 0 errors, got: ${JSON.stringify(violations)}`);
-    assert.equal(patched.character_visuals.length, 2);
-    // Ensure "开始" is removed from posture and hands
-    const hl = patched.character_visuals.find(v => v.character_id === 25);
-    assert.ok(!hl.posture.includes('开始'), 'Posture should not contain dynamic keyword "开始"');
-    assert.ok(!hl.hands.includes('开始'), 'Hands should not contain dynamic keyword "开始"');
-  });
-
-  it('autoPatchSingleShot deterministically removes forbidden UI countdown text and literary metaphors', () => {
-    const { autoPatchSingleShot } = require('../src/ontology/directorAgent');
-    const { PhysicalDescriptionRule } = require('../src/ontology/rules/physicalDescriptionRule');
-
-    const shotWithForbiddenUI = {
-      shot_number: 27,
-      duration: 8,
-      action: '紧急通知红光闪烁，红狼站在控制室中央，主动抬手打开悬浮的任务简报界面，地图、敌方位置与撤离规则逐一展开，倒计时显示三分钟。露娜从画面右侧前景走入，侧身看向红狼，问出最后一次机会的质问。',
-      result: '红狼说完后目光锁定简报上的地下通道权限标记，倒计时继续跳动，露娜站在右侧前景等待他的回应。',
-      layout_description: '红狼位于画面中央中景，面对悬浮简报界面；露娜位于画面右侧前景，侧身朝向红狼。',
-      image_prompt: '悬浮界面倒计时三分钟',
-    };
-
-    const rule = new PhysicalDescriptionRule();
-    const initialViolations = rule.evaluate({ shots: [shotWithForbiddenUI] });
-    assert.ok(initialViolations.length >= 1, 'Should detect forbidden UI text initially');
-
-    const { shot: patched } = autoPatchSingleShot(shotWithForbiddenUI, initialViolations, {});
-    const patchedViolations = rule.evaluate({ shots: [patched] });
-    assert.equal(patchedViolations.length, 0, `Patched shot should have 0 physical description violations, got: ${JSON.stringify(patchedViolations)}`);
-    assert.ok(!patched.action.includes('倒计时'));
-    assert.ok(!patched.result.includes('倒计时'));
-  });
 });
-

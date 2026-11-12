@@ -92,8 +92,10 @@ describe('OpenAI Agents SDK director runtime', () => {
     assert.ok(timeline.items.required.includes('result'));
     assert.equal(timeline.items.properties.duration_seconds, undefined);
     const trajectory = timeline.items.properties.character_trajectories.items;
-    assert.ok(trajectory.required.includes('gaze'));
+    assert.ok(trajectory.required.includes('action_atom'));
+    assert.ok(trajectory.required.includes('gaze_type'));
+    assert.ok(trajectory.required.includes('hands_state'));
     assert.ok(trajectory.required.includes('reaction_trigger'));
-    assert.equal(trajectory.properties.gaze.maxLength, 80);
+    assert.equal(trajectory.properties.gaze, undefined);
   });
 });

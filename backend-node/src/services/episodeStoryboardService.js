@@ -524,9 +524,12 @@ function generateLastFramePrompt(sb, style) {
   if (typeof lastVisuals === 'string') {
     try { lastVisuals = JSON.parse(lastVisuals); } catch (_) { lastVisuals = null; }
   }
-  const { compileLastFramePromptFromSlots, synthesizeLastFrameVisualSlots } = require('../ontology/visualSlots');
+  const { compileLastFramePromptFromSlots } = require('../ontology/visualSlots');
   if (!Array.isArray(lastVisuals) || lastVisuals.length === 0) {
-    lastVisuals = synthesizeLastFrameVisualSlots(sb, []);
+    if (sb.last_frame_prompt && String(sb.last_frame_prompt).trim()) {
+      return String(sb.last_frame_prompt).trim();
+    }
+    return compileLastFramePromptFromSlots(sb, [], { style });
   }
   return compileLastFramePromptFromSlots(sb, lastVisuals, { style });
 }
