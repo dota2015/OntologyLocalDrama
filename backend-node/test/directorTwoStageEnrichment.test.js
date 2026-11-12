@@ -541,3 +541,101 @@ test('directorTwoStageEnrichment: stage-two gate rejects h3_continuum on 5s shot
   );
   assert.ok(crossMismatch.some((v) => v.rule === 'INVARIANT_EXECUTION_BACKEND_CONFLICT'));
 });
+
+test('directorTwoStageEnrichment: stage-two gate rejects empty required_references in Ref2VA and repairs it across universal and classic modes', async () => {
+  const { directorExecutionSlotsOutputType } = require('../src/services/agentsRuntime');
+  const reqRefSchema = directorExecutionSlotsOutputType(5, {}).schema.properties.semantic_slots.properties.required_references;
+  assert.equal(reqRefSchema.minItems, 1);
+
+  const originalRunAgent = agentsRuntime.runAgent;
+  const seenInputs = [];
+  agentsRuntime.runAgent = async (_db, _log, options) => {
+    seenInputs.push(options.input);
+    const attempt = seenInputs.length;
+    const contract = {
+      semantic_slots: {
+        visible_characters: [{ id: 26, name: '主角A' }],
+        background_characters: [],
+        offscreen_characters: [],
+        identity_visibility: 'full',
+        speech_plan: { speaker_id: 26, speaker_name: '主角A', is_offscreen: false, is_narration: false, text: '跟上！', speed: 1, emotion: 'urgent', audio_references: [] },
+        sound_plan: { sound_effects: ['脚步声'], bgm_prompt: '', acoustic_env: '走廊', is_silent: false },
+        continuity_type: 'opening',
+        continuity_from_previous: { relationship: 'opening', previous_end_state: '', entry_state: '主角A转身', causal_link: '开场', sound_bridge: '', requires_previous_tail: false },
+        source_script_excerpt: '主角A：跟上！',
+        h3_mode: 'ref2va',
+        h3_mode_reason: '多参考保持身份一致',
+        first_frame_policy: 'none',
+        first_frame_reason: 'Ref2VA不用首帧',
+        last_frame_policy: 'none',
+        last_frame_reason: '自然收束',
+        required_references: attempt === 1
+          ? []
+          : [{ type: 'scene', id: 38, name: '走廊' }, { type: 'character', id: 26, character_id: 26, name: '主角A' }],
+        audio_lip_sync: 'in_frame_dialogue',
+        shot_duration: 5,
+        execution_backend: 'h3_single',
+        continuum_plan: null,
+      },
+      character_visuals: [{
+        character_id: 26, name: '主角A', depth_layer: 'foreground', screen_position: 'center_foreground',
+        environmental_anchor: '门框旁', facing: 'front_camera', facing_target_id: null, head_pose: 'neutral',
+        gaze_type: 'offscreen', gaze_target_id: null, gaze_target_label: '前方出口', posture: 'standing',
+        hands_state: 'pointing', hands_object_id: null, hands_target_id: null, expression: 'alert',
+        expression_detail: '果断开口', appearance_details: '深色外套',
+      }],
+      last_frame_visuals: [],
+      video_slots: {
+        timing: { duration: 5, pacing: 'medium' },
+        performance_contract: 'structured_sync',
+        camera: { shot_type: 'medium', movement: 'static', movement_description: '固定机位' },
+        audio_lip_sync: { mode: 'in_frame_dialogue', speaker_name: '主角A', speaker_in_frame: true, dialogue_content: '跟上！', lip_sync_rule: '口型同步' },
+        shots_timeline: [{
+          shot_number: 1, timestamp: null, duration: 5,
+          camera: { shot_type: 'medium', movement: 'static', movement_description: '固定' },
+          action: '主角A抬手指向走廊出口并迈步前进', result: '靠近走廊出口',
+          visible_characters: [{ character_id: 26, name: '主角A' }],
+          character_trajectories: [{
+            character_id: 26, name: '主角A', start_state: 'standing',
+            action_atom: { action: 'point', action_detail: '抬手指向出口迈步', body_part: 'right_arm', object_id: null, target_type: 'scene', target_id: null, target_label: '出口', direction: 'forward', contact: 'none' },
+            result_state: 'walking', reaction_trigger: { type: 'dialogue', source_id: 26, source_label: '主角A' },
+            facing: 'front_camera', facing_target_id: null, head_pose: 'neutral', gaze_type: 'offscreen', gaze_target_id: null, gaze_target_label: '出口',
+            posture: 'standing', hands_state: 'pointing', hands_object_id: null, hands_target_id: null,
+            expression: 'alert', expression_detail: '神色紧迫', mouth_state: 'speaker_synced',
+          }],
+          audio_lip_sync: { mode: 'in_frame_dialogue', speaker_name: '主角A', speaker_in_frame: true, dialogue_content: '跟上！', lip_sync_rule: '口型同步' },
+          speech_action_alignment: { mode: 'concurrent', speech_window: { start: 0, end: 5 }, speaker_character_id: 26, speaker_action_window: { start: 0, end: 5 }, listener_reactions: [], pause_reason: '' },
+        }],
+      },
+    };
+    return attempt === 1
+      ? contract
+      : { repairs: [{ shot_number: 1, patch: { semantic_slots: { required_references: contract.semantic_slots.required_references } } }] };
+  };
+  try {
+    const source = {
+      id: 1267,
+      storyboard_number: 1,
+      creation_mode: 'universal',
+      universal_segment_text: '画面从 @图片1 开始，@图片2 角色A在走廊开口',
+      duration: 5,
+      dialogue: '主角A：“跟上！”',
+      action: '主角A挥手示意跟上',
+      characters: [26],
+      scene_id: 38,
+    };
+    const planned = await ensureDirectorExecutionSlots({}, { info() {}, warn() {} }, source, {
+      forceAgent: true,
+      maxAttempts: 2,
+      catalogs: { characters: [{ id: 26, name: '主角A' }], scenes: [{ id: 38, name: '走廊' }], props: [] },
+    });
+    assert.equal(seenInputs.length, 2);
+    assert.match(seenInputs[1], /required_references 与 speech_plan\.audio_references 均为空/);
+    assert.match(seenInputs[1], /全能多参考清单第 1 项必须是当前场景 scene_id=38/);
+    assert.equal(planned.semantic_slots.required_references.length, 2);
+    assert.equal(planned.semantic_slots.required_references[0].type, 'scene');
+    assert.equal(planned.semantic_slots.required_references[1].character_id, 26);
+  } finally {
+    agentsRuntime.runAgent = originalRunAgent;
+  }
+});

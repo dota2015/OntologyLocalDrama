@@ -277,6 +277,31 @@ describe('Three-Tier Architectural Evolution: Agent First, Ontology Gatekeeper, 
       assert.ok(v, 'Should detect FL2VA reference contamination');
     });
 
+    it('Rule 13: Rejects Ref2VA shot when both required_references and audio_references are empty', () => {
+      const emptyRefShot = {
+        shot_number: 13,
+        scene_id: 38,
+        semantic_slots: {
+          h3_mode: 'ref2va',
+          first_frame_policy: 'none',
+          last_frame_policy: 'none',
+          required_references: [],
+          speech_plan: { audio_references: [] },
+        },
+      };
+      const violations = checkCrossSlotInvariants([emptyRefShot]);
+      assert.ok(
+        violations.some((v) => v.rule === 'INVARIANT_REF2VA_REFERENCE_REQUIRED'),
+        'CrossSlotInvariantsRule must reject Ref2VA with empty visual & audio references before persistence'
+      );
+
+      emptyRefShot.semantic_slots.required_references = [{ type: 'scene', id: 38, name: '工厂' }];
+      assert.equal(
+        checkCrossSlotInvariants([emptyRefShot]).some((v) => v.rule === 'INVARIANT_REF2VA_REFERENCE_REQUIRED'),
+        false
+      );
+    });
+
     it('rejects multiple speaker turns in one outer shot and requires an Agent split', () => {
       const shot = {
         shot_number: 13,

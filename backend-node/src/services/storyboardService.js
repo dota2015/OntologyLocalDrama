@@ -137,7 +137,7 @@ function updateStoryboard(db, log, id, req) {
         return { ...merged, semantic_slots: parseSemanticSlots(merged.semantic_slots) };
       });
     const { validateAllInvariants } = require('../ontology/invariants');
-    const audit = validateAllInvariants(episodeShots, { db });
+    const audit = validateAllInvariants(episodeShots, { db, directorPlanningMode: 'persisted' });
     const fatalErrors = audit.violations || [];
     if (fatalErrors.length > 0) {
       const err = new Error(`分镜修改未通过视听本体门禁审查：${fatalErrors.map(v => v.message).join('；')}`);

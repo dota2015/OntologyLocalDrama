@@ -632,6 +632,15 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
             conflict_slots: ['h3_mode', 'last_frame_policy'],
           });
         }
+        if (requiredRefs.length === 0 && (!Array.isArray(audioRefs) || audioRefs.length === 0)) {
+          violations.push({
+            rule: 'INVARIANT_REF2VA_REFERENCE_REQUIRED',
+            shot_number: shotNum,
+            severity: this.defaultSeverity,
+            message: `分镜 #${shotNum} 规划为 Ref2VA，但 required_references 与 speech_plan.audio_references 均为空；必须至少声明一项场景、画内角色、道具或音频参考合同！`,
+            conflict_slots: ['h3_mode', 'semantic_slots.required_references', 'speech_plan.audio_references'],
+          });
+        }
       } else {
         violations.push({
           rule: 'INVARIANT_H3_MODE_PLAN_MISSING',

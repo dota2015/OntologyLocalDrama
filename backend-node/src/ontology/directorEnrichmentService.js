@@ -132,6 +132,7 @@ async function enrichEpisodeOntologySlots(db, log, cfg, episodeId, options = {})
     scriptContent: pkg.episode?.script_content || '',
     dramaShots: enrichedShots,
     requestedPacing: { range: { min: 4, max: 30 } },
+    directorPlanningMode: 'persisted',
   };
   let audit = validateAllInvariants(enrichedShots, auditOptions);
 

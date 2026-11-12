@@ -92,6 +92,7 @@ function ontologyRoutes(db, log) {
           catalogs: pkg.catalogs,
           scriptContent: fullDramaScript,
           dramaShots: allDramaShots,
+          directorPlanningMode: 'persisted',
         });
 
         response.success(res, {

@@ -376,7 +376,7 @@ function semanticSlotsSchema(assignedIds = null) {
       last_frame_policy: { const: 'none' },
       last_frame_reason: nonEmptyStringSchema(),
       required_references: {
-        type: 'array', maxItems: 9,
+        type: 'array', minItems: 1, maxItems: 9,
         items: {
           type: 'object', additionalProperties: false, required: ['type', 'id', 'name'],
           properties: {
