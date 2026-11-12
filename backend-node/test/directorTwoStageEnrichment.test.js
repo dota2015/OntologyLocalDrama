@@ -74,6 +74,60 @@ test('directorTwoStageEnrichment: stage-two whitelist carries the full drama cas
   }
 });
 
+test('directorTwoStageEnrichment: execution slots schema physically allows offscreen_characters', () => {
+  const { directorExecutionSlotsOutputType } = require('../src/services/agentsRuntime');
+  const outputType = directorExecutionSlotsOutputType(5, {});
+  const semanticProps = outputType.schema.properties.semantic_slots.properties;
+  assert.ok(semanticProps.offscreen_characters, 'semantic_slots schema must define offscreen_characters, otherwise constrained decoding can never emit it');
+  const modes = semanticProps.offscreen_characters.items.properties.mode.enum;
+  assert.deepEqual([...modes].sort(), ['present_offscreen', 'remote_voice']);
+});
+
+test('directorTwoStageEnrichment: without a stage-one semantic contract, stage two may author offscreen participants', async () => {
+  const originalRunAgent = agentsRuntime.runAgent;
+  let received;
+  agentsRuntime.runAgent = async (_db, _log, options) => {
+    received = options;
+    return {
+      semantic_slots: {
+        visible_characters: [{ id: 25, name: '红狼' }],
+        background_characters: [],
+        offscreen_characters: [{ character_id: 27, name: '露娜', mode: 'remote_voice' }],
+        speech_plan: { speaker_id: 27, speaker_name: '露娜', is_offscreen: true, is_narration: false, text: '红狼，立刻转备用路线！', speed: 1.25, emotion: '急促', audio_references: [] },
+        audio_lip_sync: 'offscreen_voiceover',
+      },
+    };
+  };
+  try {
+    // Base-generation chain shape: top-level roster only, no semantic_slots.
+    const source = {
+      id: 9, storyboard_number: 22, duration: 4,
+      dialogue: '露娜: 红狼，立刻转备用路线！', action: '红狼伏在掩体后按住耳机',
+      characters: [25], scene_id: 10,
+    };
+    let error = null;
+    try {
+      await ensureDirectorExecutionSlots({}, { info() {}, warn() {} }, source, {
+        forceAgent: true,
+        maxAttempts: 1,
+        catalogs: {
+          characters: [{ id: 25, name: '红狼' }, { id: 26, name: '蜂医' }, { id: 27, name: '露娜' }],
+          scenes: [{ id: 10, name: '峡谷掩体' }],
+          props: [],
+        },
+      });
+    } catch (err) {
+      error = err;
+    }
+    assert.ok(error, 'incomplete mock contract must still be rejected overall');
+    assert.ok(received.input.includes('offscreen 阶段一未声明、未锁定'), 'prompt must tell the Agent offscreen is authorable when stage one never declared it');
+    assert.equal(error.message.includes('offscreen_characters 应为 []'), false, `offscreen must not be locked to []: ${error.message}`);
+    assert.equal(error.message.includes('未出现在任何人物清单'), false, `declared offscreen speaker must satisfy the speaker gate: ${error.message}`);
+  } finally {
+    agentsRuntime.runAgent = originalRunAgent;
+  }
+});
+
 test('directorTwoStageEnrichment: execution contract is authored by the Agent and preserves source fields', async () => {
   const originalRunAgent = agentsRuntime.runAgent;
   let received;

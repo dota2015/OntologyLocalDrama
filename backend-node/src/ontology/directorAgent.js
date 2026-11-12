@@ -2744,7 +2744,14 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
   const lockedBackgroundIds = Array.isArray(semantic.background_characters)
     ? semanticCharacterIds(semantic.background_characters, true)
     : resolveRosterIds(shot.background_characters);
-  const lockedOffscreenIds = Array.isArray(semantic.offscreen_characters)
+  // Offscreen participation has no top-level fallback roster: lock it only
+  // when stage one explicitly declared the array. When stage one produced no
+  // semantic_slots (base-generation chain), stage two is the author of the
+  // offscreen list — locking it to [] would make every remote/offscreen
+  // speaker unsatisfiable (declare it -> lock error; omit it -> speaker
+  // not declared). The asset gate still validates whatever stage two declares.
+  const hasOffscreenContract = Array.isArray(semantic.offscreen_characters);
+  const lockedOffscreenIds = hasOffscreenContract
     ? semanticCharacterIds(semantic.offscreen_characters, true)
     : [];
   const hasLockedCharacterContract = Array.isArray(semantic.visible_characters)
@@ -2776,8 +2783,11 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
       const compactNeighbours = [retryOptions.previousShot, retryOptions.nextShot]
         .filter(Boolean).map(item => compactExecutionShot(item));
       const compactCatalogs = compactExecutionCatalogs(retryOptions.catalogs || {}, candidateBase);
+      const rosterLockLine = hasOffscreenContract
+        ? `【阶段一锁定人物】visible=${JSON.stringify(lockedVisibleIds)}，background=${JSON.stringify(lockedBackgroundIds)}，offscreen=${JSON.stringify(lockedOffscreenIds)}。不得新增、删除或在三类之间挪动角色。offscreen 是画外参与者（同场画外/通讯远程），不入画：不得为其生成 character_visuals、轨迹或参考图，只影响声音与画内人物的视线/反应。`
+        : `【阶段一锁定人物】visible=${JSON.stringify(lockedVisibleIds)}，background=${JSON.stringify(lockedBackgroundIds)}。不得新增、删除或改角色归属。offscreen 阶段一未声明、未锁定：按对白声源与本镜事件如实填写 semantic_slots.offscreen_characters——通过通讯器/画外说话的人、被喊话的远程对象必须登记并注明 mode（present_offscreen/remote_voice），说话人必须出现在 visible/background/offscreen 之一；画外参与者不入画，不得为其生成 character_visuals、轨迹或参考图。`;
       const requestInput = patchMode
-        ? `【阶段一锁定人物】visible=${JSON.stringify(lockedVisibleIds)}，background=${JSON.stringify(lockedBackgroundIds)}，offscreen=${JSON.stringify(lockedOffscreenIds)}。不得新增、删除或在三类之间挪动角色。offscreen 是画外参与者（同场画外/通讯远程），不入画：不得为其生成 character_visuals、轨迹或参考图，只影响声音与画内人物的视线/反应。
+        ? `${rosterLockLine}
 【权威镜头事实】${JSON.stringify(compactExecutionShot(candidateBase))}
 【当前已有执行槽位】${JSON.stringify(compactCandidate)}
 【允许修复字段】${JSON.stringify([...patchFields])}
@@ -2785,7 +2795,7 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
 【本体资产白名单】${JSON.stringify(compactCatalogs)}
 【门禁反馈】${errors.map(item => item.message).join('；')}
 只返回 {"repairs":[{"shot_number":${Number(shotNumber) || 0},"patch":{...}}]}。patch 只能包含允许修复字段；character_visuals 和 video_slots.shots_timeline 必须返回该字段的完整新值，其他字段保持不变。`
-        : `【阶段一锁定人物】visible=${JSON.stringify(lockedVisibleIds)}，background=${JSON.stringify(lockedBackgroundIds)}，offscreen=${JSON.stringify(lockedOffscreenIds)}。不得新增、删除或在三类之间挪动角色。offscreen 是画外参与者（同场画外/通讯远程），不入画：不得为其生成 character_visuals、轨迹或参考图，只影响声音与画内人物的视线/反应。
+        : `${rosterLockLine}
 【权威镜头事实】${JSON.stringify(compactExecutionShot(candidateBase))}
 【相邻镜头连续性摘要】${JSON.stringify(compactNeighbours)}
 【本体资产白名单】${JSON.stringify(compactCatalogs)}
@@ -2794,8 +2804,8 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
       const planned = await agentsRuntime.runAgent(db, log, {
         name: 'director-execution-slots-planner',
         instructions: patchMode
-          ? `你是短剧导演执行合同的局部修复节点。只修复门禁反馈列出的字段，禁止改写人物清单、场景、对白、旁白、总时长和其他已通过字段。character_visuals 必须精确覆盖权威人物且每人有实际定格；video_slots.shots_timeline 必须让每位画内角色在该段有与事件同步的动作或反应。只返回指定 repairs JSON，不要解释。`
-          : `你是短剧导演执行合同节点。根据紧凑的当前镜头事实，一次输出完整 semantic_slots、character_visuals、last_frame_visuals 和 video_slots。禁止改写人物清单、场景、对白、旁白和总时长。semantic_slots.continuity_from_previous 必须完整；h3_mode 固定 ref2va；performance_contract 固定 sync_v2。动作与对白必须同步，所有画内人物都要有本段可执行动作或反应。${durationPlanContract}。只返回指定 JSON，不要解释。`,
+          ? `你是短剧导演执行合同的局部修复节点。只修复门禁反馈列出的字段，禁止改写人物清单、场景、对白、旁白、总时长和其他已通过字段。character_visuals 必须精确覆盖权威人物且每人有实际定格；video_slots.shots_timeline 必须让每位画内角色在该段有与事件同步的动作或反应。当【本体资产白名单】的 props 为空或不含目标物体时，动作 target_type 禁止填 'prop'（无有效 target_id 必被门禁拒绝），改用 'event' 或 'scene' 并填写 target_label。只返回指定 repairs JSON，不要解释。`
+          : `你是短剧导演执行合同节点。根据紧凑的当前镜头事实，一次输出完整 semantic_slots、character_visuals、last_frame_visuals 和 video_slots。禁止改写人物清单、场景、对白、旁白和总时长。semantic_slots.continuity_from_previous 必须完整；h3_mode 固定 ref2va；performance_contract 固定 sync_v2。动作与对白必须同步，所有画内人物都要有本段可执行动作或反应。当【本体资产白名单】的 props 为空或不含目标物体时，动作 target_type 禁止填 'prop'（无有效 target_id 必被门禁拒绝），改用 'event' 或 'scene' 并填写 target_label。${durationPlanContract}。只返回指定 JSON，不要解释。`,
         input: requestInput,
         outputType: patchMode
           ? agentsRuntime.directorExecutionRepairOutputType(shotNumber)
@@ -2863,7 +2873,7 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
         const plannedVisibleIds = semanticCharacterIds(plannedSemantic.visible_characters);
         const plannedBackgroundIds = semanticCharacterIds(plannedSemantic.background_characters, true);
         const plannedOffscreenIds = semanticCharacterIds(plannedSemantic.offscreen_characters, true);
-        if (!sameIds(lockedVisibleIds, plannedVisibleIds) || !sameIds(lockedBackgroundIds, plannedBackgroundIds) || !sameIds(lockedOffscreenIds, plannedOffscreenIds)) {
+        if (!sameIds(lockedVisibleIds, plannedVisibleIds) || !sameIds(lockedBackgroundIds, plannedBackgroundIds) || (hasOffscreenContract && !sameIds(lockedOffscreenIds, plannedOffscreenIds))) {
           errors.push({ message: `阶段二不得改写阶段一锁定的人物清单：visible_characters 应为 ${JSON.stringify(lockedVisibleIds)}、background_characters 应为 ${JSON.stringify(lockedBackgroundIds)}、offscreen_characters 应为 ${JSON.stringify(lockedOffscreenIds)}，Agent 实际输出为 visible_characters=${JSON.stringify(plannedVisibleIds)}、background_characters=${JSON.stringify(plannedBackgroundIds)}、offscreen_characters=${JSON.stringify(plannedOffscreenIds)}` });
         }
         const planningDrift = checkPlanningFeasibility([currentShot], { catalogs: retryOptions.catalogs || {} });

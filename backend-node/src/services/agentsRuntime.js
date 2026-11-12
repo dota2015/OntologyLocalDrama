@@ -368,6 +368,22 @@ function semanticSlotsSchema(assignedIds = null) {
         },
       },
       background_characters: { type: 'array', maxItems: 2, items: backgroundCharacterSchema() },
+      // Non-depicted participants (offscreen in-scene or remote voice). Without
+      // this property the closed schema makes the field physically unemittable
+      // under constrained decoding, and any stage-one offscreen declaration
+      // becomes unsatisfiable in stage two.
+      offscreen_characters: {
+        type: 'array', maxItems: 8,
+        items: {
+          type: 'object', additionalProperties: false, required: ['mode'],
+          properties: {
+            character_id: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] },
+            id: { anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }] },
+            name: stringSchema(80),
+            mode: { enum: ['present_offscreen', 'remote_voice'] },
+          },
+        },
+      },
       identity_visibility: nonEmptyStringSchema(),
       speech_plan: {
         type: 'object', additionalProperties: false,

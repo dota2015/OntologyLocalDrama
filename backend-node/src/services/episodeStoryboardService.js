@@ -654,6 +654,7 @@ function deriveStoryboardFieldsFromAi(sb, style, videoRatio, opts = {}) {
   const videoPrompt = null;
   const sceneId = sb.scene_id != null ? Number(sb.scene_id) : null;
   const charactersJson = Array.isArray(sb.characters) ? JSON.stringify(sb.characters) : (sb.characters ? JSON.stringify([].concat(sb.characters)) : '[]');
+  const backgroundCharactersJson = Array.isArray(sb.background_characters) ? JSON.stringify(sb.background_characters) : (sb.background_characters ? JSON.stringify([].concat(sb.background_characters)) : '[]');
   const propIds = Array.isArray(sb.props) ? sb.props.map(Number).filter(Number.isFinite) : [];
   let universalSegmentText = '';
   if (sb.universal_segment_text != null && String(sb.universal_segment_text).trim()) {
@@ -708,6 +709,7 @@ function deriveStoryboardFieldsFromAi(sb, style, videoRatio, opts = {}) {
     videoSlots,
     sceneId,
     charactersJson,
+    backgroundCharactersJson,
     angleH,
     angleV,
     angleS,
@@ -874,13 +876,14 @@ function insertOneStoryboard(db, episodeIdNum, sb, style, videoRatio, now, deriv
     let newId;
     try {
       const info = db.prepare(
-        `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, duration, dialogue, narration, action, result, atmosphere, image_prompt, video_prompt, characters, character_visuals, last_frame_visuals, video_slots, shot_type, angle, angle_h, angle_v, angle_s, dialogue_framing, movement, lighting_style, depth_of_field, bgm_prompt, sound_effect, segment_index, segment_title, creation_mode, universal_segment_text, layout_description, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+        `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, duration, dialogue, narration, action, result, atmosphere, image_prompt, video_prompt, characters, background_characters, character_visuals, last_frame_visuals, video_slots, shot_type, angle, angle_h, angle_v, angle_s, dialogue_framing, movement, lighting_style, depth_of_field, bgm_prompt, sound_effect, segment_index, segment_title, creation_mode, universal_segment_text, layout_description, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
       ).run(
         episodeIdNum, d.sceneId, shotNumber, d.title || null, d.description,
         sb.location ?? null, sb.time ?? null, sb.duration ?? 5,
         d.dialogue || null, d.narration || null, d.action || null, d.result || null, sb.atmosphere ?? null,
         d.imagePrompt, d.videoPrompt, d.charactersJson,
+        d.backgroundCharactersJson,
         d.characterVisuals ? JSON.stringify(d.characterVisuals) : null,
         d.lastFrameVisuals ? JSON.stringify(d.lastFrameVisuals) : null,
         d.videoSlots ? JSON.stringify(d.videoSlots) : null,
@@ -894,7 +897,7 @@ function insertOneStoryboard(db, episodeIdNum, sb, style, videoRatio, now, deriv
       );
       newId = info.lastInsertRowid;
     } catch (colErr) {
-      if ((colErr.message || '').includes('character_visuals') || (colErr.message || '').includes('layout_description') || (colErr.message || '').includes('bgm_prompt')) {
+      if ((colErr.message || '').includes('character_visuals') || (colErr.message || '').includes('layout_description') || (colErr.message || '').includes('bgm_prompt') || (colErr.message || '').includes('background_characters')) {
         const info = db.prepare(
           `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, duration, dialogue, narration, action, result, atmosphere, image_prompt, video_prompt, characters, shot_type, angle, angle_h, angle_v, angle_s, movement, lighting_style, depth_of_field, segment_index, segment_title, creation_mode, universal_segment_text, status, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
@@ -1081,13 +1084,14 @@ function saveStoryboards(db, log, episodeId, storyboards, cfg, styleOverride, sk
 
     try {
       db.prepare(
-        `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, duration, dialogue, narration, action, result, atmosphere, image_prompt, video_prompt, characters, shot_type, angle, angle_h, angle_v, angle_s, movement, lighting_style, depth_of_field, bgm_prompt, sound_effect, segment_index, segment_title, creation_mode, universal_segment_text, layout_description, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+        `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, duration, dialogue, narration, action, result, atmosphere, image_prompt, video_prompt, characters, background_characters, shot_type, angle, angle_h, angle_v, angle_s, movement, lighting_style, depth_of_field, bgm_prompt, sound_effect, segment_index, segment_title, creation_mode, universal_segment_text, layout_description, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
       ).run(
         episodeIdNum, d.sceneId, shotNumber, d.title || null, d.description,
         sb.location ?? null, sb.time ?? null, sb.duration ?? 5,
         d.dialogue || null, d.narration || null, d.action || null, d.result || null, sb.atmosphere ?? null,
         d.imagePrompt, d.videoPrompt, d.charactersJson,
+        d.backgroundCharactersJson,
         d.shotType || null, d.angle, d.angleH, d.angleV, d.angleS,
         d.movement || null, d.lightingStyle, d.depthOfField, d.bgmPrompt || null, d.soundEffect || null, d.segmentIndex, d.segmentTitle,
         d.creationMode || 'classic',
@@ -1096,7 +1100,7 @@ function saveStoryboards(db, log, episodeId, storyboards, cfg, styleOverride, sk
         now, now
       );
     } catch (e) {
-      if ((e.message || '').includes('shot_type') || (e.message || '').includes('angle') || (e.message || '').includes('movement') || (e.message || '').includes('result') || (e.message || '').includes('segment') || (e.message || '').includes('narration') || (e.message || '').includes('layout_description') || (e.message || '').includes('bgm_prompt')) {
+      if ((e.message || '').includes('shot_type') || (e.message || '').includes('angle') || (e.message || '').includes('movement') || (e.message || '').includes('result') || (e.message || '').includes('segment') || (e.message || '').includes('narration') || (e.message || '').includes('layout_description') || (e.message || '').includes('bgm_prompt') || (e.message || '').includes('background_characters')) {
         db.prepare(
           `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, duration, dialogue, action, atmosphere, image_prompt, video_prompt, characters, creation_mode, universal_segment_text, status, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
