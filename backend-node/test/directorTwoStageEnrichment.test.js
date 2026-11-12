@@ -181,3 +181,121 @@ test('directorTwoStageEnrichment: execution contract is authored by the Agent an
     agentsRuntime.runAgent = originalRunAgent;
   }
 });
+
+test('directorTwoStageEnrichment: speaker_synced feedback pinpoints mouth_state, surfaces conflict_slots, and stops masking invalid alignment.mode', async () => {
+  const originalRunAgent = agentsRuntime.runAgent;
+  const inputs = [];
+  agentsRuntime.runAgent = async (_db, _log, options) => {
+    inputs.push(options.input);
+    const baseSegment = {
+      shot_number: 11,
+      timestamp: '00:00.000',
+      duration: 4,
+      camera: { shot_type: 'medium', movement: 'static', movement_description: '固定机位' },
+      action: '说话人抬手指向右侧发出指令',
+      result: '指向完成',
+      visible_characters: [{ character_id: 27, name: '说话人A' }],
+      character_trajectories: [{
+        character_id: 27,
+        name: '说话人A',
+        start_state: 'crouched',
+        action_atom: {
+          action: 'shout_command',
+          body_part: 'torso',
+          object_id: null,
+          target_type: 'event',
+          target_id: null,
+          target_label: '发出指令',
+          direction: 'forward',
+          contact: 'none',
+          action_detail: '抬手并开口喊话',
+        },
+        result_state: 'crouched',
+        reaction_trigger: { type: 'dialogue', source_id: 25, source_label: '对话响应' },
+        facing: 'front_camera',
+        facing_target_id: null,
+        head_pose: 'neutral',
+        gaze_type: 'offscreen',
+        gaze_target_id: null,
+        gaze_target_label: '画外方向',
+        posture: 'crouching',
+        hands_state: 'pointing',
+        hands_object_id: null,
+        hands_target_id: null,
+        expression: 'determined',
+        expression_detail: '神情专注紧迫',
+        mouth_state: inputs.length === 1 ? 'closed' : 'speaker_synced',
+      }],
+      audio_lip_sync: {
+        mode: 'in_frame_dialogue',
+        speaker_name: '说话人A',
+        speaker_in_frame: true,
+        dialogue_content: '转备用路线！',
+        lip_sync_rule: '口型同步',
+      },
+      speech_action_alignment: {
+        mode: inputs.length === 1 ? 'speaker_synced' : 'concurrent',
+        speech_window: { start: 0, end: 4 },
+        speaker_action_window: { start: 0, end: 4 },
+        speaker_character_id: 27,
+        listener_reactions: [],
+        pause_reason: '',
+      },
+    };
+    const contract = {
+      semantic_slots: {
+        visible_characters: [{ id: 27, name: '说话人A' }],
+        background_characters: [],
+        offscreen_characters: [],
+        identity_visibility: 'clear',
+        speech_plan: { speaker_id: 27, speaker_name: '说话人A', is_offscreen: false, is_narration: false, text: '转备用路线！', speed: 1, emotion: 'urgent', audio_references: [] },
+        sound_plan: { sound_effects: [], bgm_prompt: '', acoustic_env: '户外', is_silent: false },
+        continuity_type: 'continuation',
+        continuity_from_previous: { relationship: 'continuation', previous_end_state: '蹲伏掩体后', entry_state: '继续蹲伏', causal_link: '承接前镜', sound_bridge: '', requires_previous_tail: false },
+        source_script_excerpt: '说话人A: 转备用路线！',
+        h3_mode: 'ref2va',
+        h3_mode_reason: '需要人物参考',
+        first_frame_policy: 'none',
+        first_frame_reason: '同场景延续',
+        last_frame_policy: 'none',
+        last_frame_reason: '自然收束',
+        required_references: [{ type: 'scene', id: 10 }, { type: 'character', id: 27 }],
+        audio_lip_sync: 'in_frame_dialogue',
+        shot_duration: 4,
+      },
+      character_visuals: [{
+        character_id: 27, name: '说话人A', depth_layer: 'foreground', screen_position: 'center_foreground',
+        environmental_anchor: '掩体旁', facing: 'front_camera', facing_target_id: null, head_pose: 'neutral',
+        gaze_type: 'offscreen', gaze_target_id: null, gaze_target_label: '画外方向', posture: 'crouching',
+        hands_state: 'pointing', hands_object_id: null, hands_target_id: null, expression: 'determined',
+        expression_detail: '神情专注', appearance_details: '战术装备',
+      }],
+      last_frame_visuals: [],
+      video_slots: {
+        timing: { duration: 4, pacing: 'medium' },
+        performance_contract: 'sync_v2',
+        camera: { shot_type: 'medium', movement: 'static', movement_description: '固定机位' },
+        audio_lip_sync: { mode: 'in_frame_dialogue', speaker_name: '说话人A', speaker_in_frame: true, dialogue_content: '转备用路线！', lip_sync_rule: '口型同步' },
+        shots_timeline: [baseSegment],
+      },
+    };
+    return inputs.length === 1 ? contract : { repairs: [{ shot_number: 11, patch: { video_slots: contract.video_slots } }] };
+  };
+  try {
+    const source = { id: 11, storyboard_number: 11, duration: 4, dialogue: '说话人A: 转备用路线！', action: '发出指令', characters: [27], scene_id: 10 };
+    const planned = await ensureDirectorExecutionSlots({}, { info() {}, warn() {} }, source, {
+      forceAgent: true,
+      maxAttempts: 2,
+      catalogs: { characters: [{ id: 27, name: '说话人A' }], scenes: [{ id: 10, name: '峡谷' }], props: [] },
+    });
+    assert.equal(inputs.length, 2, 'should converge on attempt 2 once feedback specifies field path');
+    assert.match(inputs[1], /character_trajectories\[\]\.mouth_state/);
+    assert.match(inputs[1], /冲突字段:.*mouth_state/);
+    assert.match(inputs[1], /对白必须与动作同步.*speech_action_alignment\.mode/);
+    assert.match(inputs[1], /【允许修复字段】\["video_slots"\]/);
+    assert.equal(planned.video_slots.shots_timeline[0].character_trajectories[0].mouth_state, 'speaker_synced');
+    assert.equal(planned.video_slots.shots_timeline[0].speech_action_alignment.mode, 'concurrent');
+  } finally {
+    agentsRuntime.runAgent = originalRunAgent;
+  }
+});

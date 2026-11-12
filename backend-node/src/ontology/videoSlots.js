@@ -237,7 +237,7 @@ function validateStructuredExecutionContract(shot, slots) {
       if (segmentVisibleIds.includes(speakerId)) {
         const speaker = trajectories.find((t) => Number(t.character_id) === speakerId);
         if (!speaker) add('INVARIANT_SPEAKER_TRAJECTORY_MISSING', `video_slots.shots_timeline[${index}].character_trajectories`, `分镜 ${shotNum} 第 ${index + 1} 段说话人缺少动作轨迹。`);
-        if (speaker && speaker.mouth_state !== 'speaker_synced') add('INVARIANT_SPEAKER_MOUTH_STATE_INVALID', `video_slots.shots_timeline[${index}].character_trajectories[character_id=${speakerId}].mouth_state`, `分镜 ${shotNum} 第 ${index + 1} 段说话人必须使用 speaker_synced。`);
+        if (speaker && speaker.mouth_state !== 'speaker_synced') add('INVARIANT_SPEAKER_MOUTH_STATE_INVALID', `video_slots.shots_timeline[${index}].character_trajectories[character_id=${speakerId}].mouth_state`, `分镜 ${shotNum} 第 ${index + 1} 段说话人 ID ${speakerId} 的 character_trajectories[].mouth_state 必须为 'speaker_synced'（当前为 '${speaker.mouth_state || ''}'；speech_action_alignment.mode 保持 'concurrent'，不要改为 speaker_synced）。`);
       }
       for (const listener of (Array.isArray(alignment.listener_reactions) ? alignment.listener_reactions : [])) {
         if (!segmentVisibleIds.includes(Number(listener.character_id))) add('INVARIANT_LISTENER_NOT_VISIBLE', `video_slots.shots_timeline[${index}].speech_action_alignment.listener_reactions`, `分镜 ${shotNum} 第 ${index + 1} 段听者不在画面中。`);

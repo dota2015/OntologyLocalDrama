@@ -30,7 +30,7 @@ function normalizeTimelineTimestamps(timeline) {
       const alignment = seg.speech_action_alignment && typeof seg.speech_action_alignment === 'object'
         ? { ...seg.speech_action_alignment }
         : {};
-      if (alignment.mode !== 'concurrent') {
+      if (!String(alignment.mode || '').trim()) {
         alignment.mode = 'concurrent';
       }
       if (!alignment.speech_window) {
@@ -2766,17 +2766,38 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
       const patchMode = attempt > 1;
       const patchFields = new Set();
       let hasUnclassifiedViolation = false;
+      const classifySlot = (slot, targetSet) => {
+        const s = String(slot || '');
+        if (!s) return;
+        if (s.startsWith('character_visuals')) targetSet.add('character_visuals');
+        else if (s.startsWith('last_frame_visuals')) targetSet.add('last_frame_visuals');
+        else if (s.startsWith('semantic_slots') || /^(?:characters|background_characters|offscreen_characters|scene_id|props|required_references)$/.test(s)) targetSet.add('semantic_slots');
+        else if (s.startsWith('video_slots') || /^(?:shots_timeline|audio_lip_sync|speech_action_alignment|timing)/.test(s)) targetSet.add('video_slots');
+      };
+      const classifyRule = (rule, targetSet) => {
+        const r = String(rule || '');
+        if (!r) return;
+        if (/CHARACTER_VISUAL|FACING|GAZE|POSTURE|FRAME_VISUAL/.test(r)) targetSet.add('character_visuals');
+        if (/LAST_FRAME|TAIL/.test(r)) targetSet.add('last_frame_visuals');
+        if (/CHARACTER|OFFSCREEN|SPEAKER_NOT_DECLARED|OFFSCREEN_SPEAKER_LIP_SYNC|CONTINUITY|REQUIRED_REF|UNKNOWN_.*REFERENCE|EYELINE/.test(r)) targetSet.add('semantic_slots');
+        if (/TIMELINE|TRAJECTORY|LISTENER|ACTION_|SPEAKER_|SHORT_DRAMA_|VIDEO|SPEECH_ACTION|PACING/.test(r)) targetSet.add('video_slots');
+      };
       for (const item of errors) {
+        const matchedForItem = new Set();
+        if (Array.isArray(item?.conflict_slots)) {
+          item.conflict_slots.forEach(slot => classifySlot(slot, matchedForItem));
+        }
+        if (item?.rule) classifyRule(item.rule, matchedForItem);
         const message = String(item?.message || item || '');
-        const before = patchFields.size;
-        if (/character_visuals/.test(message)) patchFields.add('character_visuals');
-        if (/last_frame_visuals/.test(message)) patchFields.add('last_frame_visuals');
-        if (/semantic_slots|continuity|source_script_excerpt|h3_mode|人物清单|offscreen|画外参与/.test(message)) patchFields.add('semantic_slots');
-        if (/video_slots|时间轴|时间线|动作|轨迹|听者|target_id|shots_timeline|visible_characters|未入画|角色 ID .*第 .*段|trajectory|audio_lip_sync|对白/.test(message)) patchFields.add('video_slots');
+        if (/character_visuals/.test(message)) matchedForItem.add('character_visuals');
+        if (/last_frame_visuals/.test(message)) matchedForItem.add('last_frame_visuals');
+        if (/semantic_slots|continuity|source_script_excerpt|h3_mode|人物清单|offscreen|画外参与/.test(message)) matchedForItem.add('semantic_slots');
+        if (/video_slots|时间轴|时间线|动作|轨迹|听者|target_id|shots_timeline|visible_characters|未入画|speaker_synced|mouth_state|角色 ID .*第 .*段|trajectory|audio_lip_sync|对白/.test(message)) matchedForItem.add('video_slots');
+        matchedForItem.forEach(field => patchFields.add(field));
         // A partial match must never narrow the Agent out of the field it
         // actually needs: any violation this classifier cannot place widens
         // the whole round to full repair permission instead of deadlocking.
-        if (patchFields.size === before) hasUnclassifiedViolation = true;
+        if (!matchedForItem.size) hasUnclassifiedViolation = true;
       }
       if (!patchFields.size || hasUnclassifiedViolation) ['semantic_slots', 'character_visuals', 'last_frame_visuals', 'video_slots'].forEach(field => patchFields.add(field));
       const compactCandidate = compactExecutionShot(candidateBase, { includeExecution: patchMode });
@@ -2786,6 +2807,13 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
       const rosterLockLine = hasOffscreenContract
         ? `【阶段一锁定人物】visible=${JSON.stringify(lockedVisibleIds)}，background=${JSON.stringify(lockedBackgroundIds)}，offscreen=${JSON.stringify(lockedOffscreenIds)}。不得新增、删除或在三类之间挪动角色。offscreen 是画外参与者（同场画外/通讯远程），不入画：不得为其生成 character_visuals、轨迹或参考图，只影响声音与画内人物的视线/反应。`
         : `【阶段一锁定人物】visible=${JSON.stringify(lockedVisibleIds)}，background=${JSON.stringify(lockedBackgroundIds)}。不得新增、删除或改角色归属。offscreen 阶段一未声明、未锁定：按对白声源与本镜事件如实填写 semantic_slots.offscreen_characters——通过通讯器/画外说话的人、被喊话的远程对象必须登记并注明 mode（present_offscreen/remote_voice），说话人必须出现在 visible/background/offscreen 之一；画外参与者不入画，不得为其生成 character_visuals、轨迹或参考图。`;
+      const gateFeedbackText = errors.map((item) => {
+        const msg = String(item?.message || item || '');
+        const slots = Array.isArray(item?.conflict_slots) && item.conflict_slots.length
+          ? ` [冲突字段: ${item.conflict_slots.join(', ')}]`
+          : '';
+        return `${msg}${slots}`;
+      }).join('；');
       const requestInput = patchMode
         ? `${rosterLockLine}
 【权威镜头事实】${JSON.stringify(compactExecutionShot(candidateBase))}
@@ -2793,13 +2821,13 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
 【允许修复字段】${JSON.stringify([...patchFields])}
 【相邻镜头连续性摘要】${JSON.stringify(compactNeighbours)}
 【本体资产白名单】${JSON.stringify(compactCatalogs)}
-【门禁反馈】${errors.map(item => item.message).join('；')}
+【门禁反馈】${gateFeedbackText}
 只返回 {"repairs":[{"shot_number":${Number(shotNumber) || 0},"patch":{...}}]}。patch 只能包含允许修复字段；character_visuals 和 video_slots.shots_timeline 必须返回该字段的完整新值，其他字段保持不变。`
         : `${rosterLockLine}
 【权威镜头事实】${JSON.stringify(compactExecutionShot(candidateBase))}
 【相邻镜头连续性摘要】${JSON.stringify(compactNeighbours)}
 【本体资产白名单】${JSON.stringify(compactCatalogs)}
-【门禁反馈】${errors.map(item => item.message).join('；')}
+【门禁反馈】${gateFeedbackText}
 必须输出当前镜头完整执行合同。`;
       const planned = await agentsRuntime.runAgent(db, log, {
         name: 'director-execution-slots-planner',
