@@ -13,6 +13,7 @@ const { validateVideoSlots, formatH3Timestamp, isGazeOnlyHold, mouthIsSealed } =
 const { validateCharacterVisualSlots, SCREEN_POSITION_REGEX, FACING_REGEX, HEAD_POSE_REGEX, GAZE_REGEX, POSTURE_REGEX, HANDS_REGEX, CLONE_TRIGGER_REGEX, DYNAMIC_REGEX } = require('./visualSlots');
 const { extractAllEntitiesFromScript } = require('./extractionAgent');
 const { isAssetObsolete } = require('./assetMatcher');
+const actionAtoms = require('./actionAtoms');
 
 function normalizeTimelineTimestamps(timeline) {
   if (!Array.isArray(timeline)) return timeline;
@@ -1492,15 +1493,16 @@ function visualSlotErrors(shot, characterVisuals, lastFrameVisuals) {
   const structured = shot?.video_slots?.performance_contract === 'sync_v2';
   if (structured && Array.isArray(characterVisuals)) {
     const enumFields = {
-      facing: ['front_camera', 'back_camera', 'left_profile', 'right_profile', 'three_quarter_left', 'three_quarter_right', 'toward_character', 'toward_object', 'toward_event', 'away_from_camera'],
-      head_pose: ['neutral', 'turned_left', 'turned_right', 'tilted_up', 'tilted_down', 'turned_to_target', 'lowered', 'raised', 'recoiling'],
-      gaze_type: ['camera', 'character', 'prop', 'event', 'scene', 'offscreen', 'ground', 'none'],
-      posture: ['standing', 'sitting', 'kneeling', 'crouching', 'lying', 'leaning', 'walking', 'running', 'falling', 'supported'],
-      hands_state: ['free', 'holding_object', 'reaching', 'supporting_target', 'pointing', 'covering_mouth', 'on_surface', 'clenched', 'relaxed'],
-      expression: ['neutral', 'focused', 'alert', 'worried', 'angry', 'surprised', 'pain', 'fear', 'relief', 'determined', 'sad', 'confused', 'exhausted'],
+      facing: actionAtoms.FACING,
+      head_pose: actionAtoms.HEAD_POSES,
+      gaze_type: actionAtoms.GAZE_TYPES,
+      posture: actionAtoms.POSTURES,
+      hands_state: actionAtoms.HAND_STATES,
+      expression: actionAtoms.EXPRESSIONS,
     };
     characterVisuals.forEach((visual, index) => Object.entries(enumFields).forEach(([field, allowed]) => {
-      if (!allowed.includes(String(visual?.[field] || ''))) errors.push(`character_visuals[${index}].${field} 必须使用结构化枚举值`);
+      const value = String(visual?.[field] ?? '');
+      if (!allowed.includes(value)) errors.push(`character_visuals[${index}].${field} 必须使用结构化枚举值（当前为 '${value}'，允许值: ${allowed.join('/')}）`);
     }));
   } else if (expected.length > 0 && Array.isArray(characterVisuals) && characterVisuals.length > 0) {
     const visualViolations = validateCharacterVisualSlots(shot, characterVisuals, 'character_visuals')
@@ -2832,8 +2834,8 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
       const planned = await agentsRuntime.runAgent(db, log, {
         name: 'director-execution-slots-planner',
         instructions: patchMode
-          ? `你是短剧导演执行合同的局部修复节点。只修复门禁反馈列出的字段，禁止改写人物清单、场景、对白、旁白、总时长和其他已通过字段。character_visuals 必须精确覆盖权威人物且每人有实际定格；video_slots.shots_timeline 必须让每位画内角色在该段有与事件同步的动作或反应。当【本体资产白名单】的 props 为空或不含目标物体时，动作 target_type 禁止填 'prop'（无有效 target_id 必被门禁拒绝），改用 'event' 或 'scene' 并填写 target_label。只返回指定 repairs JSON，不要解释。`
-          : `你是短剧导演执行合同节点。根据紧凑的当前镜头事实，一次输出完整 semantic_slots、character_visuals、last_frame_visuals 和 video_slots。禁止改写人物清单、场景、对白、旁白和总时长。semantic_slots.continuity_from_previous 必须完整；h3_mode 固定 ref2va；performance_contract 固定 sync_v2。动作与对白必须同步，所有画内人物都要有本段可执行动作或反应。当【本体资产白名单】的 props 为空或不含目标物体时，动作 target_type 禁止填 'prop'（无有效 target_id 必被门禁拒绝），改用 'event' 或 'scene' 并填写 target_label。${durationPlanContract}。只返回指定 JSON，不要解释。`,
+          ? `你是短剧导演执行合同的局部修复节点。只修复门禁反馈列出的字段，禁止改写人物清单、场景、对白、旁白、总时长和其他已通过字段。character_visuals 必须精确覆盖权威人物且每人有实际定格；video_slots.shots_timeline 必须让每位画内角色在该段有与事件同步的动作或反应。凡存在对白的 timeline 段，speech_action_alignment.mode 固定填 'concurrent'（禁止填 sync/deliberate_pause/none），画内说话人 character_trajectories[].mouth_state 固定填 'speaker_synced'。当【本体资产白名单】的 props 为空或不含目标物体时，动作 target_type 禁止填 'prop'（无有效 target_id 必被门禁拒绝），改用 'event' 或 'scene' 并填写 target_label。只返回指定 repairs JSON，不要解释。`
+          : `你是短剧导演执行合同节点。根据紧凑的当前镜头事实，一次输出完整 semantic_slots、character_visuals、last_frame_visuals 和 video_slots。禁止改写人物清单、场景、对白、旁白和总时长。semantic_slots.continuity_from_previous 必须完整；h3_mode 固定 ref2va；performance_contract 固定 sync_v2。动作与对白必须同步，所有画内人物都要有本段可执行动作或反应；有对白段 speech_action_alignment.mode 固定填 'concurrent'，画内说话人 character_trajectories[].mouth_state 固定填 'speaker_synced'。当【本体资产白名单】的 props 为空或不含目标物体时，动作 target_type 禁止填 'prop'（无有效 target_id 必被门禁拒绝），改用 'event' 或 'scene' 并填写 target_label。${durationPlanContract}。只返回指定 JSON，不要解释。`,
         input: requestInput,
         outputType: patchMode
           ? agentsRuntime.directorExecutionRepairOutputType(shotNumber)

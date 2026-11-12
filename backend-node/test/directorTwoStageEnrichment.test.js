@@ -292,6 +292,7 @@ test('directorTwoStageEnrichment: speaker_synced feedback pinpoints mouth_state,
     assert.match(inputs[1], /character_trajectories\[\]\.mouth_state/);
     assert.match(inputs[1], /冲突字段:.*mouth_state/);
     assert.match(inputs[1], /对白必须与动作同步.*speech_action_alignment\.mode/);
+    assert.match(inputs[1], /speech_action_alignment\.mode 必须为 'concurrent'/);
     assert.match(inputs[1], /【允许修复字段】\["video_slots"\]/);
     assert.equal(planned.video_slots.shots_timeline[0].character_trajectories[0].mouth_state, 'speaker_synced');
     assert.equal(planned.video_slots.shots_timeline[0].speech_action_alignment.mode, 'concurrent');

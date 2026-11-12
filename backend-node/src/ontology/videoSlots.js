@@ -13,10 +13,11 @@ const angleService = require('../services/angleService');
 const { stripChineseExclusions } = require('../utils/framePromptSanitize');
 const { synthesizeLightingChiaroscuro } = require('./visualSlots');
 const { CONTINUUM_MAX_SECONDS, SINGLE_MAX_SECONDS, CONTINUUM_MIN_SECONDS } = require('../services/continuumPlan');
+const actionAtoms = require('./actionAtoms');
 const {
   ACTIONS,
   isStructuredTrajectory,
-} = require('./actionAtoms');
+} = actionAtoms;
 
 // 物理现象与军事术语具象化字典
 const PHYSICAL_TRANSLATION_MAP = [
@@ -124,6 +125,11 @@ function validateStructuredExecutionContract(shot, slots) {
   const add = (rule, path, message, extra = {}) => violations.push({
     rule, shot_number: shotNum, severity: 'error', conflict_slots: [path], message, ...extra,
   });
+  const checkEnum = (rule, slotPath, value, allowed, label) => {
+    if (structuredEnumError(value, allowed)) {
+      add(rule, slotPath, `分镜 ${shotNum} 的 ${label} 不在允许枚举中（当前为 '${value ?? ''}'，允许值: ${allowed.join('/')}）。`);
+    }
+  };
 
   const targetValid = (atom, path) => {
     const type = String(atom?.target_type || '');
@@ -165,26 +171,36 @@ function validateStructuredExecutionContract(shot, slots) {
     if (String(atom.action || '').trim() && !ACTIONS.includes(String(atom.action).trim()) && !String(atom.action_detail || '').trim()) {
       add('INVARIANT_ACTION_ENUM_INVALID', `${path}.action_atom.action`, `分镜 ${shotNum} 的动作“${atom.action}”不在核心动作枚举中；请补充 action_detail 说明具体物理动作。`, { character_id: id });
     }
-    if (structuredEnumError(atom.body_part, require('./actionAtoms').BODY_PARTS)) add('INVARIANT_ACTION_BODY_PART_INVALID', `${path}.action_atom.body_part`, `分镜 ${shotNum} 的 body_part 不在允许枚举中。`);
-    if (structuredEnumError(atom.target_type, require('./actionAtoms').TARGET_TYPES)) add('INVARIANT_ACTION_TARGET_TYPE_INVALID', `${path}.action_atom.target_type`, `分镜 ${shotNum} 的 target_type 不在允许枚举中。`);
-    if (structuredEnumError(atom.direction, require('./actionAtoms').DIRECTIONS)) add('INVARIANT_ACTION_DIRECTION_INVALID', `${path}.action_atom.direction`, `分镜 ${shotNum} 的 direction 不在允许枚举中。`);
-    if (structuredEnumError(atom.contact, require('./actionAtoms').CONTACTS)) add('INVARIANT_ACTION_CONTACT_INVALID', `${path}.action_atom.contact`, `分镜 ${shotNum} 的 contact 不在允许枚举中。`);
+    for (const [rule, field, allowed] of [
+      ['INVARIANT_ACTION_BODY_PART_INVALID', 'body_part', actionAtoms.BODY_PARTS],
+      ['INVARIANT_ACTION_TARGET_TYPE_INVALID', 'target_type', actionAtoms.TARGET_TYPES],
+      ['INVARIANT_ACTION_DIRECTION_INVALID', 'direction', actionAtoms.DIRECTIONS],
+      ['INVARIANT_ACTION_CONTACT_INVALID', 'contact', actionAtoms.CONTACTS],
+    ]) {
+      checkEnum(rule, `${path}.action_atom.${field}`, atom[field], allowed, field);
+    }
     const needsObject = ['hold', 'grasp', 'release', 'use', 'touch'].includes(atom.action);
     const needsTarget = ['support', 'lift', 'push', 'pull', 'walk', 'run', 'turn', 'look', 'point', 'block'].includes(atom.action);
     if (needsObject && !Number.isInteger(Number(atom.object_id))) add('INVARIANT_ACTION_OBJECT_MISSING', `${path}.action_atom.object_id`, `分镜 ${shotNum} 的 ${atom.action} 动作必须填写 object_id。`);
     if (needsTarget && String(atom.target_type || 'none') === 'none') add('INVARIANT_ACTION_TARGET_MISSING', `${path}.action_atom.target_type`, `分镜 ${shotNum} 的 ${atom.action} 动作必须填写目标。`);
     if (Number(atom.target_id) === id && atom.target_type === 'character') add('INVARIANT_ACTION_SELF_TARGET', `${path}.action_atom.target_id`, `分镜 ${shotNum} 的人物不能把自己作为动作目标。`);
     targetValid(atom, `${path}.action_atom`);
-    if (structuredEnumError(trajectory.start_state, require('./actionAtoms').STATES)) add('INVARIANT_ACTION_STATE_INVALID', `${path}.start_state`, `分镜 ${shotNum} 的 start_state 不在允许枚举中。`);
-    if (structuredEnumError(trajectory.result_state, require('./actionAtoms').STATES)) add('INVARIANT_ACTION_STATE_INVALID', `${path}.result_state`, `分镜 ${shotNum} 的 result_state 不在允许枚举中。`);
-    if (!trajectory.reaction_trigger || structuredEnumError(trajectory.reaction_trigger.type, require('./actionAtoms').TRIGGER_TYPES)) add('INVARIANT_ACTION_TRIGGER_INVALID', `${path}.reaction_trigger`, `分镜 ${shotNum} 的 reaction_trigger 不完整或类型无效。`);
-    if (structuredEnumError(trajectory.facing, require('./actionAtoms').FACING)) add('INVARIANT_VISUAL_ENUM_INVALID', `${path}.facing`, `分镜 ${shotNum} 的 facing 不在允许枚举中。`);
-    if (structuredEnumError(trajectory.head_pose, require('./actionAtoms').HEAD_POSES)) add('INVARIANT_VISUAL_ENUM_INVALID', `${path}.head_pose`, `分镜 ${shotNum} 的 head_pose 不在允许枚举中。`);
-    if (structuredEnumError(trajectory.gaze_type, require('./actionAtoms').GAZE_TYPES)) add('INVARIANT_VISUAL_ENUM_INVALID', `${path}.gaze_type`, `分镜 ${shotNum} 的 gaze_type 不在允许枚举中。`);
-    if (structuredEnumError(trajectory.posture, require('./actionAtoms').POSTURES)) add('INVARIANT_VISUAL_ENUM_INVALID', `${path}.posture`, `分镜 ${shotNum} 的 posture 不在允许枚举中。`);
-    if (structuredEnumError(trajectory.hands_state, require('./actionAtoms').HAND_STATES)) add('INVARIANT_VISUAL_ENUM_INVALID', `${path}.hands_state`, `分镜 ${shotNum} 的 hands_state 不在允许枚举中。`);
-    if (structuredEnumError(trajectory.expression, require('./actionAtoms').EXPRESSIONS)) add('INVARIANT_VISUAL_ENUM_INVALID', `${path}.expression`, `分镜 ${shotNum} 的 expression 不在允许枚举中。`);
-    if (structuredEnumError(trajectory.mouth_state, require('./actionAtoms').MOUTH_STATES)) add('INVARIANT_VISUAL_ENUM_INVALID', `${path}.mouth_state`, `分镜 ${shotNum} 的 mouth_state 不在允许枚举中。`);
+    checkEnum('INVARIANT_ACTION_STATE_INVALID', `${path}.start_state`, trajectory.start_state, actionAtoms.STATES, 'start_state');
+    checkEnum('INVARIANT_ACTION_STATE_INVALID', `${path}.result_state`, trajectory.result_state, actionAtoms.STATES, 'result_state');
+    if (!trajectory.reaction_trigger || structuredEnumError(trajectory.reaction_trigger.type, actionAtoms.TRIGGER_TYPES)) {
+      add('INVARIANT_ACTION_TRIGGER_INVALID', `${path}.reaction_trigger`, `分镜 ${shotNum} 的 reaction_trigger 不完整或类型无效（当前为 '${trajectory.reaction_trigger?.type ?? ''}'，允许值: ${actionAtoms.TRIGGER_TYPES.join('/')}）。`);
+    }
+    for (const [field, allowed] of [
+      ['facing', actionAtoms.FACING],
+      ['head_pose', actionAtoms.HEAD_POSES],
+      ['gaze_type', actionAtoms.GAZE_TYPES],
+      ['posture', actionAtoms.POSTURES],
+      ['hands_state', actionAtoms.HAND_STATES],
+      ['expression', actionAtoms.EXPRESSIONS],
+      ['mouth_state', actionAtoms.MOUTH_STATES],
+    ]) {
+      checkEnum('INVARIANT_VISUAL_ENUM_INVALID', `${path}.${field}`, trajectory[field], allowed, field);
+    }
     return id;
   };
 
@@ -225,7 +241,7 @@ function validateStructuredExecutionContract(shot, slots) {
     const dialogue = String(segment?.audio_lip_sync?.dialogue_content || '').trim();
     const alignment = segment?.speech_action_alignment || {};
     if (dialogue) {
-      if (alignment.mode !== 'concurrent') add('INVARIANT_SPEECH_ACTION_NOT_CONCURRENT', `video_slots.shots_timeline[${index}].speech_action_alignment.mode`, `分镜 ${shotNum} 第 ${index + 1} 段对白必须与动作同步。`);
+      if (alignment.mode !== 'concurrent') add('INVARIANT_SPEECH_ACTION_NOT_CONCURRENT', `video_slots.shots_timeline[${index}].speech_action_alignment.mode`, `分镜 ${shotNum} 第 ${index + 1} 段对白必须与动作同步，speech_action_alignment.mode 必须为 'concurrent'（当前为 '${alignment.mode || ''}'；有对白段请勿填 sync / deliberate_pause / none）。`);
       const speakerId = Number(alignment.speaker_character_id || 0);
       const speakerInFrame = segment?.audio_lip_sync?.speaker_in_frame !== false;
       if (speakerInFrame && !speakerId) {
@@ -239,9 +255,10 @@ function validateStructuredExecutionContract(shot, slots) {
         if (!speaker) add('INVARIANT_SPEAKER_TRAJECTORY_MISSING', `video_slots.shots_timeline[${index}].character_trajectories`, `分镜 ${shotNum} 第 ${index + 1} 段说话人缺少动作轨迹。`);
         if (speaker && speaker.mouth_state !== 'speaker_synced') add('INVARIANT_SPEAKER_MOUTH_STATE_INVALID', `video_slots.shots_timeline[${index}].character_trajectories[character_id=${speakerId}].mouth_state`, `分镜 ${shotNum} 第 ${index + 1} 段说话人 ID ${speakerId} 的 character_trajectories[].mouth_state 必须为 'speaker_synced'（当前为 '${speaker.mouth_state || ''}'；speech_action_alignment.mode 保持 'concurrent'，不要改为 speaker_synced）。`);
       }
+      const allowedListenerActions = ['react', 'listen', 'look', 'support', 'turn'];
       for (const listener of (Array.isArray(alignment.listener_reactions) ? alignment.listener_reactions : [])) {
         if (!segmentVisibleIds.includes(Number(listener.character_id))) add('INVARIANT_LISTENER_NOT_VISIBLE', `video_slots.shots_timeline[${index}].speech_action_alignment.listener_reactions`, `分镜 ${shotNum} 第 ${index + 1} 段听者不在画面中。`);
-        if (!['react', 'listen', 'look', 'support', 'turn'].includes(listener.trajectory_action)) add('INVARIANT_LISTENER_REACTION_INVALID', `video_slots.shots_timeline[${index}].speech_action_alignment.listener_reactions`, `分镜 ${shotNum} 第 ${index + 1} 段听者反应必须选择一个原子动作。`);
+        if (!allowedListenerActions.includes(listener.trajectory_action)) add('INVARIANT_LISTENER_REACTION_INVALID', `video_slots.shots_timeline[${index}].speech_action_alignment.listener_reactions`, `分镜 ${shotNum} 第 ${index + 1} 段听者反应 trajectory_action 无效（当前为 '${listener.trajectory_action || ''}'，允许值: ${allowedListenerActions.join('/')}）。`);
       }
     }
   });
