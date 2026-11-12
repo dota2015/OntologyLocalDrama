@@ -595,15 +595,57 @@ function validateVideoSlots(shot, slots) {
     if (!Number.isInteger(duration) || duration < 4 || duration > CONTINUUM_MAX_SECONDS) {
       violations.push({ rule: 'INVARIANT_SHORT_DRAMA_TIMELINE_DURATION', shot_number: shotNum, severity: 'error', message: `分镜 ${shotNum} 总时长必须为4～${CONTINUUM_MAX_SECONDS}整数秒，当前为 ${duration} 秒。` });
     }
-    const executionBackend = String(slots.execution_backend || slots.executionBackend || '').toLowerCase();
-    if (duration > SINGLE_MAX_SECONDS && executionBackend !== 'h3_continuum') {
-      violations.push({ rule: 'INVARIANT_CONTINUUM_BACKEND_REQUIRED', shot_number: shotNum, severity: 'error', message: `分镜 ${shotNum} 为 ${duration} 秒，必须使用 execution_backend="h3_continuum"。普通 H3 仅支持4～8秒。` });
-    }
-    if (duration <= SINGLE_MAX_SECONDS && executionBackend === 'h3_continuum') {
-      violations.push({ rule: 'INVARIANT_SINGLE_BACKEND_REQUIRED', shot_number: shotNum, severity: 'error', message: `分镜 ${shotNum} 为 ${duration} 秒，应使用 execution_backend="h3_single"。Continuum 从9秒开始。` });
-    }
-    if (duration >= CONTINUUM_MIN_SECONDS && executionBackend === 'h3_continuum' && slots.continuum_plan?.total_duration != null && Number(slots.continuum_plan.total_duration) !== duration) {
-      violations.push({ rule: 'INVARIANT_CONTINUUM_DURATION_MISMATCH', shot_number: shotNum, severity: 'error', message: `分镜 ${shotNum} 的 continuum_plan.total_duration 必须等于 ${duration} 秒。` });
+    const validateBackendContract = (backendValue, planValue, prefix) => {
+      const normalizedBackend = String(backendValue || '').trim().toLowerCase();
+      if (!normalizedBackend) return '';
+      if (duration > SINGLE_MAX_SECONDS && normalizedBackend !== 'h3_continuum') {
+        violations.push({
+          rule: 'INVARIANT_CONTINUUM_BACKEND_REQUIRED',
+          shot_number: shotNum,
+          severity: 'error',
+          conflict_slots: [`${prefix}.execution_backend`, `${prefix}.continuum_plan`],
+          message: `分镜 ${shotNum} 为 ${duration} 秒，必须使用 ${prefix}.execution_backend="h3_continuum"。普通 H3 仅支持4～${SINGLE_MAX_SECONDS}秒。`,
+        });
+      }
+      if (duration <= SINGLE_MAX_SECONDS && normalizedBackend === 'h3_continuum') {
+        violations.push({
+          rule: 'INVARIANT_SINGLE_BACKEND_REQUIRED',
+          shot_number: shotNum,
+          severity: 'error',
+          conflict_slots: [`${prefix}.execution_backend`, `${prefix}.continuum_plan`],
+          message: `分镜 ${shotNum} 为 ${duration} 秒，应使用 ${prefix}.execution_backend="h3_single"。Continuum 从${CONTINUUM_MIN_SECONDS}秒开始。`,
+        });
+      }
+      if (normalizedBackend === 'h3_single' && planValue != null) {
+        violations.push({
+          rule: 'INVARIANT_SINGLE_BACKEND_CONTINUUM_CONFLICT',
+          shot_number: shotNum,
+          severity: 'error',
+          conflict_slots: [`${prefix}.continuum_plan`],
+          message: `分镜 ${shotNum} 为 ${duration} 秒普通 H3 (${prefix}.execution_backend="h3_single")，continuum_plan 必须为 null。`,
+        });
+      }
+      if (duration >= CONTINUUM_MIN_SECONDS && normalizedBackend === 'h3_continuum' && planValue?.total_duration != null && Number(planValue.total_duration) !== duration) {
+        violations.push({
+          rule: 'INVARIANT_CONTINUUM_DURATION_MISMATCH',
+          shot_number: shotNum,
+          severity: 'error',
+          conflict_slots: [`${prefix}.continuum_plan`],
+          message: `分镜 ${shotNum} 的 ${prefix}.continuum_plan.total_duration 必须等于 ${duration} 秒。`,
+        });
+      }
+      return normalizedBackend;
+    };
+    const executionBackend = validateBackendContract(slots.execution_backend || slots.executionBackend, slots.continuum_plan, 'video_slots');
+    const semanticBackend = validateBackendContract(semantic.execution_backend, semantic.continuum_plan, 'semantic_slots');
+    if (executionBackend && semanticBackend && executionBackend !== semanticBackend) {
+      violations.push({
+        rule: 'INVARIANT_EXECUTION_BACKEND_CONFLICT',
+        shot_number: shotNum,
+        severity: 'error',
+        conflict_slots: ['semantic_slots.execution_backend', 'video_slots.execution_backend'],
+        message: `分镜 ${shotNum} 的 semantic_slots.execution_backend (${semanticBackend}) 与 video_slots.execution_backend (${executionBackend}) 冲突。`,
+      });
     }
     const timeline = Array.isArray(slots.shots_timeline) ? slots.shots_timeline : [];
     const visibleIds = (Array.isArray(semantic.visible_characters) ? semantic.visible_characters : [])

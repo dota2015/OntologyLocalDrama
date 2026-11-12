@@ -494,3 +494,50 @@ test('directorTwoStageEnrichment: stage-two per-shot gate catches duplicate scre
     agentsRuntime.runAgent = originalRunAgent;
   }
 });
+
+test('directorTwoStageEnrichment: execution slots schema locks execution_backend to shot duration', () => {
+  const { directorExecutionSlotsOutputType } = require('../src/services/agentsRuntime');
+  const shortProps = directorExecutionSlotsOutputType(5, {}).schema.properties.semantic_slots.properties;
+  assert.equal(shortProps.shot_duration.const, 5);
+  assert.equal(shortProps.execution_backend.const, 'h3_single');
+  assert.equal(shortProps.continuum_plan.type, 'null');
+
+  const longProps = directorExecutionSlotsOutputType(12, {}).schema.properties.semantic_slots.properties;
+  assert.equal(longProps.shot_duration.const, 12);
+  assert.equal(longProps.execution_backend.const, 'h3_continuum');
+  assert.equal(longProps.continuum_plan.properties.total_duration.const, 12);
+});
+
+test('directorTwoStageEnrichment: stage-two gate rejects h3_continuum on 5s shot and repairs semantic_slots.execution_backend', async () => {
+  const { validateVideoSlots } = require('../src/ontology/videoSlots');
+  const semanticMismatchViolations = validateVideoSlots(
+    {
+      shot_number: 1,
+      duration: 5,
+      semantic_slots: { h3_mode: 'ref2va', execution_backend: 'h3_continuum', continuum_plan: null, visible_characters: [] },
+    },
+    {
+      performance_contract: 'structured_sync',
+      timing: { duration: 5, pacing: 'medium' },
+      shots_timeline: [],
+    },
+  );
+  const backendError = semanticMismatchViolations.find((v) => v.rule === 'INVARIANT_SINGLE_BACKEND_REQUIRED');
+  assert.ok(backendError, 'validateVideoSlots must reject semantic_slots.execution_backend=h3_continuum on 5s shot');
+  assert.deepEqual(backendError.conflict_slots, ['semantic_slots.execution_backend', 'semantic_slots.continuum_plan']);
+
+  const crossMismatch = validateVideoSlots(
+    {
+      shot_number: 1,
+      duration: 5,
+      semantic_slots: { h3_mode: 'ref2va', execution_backend: 'h3_continuum', continuum_plan: null, visible_characters: [] },
+    },
+    {
+      performance_contract: 'structured_sync',
+      execution_backend: 'h3_single',
+      timing: { duration: 5, pacing: 'medium' },
+      shots_timeline: [],
+    },
+  );
+  assert.ok(crossMismatch.some((v) => v.rule === 'INVARIANT_EXECUTION_BACKEND_CONFLICT'));
+});

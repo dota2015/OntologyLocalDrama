@@ -6,6 +6,7 @@ const {
   structuredTrajectorySchema,
   structuredVisualSchema,
 } = require('../ontology/actionAtoms');
+const { CONTINUUM_MIN_SECONDS } = require('./continuumPlan');
 
 let sdkPromise = null;
 
@@ -490,7 +491,8 @@ function directorCharacterVisualsOutputType() {
 }
 
 function directorExecutionSlotsOutputType(duration = 5, options = {}) {
-  const seconds = Math.max(4, Math.min(30, Number(duration) || 5));
+  const seconds = Math.max(4, Math.min(30, Math.round(Number(duration) || 5)));
+  const expectedBackend = seconds >= CONTINUUM_MIN_SECONDS ? 'h3_continuum' : 'h3_single';
   const timeline = videoSlotsSchema();
   timeline.properties.shots_timeline.minItems = 1;
   timeline.properties.shots_timeline.maxItems = Math.floor(seconds);
@@ -506,6 +508,19 @@ function directorExecutionSlotsOutputType(duration = 5, options = {}) {
   const semantic = semanticSlotsSchema();
   semantic.required = [...semantic.required, 'source_script_excerpt'];
   semantic.properties.source_script_excerpt = { type: 'string', maxLength: 2000 };
+  semantic.properties.shot_duration = { const: seconds };
+  semantic.properties.execution_backend = { const: expectedBackend };
+  semantic.properties.continuum_plan = seconds >= CONTINUUM_MIN_SECONDS
+    ? {
+        type: 'object', additionalProperties: true, required: ['enabled', 'total_duration', 'chunks', 'chunk_seconds'],
+        properties: {
+          enabled: { const: true },
+          total_duration: { const: seconds },
+          chunks: { type: 'integer', minimum: 2, maximum: 8 },
+          chunk_seconds: { type: 'integer', minimum: 4, maximum: 15 },
+        },
+      }
+    : { type: 'null' };
   return {
     type: 'json_schema',
     name: 'director_execution_slots',

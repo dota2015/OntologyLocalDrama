@@ -85,6 +85,7 @@ const NULLABLE_INT_KEYS = new Set([
 const LABELS = {
   performance_contract: '性能执行契约',
   execution_backend: '执行引擎版本',
+  continuum_plan: '长镜分片计划 (Continuum)',
   character_id: '角色 ID',
   name: '名称',
   depth_layer: '景深层级',
