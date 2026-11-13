@@ -37,6 +37,9 @@
           <el-button class="btn-settings" @click="showAiConfigDialog = true">
             <el-icon><Setting /></el-icon>AI配置
           </el-button>
+          <el-button class="btn-ontology" @click="router.push('/ontology')">
+            <el-icon><Connection /></el-icon>本体配置
+          </el-button>
           <el-button class="btn-import" :loading="importing" @click="triggerImport">
             <el-icon><Upload /></el-icon>导入项目
           </el-button>
@@ -356,7 +359,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Edit, Delete, Setting, Plus, User, PictureFilled, Box, Sunny, Moon, ChatDotSquare, Download, Upload, QuestionFilled, FolderOpened, MagicStick, Files } from '@element-plus/icons-vue'
+import { Edit, Delete, Setting, Plus, User, PictureFilled, Box, Sunny, Moon, ChatDotSquare, Download, Upload, QuestionFilled, FolderOpened, MagicStick, Files, Connection } from '@element-plus/icons-vue'
 import { useTheme } from '@/composables/useTheme'
 import { dramaAPI } from '@/api/drama'
 import { characterLibraryAPI } from '@/api/characterLibrary'
@@ -947,6 +950,26 @@ html.light .btn-settings {
   --el-button-hover-text-color: #78350f;
   --el-button-active-bg-color: rgba(180, 83, 9, 0.18);
   --el-button-active-border-color: rgba(180, 83, 9, 0.6);
+}
+
+/* 本体配置按钮 —— 紫绀科技调 */
+.btn-ontology {
+  --el-button-bg-color: rgba(99, 102, 241, 0.12);
+  --el-button-border-color: rgba(99, 102, 241, 0.35);
+  --el-button-text-color: #a5b4fc;
+  --el-button-hover-bg-color: rgba(99, 102, 241, 0.22);
+  --el-button-hover-border-color: rgba(99, 102, 241, 0.55);
+  --el-button-hover-text-color: #c7d2fe;
+  --el-button-active-bg-color: rgba(99, 102, 241, 0.3);
+  --el-button-active-border-color: rgba(99, 102, 241, 0.7);
+}
+html.light .btn-ontology {
+  --el-button-bg-color: rgba(79, 70, 229, 0.08);
+  --el-button-border-color: rgba(79, 70, 229, 0.3);
+  --el-button-text-color: #4338ca;
+  --el-button-hover-bg-color: rgba(79, 70, 229, 0.15);
+  --el-button-hover-border-color: rgba(79, 70, 229, 0.48);
+  --el-button-hover-text-color: #3730a3;
 }
 
 /* 导入按钮 —— 亮色模式下提升可读性 */

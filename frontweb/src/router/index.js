@@ -34,6 +34,12 @@ const router = createRouter({
       meta: { title: 'AI 配置' }
     },
     {
+      path: '/ontology',
+      name: 'ontology',
+      component: () => import('@/views/OntologyView.vue'),
+      meta: { title: '影视本体架构与配置' }
+    },
+    {
       path: '/free-create',
       name: 'free-create',
       component: () => import('@/views/FreeCreate.vue'),

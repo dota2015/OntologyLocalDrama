@@ -364,6 +364,197 @@ function ontologyRoutes(db, log) {
         response.badRequest(res, err.message);
       }
     },
+
+    // 查询全部 12 项本体门禁规则元数据
+    getRules: (req, res) => {
+      try {
+        const { InvariantRuleEngine } = require('../ontology/ruleEngine');
+        const engine = new InvariantRuleEngine();
+        const ruleMetaMap = {
+          RULE_AUDIO_CONTRACT: {
+            category: '视听合同与语义',
+            target_fields: ['semantic_slots.audio_lip_sync', 'semantic_slots.sound_plan', 'dialogue'],
+            prevention: '杜绝口型与画外音不一致、环境音与纯静音互斥冲突',
+            severity: 'error',
+          },
+          RULE_SPEECH_TIMING: {
+            category: '物理时序与时长',
+            target_fields: ['duration', 'dialogue', 'narration', 'semantic_slots.speech_plan'],
+            prevention: '防止台词字数超出镜头物理容纳上限（按 TTS 1.25x 速率评估），避免下游视频硬截断',
+            severity: 'error',
+          },
+          RULE_VISUAL_SLOT_COMPLETENESS: {
+            category: '画面构图与视觉定格',
+            target_fields: ['character_visuals', 'depth_layer', 'screen_position', 'facing', 'gaze_type', 'posture', 'hands_state', 'expression'],
+            prevention: '确保画内每个出场角色有明确的 3D 站位、朝向与微表情，杜绝多角色站位重叠',
+            severity: 'error',
+          },
+          RULE_VIDEO_SLOTS: {
+            category: '动态轨迹与动作原子',
+            target_fields: ['video_slots.trajectories', 'video_slots.performance_contract', 'video_slots.camera'],
+            prevention: '强化 Structured Sync 动作原子规范，严禁画外角色产生画内动作、杜绝术语未具象化',
+            severity: 'error',
+          },
+          RULE_CROWD_CONTROL: {
+            category: '模型容量与防克隆人',
+            target_fields: ['semantic_slots.visible_characters', 'characters'],
+            prevention: '单镜有身份主角严格控制在 2 人以内，防止生图/视频模型出现克隆人、双胞胎或人脸融化',
+            severity: 'error',
+          },
+          RULE_H3_REFERENCE_CAPACITY: {
+            category: '模型容量与防克隆人',
+            target_fields: ['semantic_slots.required_references', 'props'],
+            prevention: '限制单镜参考图资产 1～9 项，按「场景 -> 角色 -> 道具」严格有序排布',
+            severity: 'error',
+          },
+          RULE_SPATIAL_CONTINUITY: {
+            category: '时空连续性',
+            target_fields: ['scene_id', 'camera.angle_h', 'continuity_from_previous'],
+            prevention: '同一机位同视角下防止角色瞬间置换造成视觉跳切穿帮',
+            severity: 'error',
+          },
+          RULE_PROP_ERA_AND_SCALE: {
+            category: '资产与物理规律',
+            target_fields: ['props', 'physical_scale', 'era_compatibility'],
+            prevention: '校验道具真实物理尺度（不可随意巨化/微化）以及时代相容性（防穿越穿帮）',
+            severity: 'error',
+          },
+          RULE_OBSOLETE_ASSETS: {
+            category: '资产与物理规律',
+            target_fields: ['catalogs.props', 'catalogs.characters', 'catalogs.scenes'],
+            prevention: '识别在剧本和分镜中均未出场且超过冷却期的过时残留资产，防止污染提示词',
+            severity: 'warning',
+          },
+          RULE_SHOT_TRANSITION_CONTINUITY: {
+            category: '时空连续性',
+            target_fields: ['continuity_type', 'continuity_from_previous', 'start_framing', 'end_framing'],
+            prevention: '审查镜头起幅构图、落幅定格与过渡承接的完整性，防止镜头前后脱节',
+            severity: 'error',
+          },
+          RULE_CROSS_SLOT_INVARIANTS: {
+            category: '视听合同与语义',
+            target_fields: ['semantic_slots.offscreen_characters', 'semantic_slots.first_frame_policy', 'semantic_slots.last_frame_policy', 'h3_mode'],
+            prevention: '严格审查跨槽位语义一致性，画外参与角色必须显式声明（present_offscreen / remote_voice），严禁隐式偷渡',
+            severity: 'error',
+          },
+          RULE_ASSET_REFERENCE_AND_PLANNING_FEASIBILITY: {
+            category: '资产与物理规律',
+            target_fields: ['characters', 'props', 'scene_id', 'required_references'],
+            prevention: '严格校验引用资产 ID 必须存在于剧目/集可用白名单中，坚决拦截未知或伪造 ID',
+            severity: 'error',
+          },
+        };
+
+        const list = Array.from(engine.rules.values()).map((r) => {
+          const meta = ruleMetaMap[r.id] || {};
+          return {
+            id: r.id,
+            name: r.name || r.id,
+            description: r.description || '',
+            category: meta.category || '核心视听门禁',
+            severity: meta.severity || 'error',
+            target_fields: meta.target_fields || [],
+            prevention: meta.prevention || '',
+          };
+        });
+
+        response.success(res, list);
+      } catch (err) {
+        log.error('ontology getRules', { error: err.message });
+        response.badRequest(res, err.message);
+      }
+    },
+
+    // 查询视听本体全景系统概览（架构、三层管线、规范与统计）
+    getOverview: (req, res) => {
+      try {
+        const schema = require('../ontology/schema');
+        const atoms = require('../ontology/actionAtoms');
+        const { InvariantRuleEngine } = require('../ontology/ruleEngine');
+        const engine = new InvariantRuleEngine();
+
+        let dramaCount = 0;
+        let episodeCount = 0;
+        let storyboardCount = 0;
+        let characterCount = 0;
+        let sceneCount = 0;
+        let propCount = 0;
+
+        try {
+          dramaCount = db.prepare('SELECT count(*) as c FROM dramas WHERE deleted_at IS NULL').get()?.c || 0;
+          episodeCount = db.prepare('SELECT count(*) as c FROM episodes WHERE deleted_at IS NULL').get()?.c || 0;
+          storyboardCount = db.prepare('SELECT count(*) as c FROM storyboards WHERE deleted_at IS NULL').get()?.c || 0;
+          characterCount = db.prepare('SELECT count(*) as c FROM characters WHERE deleted_at IS NULL').get()?.c || 0;
+          sceneCount = db.prepare('SELECT count(*) as c FROM scenes WHERE deleted_at IS NULL').get()?.c || 0;
+          propCount = db.prepare('SELECT count(*) as c FROM props WHERE deleted_at IS NULL').get()?.c || 0;
+        } catch (_) {}
+
+        response.success(res, {
+          principles: [
+            {
+              title: '门禁只认结构化语义',
+              description: '本体门禁与不变量判定依据必须是结构化字段（ID、枚举、槽位关系），坚决禁止文本正则推断事实；语义事实由 Agent 显式声明，门禁只校验一致性。',
+            },
+            {
+              title: '平台代码零内容',
+              description: '通用短剧平台坚决禁止在代码与规则规范中硬编码任何剧目的剧情、角色名、道具名与题材设定；一切内容完全来源于剧目语义包与目录数据。',
+            },
+            {
+              title: '三层视听编译管线',
+              description: '严格遵循「智能体推演层 ➔ 本体门禁质检层 ➔ 执行确定性编译层」三层架构，不合规数据在门禁层立即被打回自修，绝不污染下游渲染。',
+            },
+          ],
+          pipeline: [
+            {
+              stage: 'Stage 1: 基础剧情分镜划分',
+              agent: '短剧基础导演 Agent',
+              goal: '确保剧本台词与情节逐字覆盖，单说话人单轮对白拆分，物理动作拍摄规划，TTS 速率时长预算。',
+              output: 'shot_number, title, scene_id, characters, props, duration, dialogue, narration, action',
+            },
+            {
+              stage: 'Stage 2: 视听槽位扩充与闭环审校',
+              agent: '导演执行合同 Agent',
+              goal: '推导 3D 视觉定格、因果动作原子、口型同步模式、声音方案、转场桥接与 H3 参考图合约。',
+              output: 'semantic_slots, character_visuals, video_slots, last_frame_visuals',
+            },
+            {
+              stage: 'Stage 3: 视听本体质量门禁硬拦截',
+              agent: 'SHACL Invariant Rule Engine',
+              goal: '运行 12 大不可变规则校验，发现违规立即触发 Agent 局部反射自纠，确保进入渲染层的数据百分之百合规。',
+              output: 'Audited & Validated Contract (Zero Violations)',
+            },
+            {
+              stage: 'Stage 4: 确定性执行编译与渲染',
+              agent: 'H3 Compiler & Multi-Modal Engine',
+              goal: '依据结构化槽位与资产参考图，确定性编译为 H3 提示词（Ref2VA / FL2VA）、IndexTTS 语音流与视频剪辑工程。',
+              output: 'MiniMax H3 Video / TTS Audio / Subtitles',
+            },
+          ],
+          stats: {
+            rules_count: engine.rules.size,
+            dramas_count: dramaCount,
+            episodes_count: episodeCount,
+            storyboards_count: storyboardCount,
+            characters_count: characterCount,
+            scenes_count: sceneCount,
+            props_count: propCount,
+          },
+          action_atoms: {
+            actions_count: Object.keys(atoms.ACTIONS || {}).length,
+            body_parts_count: Object.keys(atoms.BODY_PARTS || {}).length,
+            target_types_count: Object.keys(atoms.TARGET_TYPES || {}).length,
+            directions_count: Object.keys(atoms.DIRECTIONS || {}).length,
+            contacts_count: Object.keys(atoms.CONTACTS || {}).length,
+            states_count: Object.keys(atoms.STATES || {}).length,
+            actions_sample: Object.keys(atoms.ACTIONS || {}).slice(0, 12),
+          },
+          dictionary_dimensions: Object.keys(schema.AUDIOTISUAL_DATA_DICTIONARY || {}).filter(k => !k.startsWith('_')),
+        });
+      } catch (err) {
+        log.error('ontology getOverview', { error: err.message });
+        response.badRequest(res, err.message);
+      }
+    },
   };
 }
 

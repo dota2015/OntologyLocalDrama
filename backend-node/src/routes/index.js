@@ -391,6 +391,8 @@ function setupRouter(cfg, db, log) {
   r.get('/agent/history', agent.history);
 
   // ---------- audiovisual ontology & director agent ----------
+  r.get('/ontology/overview', ontology.getOverview);
+  r.get('/ontology/rules', ontology.getRules);
   r.get('/ontology/data-dictionary', ontology.getDataDictionary);
   r.get('/episodes/:episode_id/ontology/semantic-package', ontology.getSemanticPackage);
   r.post('/episodes/:episode_id/ontology/validate', ontology.validateEpisodeInvariants);

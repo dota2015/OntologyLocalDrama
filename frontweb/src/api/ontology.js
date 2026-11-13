@@ -41,6 +41,21 @@ export const ontologyAPI = {
     return request.post(`/dramas/${dramaId}/ontology/reconcile-assets`, {})
   },
 
+  // 查询视听本体槽位统一数据字典规范
+  getDataDictionary() {
+    return request.get('/ontology/data-dictionary')
+  },
+
+  // 查询全部 12 项本体门禁规则元数据
+  getRules() {
+    return request.get('/ontology/rules')
+  },
+
+  // 查询视听本体全景系统概览（架构、三层管线、规范与统计）
+  getOverview() {
+    return request.get('/ontology/overview')
+  },
+
   // 人机协同：输入名称或线索，AI 结合剧本上下文智能分析提取实体全量属性
   autocompleteEntity(dramaId, data) {
     return request.post(`/dramas/${dramaId}/ontology/autocomplete-entity`, data)

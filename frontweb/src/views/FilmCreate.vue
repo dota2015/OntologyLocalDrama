@@ -38,9 +38,14 @@
           <el-button class="btn-theme" :title="isDark ? '切换到浅色模式' : '切换到暗色模式'" @click="toggleTheme">
             <el-icon><Sunny v-if="isDark" /><Moon v-else /></el-icon>
             {{ isDark ? '浅色' : '暗色' }}
-          </el-button><el-button class="btn-ai-config" @click="showAiConfigDialog = true">
+          </el-button>
+          <el-button class="btn-ai-config" @click="showAiConfigDialog = true">
             <el-icon><Setting /></el-icon>
             AI配置
+          </el-button>
+          <el-button class="btn-ontology" @click="goOntology">
+            <el-icon><Connection /></el-icon>
+            本体配置
           </el-button>
         </div>
       </div>
@@ -232,7 +237,7 @@ import { useAgentContext } from '@/stores/agentContext'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { ElMessage } from 'element-plus'
-import { ArrowLeft, Setting, Plus, Minus, Sunny, Moon, Check, Loading, WarningFilled, Expand, Fold, Grid } from '@element-plus/icons-vue'
+import { ArrowLeft, Setting, Plus, Minus, Sunny, Moon, Check, Loading, WarningFilled, Expand, Fold, Grid, Connection } from '@element-plus/icons-vue'
 import { useTheme } from '@/composables/useTheme'
 import { useFilmStore } from '@/stores/film'
 import { useGenerationTaskStore, GEN_RESOURCE } from '@/stores/generationTaskStore'
@@ -274,6 +279,13 @@ function goCanvasMode() {
   if (!dramaId.value) return
   const query = selectedEpisodeId.value ? { episode: String(selectedEpisodeId.value) } : {}
   router.push({ path: `/film/${dramaId.value}/canvas`, query })
+}
+
+function goOntology() {
+  const query = {}
+  if (dramaId.value) query.dramaId = String(dramaId.value)
+  if (selectedEpisodeId.value) query.episodeId = String(selectedEpisodeId.value)
+  router.push({ path: '/ontology', query })
 }
 
 const showAiConfigDialog = ref(false)
@@ -1349,6 +1361,40 @@ html.light .btn-theme {
   --el-button-hover-bg-color: rgba(99, 102, 241, 0.08);
   --el-button-hover-border-color: rgba(99, 102, 241, 0.3);
   --el-button-hover-text-color: #4f46e5;
+}
+.btn-ai-config {
+  --el-button-bg-color: rgba(234, 179, 8, 0.1);
+  --el-button-border-color: rgba(234, 179, 8, 0.32);
+  --el-button-text-color: #fcd34d;
+  --el-button-hover-bg-color: rgba(234, 179, 8, 0.2);
+  --el-button-hover-border-color: rgba(234, 179, 8, 0.5);
+  --el-button-hover-text-color: #fde68a;
+  transition: all 0.2s ease;
+}
+html.light .btn-ai-config {
+  --el-button-bg-color: rgba(180, 83, 9, 0.07);
+  --el-button-border-color: rgba(180, 83, 9, 0.28);
+  --el-button-text-color: #92400e;
+  --el-button-hover-bg-color: rgba(180, 83, 9, 0.12);
+  --el-button-hover-border-color: rgba(180, 83, 9, 0.45);
+  --el-button-hover-text-color: #78350f;
+}
+.btn-ontology {
+  --el-button-bg-color: rgba(99, 102, 241, 0.12);
+  --el-button-border-color: rgba(99, 102, 241, 0.35);
+  --el-button-text-color: #a5b4fc;
+  --el-button-hover-bg-color: rgba(99, 102, 241, 0.22);
+  --el-button-hover-border-color: rgba(99, 102, 241, 0.55);
+  --el-button-hover-text-color: #c7d2fe;
+  transition: all 0.2s ease;
+}
+html.light .btn-ontology {
+  --el-button-bg-color: rgba(79, 70, 229, 0.08);
+  --el-button-border-color: rgba(79, 70, 229, 0.3);
+  --el-button-text-color: #4338ca;
+  --el-button-hover-bg-color: rgba(79, 70, 229, 0.15);
+  --el-button-hover-border-color: rgba(79, 70, 229, 0.48);
+  --el-button-hover-text-color: #3730a3;
 }
 /* ===== 左侧固定侧边栏 ===== */
 .quick-nav {
