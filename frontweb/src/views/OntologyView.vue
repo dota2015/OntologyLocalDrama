@@ -704,11 +704,17 @@ async function runEpisodeValidation() {
   auditResult.value = null
   try {
     const res = await ontologyAPI.validateInvariants(inspectEpisodeId.value)
-    auditResult.value = res?.data || null
-    if (res?.data?.valid) {
+    const payload = res?.data || {}
+    const audit = payload.audit || payload
+    auditResult.value = {
+      ...audit,
+      total_shots: payload.total_shots ?? audit.total_shots ?? 0,
+      semantic_revision: payload.semantic_revision
+    }
+    if (auditResult.value.valid) {
       ElMessage.success('全集视听本体质量门禁检测通过，合规率 100%！')
     } else {
-      ElMessage.warning(`检测到 ${(res?.data?.violations || []).length} 项不变量违规`)
+      ElMessage.warning(`检测到 ${(auditResult.value.violations || []).length} 项不变量违规`)
     }
   } catch (e) {
     ElMessage.error('门禁体检失败：' + (e.message || '未知错误'))
