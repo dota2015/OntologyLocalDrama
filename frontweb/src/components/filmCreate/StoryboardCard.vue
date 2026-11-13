@@ -150,12 +150,12 @@
             </template>
           </el-select>
           <el-select
-            v-model="ctx.sbSceneId[sb.id]"
+            :model-value="ctx.getSbSceneId ? ctx.getSbSceneId(sb.id) : (ctx.sbSceneId?.value || ctx.sbSceneId)?.[sb.id]"
             placeholder="选择场景"
             clearable
             size="small"
             class="sb-select"
-            @change="() => ctx.onStoryboardSceneChange(sb.id)"
+            @update:model-value="(v) => (ctx.setSbSceneId ? ctx.setSbSceneId(sb.id, v) : ((ctx.sbSceneId?.value || ctx.sbSceneId)[sb.id] = v, ctx.onStoryboardSceneChange(sb.id)))"
           >
             <el-option
               v-for="s in (ctx.scenes?.value || ctx.scenes || [])"

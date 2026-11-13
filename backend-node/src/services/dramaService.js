@@ -345,15 +345,33 @@ function rowToEpisode(r) {
   };
 }
 
-function parseStoryboardCharacters(charactersStr) {
-  if (!charactersStr || typeof charactersStr !== 'string') return [];
-  try {
-    const parsed = JSON.parse(charactersStr);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.map((c) => (typeof c === 'object' && c != null && c.id != null ? Number(c.id) : Number(c))).filter((n) => Number.isFinite(n));
-  } catch (_) {
-    return [];
+function parseStoryboardCharacters(charactersStr, r = null) {
+  let ids = [];
+  if (charactersStr) {
+    try {
+      const parsed = typeof charactersStr === 'string' ? JSON.parse(charactersStr) : charactersStr;
+      if (Array.isArray(parsed)) {
+        ids = parsed.map((c) => (typeof c === 'object' && c != null && c.id != null ? Number(c.id) : Number(c))).filter((n) => Number.isFinite(n));
+      }
+    } catch (_) {}
   }
+  if (!ids.length && r?.semantic_slots) {
+    try {
+      const sem = typeof r.semantic_slots === 'string' ? JSON.parse(r.semantic_slots) : r.semantic_slots;
+      if (Array.isArray(sem?.visible_characters)) {
+        ids = sem.visible_characters.map((c) => Number(c.id)).filter(Number.isFinite);
+      }
+    } catch (_) {}
+  }
+  if (!ids.length && r?.character_visuals) {
+    try {
+      const vis = typeof r.character_visuals === 'string' ? JSON.parse(r.character_visuals) : r.character_visuals;
+      if (Array.isArray(vis)) {
+        ids = vis.map((c) => Number(c.character_id)).filter(Number.isFinite);
+      }
+    } catch (_) {}
+  }
+  return Array.from(new Set(ids));
 }
 
 function rowToStoryboard(r) {
@@ -403,7 +421,8 @@ function rowToStoryboard(r) {
       last_frame_image_id: r.last_frame_image_id ?? null,
       last_frame_image_url: sanitizeImageUrl(r.last_frame_image_url),
       last_frame_local_path: r.last_frame_local_path ?? null,
-      characters: parseStoryboardCharacters(r.characters),
+      characters: parseStoryboardCharacters(r.characters, r),
+      prop_ids: Array.isArray(r.prop_ids) ? r.prop_ids : [],
       composed_image: r.composed_image,
       image_url: sanitizeImageUrl(r.image_url),
       local_path: r.local_path ?? null,

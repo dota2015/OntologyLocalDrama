@@ -37,3 +37,32 @@ test('episode list leaves missing or invalid director slots unavailable', t => {
   INSERT INTO storyboards VALUES (1,17,1,NULL,NULL), (2,17,2,'invalid',NULL)`);
   assert.deepEqual(getStoryboardsForEpisode(db, 17).map(s => s.semantic_slots), [null, null]);
 });
+
+test('episode list resolves character IDs from semantic_slots and returns prop_ids', t => {
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  db.exec(`
+    CREATE TABLE episodes (id INTEGER PRIMARY KEY, drama_id INTEGER);
+    CREATE TABLE characters (id INTEGER PRIMARY KEY, drama_id INTEGER, name TEXT, deleted_at TEXT);
+    CREATE TABLE storyboard_props (id INTEGER PRIMARY KEY, storyboard_id INTEGER, prop_id INTEGER);
+    CREATE TABLE storyboards (
+      id INTEGER PRIMARY KEY, episode_id INTEGER, storyboard_number INTEGER,
+      characters TEXT, semantic_slots TEXT, deleted_at TEXT
+    );
+    INSERT INTO episodes VALUES (17, 5);
+    INSERT INTO characters VALUES (26, 5, '蜂医', NULL);
+    INSERT INTO storyboard_props (storyboard_id, prop_id) VALUES (1, 37);
+  `);
+
+  // Case 1: legacy characters is ["蜂医"] (string name), semantic_slots has id 26
+  const semantic = {
+    visible_characters: [{ id: 26, name: '蜂医' }],
+    required_references: [{ type: 'prop', id: 37, name: '电脑' }],
+  };
+  db.prepare('INSERT INTO storyboards VALUES (1, 17, 1, ?, ?, NULL)')
+    .run(JSON.stringify(['蜂医']), JSON.stringify(semantic));
+
+  const [shot] = getStoryboardsForEpisode(db, 17);
+  assert.deepEqual(shot.characters, [26], 'Characters should resolve to [26]');
+  assert.deepEqual(shot.prop_ids, [37], 'Prop IDs should contain [37]');
+});

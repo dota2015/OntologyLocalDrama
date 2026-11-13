@@ -617,6 +617,98 @@ function runMigrationsAndEnsure(database) {
         AND video_url NOT LIKE 'http%'
     `).run();
   } catch (_) {}
+
+  // 修复存量分镜中 characters 存有中文人名字符串或缺少关联表数据的问题，补齐 storyboard_characters 与 storyboard_props
+  repairStoryboardEntityAssociations(database);
+}
+
+function repairStoryboardEntityAssociations(database) {
+  try {
+    const sbs = database.prepare(`
+      SELECT s.id, s.episode_id, s.characters, s.semantic_slots, s.character_visuals, e.drama_id
+      FROM storyboards s
+      LEFT JOIN episodes e ON e.id = s.episode_id
+      WHERE s.deleted_at IS NULL
+    `).all();
+
+    const charMapByDrama = new Map();
+    const getDramaCharMap = (dramaId) => {
+      if (!dramaId) return new Map();
+      if (!charMapByDrama.has(dramaId)) {
+        const rows = database.prepare('SELECT id, name FROM characters WHERE drama_id = ? AND deleted_at IS NULL').all(dramaId);
+        charMapByDrama.set(dramaId, new Map(rows.map((r) => [r.name.trim(), Number(r.id)])));
+      }
+      return charMapByDrama.get(dramaId);
+    };
+
+    const updateCharStmt = database.prepare('UPDATE storyboards SET characters = ? WHERE id = ?');
+    const insSbCharStmt = database.prepare('INSERT OR IGNORE INTO storyboard_characters (storyboard_id, character_id, created_at) VALUES (?, ?, ?)');
+    const insSbPropStmt = database.prepare('INSERT OR IGNORE INTO storyboard_props (storyboard_id, prop_id) VALUES (?, ?)');
+    const now = new Date().toISOString();
+
+    for (const sb of sbs) {
+      // 1. 角色解析
+      let charIds = [];
+      let parsedChars = null;
+      if (sb.characters) {
+        try { parsedChars = typeof sb.characters === 'string' ? JSON.parse(sb.characters) : sb.characters; } catch (_) {}
+      }
+      if (Array.isArray(parsedChars)) {
+        charIds = parsedChars
+          .map((c) => (typeof c === 'object' && c != null && c.id != null ? Number(c.id) : Number(c)))
+          .filter(Number.isFinite);
+      }
+      if (!charIds.length && sb.semantic_slots) {
+        try {
+          const sem = typeof sb.semantic_slots === 'string' ? JSON.parse(sb.semantic_slots) : sb.semantic_slots;
+          if (Array.isArray(sem?.visible_characters)) {
+            charIds = sem.visible_characters.map((c) => Number(c.id)).filter(Number.isFinite);
+          }
+        } catch (_) {}
+      }
+      if (!charIds.length && sb.character_visuals) {
+        try {
+          const vis = typeof sb.character_visuals === 'string' ? JSON.parse(sb.character_visuals) : sb.character_visuals;
+          if (Array.isArray(vis)) {
+            charIds = vis.map((c) => Number(c.character_id)).filter(Number.isFinite);
+          }
+        } catch (_) {}
+      }
+      if (!charIds.length && Array.isArray(parsedChars) && parsedChars.length > 0 && sb.drama_id) {
+        const nameMap = getDramaCharMap(sb.drama_id);
+        charIds = parsedChars.map((n) => (typeof n === 'string' ? nameMap.get(n.trim()) : null)).filter(Number.isFinite);
+      }
+
+      charIds = Array.from(new Set(charIds));
+      if (charIds.length > 0) {
+        const newCharsJson = JSON.stringify(charIds);
+        if (sb.characters !== newCharsJson) {
+          updateCharStmt.run(newCharsJson, sb.id);
+        }
+        for (const cid of charIds) {
+          insSbCharStmt.run(sb.id, cid, now);
+        }
+      }
+
+      // 2. 道具解析
+      if (sb.semantic_slots) {
+        try {
+          const sem = typeof sb.semantic_slots === 'string' ? JSON.parse(sb.semantic_slots) : sb.semantic_slots;
+          if (Array.isArray(sem?.required_references)) {
+            const propIds = sem.required_references
+              .filter((ref) => ref.type === 'prop')
+              .map((ref) => Number(ref.id || ref.prop_id))
+              .filter(Number.isFinite);
+            for (const pid of propIds) {
+              insSbPropStmt.run(sb.id, pid);
+            }
+          }
+        } catch (_) {}
+      }
+    }
+  } catch (err) {
+    console.warn('[migrate] repairStoryboardEntityAssociations warning:', err.message);
+  }
 }
 
 function main() {

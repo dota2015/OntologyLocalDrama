@@ -230,11 +230,49 @@ async function enrichEpisodeOntologySlots(db, log, cfg, episodeId, options = {})
     WHERE id = ?
   `);
 
+  let insSbCharStmt = null;
+  let delSbCharStmt = null;
+  let insSbPropStmt = null;
+  let delSbPropStmt = null;
+  try {
+    insSbCharStmt = db.prepare('INSERT OR IGNORE INTO storyboard_characters (storyboard_id, character_id, created_at) VALUES (?, ?, ?)');
+    delSbCharStmt = db.prepare('DELETE FROM storyboard_characters WHERE storyboard_id = ?');
+  } catch (_) {}
+  try {
+    insSbPropStmt = db.prepare('INSERT OR IGNORE INTO storyboard_props (storyboard_id, prop_id) VALUES (?, ?)');
+    delSbPropStmt = db.prepare('DELETE FROM storyboard_props WHERE storyboard_id = ?');
+  } catch (_) {}
+
   const now = new Date().toISOString();
   db.transaction(() => {
     for (const shot of enrichedShots) {
+      let resolvedCharIds = [];
+      if (Array.isArray(shot.semantic_slots?.visible_characters) && shot.semantic_slots.visible_characters.length > 0) {
+        resolvedCharIds = shot.semantic_slots.visible_characters.map((c) => Number(c.id)).filter(Number.isFinite);
+      } else if (Array.isArray(shot.character_visuals) && shot.character_visuals.length > 0) {
+        resolvedCharIds = shot.character_visuals.map((c) => Number(c.character_id)).filter(Number.isFinite);
+      } else if (shot.characters) {
+        const parsed = typeof shot.characters === 'string' ? JSON.parse(shot.characters) : shot.characters;
+        resolvedCharIds = (Array.isArray(parsed) ? parsed : [parsed])
+          .map((c) => Number(typeof c === 'object' && c != null ? c.id : c))
+          .filter(Number.isFinite);
+      }
+      resolvedCharIds = Array.from(new Set(resolvedCharIds));
+      shot.characters = resolvedCharIds;
+
+      let resolvedPropIds = [];
+      if (Array.isArray(shot.semantic_slots?.required_references)) {
+        resolvedPropIds = shot.semantic_slots.required_references
+          .filter((ref) => ref.type === 'prop')
+          .map((ref) => Number(ref.id || ref.prop_id))
+          .filter(Number.isFinite);
+      } else if (Array.isArray(shot.props)) {
+        resolvedPropIds = shot.props.map((p) => Number(typeof p === 'object' && p != null ? p.id : p)).filter(Number.isFinite);
+      }
+      resolvedPropIds = Array.from(new Set(resolvedPropIds));
+
       updateStmt.run(
-        shot.characters ? (typeof shot.characters === 'string' ? shot.characters : JSON.stringify(shot.characters)) : null,
+        JSON.stringify(resolvedCharIds),
         shot.background_characters ? (typeof shot.background_characters === 'string' ? shot.background_characters : JSON.stringify(shot.background_characters)) : null,
         shot.duration,
         shot.dialogue_framing || null,
@@ -257,6 +295,26 @@ async function enrichEpisodeOntologySlots(db, log, cfg, episodeId, options = {})
         now,
         shot.id
       );
+
+      // 同步 storyboard_characters 关联表
+      if (delSbCharStmt && insSbCharStmt) {
+        try {
+          delSbCharStmt.run(shot.id);
+          for (const cid of resolvedCharIds) {
+            insSbCharStmt.run(shot.id, cid, now);
+          }
+        } catch (_) {}
+      }
+
+      // 同步 storyboard_props 关联表
+      if (resolvedPropIds.length > 0 && delSbPropStmt && insSbPropStmt) {
+        try {
+          delSbPropStmt.run(shot.id);
+          for (const pid of resolvedPropIds) {
+            insSbPropStmt.run(shot.id, pid);
+          }
+        } catch (_) {}
+      }
     }
   })();
 

@@ -254,6 +254,18 @@ function getStoryboardsForEpisode(db, episodeId) {
       'SELECT * FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL ORDER BY storyboard_number ASC, id ASC'
     ).all(episodeId)
   );
+  const sbIds = rows.map((r) => r.id);
+  const spMap = {};
+  if (sbIds.length > 0) {
+    try {
+      const placeholders = sbIds.map(() => '?').join(',');
+      const spRows = db.prepare(`SELECT storyboard_id, prop_id FROM storyboard_props WHERE storyboard_id IN (${placeholders})`).all(...sbIds);
+      for (const row of spRows) {
+        if (!spMap[row.storyboard_id]) spMap[row.storyboard_id] = [];
+        spMap[row.storyboard_id].push(row.prop_id);
+      }
+    } catch (_) {}
+  }
   return rows.map((r) => {
     let background = null;
     if (r.scene_id != null) {
@@ -302,9 +314,59 @@ function getStoryboardsForEpisode(db, episodeId) {
       end_framing: r.end_framing ?? null,
       transition_to_next: r.transition_to_next ?? null,
       characters: (() => {
-        if (!r.characters) return [];
-        if (typeof r.characters !== 'string') return Array.isArray(r.characters) ? r.characters : [];
-        try { return JSON.parse(r.characters); } catch (_) { return []; }
+        let parsed = [];
+        if (r.characters) {
+          if (typeof r.characters !== 'string') parsed = Array.isArray(r.characters) ? r.characters : [];
+          else {
+            try { parsed = JSON.parse(r.characters); } catch (_) { parsed = []; }
+          }
+        }
+        let charIds = (Array.isArray(parsed) ? parsed : [parsed])
+          .map((c) => (typeof c === 'object' && c != null && c.id != null ? Number(c.id) : Number(c)))
+          .filter(Number.isFinite);
+
+        if (!charIds.length && r.semantic_slots) {
+          try {
+            const sem = typeof r.semantic_slots === 'string' ? JSON.parse(r.semantic_slots) : r.semantic_slots;
+            if (Array.isArray(sem?.visible_characters)) {
+              charIds = sem.visible_characters.map((c) => Number(c.id)).filter(Number.isFinite);
+            }
+          } catch (_) {}
+        }
+        if (!charIds.length && r.character_visuals) {
+          try {
+            const vis = typeof r.character_visuals === 'string' ? JSON.parse(r.character_visuals) : r.character_visuals;
+            if (Array.isArray(vis)) {
+              charIds = vis.map((c) => Number(c.character_id)).filter(Number.isFinite);
+            }
+          } catch (_) {}
+        }
+        if (!charIds.length && Array.isArray(parsed) && parsed.length > 0) {
+          try {
+            const ep = db.prepare('SELECT drama_id FROM episodes WHERE id = ?').get(r.episode_id);
+            if (ep?.drama_id) {
+              const nameRows = db.prepare('SELECT id, name FROM characters WHERE drama_id = ? AND deleted_at IS NULL').all(ep.drama_id);
+              const nameMap = new Map(nameRows.map((c) => [c.name.trim(), Number(c.id)]));
+              charIds = parsed.map((name) => (typeof name === 'string' ? nameMap.get(name.trim()) : null)).filter(Number.isFinite);
+            }
+          } catch (_) {}
+        }
+        return Array.from(new Set(charIds));
+      })(),
+      prop_ids: (() => {
+        let pids = spMap[r.id] || [];
+        if (!pids.length && r.semantic_slots) {
+          try {
+            const sem = typeof r.semantic_slots === 'string' ? JSON.parse(r.semantic_slots) : r.semantic_slots;
+            if (Array.isArray(sem?.required_references)) {
+              pids = sem.required_references
+                .filter((ref) => ref.type === 'prop')
+                .map((ref) => Number(ref.id || ref.prop_id))
+                .filter(Number.isFinite);
+            }
+          } catch (_) {}
+        }
+        return Array.from(new Set(pids));
       })(),
       composed_image: r.composed_image,
       video_url: r.video_url,
@@ -541,9 +603,35 @@ function deriveStoryboardFieldsFromAi(sb, style, videoRatio, opts = {}) {
   // submission time. Do not persist a second, editable text representation.
   const videoPrompt = null;
   const sceneId = sb.scene_id != null ? Number(sb.scene_id) : null;
-  const charactersJson = Array.isArray(sb.characters) ? JSON.stringify(sb.characters) : (sb.characters ? JSON.stringify([].concat(sb.characters)) : '[]');
+  // 角色 ID 规范化：优先数字 ID / 对象 ID，若是名字字符串则在 opts.dramaCharacters 中按名解析为 ID
+  const rawChars = Array.isArray(sb.characters) ? sb.characters : (sb.characters != null ? [sb.characters] : []);
+  const charIds = Array.from(new Set(rawChars
+    .map((c) => {
+      if (typeof c === 'object' && c != null && c.id != null) return Number(c.id);
+      if (Number.isFinite(Number(c)) && String(c).trim() !== '') return Number(c);
+      if (typeof c === 'string' && opts.dramaCharacters?.length) {
+        const found = opts.dramaCharacters.find((dc) => dc.name && dc.name.trim() === c.trim());
+        if (found) return Number(found.id);
+      }
+      return null;
+    })
+    .filter(Number.isFinite)));
+  const charactersJson = JSON.stringify(charIds);
   const backgroundCharactersJson = Array.isArray(sb.background_characters) ? JSON.stringify(sb.background_characters) : (sb.background_characters ? JSON.stringify([].concat(sb.background_characters)) : '[]');
-  const propIds = Array.isArray(sb.props) ? sb.props.map(Number).filter(Number.isFinite) : [];
+
+  // 道具 ID 规范化
+  const rawProps = Array.isArray(sb.props) ? sb.props : (sb.props != null ? [sb.props] : []);
+  const propIds = Array.from(new Set(rawProps
+    .map((p) => {
+      if (typeof p === 'object' && p != null && p.id != null) return Number(p.id);
+      if (Number.isFinite(Number(p)) && String(p).trim() !== '') return Number(p);
+      if (typeof p === 'string' && opts.dramaProps?.length) {
+        const found = opts.dramaProps.find((dp) => dp.name && dp.name.trim() === p.trim());
+        if (found) return Number(found.id);
+      }
+      return null;
+    })
+    .filter(Number.isFinite)));
   let universalSegmentText = '';
   if (sb.universal_segment_text != null && String(sb.universal_segment_text).trim()) {
     universalSegmentText = String(sb.universal_segment_text).trim().replace(/\r?\n/g, ' ');
@@ -596,6 +684,7 @@ function deriveStoryboardFieldsFromAi(sb, style, videoRatio, opts = {}) {
     lastFrameVisuals,
     videoSlots,
     sceneId,
+    charIds,
     charactersJson,
     backgroundCharactersJson,
     angleH,
@@ -745,6 +834,13 @@ function updateStoryboardRowFromDerived(db, existingId, episodeIdNum, d, sb, now
   require('./wardrobeService').recordAiChange(db, episodeIdNum, existingId, sb);
   require('./speechDeliveryService').recordAiPlan(db, episodeIdNum, existingId, sb);
   try {
+    db.prepare('DELETE FROM storyboard_characters WHERE storyboard_id = ?').run(existingId);
+    if (d.charIds && d.charIds.length > 0) {
+      const insChar = db.prepare('INSERT OR IGNORE INTO storyboard_characters (storyboard_id, character_id, created_at) VALUES (?, ?, ?)');
+      for (const cid of d.charIds) insChar.run(existingId, cid, now);
+    }
+  } catch (_) {}
+  try {
     db.prepare('DELETE FROM storyboard_props WHERE storyboard_id = ?').run(existingId);
     if (d.propIds.length > 0) {
       const insProp = db.prepare('INSERT OR IGNORE INTO storyboard_props (storyboard_id, prop_id) VALUES (?, ?)');
@@ -808,6 +904,12 @@ function insertOneStoryboard(db, episodeIdNum, sb, style, videoRatio, now, deriv
     persistStoryboardExecutionContract(db, newId, sb);
     require('./wardrobeService').recordAiChange(db, episodeIdNum, newId, sb);
     require('./speechDeliveryService').recordAiPlan(db, episodeIdNum, newId, sb);
+    if (d.charIds && d.charIds.length > 0) {
+      try {
+        const insChar = db.prepare('INSERT OR IGNORE INTO storyboard_characters (storyboard_id, character_id, created_at) VALUES (?, ?, ?)');
+        for (const cid of d.charIds) insChar.run(newId, cid, now);
+      } catch (_) {}
+    }
     if (d.propIds.length > 0) {
       try {
         const insProp = db.prepare('INSERT OR IGNORE INTO storyboard_props (storyboard_id, prop_id) VALUES (?, ?)');
@@ -1009,6 +1111,12 @@ function saveStoryboards(db, log, episodeId, storyboards, cfg, styleOverride, sk
     persistStoryboardExecutionContract(db, id, sb);
     require('./wardrobeService').recordAiChange(db, episodeIdNum, id, sb);
     require('./speechDeliveryService').recordAiPlan(db, episodeIdNum, id, sb);
+    if (d.charIds && d.charIds.length > 0) {
+      try {
+        const insChar = db.prepare('INSERT OR IGNORE INTO storyboard_characters (storyboard_id, character_id, created_at) VALUES (?, ?, ?)');
+        for (const cid of d.charIds) insChar.run(id, cid, now);
+      } catch (_) {}
+    }
     if (d.propIds.length > 0) {
       try {
         const insProp = db.prepare('INSERT OR IGNORE INTO storyboard_props (storyboard_id, prop_id) VALUES (?, ?)');
@@ -1039,8 +1147,8 @@ function saveStoryboards(db, log, episodeId, storyboards, cfg, styleOverride, sk
       segment_title: d.segmentTitle,
       creation_mode: d.creationMode || 'classic',
       universal_segment_text: d.universalSegmentText != null ? d.universalSegmentText : null,
-      characters: Array.isArray(sb.characters) ? sb.characters : [],
-      prop_ids: d.propIds,
+      characters: d.charIds || [],
+      prop_ids: d.propIds || [],
       status: 'pending',
       created_at: now,
       updated_at: now,
@@ -1149,6 +1257,20 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
         db.prepare('SELECT id, name, appearance FROM characters WHERE drama_id = ? AND deleted_at IS NULL ORDER BY name ASC').all(streamEpisode.drama_id)
       )
     : {};
+  const dramaCharacters = streamEpisode?.drama_id
+    ? (() => {
+        try {
+          return db.prepare('SELECT id, name FROM characters WHERE drama_id = ? AND deleted_at IS NULL ORDER BY name ASC').all(streamEpisode.drama_id);
+        } catch (_) { return []; }
+      })()
+    : [];
+  const dramaProps = streamEpisode?.drama_id
+    ? (() => {
+        try {
+          return db.prepare('SELECT id, name FROM props WHERE drama_id = ? AND deleted_at IS NULL ORDER BY name ASC').all(streamEpisode.drama_id);
+        } catch (_) { return []; }
+      })()
+    : [];
   const deriveOpts = {
     universalOmni: !!universalOmni,
     // Publish only after the entire result passes speech validation.
@@ -1156,6 +1278,8 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
     durationRange,
     targetClipDuration: targetClipDurationSec != null && Number(targetClipDurationSec) > 0 ? Number(targetClipDurationSec) : null,
     characterAppearances,
+    dramaCharacters,
+    dramaProps,
   };
   let streamThrottle = 0;
 
@@ -1770,7 +1894,7 @@ async function runStageOneBaseGeneration(db, log, episodeId, taskId, options = {
   const stage1DurationLabel = ctx.durationRange
     ? `${ctx.durationRange.min}～${ctx.durationRange.max}秒整数秒，严禁超过上限 ${ctx.durationRange.max} 秒`
     : '4～30秒整数秒，超过30秒才按语义拆镜';
-  ctx.systemPrompt = `你是短剧基础分镜导演。只把本集剧本拆成完整、紧凑、可执行的剧情分镜，先保证剧情顺序和台词逐字覆盖。每镜${stage1DurationLabel}；每个分镜最多只允许 1 个说话人的单轮对白（或 1 段旁白），严禁两人轮流对话或对白与旁白混在同一镜，多人轮流对话必须按说话轮次拆成连续分镜；每镜对白/旁白字数必须能在本镜 duration 内按实际 TTS 速度（默认 1.25x，约 5 字/秒）自然说完，超长台词必须按语义拆镜；单镜最多2名有身份角色，群众/敌军写成环境事件。动作与画面描写必须是可拍摄的纯写实物理动作，严禁文学心理隐喻及在画面中描述 UI 元素（如血条、准星、倒计时悬浮窗、屏幕小字）。不要输出 semantic_slots、video_slots、character_visuals、动作原子、口型、视线枚举或 H3 提示词。只返回 JSON 对象 {"storyboards":[...]}，不要解释。每镜字段：shot_number,title,scene_id,characters,background_characters,props,duration,location,time,shot_type,angle_h,angle_v,angle_s,movement,action,result,dialogue,narration,emotion,start_framing,end_framing,transition_to_next。对白和旁白必须逐字保留，动作必须与对白同时发生，禁止用互相看着或静止等待填时长。可用场景目录：${JSON.stringify(ctx.scenes.map(s => ({ id: s.id, name: s.name, location: s.location })))}；可用角色目录：${JSON.stringify(ctx.characters.map(c => ({ id: c.id, name: c.name })))}；可用道具目录：${JSON.stringify(ctx.props.map(p => ({ id: p.id, name: p.name })))}。`;
+  ctx.systemPrompt = `你是短剧基础分镜导演。只把本集剧本拆成完整、紧凑、可执行的剧情分镜，先保证剧情顺序和台词逐字覆盖。每镜${stage1DurationLabel}；每个分镜最多只允许 1 个说话人的单轮对白（或 1 段旁白），严禁两人轮流对话或对白与旁白混在同一镜，多人轮流对话必须按说话轮次拆成连续分镜；每镜对白/旁白字数必须能在本镜 duration 内按实际 TTS 速度（默认 1.25x，约 5 字/秒）自然说完，超长台词必须按语义拆镜；单镜最多2名有身份角色，群众/敌军写成环境事件。动作与画面描写必须是可拍摄的纯写实物理动作，严禁文学心理隐喻及在画面中描述 UI 元素（如血条、准星、倒计时悬浮窗、屏幕小字）。不要输出 semantic_slots、video_slots、character_visuals、动作原子、口型、视线枚举或 H3 提示词。只返回 JSON 对象 {"storyboards":[...]}，不要解释。每镜字段：shot_number,title,scene_id,characters,background_characters,props,duration,location,time,shot_type,angle_h,angle_v,angle_s,movement,action,result,dialogue,narration,emotion,start_framing,end_framing,transition_to_next。注意：scene_id 填可用场景目录中的数字 ID；characters 必须填入可用角色目录中的数字 ID 数组（如 [26]，严禁写角色名字符串；无人物则为 []）；props 必须填入可用道具目录中的数字 ID 数组（如 [37]；无道具则为 []）。对白和旁白必须逐字保留，动作必须与对白同时发生，禁止用互相看着或静止等待填时长。可用场景目录：${JSON.stringify(ctx.scenes.map(s => ({ id: s.id, name: s.name, location: s.location })))}；可用角色目录：${JSON.stringify(ctx.characters.map(c => ({ id: c.id, name: c.name })))}；可用道具目录：${JSON.stringify(ctx.props.map(p => ({ id: p.id, name: p.name })))}。`;
   ctx.userPrompt = `【本集剧本】\n${ctx.scriptContent}\n\n【规划目标】镜头数${ctx.storyboardCount || '自动'}；总时长${ctx.videoDuration || '自动'}秒；镜头时长范围${ctx.durationRange ? JSON.stringify(ctx.durationRange) : '4～30秒'}。按剧情节拍规划，不删台词、不重复内容。`;
   log.info('Running Stage 1 Base Storyboard Generation', {
     task_id: taskId,

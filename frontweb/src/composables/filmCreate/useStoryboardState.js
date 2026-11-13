@@ -543,6 +543,17 @@ export function useStoryboardState({
     storyboardsAPI.update(sbId, { prop_ids: ids }).catch(() => {})
   }
 
+  function getSbSceneId(sbId) {
+    const v = sbSceneId.value[sbId]
+    return v != null ? Number(v) : null
+  }
+
+  function setSbSceneId(sbId, v) {
+    const next = v != null && v !== '' ? Number(v) : null
+    sbSceneId.value = { ...sbSceneId.value, [sbId]: next }
+    onStoryboardSceneChange(sbId)
+  }
+
   function onStoryboardSceneChange(sbId) {
     const sceneId = sbSceneId.value[sbId] ?? null
     storyboardsAPI.update(sbId, { scene_id: sceneId }).catch(() => {})
@@ -749,8 +760,28 @@ export function useStoryboardState({
       nextDof[sb.id] = sb.depth_of_field || ''
       nextLayoutDescription[sb.id] = (sb.layout_description ?? '').toString()
       const charList = Array.isArray(sb.characters) ? sb.characters : (sb.characters != null ? [sb.characters] : [])
-      nextCharIds[sb.id] = charList.map((c) => (typeof c === 'object' && c != null ? Number(c.id) : Number(c))).filter((n) => Number.isFinite(n))
-      nextPropIds[sb.id] = Array.isArray(sb.prop_ids) ? sb.prop_ids : []
+      let charIds = charList.map((c) => (typeof c === 'object' && c != null ? Number(c.id) : Number(c))).filter((n) => Number.isFinite(n))
+      if (!charIds.length && Array.isArray(sb.semantic_slots?.visible_characters)) {
+        charIds = sb.semantic_slots.visible_characters.map((c) => Number(c.id)).filter(Number.isFinite)
+      }
+      if (!charIds.length && Array.isArray(sb.character_visuals)) {
+        charIds = sb.character_visuals.map((c) => Number(c.character_id)).filter(Number.isFinite)
+      }
+      if (!charIds.length && charList.length > 0) {
+        const all = [...(store.characters || []), ...(store.drama?.characters || [])]
+        const nameMap = new Map(all.map((c) => [c.name?.trim(), Number(c.id)]))
+        charIds = charList.map((c) => (typeof c === 'string' ? nameMap.get(c.trim()) : null)).filter(Number.isFinite)
+      }
+      nextCharIds[sb.id] = Array.from(new Set(charIds))
+
+      let propIds = Array.isArray(sb.prop_ids) ? sb.prop_ids.map(Number).filter(Number.isFinite) : []
+      if (!propIds.length && Array.isArray(sb.semantic_slots?.required_references)) {
+        propIds = sb.semantic_slots.required_references
+          .filter((ref) => ref.type === 'prop')
+          .map((ref) => Number(ref.id || ref.prop_id))
+          .filter(Number.isFinite)
+      }
+      nextPropIds[sb.id] = Array.from(new Set(propIds))
       nextCreationMode[sb.id] = sb.creation_mode === 'universal' ? 'universal' : 'classic'
       nextUniversalSegment[sb.id] = (sb.universal_segment_text ?? '').toString()
     }
@@ -909,6 +940,8 @@ export function useStoryboardState({
     setSbPropIds,
     onStoryboardPropChange,
     onStoryboardSceneChange,
+    getSbSceneId,
+    setSbSceneId,
     getSbSelectedScene,
     getSbSelectedCharacters,
     getSbSelectedProps,

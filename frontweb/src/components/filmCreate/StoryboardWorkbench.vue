@@ -1610,6 +1610,8 @@ const charactersAvailableToAddToSb = ctx.charactersAvailableToAddToSb
 const onSbAddCharacterCommand = ctx.onSbAddCharacterCommand
 const getSbPropIds = ctx.getSbPropIds
 const setSbPropIds = ctx.setSbPropIds
+const getSbSceneId = ctx.getSbSceneId
+const setSbSceneId = ctx.setSbSceneId
 const getSbSelectedCharacters = ctx.getSbSelectedCharacters
 const getSbSelectedScene = ctx.getSbSelectedScene
 const getSbSelectedProps = ctx.getSbSelectedProps
@@ -4648,6 +4650,8 @@ provide('filmCreateContext', {
   onStoryboardCharacterChange,
   onStoryboardPropChange,
   onStoryboardSceneChange,
+  getSbSceneId,
+  setSbSceneId,
   getSbCharacterIds,
   setSbCharacterIds,
   charactersAvailableToAddToSb,
