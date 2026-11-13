@@ -415,16 +415,16 @@ function compactExecutionCatalogs(catalogs = {}, shot = {}) {
     .filter((item) => ids.has(Number(item?.id)) || names.has(String(item?.name || '').trim()))
     .map((item) => ({ id: item.id, name: item.name, location: item.location, role: item.role }));
   return {
-    // Characters are NEVER cropped to the current shot: a drama has only a
-    // handful of identity characters, and an Agent that cannot see a real ID
-    // will invent one (e.g. guessing 28 for a character whose ID is 26),
-    // which the gate then rejects forever. The catalog is drama-scoped, so
-    // the full compact list is cheap and cannot leak other dramas' casts.
+    // Characters and props are NEVER cropped to the current shot: a drama has only a
+    // handful of identity characters and props (< 20 items), and an Agent that cannot see
+    // real IDs will either invent invalid ones or be unable to assign entering assets if
+    // Stage 1 omitted them. The catalogs are drama-scoped, so compact lists are cheap.
     characters: (Array.isArray(catalogs.characters) ? catalogs.characters : [])
       .map((item) => ({ id: item.id, name: item.name, location: item.location, role: item.role })),
     scenes: (catalogs.scenes || []).filter((item) => Number(item?.id) === Number(shot.scene_id))
       .map((item) => ({ id: item.id, name: item.name, location: item.location, time: item.time })),
-    props: pick(catalogs.props),
+    props: (Array.isArray(catalogs.props) ? catalogs.props : [])
+      .map((item) => ({ id: item.id, name: item.name, type: item.type })),
   };
 }
 

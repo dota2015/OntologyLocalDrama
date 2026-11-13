@@ -247,7 +247,7 @@
               </el-dropdown>
             </div>
           </div>
-          <div v-if="ctx.getSbSelectedProps(sb.id).length" class="sb-thumb-row">
+          <div v-if="ctx.getSbSelectedProps(sb.id).length || (ctx.props?.value || ctx.props || []).length" class="sb-thumb-row">
             <span class="sb-thumb-label">物品</span>
             <div class="sb-thumb-list">
               <div
@@ -262,6 +262,30 @@
                 <img v-if="ctx.hasAssetImage(p)" :src="ctx.assetImageUrl(p)" alt="" />
                 <span v-else class="sb-thumb-placeholder">{{ (p.name || '')[0] }}</span>
               </div>
+              <el-dropdown trigger="click" @command="(cmd) => (ctx.onSbAddPropCommand ? ctx.onSbAddPropCommand(sb.id, cmd) : null)">
+                <div
+                  class="sb-thumb-item sb-thumb-prop sb-thumb-add-char"
+                  title="添加物品"
+                  role="button"
+                  @click.stop
+                >
+                  <el-icon><Plus /></el-icon>
+                </div>
+                <template #dropdown>
+                  <el-dropdown-menu class="sb-char-add-dropdown">
+                    <el-dropdown-item
+                      v-for="p in (ctx.propsAvailableToAddToSb ? ctx.propsAvailableToAddToSb(sb.id) : [])"
+                      :key="p.id"
+                      :command="p.id"
+                    >
+                      {{ p.name || '未命名' }}（ID {{ p.id }}）
+                    </el-dropdown-item>
+                    <el-dropdown-item v-if="!(ctx.propsAvailableToAddToSb ? ctx.propsAvailableToAddToSb(sb.id) : []).length" disabled>
+                      已全部添加或无可用物品
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
             </div>
           </div>
         </div>

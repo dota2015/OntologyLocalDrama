@@ -625,7 +625,8 @@ function runMigrationsAndEnsure(database) {
 function repairStoryboardEntityAssociations(database) {
   try {
     const sbs = database.prepare(`
-      SELECT s.id, s.episode_id, s.characters, s.semantic_slots, s.character_visuals, e.drama_id
+      SELECT s.id, s.episode_id, s.title, s.action, s.dialogue, s.narration, s.description,
+             s.characters, s.semantic_slots, s.character_visuals, e.drama_id
       FROM storyboards s
       LEFT JOIN episodes e ON e.id = s.episode_id
       WHERE s.deleted_at IS NULL
@@ -641,7 +642,22 @@ function repairStoryboardEntityAssociations(database) {
       return charMapByDrama.get(dramaId);
     };
 
+    const propListByDrama = new Map();
+    const getDramaPropList = (dramaId) => {
+      if (!dramaId) return [];
+      if (!propListByDrama.has(dramaId)) {
+        try {
+          const rows = database.prepare('SELECT id, drama_id, episode_id, name FROM props WHERE drama_id = ? AND deleted_at IS NULL').all(dramaId);
+          propListByDrama.set(dramaId, rows);
+        } catch (_) {
+          propListByDrama.set(dramaId, []);
+        }
+      }
+      return propListByDrama.get(dramaId);
+    };
+
     const updateCharStmt = database.prepare('UPDATE storyboards SET characters = ? WHERE id = ?');
+    const updateSemanticStmt = database.prepare('UPDATE storyboards SET semantic_slots = ? WHERE id = ?');
     const insSbCharStmt = database.prepare('INSERT OR IGNORE INTO storyboard_characters (storyboard_id, character_id, created_at) VALUES (?, ?, ?)');
     const insSbPropStmt = database.prepare('INSERT OR IGNORE INTO storyboard_props (storyboard_id, prop_id) VALUES (?, ?)');
     const now = new Date().toISOString();
@@ -691,19 +707,61 @@ function repairStoryboardEntityAssociations(database) {
       }
 
       // 2. 道具解析
+      let propIds = [];
+      let semObj = null;
       if (sb.semantic_slots) {
         try {
-          const sem = typeof sb.semantic_slots === 'string' ? JSON.parse(sb.semantic_slots) : sb.semantic_slots;
-          if (Array.isArray(sem?.required_references)) {
-            const propIds = sem.required_references
+          semObj = typeof sb.semantic_slots === 'string' ? JSON.parse(sb.semantic_slots) : sb.semantic_slots;
+          if (Array.isArray(semObj?.required_references)) {
+            propIds = semObj.required_references
               .filter((ref) => ref.type === 'prop')
               .map((ref) => Number(ref.id || ref.prop_id))
               .filter(Number.isFinite);
-            for (const pid of propIds) {
-              insSbPropStmt.run(sb.id, pid);
-            }
           }
         } catch (_) {}
+      }
+
+      // 如果槽位中没有道具，且分镜存在剧情描述，尝试根据剧目道具目录做语义对齐回填
+      if (!propIds.length && sb.drama_id) {
+        const dramaProps = getDramaPropList(sb.drama_id);
+        const text = [sb.title, sb.action, sb.dialogue, sb.narration, sb.description].filter(Boolean).join(' ');
+        if (text && dramaProps.length > 0) {
+          for (const p of dramaProps) {
+            if (p.episode_id != null && Number(p.episode_id) !== Number(sb.episode_id)) {
+              continue;
+            }
+            const name = (p.name || '').trim();
+            if (!name) continue;
+            const coreWords = [name];
+            const stripped = name.replace(/(?:界面|装置|用品|设备|本|试卷|册|清单)$/, '');
+            if (stripped.length >= 2) coreWords.push(stripped);
+            if (name.includes('简报')) coreWords.push('简报');
+            if (name.includes('试卷') || name.includes('测验')) coreWords.push('试卷', '小测验');
+            if (name.includes('错题')) coreWords.push('错题本', '错题整理本');
+            if (name.includes('权限') || name.includes('终端')) coreWords.push('权限', '权限终端');
+
+            if (coreWords.some((w) => text.includes(w))) {
+              propIds.push(Number(p.id));
+              if (semObj && Array.isArray(semObj.required_references)) {
+                if (!semObj.required_references.some((r) => r.type === 'prop' && Number(r.id || r.prop_id) === Number(p.id))) {
+                  semObj.required_references.push({ type: 'prop', id: Number(p.id), name: p.name });
+                }
+              }
+            }
+          }
+        }
+      }
+
+      propIds = Array.from(new Set(propIds));
+      if (propIds.length > 0) {
+        for (const pid of propIds) {
+          insSbPropStmt.run(sb.id, pid);
+        }
+        if (semObj) {
+          try {
+            updateSemanticStmt.run(JSON.stringify(semObj), sb.id);
+          } catch (_) {}
+        }
       }
     }
   } catch (err) {

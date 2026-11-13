@@ -1608,6 +1608,8 @@ const getSbCharacterIds = ctx.getSbCharacterIds
 const setSbCharacterIds = ctx.setSbCharacterIds
 const charactersAvailableToAddToSb = ctx.charactersAvailableToAddToSb
 const onSbAddCharacterCommand = ctx.onSbAddCharacterCommand
+const propsAvailableToAddToSb = ctx.propsAvailableToAddToSb
+const onSbAddPropCommand = ctx.onSbAddPropCommand
 const getSbPropIds = ctx.getSbPropIds
 const setSbPropIds = ctx.setSbPropIds
 const getSbSceneId = ctx.getSbSceneId
@@ -4656,6 +4658,8 @@ provide('filmCreateContext', {
   setSbCharacterIds,
   charactersAvailableToAddToSb,
   onSbAddCharacterCommand,
+  propsAvailableToAddToSb,
+  onSbAddPropCommand,
   getSbPropIds,
   setSbPropIds,
   getSbSelectedCharacters,

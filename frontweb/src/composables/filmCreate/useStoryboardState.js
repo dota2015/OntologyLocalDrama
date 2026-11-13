@@ -543,6 +543,21 @@ export function useStoryboardState({
     storyboardsAPI.update(sbId, { prop_ids: ids }).catch(() => {})
   }
 
+  function propsAvailableToAddToSb(sbId) {
+    const all = store.props ?? []
+    const cur = new Set((getSbPropIds(sbId) || []).map((x) => Number(x)))
+    return all.filter((p) => p && !cur.has(Number(p.id)))
+  }
+
+  function onSbAddPropCommand(sbId, propId) {
+    const id = Number(propId)
+    if (!Number.isFinite(id)) return
+    const cur = [...(getSbPropIds(sbId) || [])]
+    if (cur.some((x) => Number(x) === id)) return
+    cur.push(id)
+    setSbPropIds(sbId, cur)
+  }
+
   function getSbSceneId(sbId) {
     const v = sbSceneId.value[sbId]
     return v != null ? Number(v) : null
@@ -938,6 +953,8 @@ export function useStoryboardState({
     onSbAddCharacterCommand,
     getSbPropIds,
     setSbPropIds,
+    propsAvailableToAddToSb,
+    onSbAddPropCommand,
     onStoryboardPropChange,
     onStoryboardSceneChange,
     getSbSceneId,
