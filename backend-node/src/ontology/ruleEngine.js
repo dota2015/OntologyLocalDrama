@@ -16,6 +16,7 @@ const ObsoleteAssetsRule = require('./rules/obsoleteAssetsRule');
 const ShotTransitionContinuityRule = require('./rules/shotTransitionContinuityRule');
 const { CrossSlotInvariantsRule } = require('./rules/crossSlotRules');
 const { AssetReferenceRule } = require('./rules/assetReferenceRule');
+const BeatCinematographyRule = require('./rules/beatCinematographyRule');
 const { CAMERA_MOVEMENTS } = require('./schema');
 
 class InvariantRuleEngine {
@@ -38,6 +39,7 @@ class InvariantRuleEngine {
     this.registerRule(new ShotTransitionContinuityRule());
     this.registerRule(new CrossSlotInvariantsRule());
     this.registerRule(new AssetReferenceRule());
+    this.registerRule(new BeatCinematographyRule());
   }
 
   /**

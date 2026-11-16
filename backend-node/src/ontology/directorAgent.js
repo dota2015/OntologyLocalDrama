@@ -674,6 +674,14 @@ function directorAtomicRepairHint(violation) {
     INVARIANT_OFFSCREEN_SPEECH_LIP_SYNC_CONFLICT: '画外说话时严禁使用 in_frame_dialogue 或让画内角色张嘴：请将 semantic_slots.audio_lip_sync 设为 "offscreen_voiceover"，video_slots.audio_lip_sync.visible_characters_lip_state 设为 "strictly_sealed"，并将画内角色 mouth_state 设为 "closed" 或 "offscreen_sealed"。',
     INVARIANT_NONVERBAL_MOUTH_NOT_SEALED: '无语言声音模式（silent_ambient / bgm_only / is_silent）下，所有画内角色的 mouth_state 必须设为闭集枚举 "closed" 或 "offscreen_sealed"，严禁填写中文描述。',
     INVARIANT_SPEAKER_MOUTH_STATE_INVALID: '画内说话人在对应有对白的 timeline 段中，其 character_trajectories[].mouth_state 必须设为 "speaker_synced"，其余倾听角色 mouth_state 设为 "closed"；speech_action_alignment.mode 保持 "concurrent"。',
+    INVARIANT_CROWD_COLLAPSE_RISK: '单镜出场身份角色严格 ≤ 2 人。围观吃瓜镜头也只允许选 ≤ 2 名焦点角色挂参考图，其余围观群众改写为 background_characters 无ID群像或环境氛围描述（environment_vfx）。',
+    INVARIANT_H3_CROWD_OVERLOAD: '单镜身份角色超过 2 人上限：必须拆镜为正反打或反应特写；吃瓜围观镜头其余群众请移入环境事件，杜绝人脸崩溃。',
+    INVARIANT_PLANNING_CHARACTER_CAPACITY: '有身份主体与背景角色去重后不得超过 2 人。其余群众人物改写为环境事件，或拆成连续正反打镜头。',
+    INVARIANT_SHORT_DRAMA_VISIBLE_CHARACTER_LIMIT: '时间线每段画内可见角色不得超过 2 人。多余角色请移入其他段或作为环境背景。',
+    INVARIANT_KEY_PROP_REFERENCE_MISSING: '为 reveal 亮底牌节拍显式配置核心身份信物/打脸证据 props（从剧库信物道具目录中选择对应 ID 填入 props 或 semantic_slots.required_references）。',
+    INVARIANT_KEY_PROP_CLOSE_UP_REQUIRED: '涉及核心打脸信物或亮牌节拍（reveal）时，镜头景别必须使用 "特写" 或 "近景"，确保竖屏短剧中打脸信物高辨识度清晰夺焦。',
+    INVARIANT_BEAT_AUDIO_IMPACT_MISSING: '施压（suppression）或打脸反转（slap_reversal）节拍必须在 sound_plan.sound_effects 或 sound_effect 中配置重音刺入/打脸音效（如 sfx_sting/打脸音效/重音刺入）。',
+    INVARIANT_SUPPRESSION_ANGLE_MISMATCH: '施压构图中，压迫者（dominant）机位应为仰拍（angle_v: "low"），受压迫者（suppressed）机位应为俯拍（angle_v: "high"），以视觉语法凸显权力位阶反差。',
   };
   const exact = fieldRules[item.rule] || '';
   const speechExtension = item.rule === 'INVARIANT_SPEECH_OVER_BUDGET'
@@ -827,6 +835,56 @@ function directorAtomicPatchSchemaSingle(violation, targetShot = null) {
           additionalProperties: false,
           required: ['h3_mode'],
           properties: { h3_mode: { const: 'ref2va' } },
+        },
+      },
+    };
+  }
+  if (violation?.rule === 'INVARIANT_KEY_PROP_CLOSE_UP_REQUIRED') {
+    return {
+      type: 'object',
+      additionalProperties: false,
+      required: ['shot_type'],
+      properties: {
+        shot_type: { type: 'string', enum: ['特写', '大特写', '近景'] },
+      },
+    };
+  }
+  if (violation?.rule === 'INVARIANT_SUPPRESSION_ANGLE_MISMATCH') {
+    return {
+      type: 'object',
+      additionalProperties: false,
+      required: ['angle_v'],
+      properties: {
+        angle_v: { type: 'string', enum: ['low', 'high', 'eye_level', '仰拍', '俯拍', '平拍'] },
+      },
+    };
+  }
+  if (violation?.rule === 'INVARIANT_BEAT_AUDIO_IMPACT_MISSING') {
+    return {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        sound_effect: { type: 'string' },
+        sound_plan: {
+          type: 'object',
+          properties: {
+            sound_effects: { type: 'array', items: { type: 'string' } },
+          },
+        },
+      },
+    };
+  }
+  if (violation?.rule === 'INVARIANT_KEY_PROP_REFERENCE_MISSING') {
+    return {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        props: { type: 'array', items: { type: 'integer' } },
+        semantic_slots: {
+          type: 'object',
+          properties: {
+            required_references: { type: 'array', items: { type: 'object' } },
+          },
         },
       },
     };

@@ -532,11 +532,17 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
         });
       }
       if (visibleCount > 2) {
+        const isCrowdReaction = shot.is_crowd_reaction
+          || shot.beat_type === 'crowd_reaction'
+          || shot.dialogue_framing === 'crowd_reaction'
+          || (shot.title && (shot.title.includes('反应') || shot.title.includes('围观') || shot.title.includes('众人')));
         violations.push({
           rule: 'INVARIANT_REFERENCE_CAPACITY_EXCEEDED',
           shot_number: shotNum,
           severity: this.defaultSeverity,
-          message: `分镜 #${shotNum} 画内身份角色超过 2 人（当前 ${visibleCount} 人），必须拆镜为正反打或特写；路人/群众请改写为环境事件！`,
+          message: isCrowdReaction
+            ? `分镜 #${shotNum} 为围观吃瓜镜头，画内具名焦点角色仍须 ≤ 2 人（作为领头震惊代表），其余围观群众严禁填入 visible_characters 挂人脸参考图（会导致模型克隆人崩溃），必须改写为 background_characters 无ID群像或环境氛围描述（environment_vfx）！`
+            : `分镜 #${shotNum} 画内身份角色超过 2 人（当前 ${visibleCount} 人），必须拆镜为正反打或特写；路人/群众请改写为环境事件！`,
           conflict_slots: ['visible_characters'],
         });
       }

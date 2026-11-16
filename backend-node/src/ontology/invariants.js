@@ -19,6 +19,7 @@ const ObsoleteAssetsRule = require('./rules/obsoleteAssetsRule');
 const ShotTransitionContinuityRule = require('./rules/shotTransitionContinuityRule');
 const { CrossSlotInvariantsRule } = require('./rules/crossSlotRules');
 const { AssetReferenceRule, planningFeasibilityViolations } = require('./rules/assetReferenceRule');
+const BeatCinematographyRule = require('./rules/beatCinematographyRule');
 const { InvariantRuleEngine, defaultEngine } = require('./ruleEngine');
 
 /**
@@ -61,6 +62,7 @@ module.exports = {
   ShotTransitionContinuityRule,
   CrossSlotInvariantsRule,
   AssetReferenceRule,
+  BeatCinematographyRule,
 
   // 词表与核心判定入口
   MODERN_ANACHRONISMS,

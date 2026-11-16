@@ -481,4 +481,162 @@ describe('Director Boost Fixes Verification', () => {
     }
   });
 
+  it('enforces crowd_reaction focal character limits without lifting 2-person physical boundary', () => {
+    const CrowdControlRule = require('../src/ontology/rules/crowdControlRule');
+    const H3ReferenceCapacityRule = require('../src/ontology/rules/h3ReferenceCapacityRule');
+    const { CrossSlotInvariantsRule } = require('../src/ontology/rules/crossSlotRules');
+
+    const crowdRule = new CrowdControlRule();
+    const h3Rule = new H3ReferenceCapacityRule();
+    const crossSlotRule = new CrossSlotInvariantsRule();
+
+    // 3 named characters in crowd_reaction shot
+    const crowdShot = {
+      shot_number: 5,
+      beat_type: 'crowd_reaction',
+      dialogue_framing: 'crowd_reaction',
+      characters: [1, 2, 3],
+      semantic_slots: {
+        visible_characters: [{ id: 1 }, { id: 2 }, { id: 3 }],
+        required_references: [{ id: 1, type: 'character' }, { id: 2, type: 'character' }, { id: 3, type: 'character' }],
+      },
+    };
+
+    const crowdViolations = crowdRule.evaluate({ shots: [crowdShot] });
+    assert.equal(crowdViolations.length, 1);
+    assert.equal(crowdViolations[0].rule, 'INVARIANT_CROWD_COLLAPSE_RISK');
+    assert.ok(crowdViolations[0].message.includes('围观吃瓜镜头'));
+    assert.ok(crowdViolations[0].message.includes('具名焦点角色仍须 ≤ 2 人'));
+
+    const h3Violations = h3Rule.evaluate({ shots: [crowdShot] });
+    assert.equal(h3Violations.length, 1);
+    assert.equal(h3Violations[0].rule, 'INVARIANT_H3_CROWD_OVERLOAD');
+    assert.ok(h3Violations[0].message.includes('围观吃瓜镜头'));
+
+    const crossViolations = crossSlotRule.evaluate({ shots: [crowdShot] });
+    const capacityViolation = crossViolations.find((v) => v.rule === 'INVARIANT_REFERENCE_CAPACITY_EXCEEDED');
+    assert.ok(capacityViolation);
+    assert.ok(capacityViolation.message.includes('围观吃瓜镜头'));
+
+    // 2 focal characters + background text description passes cleanly
+    const compliantCrowdShot = {
+      shot_number: 6,
+      beat_type: 'crowd_reaction',
+      dialogue_framing: 'crowd_reaction',
+      characters: [1, 2],
+      background_characters: [],
+      semantic_slots: {
+        visible_characters: [{ id: 1 }, { id: 2 }],
+        background_characters: [],
+        required_references: [{ id: 1, type: 'character' }, { id: 2, type: 'character' }],
+      },
+    };
+    assert.equal(crowdRule.evaluate({ shots: [compliantCrowdShot] }).length, 0);
+    assert.equal(h3Rule.evaluate({ shots: [compliantCrowdShot] }).length, 0);
+  });
+
+  it('validates beat cinematography: reveal prop close-up and suppression audio/angle invariants', () => {
+    const BeatCinematographyRule = require('../src/ontology/rules/beatCinematographyRule');
+    const rule = new BeatCinematographyRule();
+
+    const catalogs = {
+      props: [
+        { id: 10, name: '至尊龙王戒', prop_role: 'key_token', close_up_required: true },
+        { id: 20, name: '普通茶杯', prop_role: 'ambient', close_up_required: false },
+      ],
+      characters: [
+        { id: 1, name: '强势反派', power_status: 'dominant' },
+        { id: 2, name: '隐忍主角', power_status: 'suppressed' },
+      ],
+    };
+
+    // Case 1: Reveal beat missing prop reference
+    const revealNoPropShot = {
+      shot_number: 1,
+      beat_type: 'reveal',
+      shot_type: '特写',
+      props: [],
+      sound_plan: { sound_effects: ['sfx_sting'] },
+    };
+    const v1 = rule.evaluate({ shots: [revealNoPropShot], catalogs });
+    assert.ok(v1.some((v) => v.rule === 'INVARIANT_KEY_PROP_REFERENCE_MISSING'));
+
+    // Case 2: Reveal beat or key token prop with wide shot
+    const revealWideShot = {
+      shot_number: 2,
+      beat_type: 'reveal',
+      shot_type: '全景',
+      props: [10],
+      sound_plan: { sound_effects: ['sfx_sting'] },
+    };
+    const v2 = rule.evaluate({ shots: [revealWideShot], catalogs });
+    assert.ok(v2.some((v) => v.rule === 'INVARIANT_KEY_PROP_CLOSE_UP_REQUIRED'));
+
+    // Case 3: Suppression beat missing sting/impact SFX
+    const suppressionNoSfxShot = {
+      shot_number: 3,
+      beat_type: 'suppression',
+      shot_type: '中景',
+      characters: [1],
+      angle_v: 'low',
+      sound_plan: { sound_effects: [] },
+    };
+    const v3 = rule.evaluate({ shots: [suppressionNoSfxShot], catalogs });
+    assert.ok(v3.some((v) => v.rule === 'INVARIANT_BEAT_AUDIO_IMPACT_MISSING'));
+
+    // Case 4: Suppression dominant character shot with high angle
+    const suppressionWrongAngleDominant = {
+      shot_number: 4,
+      beat_type: 'suppression',
+      shot_type: '中景',
+      characters: [1],
+      angle_v: 'high',
+      sound_plan: { sound_effects: ['重音刺入'] },
+    };
+    const v4 = rule.evaluate({ shots: [suppressionWrongAngleDominant], catalogs });
+    assert.ok(v4.some((v) => v.rule === 'INVARIANT_SUPPRESSION_ANGLE_MISMATCH' && v.message.includes('dominant')));
+
+    // Case 5: Suppression suppressed character shot with low angle
+    const suppressionWrongAngleSuppressed = {
+      shot_number: 5,
+      beat_type: 'suppression',
+      shot_type: '近景',
+      characters: [2],
+      angle_v: 'low',
+      sound_plan: { sound_effects: ['打脸音效'] },
+    };
+    const v5 = rule.evaluate({ shots: [suppressionWrongAngleSuppressed], catalogs });
+    assert.ok(v5.some((v) => v.rule === 'INVARIANT_SUPPRESSION_ANGLE_MISMATCH' && v.message.includes('suppressed')));
+
+    // Case 6: Fully compliant reveal shot
+    const perfectRevealShot = {
+      shot_number: 6,
+      beat_type: 'reveal',
+      shot_type: '特写',
+      props: [10],
+      sound_plan: { sound_effects: ['重音刺入'] },
+    };
+    const v6 = rule.evaluate({ shots: [perfectRevealShot], catalogs });
+    assert.equal(v6.length, 0, 'Compliant reveal shot must produce 0 violations');
+  });
+
+  it('provides repair hint and explicit patch schema for beat cinematography violations', () => {
+    const hintCloseUp = directorAtomicRepairHint({ rule: 'INVARIANT_KEY_PROP_CLOSE_UP_REQUIRED' });
+    assert.ok(hintCloseUp.includes('特写'));
+
+    const hintSfx = directorAtomicRepairHint({ rule: 'INVARIANT_BEAT_AUDIO_IMPACT_MISSING' });
+    assert.ok(hintSfx.includes('重音刺入'));
+
+    const hintAngle = directorAtomicRepairHint({ rule: 'INVARIANT_SUPPRESSION_ANGLE_MISMATCH' });
+    assert.ok(hintAngle.includes('仰拍'));
+
+    const schemaCloseUp = directorAtomicPatchSchema({ rule: 'INVARIANT_KEY_PROP_CLOSE_UP_REQUIRED' });
+    assert.deepEqual(schemaCloseUp.properties.shot_type.enum, ['特写', '大特写', '近景']);
+
+    const schemaAngle = directorAtomicPatchSchema({ rule: 'INVARIANT_SUPPRESSION_ANGLE_MISMATCH' });
+    assert.ok(schemaAngle.properties.angle_v.enum.includes('low'));
+
+    const schemaSfx = directorAtomicPatchSchema({ rule: 'INVARIANT_BEAT_AUDIO_IMPACT_MISSING' });
+    assert.ok(schemaSfx.properties.sound_effect);
+  });
 });

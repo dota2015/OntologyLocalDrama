@@ -28,7 +28,7 @@ class H3ReferenceCapacityRule extends BaseInvariantRule {
     shots.forEach((shot, idx) => {
       const shotNum = shot.shot_number || (idx + 1);
 
-      // 短剧本体特性：围观吃瓜反应镜头豁免主角限2人
+      // 短剧本体特性：围观吃瓜反应镜头具名领头焦点仍限 ≤ 2 人，防生图模型人脸崩坏
       const isCrowdReaction = shot.is_crowd_reaction
         || shot.beat_type === 'crowd_reaction'
         || shot.dialogue_framing === 'crowd_reaction'
@@ -37,12 +37,15 @@ class H3ReferenceCapacityRule extends BaseInvariantRule {
       const charIds = shotCharacterIds(shot).all;
       const propIds = Array.isArray(shot.props) ? shot.props : (Array.isArray(shot.prop_ids) ? shot.prop_ids : []);
 
-      if (charIds.length > maxChars && !isCrowdReaction) {
+      if (charIds.length > maxChars) {
+        const message = isCrowdReaction
+          ? `分镜 ${shotNum} 为围观吃瓜镜头，具名焦点角色仍须 ≤ ${maxChars} 人（作为领头震惊/议论的代表），其余围观群众严禁挂入人脸参考图（会导致生图模型克隆人崩溃），必须改写为环境背景或 environment_vfx！`
+          : `分镜 ${shotNum} 出场身份角色超过设定的上限 ${maxChars} 人（当前${charIds.length}人），短剧镜头必须拆为正反打或反应镜头；路人/群众请改写为环境事件！`;
         violations.push({
           rule: 'INVARIANT_H3_CROWD_OVERLOAD',
           shot_number: shotNum,
           severity,
-          message: `分镜 ${shotNum} 出场身份角色超过设定的上限 ${maxChars} 人（当前${charIds.length}人），短剧镜头必须拆为正反打或反应镜头；路人/群众请改写为环境事件！`,
+          message,
         });
       }
       if (propIds.length > maxProps) {

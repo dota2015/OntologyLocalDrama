@@ -323,6 +323,16 @@ function getDefaultOntologyConfig() {
         params: {},
         description: '作为资产白名单把关者，杜绝智能体幻觉伪造不存在的资产 ID',
       },
+      RULE_BEAT_CINEMATOGRAPHY: {
+        enabled: true,
+        severity: 'warning',
+        params: {
+          require_prop_close_up: true,
+          require_beat_impact_sfx: true,
+          enforce_power_angle: true,
+        },
+        description: '短剧爽点节拍视听语法硬约束（亮信物特写夺焦、施压/打脸音效刺入与权力位阶俯仰角）',
+      },
     },
   };
 }

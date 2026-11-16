@@ -446,6 +446,12 @@ function ontologyRoutes(db, log) {
             prevention: '严格校验引用资产 ID 必须存在于剧目/集可用白名单中，坚决拦截未知或伪造 ID',
             severity: 'error',
           },
+          RULE_BEAT_CINEMATOGRAPHY: {
+            category: '短剧爽点与视听语法',
+            target_fields: ['beat_type', 'shot_type', 'angle_v', 'props', 'semantic_slots.sound_plan', 'sound_effects'],
+            prevention: '强制落实短剧核心视听语法：亮信物必须特写夺焦、施压与打脸反转必须配置重音音效、施压机位必须匹配压迫俯仰角',
+            severity: 'warning',
+          },
         };
 
         const currentConfig = getEffectiveConfig(db);
@@ -560,7 +566,7 @@ function ontologyRoutes(db, log) {
             {
               stage: 'Stage 3: 视听本体质量门禁硬拦截',
               agent: 'SHACL Invariant Rule Engine',
-              goal: '运行 12 大不可变规则校验，发现违规立即触发 Agent 局部反射自纠，确保进入渲染层的数据百分之百合规。',
+              goal: '运行 13 大不可变规则校验，发现违规立即触发 Agent 局部反射自纠，确保进入渲染层的数据百分之百合规。',
               output: 'Audited & Validated Contract (Zero Violations)',
             },
             {
