@@ -328,20 +328,40 @@ async function enrichEpisodeOntologySlots(db, log, cfg, episodeId, options = {})
     const rawMeta = pkg.drama?.metadata;
     const dramaMeta = typeof rawMeta === 'string' ? parseJsonValue(rawMeta, {}) : (rawMeta || {});
     const aspectRatio = String(dramaMeta?.aspect_ratio || pkg.drama?.aspect_ratio || '16:9');
-    for (let i = 0; i < persistedRows.length; i++) {
-      const shot = persistedRows[i];
-      onProgress(86 + Math.floor(((i + 1) / persistedRows.length) * 13), `阶段三正在编译第 ${i + 1}/${persistedRows.length} 镜官方 H3 提示词...`);
-      const res = await h3Stage3.ensureShotH3PromptCompiled(db, log, shot, {
-        dramaId: pkg.drama?.id,
-        aspectRatio,
-        forceRecompile: options.forceStage3 === true,
-      });
-      if (res.source === 'manual_locked') stage3Stats.manual_locked += 1;
-      else if (res.source === 'cache_hit') stage3Stats.cached += 1;
-      else stage3Stats.compiled += 1;
-      options.checkpoint?.record?.({ stage: 'stage3', shot_number: Number(shot.storyboard_number || i + 1), type: 'stage3_completed', payload: { source: res.source, mode: res.mode } });
-      options.checkpoint?.save?.();
+    const concurrency = Math.max(1, Math.min(6, Number(options.stage3Concurrency || 4)));
+    let completedCount = 0;
+    let nextIndex = 0;
+
+    async function stage3Worker() {
+      while (nextIndex < persistedRows.length) {
+        const i = nextIndex++;
+        const shot = persistedRows[i];
+        const res = await h3Stage3.ensureShotH3PromptCompiled(db, log, shot, {
+          dramaId: pkg.drama?.id,
+          aspectRatio,
+          forceRecompile: options.forceStage3 === true,
+        });
+        if (res.source === 'manual_locked') stage3Stats.manual_locked += 1;
+        else if (res.source === 'cache_hit') stage3Stats.cached += 1;
+        else stage3Stats.compiled += 1;
+
+        completedCount += 1;
+        onProgress(86 + Math.floor((completedCount / persistedRows.length) * 13), `阶段三正在编译第 ${completedCount}/${persistedRows.length} 镜官方 H3 提示词...`);
+        options.checkpoint?.record?.({
+          stage: 'stage3',
+          shot_number: Number(shot.storyboard_number || i + 1),
+          type: 'stage3_completed',
+          payload: { source: res.source, mode: res.mode },
+        });
+        options.checkpoint?.save?.();
+      }
     }
+
+    const workers = [];
+    for (let w = 0; w < Math.min(concurrency, persistedRows.length); w++) {
+      workers.push(stage3Worker());
+    }
+    await Promise.all(workers);
   }
 
   log.info('[本体丰富] 阶段二/三完成并落库', {

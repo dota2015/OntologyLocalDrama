@@ -51,11 +51,14 @@ function compileDramaSemanticPackage(db, episodeId) {
   try { dramaMeta = typeof drama.metadata === 'string' ? JSON.parse(drama.metadata) : (drama.metadata || {}); } catch (_) {}
   const rawGraph = dramaMeta.ontology_graph || {};
   const storedRelations = Array.isArray(rawGraph.relations) ? rawGraph.relations : [];
-  const storedBeats = Array.isArray(rawGraph.beats?.[epId])
-    ? rawGraph.beats[epId]
-    : (Array.isArray(rawGraph.beats?.[String(epId)])
-      ? rawGraph.beats[String(epId)]
-      : (Array.isArray(rawGraph.beats) ? rawGraph.beats : []));
+  const episodesBeats = rawGraph.episodes_beats || rawGraph.beats || {};
+  const storedBeats = Array.isArray(episodesBeats?.[epId])
+    ? episodesBeats[epId]
+    : (Array.isArray(episodesBeats?.[String(epId)])
+      ? episodesBeats[String(epId)]
+      : (Array.isArray(rawGraph.narrative_beats)
+        ? rawGraph.narrative_beats
+        : (Array.isArray(rawGraph.beats) ? rawGraph.beats : [])));
 
   // 1. 抽取角色本体目录（含身份锚点、造型阶段、音色、短剧人设与双层身份）
   const charRows = db.prepare('SELECT * FROM characters WHERE drama_id = ? AND deleted_at IS NULL ORDER BY id ASC').all(ep.drama_id);

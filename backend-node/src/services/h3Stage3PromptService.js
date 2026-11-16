@@ -273,6 +273,106 @@ function buildStage3PromptSpec(db, shot, context = {}) {
   };
 }
 
+function buildDeterministicStage3Skeleton(spec) {
+  if (!spec || typeof spec !== 'object') return '';
+
+  const picBindings = Array.isArray(spec.picture_bindings) ? spec.picture_bindings : [];
+  const audioBindings = Array.isArray(spec.audio_bindings) ? spec.audio_bindings : [];
+  const contract = spec.authoritative_contract || {};
+  const semantic = contract.semantic_slots || {};
+  const videoSlots = contract.video_slots || {};
+  const timeline = Array.isArray(videoSlots.shots_timeline) && videoSlots.shots_timeline.length > 0
+    ? videoSlots.shots_timeline
+    : [{
+      shot_number: 1,
+      timestamp: null,
+      duration: spec.duration_seconds || 5,
+      camera: videoSlots.camera || {},
+      action: '',
+      character_trajectories: [],
+    }];
+
+  const subjectLines = [];
+  if (spec.mode === 'fl2va') {
+    for (const pb of picBindings) {
+      subjectLines.push(`- ${pb.tag}: ${pb.role} (${pb.description || ''})`);
+    }
+  } else {
+    for (let i = 0; i < picBindings.length; i++) {
+      const pb = picBindings[i];
+      const subjTag = `<Subject ${i + 1}>`;
+      if (pb.type === 'scene') {
+        subjectLines.push(`- ${subjTag}: Scene environment referenced from ${pb.tag} (${pb.name || contract.scene?.location || 'Setting'})`);
+      } else if (pb.type === 'character') {
+        const outfit = pb.appearance ? `wearing ${pb.appearance}` : 'in signature drama costume';
+        subjectLines.push(`- ${subjTag}: Character ${pb.name || ''} (${outfit}) referenced from ${pb.tag}`);
+      } else if (pb.type === 'prop') {
+        subjectLines.push(`- ${subjTag}: Prop ${pb.name || ''} (${pb.appearance || 'key drama token'}) referenced from ${pb.tag}`);
+      } else {
+        subjectLines.push(`- ${subjTag}: Asset ${pb.name || pb.role || ''} referenced from ${pb.tag}`);
+      }
+    }
+  }
+
+  const audioLines = audioBindings.map((ab) => `- ${ab.tag}: Audio reference for ${ab.speaker_name || ab.key || 'voice'} (${ab.kind})`);
+
+  const nonSpeakingModes = new Set(['offscreen_voiceover', 'narration', 'silent_ambient', 'bgm_only']);
+  const isGlobalNonSpeaking = nonSpeakingModes.has(semantic.audio_lip_sync) || Boolean(semantic.sound_plan?.is_silent);
+
+  const shotTimelineLines = timeline.map((seg, idx) => {
+    const shotNum = seg.shot_number || idx + 1;
+    const cutHeader = shotNum === 1 && !seg.timestamp
+      ? `[Shot 1]`
+      : (seg.timestamp ? `[Shot ${shotNum}] At ${seg.timestamp}` : `[Shot ${shotNum}]`);
+    const durStr = Number.isFinite(Number(seg.duration)) ? ` (duration: ${Number(seg.duration)}s)` : '';
+    const cam = seg.camera || {};
+    const camDesc = `Camera: ${cam.shot_type || 'medium_shot'}, movement: ${cam.movement || 'static'}, horizontal angle: ${cam.angle_h || 'eye_level'}, vertical angle: ${cam.angle_v || 'level'}`;
+
+    const charLines = [];
+    const trajectories = Array.isArray(seg.character_trajectories) ? seg.character_trajectories : [];
+    if (trajectories.length > 0) {
+      for (const traj of trajectories) {
+        const charName = traj.character_name || (traj.character_id ? `Character ID ${traj.character_id}` : 'Character');
+        const pos = traj.screen_position || 'center';
+        const depth = traj.depth_layer || 'midground';
+        const facing = traj.facing || 'front';
+        const gaze = traj.gaze ? `${traj.gaze.gaze_type || 'direct'} towards ${traj.gaze.gaze_target_label || 'target'}` : 'directed';
+        const actAtom = traj.action_atom ? `performing ${traj.action_atom}` : '';
+        const resState = traj.result_state ? `ending in ${traj.result_state}` : '';
+        const actionPart = [actAtom, resState].filter(Boolean).join(' -> ');
+
+        let lipConstraint = '';
+        const mouthState = traj.mouth_state;
+        const dialogueContent = String(seg.audio_lip_sync?.dialogue_content || semantic.speech_plan?.text || '').trim();
+
+        if (!isGlobalNonSpeaking && mouthState === 'speaker_synced' && dialogueContent) {
+          lipConstraint = `Mouth: speaker_synced speaking line <d>[Chinese] ${dialogueContent}</d>`;
+        } else {
+          lipConstraint = 'Mouth: keeps lips strictly closed without speaking';
+        }
+
+        charLines.push(`  * ${charName}: position at ${pos} (${depth}), facing ${facing}, gaze ${gaze}. ${actionPart}. ${lipConstraint}`);
+      }
+    } else if (Array.isArray(semantic.visible_characters) && semantic.visible_characters.length > 0) {
+      for (const vc of semantic.visible_characters) {
+        const charName = vc.name || (vc.id ? `Character ID ${vc.id}` : 'Character');
+        charLines.push(`  * ${charName}: in frame. Mouth: ${isGlobalNonSpeaking ? 'keeps lips strictly closed without speaking' : 'natural'}`);
+      }
+    }
+
+    return `${cutHeader}${durStr}\n  ${camDesc}\n${charLines.length ? charLines.join('\n') : '  (Environment/Subject observation)'}`;
+  });
+
+  return `=== DETERMINISTIC STAGE 3 SKELETON (AUTHORITATIVE ANCHORS) ===
+[Media & Subject Bindings]
+${subjectLines.join('\n') || '- None'}
+${audioLines.join('\n')}
+
+[Shot Timeline & Strict Performance Constraints]
+${shotTimelineLines.join('\n\n')}
+==============================================================`;
+}
+
 function computeH3PromptFingerprint(spec) {
   return sha256({
     version: spec.version,
@@ -410,8 +510,44 @@ function validateOfficialH3Prompt(rawPrompt, spec) {
     if (mainBody && !/<(?:Subject|Picture)\s+1>/i.test(mainBody)) {
       errors.push('Ref2VA detailed_description 未引用任何已定义的 <Subject N> 或 <Picture N>（参考素材悬空）');
     }
+
+    // Ref2VA 全画内可见角色 <Subject N> 覆盖校验
+    const charBindings = (spec.picture_bindings || [])
+      .map((pb, idx) => ({ ...pb, index: idx + 1 }))
+      .filter((pb) => pb.type === 'character');
+    const charGroups = new Map();
+    for (const cb of charBindings) {
+      const key = (cb.character_id != null && cb.character_id > 0) ? `id:${cb.character_id}` : (cb.name || `idx:${cb.index}`);
+      if (!charGroups.has(key)) charGroups.set(key, []);
+      charGroups.get(key).push(cb);
+    }
+    for (const [, bindings] of charGroups) {
+      const covered = bindings.some((b) => {
+        const regex = new RegExp(`<(?:Subject|Picture)\\s+${b.index}>`, 'i');
+        return mainBody && regex.test(mainBody);
+      });
+      if (!covered) {
+        const firstBinding = bindings[0];
+        errors.push(`Ref2VA detailed_description 缺少画内可见角色 <Subject ${firstBinding.index}> / <Picture ${firstBinding.index}>（${firstBinding.name || '角色'}）的描述与引用`);
+      }
+    }
   } else if (spec.mode === 'fl2va' && spec.firstFramePresent && !/<Picture\s+1>/i.test(prompt)) {
     errors.push('FL2VA 首帧模式必须明确说明 <Picture 1> 与 0.00s 帧锚点的衔接');
+  }
+
+  // 非画内对白镜头的闭口保真校验
+  const semanticLipMode = spec.authoritative_contract?.semantic_slots?.audio_lip_sync;
+  const videoLipMode = spec.authoritative_contract?.video_slots?.audio_lip_sync?.mode;
+  const isSilentMode = spec.authoritative_contract?.semantic_slots?.sound_plan?.is_silent === true;
+  const nonSpeakingModes = ['offscreen_voiceover', 'narration', 'silent_ambient', 'bgm_only'];
+  const isNonInFrameDialogue = nonSpeakingModes.includes(semanticLipMode) || nonSpeakingModes.includes(videoLipMode) || isSilentMode;
+  const hasVisibleChars = (spec.authoritative_contract?.semantic_slots?.visible_characters || []).length > 0;
+
+  if (isNonInFrameDialogue && hasVisibleChars && mainBody) {
+    const speakingRegex = /\b(?:speaking|speaks|says|saying|talks|talking|opens?\s+mouth\s+to\s+speak|lip[- ]syncing)\b/i;
+    if (speakingRegex.test(mainBody)) {
+      errors.push('当前镜头处于非画内对白模式（画外音/旁白/无声环境），detailed_description 严禁将画内角色描写为开口说话，画内角色必须保持闭口（keeps lips strictly closed）');
+    }
   }
 
   return { valid: errors.length === 0, errors, prompt };
@@ -422,6 +558,7 @@ async function compileShotH3Prompt(db, log, shot, context = {}) {
   const fingerprint = computeH3PromptFingerprint(spec);
   const { skill, guide, guideFile } = loadOfficialH3Skill(spec.mode);
   const maxAttempts = Math.max(1, Math.min(4, Number(context.maxAttempts || 3)));
+  const skeleton = buildDeterministicStage3Skeleton(spec);
 
   const systemInstructions = `You are Stage 3 of the LocalMiniDrama director pipeline: the official MiniMax H3 Prompt Compiler.
 Your ONLY job is to translate a single Stage-2 validated storyboard contract into a production-ready MiniMax H3 prompt strictly following the official MiniMax-H3 h3-prompt-writing SKILL and guide (${guideFile}).
@@ -447,15 +584,16 @@ ${spec.mode === 'fl2va'
   let lastErrors = [];
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const userInput = feedback
-      ? `The previous prompt draft failed official MiniMax H3 SKILL validation. Fix ALL errors below and output ONLY the corrected prompt text.\nValidation errors:\n- ${feedback}\n\nAuthoritative Stage-2 Contract & Media Bindings:\n${JSON.stringify(spec, null, 2)}`
-      : `Compile this Stage-2 validated storyboard contract and media bindings into the official MiniMax H3 prompt:\n${JSON.stringify(spec, null, 2)}`;
+      ? `The previous prompt draft failed official MiniMax H3 SKILL validation. Fix ALL errors below and output ONLY the corrected prompt text strictly adhering to the deterministic skeleton.\nValidation errors:\n- ${feedback}\n\n${skeleton}\n\nAuthoritative Stage-2 Contract & Media Bindings:\n${JSON.stringify(spec, null, 2)}`
+      : `Compile this Stage-2 validated storyboard contract and media bindings into the official MiniMax H3 prompt adhering strictly to the deterministic skeleton:\n\n${skeleton}\n\nFull Stage-2 Contract:\n${JSON.stringify(spec, null, 2)}`;
 
     const raw = await agentsRuntime.runAgent(db, log, {
       name: 'h3-official-prompt-writer',
       instructions: systemInstructions,
       input: userInput,
       outputType: 'text',
-      thinking: 'enabled',
+      thinking: 'disabled',
+      reasoningEffort: 'none',
       maxTokens: 8192,
       temperature: 0.2,
     });
@@ -540,6 +678,7 @@ async function ensureShotH3PromptCompiled(db, log, shot, context = {}) {
 module.exports = {
   loadOfficialH3Skill,
   buildStage3PromptSpec,
+  buildDeterministicStage3Skeleton,
   computeH3PromptFingerprint,
   validateOfficialH3Prompt,
   compileShotH3Prompt,

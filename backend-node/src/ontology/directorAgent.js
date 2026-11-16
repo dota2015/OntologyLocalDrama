@@ -17,6 +17,7 @@ const { validateCharacterVisualSlots, STRUCTURED_DEPTH_LAYERS, STRUCTURED_SCREEN
 const { extractAllEntitiesFromScript } = require('./extractionAgent');
 const { isAssetObsolete } = require('./assetMatcher');
 const { CrossSlotInvariantsRule } = require('./rules/crossSlotRules');
+const { shotSpeechTurns } = require('../services/dialogueDubbingService');
 
 const singleShotCrossSlotRule = new CrossSlotInvariantsRule();
 const STAGE2_SKIPPED_CROSS_SLOT_RULES = new Set([
@@ -28,6 +29,163 @@ function crossSlotStage2Violations(shot, catalogs = {}) {
   return singleShotCrossSlotRule
     .evaluate({ shots: [shot], catalogs, options: { directorPlanningMode: 'persisted' } })
     .filter((item) => item?.severity === 'error' && !STAGE2_SKIPPED_CROSS_SLOT_RULES.has(item.rule));
+}
+
+/**
+ * 单源权威确定性投影器：消除 4 层同义重复报错
+ * 1. 时长与执行后端单向投影（<9s: h3_single, >=9s: h3_continuum）
+ * 2. 人物清单单向投影（visible_characters -> characters, background_characters -> background_characters）
+ * 3. 单说话人台词单向投影（shotSpeechTurns -> speech_plan.text & dialogue_content）
+ * 4. 画外音/无语言闭口状态兜底对齐（strictly_sealed）
+ */
+function projectCanonicalShotContract(shot) {
+  if (!shot || typeof shot !== 'object') return shot;
+
+  // 1. 时长与执行后端单向投影：以权威整数秒 duration 为准
+  let rawDuration = Number(
+    shot.duration != null
+      ? shot.duration
+      : (shot.semantic_slots?.shot_duration != null
+        ? shot.semantic_slots.shot_duration
+        : (shot.video_slots?.timing?.duration != null
+          ? shot.video_slots.timing.duration
+          : 5))
+  );
+  if (!Number.isFinite(rawDuration)) rawDuration = 5;
+  const duration = Math.round(rawDuration);
+
+  shot.duration = duration;
+
+  if (shot.semantic_slots && typeof shot.semantic_slots === 'object') {
+    shot.semantic_slots.shot_duration = duration;
+    if (duration >= CONTINUUM_MIN_SECONDS) {
+      shot.semantic_slots.execution_backend = 'h3_continuum';
+      if (shot.semantic_slots.continuum_plan && typeof shot.semantic_slots.continuum_plan === 'object') {
+        shot.semantic_slots.continuum_plan.total_duration = duration;
+      }
+    } else {
+      shot.semantic_slots.execution_backend = 'h3_single';
+      shot.semantic_slots.continuum_plan = null;
+    }
+  }
+
+  if (shot.video_slots && typeof shot.video_slots === 'object') {
+    if (!shot.video_slots.timing || typeof shot.video_slots.timing !== 'object') {
+      shot.video_slots.timing = {};
+    }
+    shot.video_slots.timing.duration = duration;
+    if (duration >= CONTINUUM_MIN_SECONDS) {
+      shot.video_slots.execution_backend = 'h3_continuum';
+    } else {
+      shot.video_slots.execution_backend = 'h3_single';
+    }
+  }
+
+  // 2. 人物清单单向投影
+  if (Array.isArray(shot.semantic_slots?.visible_characters)) {
+    const visibleIds = shot.semantic_slots.visible_characters
+      .map((c) => Number(c?.id ?? c?.character_id ?? c))
+      .filter((id) => Number.isInteger(id) && id > 0);
+    shot.characters = Array.from(new Set(visibleIds));
+  }
+  if (Array.isArray(shot.semantic_slots?.background_characters)) {
+    const bgIds = shot.semantic_slots.background_characters
+      .map((c) => Number(c?.id ?? c?.character_id ?? c))
+      .filter((id) => Number.isInteger(id) && id > 0);
+    shot.background_characters = Array.from(new Set(bgIds));
+  }
+
+  // 3. 单说话人台词单向投影
+  let turns = [];
+  try {
+    turns = shotSpeechTurns(shot);
+  } catch (_) {
+    turns = [];
+  }
+  if (turns.length === 1) {
+    const singleTurn = turns[0];
+    const authoritativeText = String(singleTurn.text || '').trim();
+    const speakerName = singleTurn.speaker || '';
+    const isNarration = singleTurn.kind === 'narration';
+
+    if (shot.semantic_slots && typeof shot.semantic_slots === 'object') {
+      if (!shot.semantic_slots.speech_plan || typeof shot.semantic_slots.speech_plan !== 'object') {
+        shot.semantic_slots.speech_plan = {};
+      }
+      const sp = shot.semantic_slots.speech_plan;
+      sp.text = authoritativeText;
+      if (speakerName && !sp.speaker_name) sp.speaker_name = speakerName;
+      if (sp.is_narration == null) sp.is_narration = isNarration;
+    }
+    if (shot.video_slots && typeof shot.video_slots === 'object') {
+      if (!shot.video_slots.audio_lip_sync || typeof shot.video_slots.audio_lip_sync !== 'object') {
+        shot.video_slots.audio_lip_sync = {};
+      }
+      shot.video_slots.audio_lip_sync.dialogue_content = authoritativeText;
+    }
+    const speakerId = Number(shot.semantic_slots?.speech_plan?.speaker_id);
+    if (Array.isArray(shot.character_visuals) && Number.isInteger(speakerId) && speakerId > 0 && !isNarration) {
+      for (const cv of shot.character_visuals) {
+        const cvId = Number(cv.character_id ?? cv.id);
+        if (cvId === speakerId) {
+          cv.mouth_state = 'speaking';
+        } else if (cv.mouth_state === 'speaking' || cv.mouth_state === 'speaker_synced') {
+          cv.mouth_state = 'strictly_sealed';
+        }
+      }
+    }
+  } else if (turns.length === 0) {
+    if (shot.semantic_slots && typeof shot.semantic_slots === 'object' && shot.semantic_slots.speech_plan) {
+      shot.semantic_slots.speech_plan.text = '';
+    }
+    if (shot.video_slots && typeof shot.video_slots === 'object') {
+      if (!shot.video_slots.audio_lip_sync || typeof shot.video_slots.audio_lip_sync !== 'object') {
+        shot.video_slots.audio_lip_sync = {};
+      }
+      shot.video_slots.audio_lip_sync.dialogue_content = '';
+    }
+    if (shot.dialogue == null) shot.dialogue = '';
+    if (shot.narration == null) shot.narration = '';
+  }
+
+  // 4. 画外音/无语言闭口状态兜底对齐
+  const semanticAudioMode = shot.semantic_slots?.audio_lip_sync || shot.semantic_slots?.speech_plan?.mode;
+  const videoAudioMode = shot.video_slots?.audio_lip_sync?.mode;
+  const isSilent = Boolean(shot.semantic_slots?.sound_plan?.is_silent) || semanticAudioMode === 'silent_ambient';
+  const nonSpeakingModes = new Set(['offscreen_voiceover', 'narration', 'silent_ambient', 'bgm_only']);
+
+  if (
+    nonSpeakingModes.has(semanticAudioMode) ||
+    nonSpeakingModes.has(videoAudioMode) ||
+    isSilent
+  ) {
+    if (Array.isArray(shot.character_visuals)) {
+      for (const cv of shot.character_visuals) {
+        if (cv.mouth_state === 'speaking' || cv.mouth_state === 'speaker_synced') {
+          cv.mouth_state = 'strictly_sealed';
+        }
+      }
+    }
+    if (shot.video_slots && typeof shot.video_slots === 'object') {
+      if (!shot.video_slots.audio_lip_sync || typeof shot.video_slots.audio_lip_sync !== 'object') {
+        shot.video_slots.audio_lip_sync = {};
+      }
+      shot.video_slots.audio_lip_sync.visible_characters_lip_state = 'strictly_sealed';
+      if (Array.isArray(shot.video_slots.shots_timeline)) {
+        for (const seg of shot.video_slots.shots_timeline) {
+          if (Array.isArray(seg.character_trajectories)) {
+            for (const traj of seg.character_trajectories) {
+              if (traj.mouth_state === 'speaker_synced') {
+                traj.mouth_state = 'offscreen_sealed';
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return shot;
 }
 
 function normalizeTimelineTimestamps(timeline) {
@@ -604,7 +762,7 @@ function applySingleStoryboardPatch(current, response, shotNumber) {
   if (Array.isArray(response.patch?.video_slots?.shots_timeline)) {
     patched.video_slots.shots_timeline = normalizeTimelineTimestamps(patched.video_slots.shots_timeline);
   }
-  return patched;
+  return projectCanonicalShotContract(patched);
 }
 
 function selectDirectorRepairTarget(shots, violations, skippedShots = new Set()) {
@@ -1410,6 +1568,7 @@ function applyDirectorRepairPlan(currentShots, plan) {
       if (Array.isArray(repair.patch?.video_slots?.shots_timeline)) {
         next[index].video_slots.shots_timeline = normalizeTimelineTimestamps(next[index].video_slots.shots_timeline);
       }
+      next[index] = projectCanonicalShotContract(next[index]);
       if (JSON.stringify(next[index]) !== before) changedCount++;
     }
   } else {
@@ -1454,7 +1613,7 @@ function applyDirectorRepairPlan(currentShots, plan) {
         if (Array.isArray(merged.video_slots?.shots_timeline)) {
           merged.video_slots.shots_timeline = normalizeTimelineTimestamps(merged.video_slots.shots_timeline);
         }
-        return merged;
+        return projectCanonicalShotContract(merged);
       }));
       changedCount += replacements.length;
     }
@@ -1656,8 +1815,9 @@ function visualSlotViolations(shot, characterVisuals, lastFrameVisuals) {
 
 // Generate framing and the execution timeline together. They are two views of
 // the same performance and should not be planned by independent agents.
-async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
+async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {}) {
   const retry = directorRetryContext(retryOptions);
+  const shot = projectCanonicalShotContract(rawShot);
   // Execution-slot repair is an Agent loop.  Six attempts was too small for a
   // long structured contract and made a recoverable field omission terminal.
   // Keep a finite, configurable safety ceiling, but default to the same 20
@@ -1716,7 +1876,7 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
       item && typeof item === 'object' ? item : { message: String(item) }
     )));
   }
-  if (errors.length === 0) return shot;
+  if (errors.length === 0) return projectCanonicalShotContract(shot);
 
   let currentShot = shot;
   const semanticCharacterIds = (value, background = false) => {
@@ -1757,6 +1917,12 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
   const lockedOffscreenIds = hasOffscreenContract
     ? semanticCharacterIds(semantic.offscreen_characters, true)
     : [];
+  const lockedParticipantIds = Array.from(new Set([
+    ...lockedVisibleIds,
+    ...lockedBackgroundIds,
+    ...lockedOffscreenIds,
+  ])).sort((a, b) => a - b);
+  const lockedParticipantSet = new Set(lockedParticipantIds);
   const hasLockedCharacterContract = Array.isArray(semantic.visible_characters)
     || Array.isArray(shot.characters);
   let lastFatalError = null;
@@ -1812,8 +1978,8 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
         .filter(Boolean).map(item => compactExecutionShot(item));
       const compactCatalogs = compactExecutionCatalogs(retryOptions.catalogs || {}, candidateBase);
       const rosterLockLine = hasOffscreenContract
-        ? `【阶段一锁定人物】visible=${JSON.stringify(lockedVisibleIds)}，background=${JSON.stringify(lockedBackgroundIds)}，offscreen=${JSON.stringify(lockedOffscreenIds)}。不得新增、删除或在三类之间挪动角色。offscreen 是画外参与者（同场画外/通讯远程），不入画：不得为其生成 character_visuals、轨迹或参考图，只影响声音与画内人物的视线/反应。`
-        : `【阶段一锁定人物】visible=${JSON.stringify(lockedVisibleIds)}，background=${JSON.stringify(lockedBackgroundIds)}。不得新增、删除或改角色归属。offscreen 阶段一未声明、未锁定：按对白声源与本镜事件如实填写 semantic_slots.offscreen_characters——通过通讯器/画外说话的人、被喊话的远程对象必须登记并注明 mode（present_offscreen/remote_voice），说话人必须出现在 visible/background/offscreen 之一；画外参与者不入画，不得为其生成 character_visuals、轨迹或参考图。`;
+        ? `【阶段一参与角色总集守恒】参与本镜事件的角色锁定为：${JSON.stringify(lockedParticipantIds)}（初始分布：visible=${JSON.stringify(lockedVisibleIds)}，background=${JSON.stringify(lockedBackgroundIds)}，offscreen=${JSON.stringify(lockedOffscreenIds)}）。严禁凭空捏造未登记角色 ID。画内总人数（visible + background）严格 ≤ 2。若近景/过肩对话产生背景冲突，允许将 background 角色移入 offscreen（mode: present_offscreen）或移出画；若画外说话人/电话对讲误入画内，允许移入 offscreen_characters（注明 mode: remote_voice/present_offscreen）。画外参与者不入画，不得为其生成 character_visuals、轨迹或参考图。`
+        : `【阶段一参与角色总集守恒】参与本镜事件的角色锁定为：${JSON.stringify(lockedParticipantIds)}（初始分布：visible=${JSON.stringify(lockedVisibleIds)}，background=${JSON.stringify(lockedBackgroundIds)}）。严禁凭空捏造未登记角色 ID。画内总人数（visible + background）严格 ≤ 2。offscreen 阶段一未声明、未锁定：按对白声源与本镜事件如实填写 semantic_slots.offscreen_characters——通过通讯器/画外说话的人、被喊话的远程对象必须登记并注明 mode（present_offscreen/remote_voice），说话人必须出现在 visible/background/offscreen 之一；画外参与者不入画，不得为其生成 character_visuals、轨迹或参考图。`;
       const gateFeedbackText = errors.map((item) => {
         const msg = String(item?.message || item || '');
         const slots = Array.isArray(item?.conflict_slots) && item.conflict_slots.length
@@ -1885,6 +2051,7 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
         last_frame_visuals: plannedPatch?.last_frame_visuals ?? (patchMode ? candidateBase.last_frame_visuals : undefined),
         video_slots: plannedVideoSlots ?? (patchMode ? candidateBase.video_slots : plannedPatch?.video_slots),
       };
+      currentShot = projectCanonicalShotContract(currentShot);
       const plannedSemantic = currentShot.semantic_slots && typeof currentShot.semantic_slots === 'object'
         ? currentShot.semantic_slots
         : {};
@@ -1905,20 +2072,33 @@ async function ensureDirectorExecutionSlots(db, log, shot, retryOptions = {}) {
         ...visualSlotViolations(currentShot, currentShot.character_visuals, currentShot.last_frame_visuals),
         ...shortDramaTimelineViolations(currentShot, currentShot.video_slots?.shots_timeline),
       ];
-      // Stage one owns the story structure.  Stage two may fill execution
-      // fields, but it must not add/remove identity characters while repairing
-      // those fields.  Otherwise the required visual IDs become impossible to
-      // satisfy and the error only appears much later as a misleading array
-      // mismatch.
+      // Stage one owns the story structure. Under participant conservation,
+      // stage two may adjust character distribution between visible, background,
+      // and offscreen (e.g. resolving close dialogue background conflict, or
+      // offscreen speaker correction), provided that no foreign IDs are invented.
       if (requireSemantic && hasLockedCharacterContract) {
         const plannedVisibleIds = semanticCharacterIds(plannedSemantic.visible_characters);
         const plannedBackgroundIds = semanticCharacterIds(plannedSemantic.background_characters, true);
         const plannedOffscreenIds = semanticCharacterIds(plannedSemantic.offscreen_characters, true);
-        if (!sameIds(lockedVisibleIds, plannedVisibleIds) || !sameIds(lockedBackgroundIds, plannedBackgroundIds) || (hasOffscreenContract && !sameIds(lockedOffscreenIds, plannedOffscreenIds))) {
-          errors.push({ message: `阶段二不得改写阶段一锁定的人物清单：visible_characters 应为 ${JSON.stringify(lockedVisibleIds)}、background_characters 应为 ${JSON.stringify(lockedBackgroundIds)}、offscreen_characters 应为 ${JSON.stringify(lockedOffscreenIds)}，Agent 实际输出为 visible_characters=${JSON.stringify(plannedVisibleIds)}、background_characters=${JSON.stringify(plannedBackgroundIds)}、offscreen_characters=${JSON.stringify(plannedOffscreenIds)}` });
+        const plannedParticipantIds = Array.from(new Set([
+          ...plannedVisibleIds,
+          ...plannedBackgroundIds,
+          ...plannedOffscreenIds,
+        ])).sort((a, b) => a - b);
+
+        const inventedIds = plannedParticipantIds.filter((id) => !lockedParticipantSet.has(id));
+        if (inventedIds.length > 0 && lockedParticipantSet.size > 0) {
+          errors.push({
+            message: `阶段二不得引入未在阶段一登记的新角色：${JSON.stringify(inventedIds)}；允许参与的角色集合为：${JSON.stringify(lockedParticipantIds)}`,
+          });
         }
+
+        // 同步更新 currentShot 的 characters 与 background_characters
+        currentShot.characters = plannedVisibleIds;
+        currentShot.background_characters = plannedBackgroundIds;
+
         const planningDrift = planningFeasibilityViolations([currentShot], { catalogs: retryOptions.catalogs || {} });
-        errors.push(...planningDrift.map(item => ({ message: item.message })));
+        errors.push(...planningDrift.map((item) => ({ message: item.message })));
       }
       if (requireSemantic) {
         const existingMsgs = new Set(errors.map((item) => String(item?.message || item || '')));
@@ -2608,5 +2788,6 @@ module.exports = {
   applySingleStoryboardPatch,
   auditDirectorDraftScoped,
   normalizeTimelineTimestamps,
+  projectCanonicalShotContract,
   ensureDirectorExecutionSlots,
 };

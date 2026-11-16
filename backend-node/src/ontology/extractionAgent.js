@@ -223,32 +223,46 @@ ${ep.script_content}
       dramaMeta = {};
     }
     if (!dramaMeta.ontology_graph || typeof dramaMeta.ontology_graph !== 'object' || Array.isArray(dramaMeta.ontology_graph)) {
-      dramaMeta.ontology_graph = { relations: [], beats: {} };
+      dramaMeta.ontology_graph = { relations: [], episodes_beats: {}, beats: {} };
     }
     if (!Array.isArray(dramaMeta.ontology_graph.relations)) {
       dramaMeta.ontology_graph.relations = [];
+    }
+    if (!dramaMeta.ontology_graph.episodes_beats || typeof dramaMeta.ontology_graph.episodes_beats !== 'object' || Array.isArray(dramaMeta.ontology_graph.episodes_beats)) {
+      dramaMeta.ontology_graph.episodes_beats = dramaMeta.ontology_graph.beats && typeof dramaMeta.ontology_graph.beats === 'object' && !Array.isArray(dramaMeta.ontology_graph.beats)
+        ? { ...dramaMeta.ontology_graph.beats }
+        : {};
     }
     if (!dramaMeta.ontology_graph.beats || typeof dramaMeta.ontology_graph.beats !== 'object' || Array.isArray(dramaMeta.ontology_graph.beats)) {
       dramaMeta.ontology_graph.beats = {};
     }
     if (extractedRelations.length > 0) {
-      // 合并全剧关系边（按 from_character -> relation_kind -> to_character 增量合并，保留已有其他关系）
+      // 合并全剧关系边（按 ${from_type}:${from_id}->${relation_kind}->${to_type}:${to_id} 增量合并，保留已有其他关系）
       const existingRels = dramaMeta.ontology_graph.relations;
-      const relKey = r => `${String(r.from_character || '').trim()}->${String(r.relation_kind || '').trim()}->${String(r.to_character || '').trim()}`;
+      const relKey = r => {
+        const fromType = r.from_type || r.fromType || 'Character';
+        const fromVal = (r.from_id != null && Number.isFinite(Number(r.from_id))) ? r.from_id : String(r.from_character || '').trim();
+        const toType = r.to_type || r.toType || 'Character';
+        const toVal = (r.to_id != null && Number.isFinite(Number(r.to_id))) ? r.to_id : String(r.to_character || '').trim();
+        const kind = String(r.relation_kind || '').trim();
+        return `${fromType}:${fromVal}->${kind}->${toType}:${toVal}`;
+      };
       const relMap = new Map();
       for (const r of existingRels) {
         const k = relKey(r);
-        if (k !== '->->') relMap.set(k, r);
+        if (k !== 'Character:->->Character:') relMap.set(k, r);
       }
       for (const r of extractedRelations) {
         const k = relKey(r);
-        if (k !== '->->') relMap.set(k, r);
+        if (k !== 'Character:->->Character:') relMap.set(k, r);
       }
       dramaMeta.ontology_graph.relations = Array.from(relMap.values());
     }
     if (extractedBeats.length > 0) {
       // 爽点节拍按单集分槽持久化，彻底杜绝跨集抽取相互覆盖
+      dramaMeta.ontology_graph.episodes_beats[String(epId)] = extractedBeats;
       dramaMeta.ontology_graph.beats[String(epId)] = extractedBeats;
+      dramaMeta.ontology_graph.narrative_beats = extractedBeats;
     }
     db.prepare('UPDATE dramas SET metadata = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(dramaMeta), now, ep.drama_id);
   } catch (err) {

@@ -12,6 +12,7 @@ const { timingInstructions, assessSpeechTiming } = require('../utils/speechTimin
 const { shotSpeechTurns } = require('./dialogueDubbingService');
 const { enforceStoryboardSpeechTiming } = require('./storyboardSpeechService');
 const { planningFeasibilityViolations, SpeechTimingRule } = require('../ontology/invariants');
+const { compileDramaSemanticPackage } = require('../ontology/semanticPackage');
 
 function stageOnePlanningViolations(storyboards, { catalogs, narrativeStyle, durationRange } = {}) {
   const violations = [...planningFeasibilityViolations(storyboards, { catalogs })];
@@ -44,6 +45,19 @@ function stageOnePlanningViolations(storyboards, { catalogs, narrativeStyle, dur
     const dur = durationRange ? Math.max(durationRange.min, Math.min(durationRange.max, rawDur)) : rawDur;
     const deliveryOptions = delivery.budgetOptions(delivery.resolve(narrativeStyle, shot, { duration: dur }));
     violations.push(...speechTimingRule.evaluate({ shots: [{ ...shot, shot_number: shotNum, duration: dur }], options: { deliveryOptions } }));
+
+    // 单镜换装前置门禁：在具备拆镜能力的阶段一规划环中拦截并拆镜，绝不带病流入阶段二
+    const mutationRegex = /(?:换上|换装|变身|脱去|脱下|脱掉|撕下面具|穿上|披上).{0,6}(?:衣|装|服|袍|甲|衫|裙|披风|斗篷)?/i;
+    const shotAction = `${shot.action || ''} ${shot.result || ''} ${shot.video_prompt || ''}`.trim();
+    if (mutationRegex.test(shotAction)) {
+      violations.push({
+        rule: 'INVARIANT_MID_SHOT_WARDROBE_MUTATION',
+        shot_number: shotNum,
+        severity: 'error',
+        conflict_slots: ['action', 'wardrobe_id'],
+        message: `分镜 #${shotNum} 镜头动作包含单镜换装/变身/造型改变描写（「${shotAction.slice(0, 40)}...」），单镜头生成无法维持造型突变，阶段一必须拆分为换装前后两个分镜！`,
+      });
+    }
   }
   return violations;
 }
@@ -659,6 +673,61 @@ function deriveStoryboardFieldsFromAi(sb, style, videoRatio, opts = {}) {
   if (!universalOmni) universalSegmentText = null;
   const layoutDescription = (sb.layout_description && String(sb.layout_description).trim()) || null;
   const dialogueFraming = sb.dialogue_framing || (Array.isArray(sb.characters) && sb.characters.length >= 2 ? (dialogue ? 'two_shot_face_to_face' : 'joint_observation') : (dialogue ? 'single_reaction_offscreen' : 'solo_action'));
+
+  // 短剧爽点节拍与画外参与者解析
+  const beatType = String(sb.beat_type || sb.semantic_slots?.beat_type || '').trim() || null;
+  const beatId = sb.beat_id || sb.semantic_slots?.beat_id || null;
+  const rawOffscreen = Array.isArray(sb.offscreen_characters)
+    ? sb.offscreen_characters
+    : (Array.isArray(sb.semantic_slots?.offscreen_characters) ? sb.semantic_slots.offscreen_characters : []);
+  const normalizedOffscreen = rawOffscreen.map((c) => {
+    if (typeof c === 'object' && c !== null) {
+      let charId = c.id != null ? Number(c.id) : (c.character_id != null ? Number(c.character_id) : null);
+      let charName = c.name || '';
+      if (!charId && charName && opts.dramaCharacters?.length) {
+        const found = opts.dramaCharacters.find((dc) => dc.name && dc.name.trim() === charName.trim());
+        if (found) charId = Number(found.id);
+      }
+      return {
+        id: charId,
+        character_id: charId,
+        name: charName,
+        mode: String(c.mode || 'present_offscreen').trim(),
+      };
+    }
+    const num = Number(c);
+    if (Number.isFinite(num) && num > 0) {
+      const found = opts.dramaCharacters?.find((dc) => Number(dc.id) === num);
+      return { id: num, character_id: num, name: found?.name || '', mode: 'present_offscreen' };
+    }
+    if (typeof c === 'string') {
+      const found = opts.dramaCharacters?.find((dc) => dc.name && dc.name.trim() === c.trim());
+      return { id: found ? Number(found.id) : null, character_id: found ? Number(found.id) : null, name: c.trim(), mode: 'present_offscreen' };
+    }
+    return null;
+  }).filter(Boolean);
+
+  let semanticSlots = sb.semantic_slots;
+  if (typeof semanticSlots === 'string') {
+    try { semanticSlots = JSON.parse(semanticSlots); } catch (_) { semanticSlots = null; }
+  }
+  if (!semanticSlots || typeof semanticSlots !== 'object') {
+    semanticSlots = {
+      visible_characters: charIds.map((id) => ({ id })),
+      background_characters: Array.isArray(sb.background_characters) ? sb.background_characters : [],
+      offscreen_characters: normalizedOffscreen,
+      beat_type: beatType,
+      beat_id: beatId,
+    };
+  } else {
+    if (normalizedOffscreen.length && (!semanticSlots.offscreen_characters || !semanticSlots.offscreen_characters.length)) {
+      semanticSlots.offscreen_characters = normalizedOffscreen;
+    }
+    if (beatType && !semanticSlots.beat_type) semanticSlots.beat_type = beatType;
+    if (beatId && !semanticSlots.beat_id) semanticSlots.beat_id = beatId;
+  }
+  sb.semantic_slots = semanticSlots;
+
   return {
     shotNumber,
     title,
@@ -694,6 +763,10 @@ function deriveStoryboardFieldsFromAi(sb, style, videoRatio, opts = {}) {
     creationMode,
     universalSegmentText,
     layoutDescription,
+    beatType,
+    beatId,
+    offscreenCharacters: normalizedOffscreen,
+    semanticSlots,
   };
 }
 
@@ -1888,13 +1961,36 @@ If words cannot fit, increase the shot count rather than omit words, rush speech
 
 async function runStageOneBaseGeneration(db, log, episodeId, taskId, options = {}) {
   const ctx = prepareStoryboardGenerationContext(db, episodeId, options);
+  const semPkg = compileDramaSemanticPackage(db, episodeId);
+  const ontologyDigest = semPkg?.getSystemDigest ? semPkg.getSystemDigest() : '';
   // Stage 1 is deliberately a small, fast narrative pass.  The execution
   // contract Agent owns semantic/video slots in Stage 2; sending those low
   // level fields here made the first response huge and caused truncation.
   const stage1DurationLabel = ctx.durationRange
     ? `${ctx.durationRange.min}～${ctx.durationRange.max}秒整数秒，严禁超过上限 ${ctx.durationRange.max} 秒`
     : '4～30秒整数秒，超过30秒才按语义拆镜';
-  ctx.systemPrompt = `你是短剧基础分镜导演。只把本集剧本拆成完整、紧凑、可执行的剧情分镜，先保证剧情顺序和台词逐字覆盖。每镜${stage1DurationLabel}；每个分镜最多只允许 1 个说话人的单轮对白（或 1 段旁白），严禁两人轮流对话或对白与旁白混在同一镜，多人轮流对话必须按说话轮次拆成连续分镜；每镜对白/旁白字数必须能在本镜 duration 内按实际 TTS 速度（默认 1.25x，约 5 字/秒）自然说完，超长台词必须按语义拆镜；单镜最多2名有身份角色，群众/敌军写成环境事件。动作与画面描写必须是可拍摄的纯写实物理动作，严禁文学心理隐喻及在画面中描述 UI 元素（如血条、准星、倒计时悬浮窗、屏幕小字）。不要输出 semantic_slots、video_slots、character_visuals、动作原子、口型、视线枚举或 H3 提示词。只返回 JSON 对象 {"storyboards":[...]}，不要解释。每镜字段：shot_number,title,scene_id,characters,background_characters,props,duration,location,time,shot_type,angle_h,angle_v,angle_s,movement,action,result,dialogue,narration,emotion,start_framing,end_framing,transition_to_next。注意：scene_id 填可用场景目录中的数字 ID；characters 必须填入可用角色目录中的数字 ID 数组（如 [26]，严禁写角色名字符串；无人物则为 []）；props 必须填入可用道具目录中的数字 ID 数组（如 [37]；无道具则为 []）。对白和旁白必须逐字保留，动作必须与对白同时发生，禁止用互相看着或静止等待填时长。可用场景目录：${JSON.stringify(ctx.scenes.map(s => ({ id: s.id, name: s.name, location: s.location })))}；可用角色目录：${JSON.stringify(ctx.characters.map(c => ({ id: c.id, name: c.name })))}；可用道具目录：${JSON.stringify(ctx.props.map(p => ({ id: p.id, name: p.name })))}。`;
+  ctx.systemPrompt = `你是短剧基础分镜导演。基于短剧本体图谱与爽点节拍，把本集剧本拆成完整、紧凑、可执行的剧情分镜，先保证剧情顺序和台词逐字覆盖。每镜${stage1DurationLabel}；每个分镜最多只允许 1 个说话人的单轮对白（或 1 段旁白），严禁两人轮流对话或对白与旁白混在同一镜，多人轮流对话必须按说话轮次拆成连续分镜；每镜对白/旁白字数必须能在本镜 duration 内按实际 TTS 速度（默认 1.25x，约 5 字/秒）自然说完，超长台词必须按语义拆镜；单镜最多2名有身份画内角色（characters），群众/敌军写成环境事件。动作与画面描写必须是可拍摄的纯写实物理动作，严禁文学心理隐喻及在画面中描述 UI 元素（如血条、准星、倒计时悬浮窗、屏幕小字）。不要输出 video_slots、character_visuals、动作原子、口型、视线枚举或 H3 提示词。只返回 JSON 对象 {"storyboards":[...]}，不要解释。
+
+每镜字段：shot_number,title,scene_id,characters,background_characters,offscreen_characters,beat_type,props,duration,location,time,shot_type,angle_h,angle_v,angle_s,movement,action,result,dialogue,narration,emotion,start_framing,end_framing,transition_to_next。
+
+【角色与画外参与规则】
+- scene_id 填可用场景目录中的数字 ID；
+- characters 必须填入可用角色目录中的数字 ID 数组（如 [26]，严禁写角色名字符串；画内无主体人物则为 []，最多2人）；
+- background_characters 为画内背景角色 ID 数组（如 []）；
+- offscreen_characters：通过电话、对讲机、门外喊话等参与本镜事件但不入画的角色，必须填入 offscreen_characters（如 [{"id": 102, "name": "露娜", "mode": "remote_voice"}]，模式可选 remote_voice、doorway、present_offscreen），严禁塞入画内 characters 或 background_characters；
+- props 必须填入可用道具目录中的数字 ID 数组（如 [37]；无道具则为 []）。
+
+【短剧节拍与视听映射规则（Beat-Driven Cinematography）】
+- beat_type 填入当前镜头承载的短剧爽点节拍类型（hook: 黄金前3秒钩子；suppression: 极限施压/羞辱；reveal: 亮明底牌/信物；slap_reversal: 打脸反转；cliffhanger: 集末断章卡点；crowd_reaction: 围观震惊反应；transition: 剧情过场衔接）。
+1. hook（前3秒钩子）：优先采用特写/近景或快节奏推拉（push/pull），第一时间抓住视觉冲突与悬念；
+2. suppression（极限施压/羞辱）：上位施压者（dominant）镜头优先采用仰拍（angle_v: 'low'），受辱隐忍方（suppressed）优先采用俯拍（angle_v: 'high'）；
+3. reveal（亮明底牌/信物）：凡涉及 prop_role === 'key_token' 或 close_up_required === true 的核心打脸信物/底牌道具，必须将该道具 ID 挂入本镜 props，且景别优先给特写/近景；
+4. slap_reversal（打脸反转）：采用快速推轨（push）或紧凑正反打，突出反转气场与重音音效（sound_effect）；
+5. crowd_reaction（吃瓜围观震惊反应）：画内有身份角色 characters 仍严格控制在 1～2 人（作为领头震惊议论的焦点代表），其余围观人群写入 action 与环境反应描写，绝不挂载超过 2 个角色 ID。
+
+对白和旁白必须逐字保留，动作必须与对白同时发生，禁止用互相看着或静止等待填时长。
+
+${ontologyDigest}`;
   ctx.userPrompt = `【本集剧本】\n${ctx.scriptContent}\n\n【规划目标】镜头数${ctx.storyboardCount || '自动'}；总时长${ctx.videoDuration || '自动'}秒；镜头时长范围${ctx.durationRange ? JSON.stringify(ctx.durationRange) : '4～30秒'}。按剧情节拍规划，不删台词、不重复内容。`;
   log.info('Running Stage 1 Base Storyboard Generation', {
     task_id: taskId,

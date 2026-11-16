@@ -653,6 +653,8 @@ function createSemanticSlots(data = {}) {
     })),
     audio_lip_sync: data.audio_lip_sync || (data.speech_plan?.is_narration ? AUDIO_LIP_SYNC_MODES.NARRATION : (data.speech_plan?.is_offscreen ? AUDIO_LIP_SYNC_MODES.OFFSCREEN_VOICEOVER : AUDIO_LIP_SYNC_MODES.IN_FRAME_DIALOGUE)),
     shot_duration: Math.max(1, Number(data.shot_duration || data.duration) || 5),
+    beat_type: data.beat_type || null,
+    beat_id: data.beat_id || null,
   };
 }
 

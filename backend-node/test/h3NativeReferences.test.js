@@ -42,7 +42,7 @@ function buildOfficialMockPromptFromSpec(spec) {
     '',
     'detailed_description:',
     'Natural cinematic lighting.',
-    `[Shot 1] Wide framing establishing <Subject 1> inside the room. ${speechText}`,
+    `[Shot 1] Wide framing establishing <Subject 1>${(spec.picture_bindings || []).length > 1 ? ` alongside ${(spec.picture_bindings || []).slice(1).map((_, i) => `<Subject ${i + 2}>`).join(', ')}` : ''} inside the room. ${speechText}`,
     '',
     'overall_soundscape:',
     'Quiet indoor ambience.',
