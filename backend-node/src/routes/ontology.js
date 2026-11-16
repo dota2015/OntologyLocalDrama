@@ -33,6 +33,8 @@ function ontologyRoutes(db, log) {
           drama: pkg.drama,
           episode: pkg.episode,
           catalogs: pkg.catalogs,
+          ontology_graph: pkg.ontology_graph,
+          narrative_beats: pkg.narrative_beats,
         });
       } catch (err) {
         log.error('ontology getSemanticPackage', { error: err.message });
