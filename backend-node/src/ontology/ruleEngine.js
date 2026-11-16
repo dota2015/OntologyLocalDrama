@@ -94,11 +94,14 @@ class InvariantRuleEngine {
     const disabled = new Set(options.disabledRules || []);
     const onlyCategories = options.onlyCategories ? new Set(options.onlyCategories) : null;
     const severityOverrides = options.severityOverrides || {};
+    const ruleConfigs = options.ruleConfigs || (options.ontologyConfig?.rules) || {};
 
     const allViolations = [];
 
     for (const rule of this.rules.values()) {
-      if (!rule.enabled || disabled.has(rule.id)) continue;
+      const cfg = ruleConfigs[rule.id] || {};
+      const isEnabled = cfg.enabled !== undefined ? !!cfg.enabled : rule.enabled;
+      if (!isEnabled || disabled.has(rule.id)) continue;
       if (onlyCategories && !onlyCategories.has(rule.category)) continue;
 
       // 视条件跳过：无 props 时跳过 propEraAndScaleRule；无 catalogs/scriptContent 时跳过 obsoleteAssets
@@ -110,12 +113,12 @@ class InvariantRuleEngine {
       }
 
       try {
-        const res = rule.evaluate({ ...context, options });
+        const res = rule.evaluate({ ...context, ruleConfig: cfg, options });
         if (Array.isArray(res) && res.length > 0) {
-          // 若有级别覆盖
-          if (severityOverrides[rule.id]) {
+          const effectiveSeverity = severityOverrides[rule.id] || cfg.severity;
+          if (effectiveSeverity) {
             res.forEach((v) => {
-              v.severity = severityOverrides[rule.id];
+              v.severity = effectiveSeverity;
             });
           }
           allViolations.push(...res);

@@ -774,14 +774,31 @@ export function useStoryboardState({
       nextLighting[sb.id] = sb.lighting_style || ''
       nextDof[sb.id] = sb.depth_of_field || ''
       nextLayoutDescription[sb.id] = (sb.layout_description ?? '').toString()
-      const charList = Array.isArray(sb.characters) ? sb.characters : (sb.characters != null ? [sb.characters] : [])
-      let charIds = charList.map((c) => (typeof c === 'object' && c != null ? Number(c.id) : Number(c))).filter((n) => Number.isFinite(n))
-      if (!charIds.length && Array.isArray(sb.semantic_slots?.visible_characters)) {
-        charIds = sb.semantic_slots.visible_characters.map((c) => Number(c.id)).filter(Number.isFinite)
+
+      // 安全解析 characters / semantic_slots / character_visuals (兼容 JSON 字符串或已解析对象)
+      let rawChars = sb.characters
+      if (typeof rawChars === 'string') {
+        try { rawChars = JSON.parse(rawChars) } catch (_) {}
       }
-      if (!charIds.length && Array.isArray(sb.character_visuals)) {
-        charIds = sb.character_visuals.map((c) => Number(c.character_id)).filter(Number.isFinite)
+      const charList = Array.isArray(rawChars) ? rawChars : (rawChars != null ? [rawChars] : [])
+      let charIds = charList.map((c) => (typeof c === 'object' && c != null ? Number(c.id ?? c.character_id) : Number(c))).filter((n) => Number.isFinite(n))
+
+      let semSlots = sb.semantic_slots
+      if (typeof semSlots === 'string') {
+        try { semSlots = JSON.parse(semSlots) } catch (_) {}
       }
+      if (!charIds.length && Array.isArray(semSlots?.visible_characters)) {
+        charIds = semSlots.visible_characters.map((c) => Number(c.id ?? c.character_id)).filter(Number.isFinite)
+      }
+
+      let charVis = sb.character_visuals
+      if (typeof charVis === 'string') {
+        try { charVis = JSON.parse(charVis) } catch (_) {}
+      }
+      if (!charIds.length && Array.isArray(charVis)) {
+        charIds = charVis.map((c) => Number(c.character_id ?? c.id)).filter(Number.isFinite)
+      }
+
       if (!charIds.length && charList.length > 0) {
         const all = [...(store.characters || []), ...(store.drama?.characters || [])]
         const nameMap = new Map(all.map((c) => [c.name?.trim(), Number(c.id)]))
@@ -790,8 +807,14 @@ export function useStoryboardState({
       nextCharIds[sb.id] = Array.from(new Set(charIds))
 
       let propIds = Array.isArray(sb.prop_ids) ? sb.prop_ids.map(Number).filter(Number.isFinite) : []
-      if (!propIds.length && Array.isArray(sb.semantic_slots?.required_references)) {
-        propIds = sb.semantic_slots.required_references
+      if (!propIds.length && typeof sb.prop_ids === 'string') {
+        try {
+          const parsedProps = JSON.parse(sb.prop_ids)
+          if (Array.isArray(parsedProps)) propIds = parsedProps.map(Number).filter(Number.isFinite)
+        } catch (_) {}
+      }
+      if (!propIds.length && Array.isArray(semSlots?.required_references)) {
+        propIds = semSlots.required_references
           .filter((ref) => ref.type === 'prop')
           .map((ref) => Number(ref.id || ref.prop_id))
           .filter(Number.isFinite)

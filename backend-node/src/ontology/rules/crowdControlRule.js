@@ -20,15 +20,28 @@ class CrowdControlRule extends BaseInvariantRule {
     const violations = [];
     if (!Array.isArray(shots)) return violations;
 
+    const maxChars = Number(context.ruleConfig?.params?.max_characters ?? context.options?.max_characters) || 2;
+    const severity = context.ruleConfig?.severity || this.defaultSeverity;
+
     shots.forEach((shot, idx) => {
       const shotNum = shot.shot_number || (idx + 1);
+
+      // 短剧本体特性：围观吃瓜反应镜头（众人震惊、议论、倒吸凉气）豁免2人限制，按群像切镜模板处理
+      const isCrowdReaction = shot.is_crowd_reaction
+        || shot.beat_type === 'crowd_reaction'
+        || shot.dialogue_framing === 'crowd_reaction'
+        || (shot.title && (shot.title.includes('反应') || shot.title.includes('围观') || shot.title.includes('众人')));
+      if (isCrowdReaction) {
+        return;
+      }
+
       const charIds = shotCharacterIds(shot).all;
-      if (charIds.length > 2) {
+      if (charIds.length > maxChars) {
         violations.push({
           rule: 'INVARIANT_CROWD_COLLAPSE_RISK',
           shot_number: shotNum,
-          severity: this.defaultSeverity,
-          message: `分镜 ${shotNum} 关联了 ${charIds.length} 名身份角色（超过2人），违反短剧正反打语法。路人/群众应写成环境事件，建议拆解为主体行动镜+反应特写。`,
+          severity,
+          message: `分镜 ${shotNum} 关联了 ${charIds.length} 名身份角色（超过设定的上限 ${maxChars} 人），违反短剧正反打语法。路人/群众应写成环境事件，建议拆解为主体行动镜+反应特写。`,
         });
       }
     });

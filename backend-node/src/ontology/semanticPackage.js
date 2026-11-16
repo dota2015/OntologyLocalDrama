@@ -6,7 +6,13 @@
  */
 
 const crypto = require('crypto');
-const { createCharacterEntity, createSceneSpatialEntity, createPropEntity } = require('./schema');
+const {
+  createCharacterEntity,
+  createSceneSpatialEntity,
+  createPropEntity,
+  SHORT_DRAMA_ONTOLOGY_META_MODEL,
+  createRelationEdge,
+} = require('./schema');
 
 /**
  * episodes.duration is persisted in minutes by both storyboard generators.  A
@@ -40,9 +46,17 @@ function compileDramaSemanticPackage(db, episodeId) {
 
   const drama = db.prepare('SELECT * FROM dramas WHERE id = ? AND deleted_at IS NULL').get(ep.drama_id) || {};
 
-  // 1. 抽取角色本体目录（含身份锚点、造型阶段、音色）
+  // 读取短剧持久化扩展元数据（人物恩怨关系与爽点节拍）
+  let dramaMeta = {};
+  try { dramaMeta = typeof drama.metadata === 'string' ? JSON.parse(drama.metadata) : (drama.metadata || {}); } catch (_) {}
+  const rawGraph = dramaMeta.ontology_graph || {};
+  const storedRelations = Array.isArray(rawGraph.relations) ? rawGraph.relations : [];
+  const storedBeats = Array.isArray(rawGraph.beats?.[epId]) ? rawGraph.beats[epId] : [];
+
+  // 1. 抽取角色本体目录（含身份锚点、造型阶段、音色、短剧人设与双层身份）
   const charRows = db.prepare('SELECT * FROM characters WHERE drama_id = ? AND deleted_at IS NULL ORDER BY id ASC').all(ep.drama_id);
   const episodeCharacterIds = new Set(db.prepare('SELECT character_id FROM episode_characters WHERE episode_id=?').all(epId).map(r => Number(r.character_id)));
+  const charNameToIdMap = new Map();
   const characters = charRows.map((r) => {
     let anchors = null;
     if (r.identity_anchors) {
@@ -52,6 +66,7 @@ function compileDramaSemanticPackage(db, episodeId) {
     if (r.voice_id || r.custom_voice_id) {
       voice = { voice_id: r.voice_id || r.custom_voice_id, speed: r.speed || 1.0, pitch: r.pitch || 0 };
     }
+    charNameToIdMap.set(r.name.trim(), r.id);
     return createCharacterEntity({
       id: r.id,
       name: r.name,
@@ -61,75 +76,142 @@ function compileDramaSemanticPackage(db, episodeId) {
       wardrobeStageId: r.current_stage_id,
       state: 'normal',
       voice,
+      identityAnchors: anchors,
+      archetype: anchors?.archetype || 'hidden_tycoon',
+      surfaceIdentity: anchors?.surface_identity || '',
+      hiddenIdentity: anchors?.hidden_identity || '',
+      powerStatus: anchors?.power_status || 'suppressed',
     });
   });
 
-  // 2. 抽取场景空间本体目录（含空间地标、采光）
+  // 2. 抽取场景空间本体目录（优先读取结构化地标、空间权力轴与采光）
   const sceneRows = db.prepare('SELECT * FROM scenes WHERE drama_id = ? AND deleted_at IS NULL ORDER BY id ASC').all(ep.drama_id);
   const scenes = sceneRows.map((r) => {
-    const desc = `${r.location || ''} ${r.prompt || ''}`.toLowerCase();
-    const landmarks = [];
-    if (/门|门口|door/.test(desc)) landmarks.push('doorway');
-    if (/窗|窗口|window/.test(desc)) landmarks.push('window');
-    if (/桌|案几|台|desk|table/.test(desc)) landmarks.push('desk');
-    if (/箱|货箱|掩体|cover|crate/.test(desc)) landmarks.push('cover');
-    if (/走廊|过道|通道|corridor/.test(desc)) landmarks.push('corridor');
+    let landmarks = [];
+    if (Array.isArray(r.landmarks)) {
+      landmarks = r.landmarks;
+    } else if (typeof r.landmarks === 'string' && r.landmarks.trim().startsWith('[')) {
+      try { landmarks = JSON.parse(r.landmarks); } catch (_) {}
+    }
+    if (landmarks.length === 0) {
+      const desc = `${r.location || ''} ${r.prompt || ''}`.toLowerCase();
+      if (/门|门口|door/.test(desc)) landmarks.push('doorway');
+      if (/窗|窗口|window/.test(desc)) landmarks.push('window');
+      if (/桌|案几|台|desk|table/.test(desc)) landmarks.push('desk');
+      if (/箱|货箱|掩体|cover|crate/.test(desc)) landmarks.push('cover');
+      if (/走廊|过道|通道|corridor/.test(desc)) landmarks.push('corridor');
+      if (/主位|高台|宝座|main_seat/.test(desc)) landmarks.push('main_seat');
+    }
 
-    let lighting = 'natural';
-    if (/夜|暗|night|dark/.test(desc)) lighting = 'night';
-    else if (/夕阳|黄昏|sunset|golden/.test(desc)) lighting = 'golden_hour';
-    else if (/蓝调|冷|blue/.test(desc)) lighting = 'blue_hour';
-    else if (/霓虹|赛博|neon/.test(desc)) lighting = 'neon';
+    const lighting = r.lighting_style || r.lighting_env || 'natural';
+    const spatialType = r.spatial_type || (/室外|街道|广场|荒野|outdoor/.test((r.location || '').toLowerCase()) ? 'exterior_open' : 'interior');
+    const powerAxis = r.power_axis || 'center_stage_vs_crowd';
 
     return createSceneSpatialEntity({
       id: r.id,
       location: r.location,
       time: r.time,
-      spatialType: /室外|街道|广场|荒野|outdoor/.test(desc) ? 'exterior_open' : 'interior',
+      spatialType,
       lightingEnv: lighting,
       landmarks,
-      acoustics: /仓库|大厅|空旷/.test(desc) ? 'echo_hall' : 'standard',
+      powerAxis,
+      acoustics: r.acoustics || 'standard',
     });
   });
 
-  // 3. 抽取道具物理本体目录（含尺寸、时代）
+  // 3. 抽取道具物理本体目录（优先读取结构化尺度、打脸信物属性）
   let props = [];
   try {
     const propRows = db.prepare('SELECT * FROM props WHERE drama_id = ? AND deleted_at IS NULL ORDER BY id ASC').all(ep.drama_id);
     props = propRows.map((r) => {
       let scale = r.physical_scale || '';
       if (!scale) {
-        if (/枪|刀|剑|武器/.test(r.name)) scale = '长约40-80cm单兵持有物，不可放大';
-        else if (/箱|盒子/.test(r.name)) scale = '长约30-50cm手提物件，放置于平整表面';
-        else scale = '环境正常尺寸小件道具，次要元素';
+        scale = '标准手持或环境尺寸物件';
       }
+      const propRole = r.prop_role || (r.type === '打脸信物' || r.type === '核心信物' ? 'key_token' : 'ambient');
+      const closeUp = r.close_up_required != null ? !!r.close_up_required : (propRole === 'key_token' || propRole === 'slap_evidence');
+
       return createPropEntity({
         id: r.id,
         name: r.name,
         type: r.type,
+        propRole,
+        closeUpRequired: closeUp,
         eraCategory: r.era_category || 'universal',
-        eraCompatibility: r.era_compatibility || '',
+        eraCompatibility: r.era_compatibility || 'compatible',
         eraReason: r.era_reason || '',
         physicalScale: scale,
         description: r.description,
+        ownerCharacterId: r.owner_character_id,
         prompt: r.image_prompt,
       });
     });
   } catch (_) {
-    // 兼容尚未建立 props 表的环境
     props = [];
   }
 
-  // 4. 解析剧情时代与世界观
+  // 4. 解析短剧时代与世界观（结构化优先 + 补充 fantasy 时代分支）
   const dramaEra = (() => {
+    if (drama.era && typeof drama.era === 'string') return drama.era;
     const text = `${drama.title || ''} ${drama.genre || ''} ${drama.style || ''} ${ep.script_content || ''}`.toLowerCase();
-    if (/古装|古风|武侠|仙侠|修真|大宋|大明|大唐|汉服|朝代|historical|ancient|流放|大靖|朝廷|王爷|皇宫|嫡女|庶女/.test(text)) return 'ancient';
+    if (/奇幻|玄幻|修真|仙侠|魔法|神魔|魔幻|fantasy/.test(text)) return 'fantasy';
+    if (/古装|古风|武侠|大宋|大明|大唐|汉服|朝代|historical|ancient|流放|大靖|朝廷|王爷|皇宫|嫡女|庶女/.test(text)) return 'ancient';
     if (/民国|上海滩|军阀|租界/.test(text)) return 'republic_china';
     if (/赛博|科幻|星际|太空|未来|战舰|全息|AI/.test(text)) return 'sci_fi';
     return 'modern';
   })();
 
-  // 5. 计算不可变内容哈希（SHA-256 Content Hash）
+  // 5. 构建显式短剧语义关系图边集合 (Relation Edges)
+  const relations = [];
+  // 5.1 人物社会恩怨关系边
+  for (const rel of storedRelations) {
+    const fromId = rel.from_character_id || charNameToIdMap.get(rel.from_character?.trim()) || 0;
+    const toId = rel.to_character_id || charNameToIdMap.get(rel.to_character?.trim()) || 0;
+    try {
+      relations.push(createRelationEdge({
+        type: 'REL_CHARACTER_SOCIAL',
+        fromType: 'Character',
+        fromId,
+        toType: 'Character',
+        toId,
+        properties: {
+          relation_kind: rel.relation_kind || 'enemy_of',
+          from_character: rel.from_character || '',
+          to_character: rel.to_character || '',
+          description: rel.description || '',
+        },
+      }));
+    } catch (_) {}
+  }
+
+  // 5.2 道具持有归属关系边
+  for (const p of props) {
+    if (p.owner_character_id) {
+      try {
+        relations.push(createRelationEdge({
+          type: 'REL_CHARACTER_OWNS_PROP',
+          fromType: 'Character',
+          fromId: p.owner_character_id,
+          toType: 'Prop',
+          toId: p.id,
+          properties: { prop_role: p.prop_role },
+        }));
+      } catch (_) {}
+    }
+  }
+
+  const ontologyGraph = {
+    meta_model: SHORT_DRAMA_ONTOLOGY_META_MODEL,
+    objects: {
+      characters,
+      scenes,
+      props,
+      beats: storedBeats,
+    },
+    relations,
+  };
+
+  // 6. 计算不可变内容哈希（SHA-256 Content Hash）
   const contentDigest = JSON.stringify({
     drama_id: ep.drama_id,
     episode_id: epId,
@@ -138,6 +220,8 @@ function compileDramaSemanticPackage(db, episodeId) {
     characters: characters.map(c => ({ id: c.id, name: c.name, stage: c.wardrobe_stage_id, in_episode: episodeCharacterIds.has(c.id) })),
     scenes: scenes.map(s => ({ id: s.id, loc: s.location, landmarks: s.landmarks })),
     props: props.map(p => ({ id: p.id, name: p.name, scale: p.physical_scale, era: p.era_category, compatibility: p.era_compatibility })),
+    relations_count: relations.length,
+    beats_count: storedBeats.length,
   });
   const revisionHash = crypto.createHash('sha256').update(contentDigest).digest('hex').slice(0, 16);
 
@@ -161,6 +245,9 @@ function compileDramaSemanticPackage(db, episodeId) {
       scenes,
       props,
     },
+    ontology_graph: ontologyGraph,
+    narrative_beats: storedBeats,
+
     // 工具检索方法
     getCharacter(id) {
       return characters.find(c => c.id === Number(id)) || null;
@@ -173,13 +260,20 @@ function compileDramaSemanticPackage(db, episodeId) {
     },
     // 生成供大模型理解的紧凑结构化提示词概要
     getSystemDigest() {
-      const charLines = characters.map(c => `- ID:${c.id} [${c.name}] ${episodeCharacterIds.has(c.id) ? "【本集已关联】" : "【剧库可复用，未关联本集】"} (${c.gender}/${c.role}) ${c.appearance ? `外貌:${c.appearance.slice(0, 50)}` : ''}`).join('\n');
-      const sceneLines = scenes.map(s => `- ID:${s.id} [${s.location}] 地标:[${s.landmarks.join(',')}] 光照:${s.lighting_env || '自然光'}`).join('\n');
-      const propLines = props.map(p => `- ID:${p.id} [${p.name}] 尺度:[${p.physical_scale}] 时代使用:${p.era_compatibility || '未声明'}${p.era_reason ? `(${p.era_reason})` : ''}`).join('\n');
-      return `【剧目本体世界观】剧名：${drama.title || '短剧'} | 时代：${dramaEra} | 风格：${drama.style || '写实电影感'}
-【角色身份选择】人物身份以 ID 为准，名字不是唯一键。优先复用本集已关联人物；同名多个 ID 时必须核对本集选择、外貌与剧情身份，不能在不同镜头随机切换 ID，也不能把同名记录当作同一个角色。仅在剧情确实需要时明确选择剧库其他人物，发布时会按所选 ID 建立本集关联。\n【可用角色本体目录】\n${charLines || '(暂无)'}
+      const charLines = characters.map(c => `- ID:${c.id} [${c.name}] ${episodeCharacterIds.has(c.id) ? "【本集已关联】" : "【剧库可复用，未关联本集】"} (${c.gender}/${c.role}) [人设:${c.archetype || '主演'}] ${c.surface_identity ? `表:${c.surface_identity}` : ''} ${c.hidden_identity ? `底牌:${c.hidden_identity}` : ''} ${c.appearance ? `外貌:${c.appearance.slice(0, 50)}` : ''}`).join('\n');
+      const sceneLines = scenes.map(s => `- ID:${s.id} [${s.location}] 地标:[${s.landmarks.join(',')}] 权力轴:[${s.power_axis || '中心焦点'}] 光照:${s.lighting_env || '自然光'}`).join('\n');
+      const propLines = props.map(p => `- ID:${p.id} [${p.name}] 作用:${p.prop_role || 'ambient'}${p.close_up_required ? '【打脸信物必须给大特写】' : ''} 尺度:[${p.physical_scale}] 时代使用:${p.era_compatibility || '未声明'}${p.era_reason ? `(${p.era_reason})` : ''}`).join('\n');
+      const relLines = relations.filter(r => r.type === 'REL_CHARACTER_SOCIAL').map(r => `- ${r.properties?.from_character || r.from_id} ➔ [${r.properties?.relation_kind || '恩怨'}] ➔ ${r.properties?.to_character || r.to_id}${r.properties?.description ? ` (${r.properties.description})` : ''}`).join('\n');
+      const beatLines = storedBeats.map(b => `- 节拍${b.beat_number} [${b.beat_type}]: 张力${b.tension_level}星 | 主情绪:${b.dominant_emotion || '强冲突'} | ${b.event_summary || ''}`).join('\n');
+
+      return `【短剧本体世界观】剧名：${drama.title || '短剧'} | 时代：${dramaEra} | 风格：${drama.style || '快节奏爽剧'}
+【短剧人物关系网与身份反差】
+${relLines || '(无预设关系边，依剧情推演)'}
+【本集爽点节拍链（Beats）】
+${beatLines || '(依短剧黄金钩子-施压-打脸-反转-卡点节奏推演)'}
+【角色身份选择】人物身份以 ID 为准，名字不是唯一键。优先复用本集已关联人物；同名多个 ID 时必须核对本集选择、外貌与剧情身份，不能在不同镜头随机切换 ID。\n【可用角色本体目录】\n${charLines || '(暂无)'}
 【可用场景空间地标】\n${sceneLines || '(暂无)'}
-【可用物理道具目录】\n${propLines || '(暂无)'}`;
+【可用短剧道具与打脸信物】\n${propLines || '(暂无)'}`;
     },
   };
 }

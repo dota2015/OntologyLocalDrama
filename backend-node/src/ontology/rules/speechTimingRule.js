@@ -23,6 +23,8 @@ class SpeechTimingRule extends BaseInvariantRule {
     const { assessVideoSpeech, timingError } = require('../../utils/speechTiming');
     const speechDelivery = require('../../services/speechDeliveryService');
 
+    const severity = context.ruleConfig?.severity || this.defaultSeverity;
+
     shots.forEach((shot, idx) => {
       const shotNum = shot.shot_number || shot.storyboard_number || (idx + 1);
       const duration = Number(shot.duration) > 0 ? Number(shot.duration) : 5;
@@ -35,7 +37,7 @@ class SpeechTimingRule extends BaseInvariantRule {
         violations.push({
           rule: 'INVARIANT_SPEECH_OVER_BUDGET',
           shot_number: shotNum,
-          severity: this.defaultSeverity,
+          severity,
           message: timingError(shot, assessment),
           assessment,
         });

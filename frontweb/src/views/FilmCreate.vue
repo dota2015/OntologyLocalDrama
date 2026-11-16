@@ -784,6 +784,7 @@ async function refreshStoryboardsForEpisode(episodeId) {
     if (!Array.isArray(list)) return
     if (Number(store.currentEpisode?.id) === Number(episodeId)) {
       store.currentEpisode.storyboards = list
+      syncStoryboardStateFromEpisode(store.currentEpisode)
     }
     const epInDrama = store.drama?.episodes?.find((e) => Number(e.id) === Number(episodeId))
     if (epInDrama) {

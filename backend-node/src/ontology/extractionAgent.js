@@ -33,40 +33,70 @@ async function extractAllEntitiesFromScript(db, log, cfg, episodeId) {
   const isAncient = /古装|古风|武侠|仙侠|大明|大唐|汉服|historical|ancient|流放|大靖|朝廷|王爷|皇宫|嫡女|庶女/.test(text);
   const dramaEra = isAncient ? 'ancient' : (/民国/.test(text) ? 'republic_china' : (/赛博|科幻/.test(text) ? 'sci_fi' : 'modern'));
 
-  const prompt = `你是一位严谨的影视世界观与本体知识设计师。
-请阅读以下剧本，按照【短剧影视视听本体】标准，一次性抽取出该集出现的所有核心资产：角色（Characters）、关键道具（Props）、空间场景（Scenes）。
+  const prompt = `你是一位严谨的短剧世界观与本体知识架构师。
+请阅读以下剧本，按照【短剧本体（Short-Drama Ontology）】标准，一次性抽取出该集出现的所有核心资产：短剧角色（Characters）、道具与打脸信物（Props）、空间场景与权力位阶（Scenes），以及角色间的恩怨关系边（Character Relations）和短剧爽点节拍序列（Narrative Beats）。
 
 【世界观时代】：${dramaEra}（${isAncient ? '古装/古风世界观：严禁出现手机、电脑、现代工业品' : '现代/通用世界观'}）
 【剧名】：${drama.title || '短剧'}
 【剧本内容】：
 ${ep.script_content}
 
-【抽取硬性规则】：
-1. **角色(characters)**：提取所有有台词或关键动作的具体人物。写出 name, gender(男/女), role(身份如医生/学生/警探/母亲等), appearance(具体外貌特征，五官/发型/体型，不少于30字), personality(性格关键词)。
-2. **道具(props)**：提取剧中有物理交互、关键情节作用的物体（如武器、情报箱、药剂包、信件、案几）。
-   - **强制要求 physical_scale**：必须给出具体的真实物理尺度（如“长约45cm的手提密码箱”、“高度约75cm的木案”），并标明“次要环境小物件，绝不可夸大夺焦”。
-   - **时空使用合同**：结合道具实际出现的剧情时空，输出 era_category、era_compatibility 与 era_reason。era_compatibility 只能是 compatible、intentional_cross_era、incompatible、uncertain。穿越、梦境、游戏世界、回忆或刻意反差中的跨时代道具应标记 intentional_cross_era 并说明剧情依据，禁止仅凭全剧题材关键词判定穿帮。
-   - **参考图多视图智能规划(reference_image_mode & reason)**：
-     - 若为剧情核心主武器、复杂几何结构或需全方位展示的物体，选 "quad_grid"（四视图）；
-     - 若为单一视角小件或次要道具，选 "single"（单图，优先保证高清晰度）；
-     - 给出 reference_image_reason 简明推荐理由。
-3. **场景(scenes)**：提取剧情发生的独立物理空间。
-   - 写出 location(地点名，如仓库掩体区/家庭书房), time(时间与光照，如黄昏金光/深夜冷光), landmarks(场景内地标数组，如 ["doorway", "cover", "desk", "window"]), lighting_style(侧光/柔光/夜景/戏剧光等)。
-   - **参考图多视图智能规划(reference_image_mode & reason)**：
-     - 若为反复出场的常驻复杂多机位主场景（需要多方向视角与家具陈设一致性），选 "quad_grid"（四视图）；
-     - 若为一次性过场场地或简单外景，选 "single"（单图，优先保障景深与大景别画质）；
-     - 给出 reference_image_reason 简明推荐理由。
+【短剧本体抽取规则】：
+1. **角色(characters)**：提取所有登场人物。
+   - name, gender(男/女), role(如赘婿/千金/霸总/岳母/打手等)
+   - archetype(人设原型: hidden_tycoon/avenging_heiress/arrogant_antagonist/snobbish_inlaw/loyal_sidekick/bystander_crowd)
+   - surface_identity(表面伪装身份，如“保洁大妈”、“穷酸外卖员”、“窝囊赘婿”)
+   - hidden_identity(隐藏真实身份，如“千亿集团唯一继承人”、“退役龙王战神”)
+   - power_status(当前所处位阶: dominant强势压迫/suppressed低位隐忍/awakened觉醒/bystander围观)
+   - appearance(具体外貌特征与五官发型服装，不少于30字), personality(性格关键词)
+2. **道具与打脸信物(props)**：提取剧中有物理交互、关键情节推动、打脸反转或证物作用的物体（如黑金卡、龙王戒、离婚协议书、亲子鉴定、信件、佩剑）。
+   - prop_role: 必须分类为 key_token(核心身份信物/底牌) / slap_evidence(打脸证据/文书) / conflict_tool(冲突器物/武器) / ambient(普通环境物件)
+   - close_up_required: boolean(若为 key_token 或 slap_evidence 必须为 true，短剧镜头中必须给予高辨识度特写)
+   - owner_character_name: 专属持有者或出示者姓名
+   - physical_scale: 给出具体真实物理尺度（如“标准黑金银行卡尺寸”、“直径约2.5cm古玉扳指”、“A4纸质装订文件”）
+   - era_category: ancient/modern/republic_china/sci_fi/fantasy/universal
+   - era_compatibility: compatible/intentional_cross_era/incompatible/uncertain
+   - era_reason: 结合具体剧情时空说明理由
+   - reference_image_mode: single 或 quad_grid (复杂三维信物选 quad_grid，平面文书选 single)
+3. **场景与空间权力轴(scenes)**：提取剧情发生的独立物理空间。
+   - location(地点名，如豪门寿宴大厅/总裁办公室/阴暗地下室)
+   - time(时间与光照，如奢华暖金顶光/冰冷日光灯/夜景暗调)
+   - spatial_type: interior_tight / interior_open / exterior_open
+   - power_axis: 空间权力轴向(high_seat_vs_floor 主座高位对堂下 / entrance_intrusion 门口踹开闯入轴 / center_stage_vs_crowd 焦点对围观区)
+   - landmarks: 场景内地标数组，如 ["main_seat", "doorway", "banquet_table", "window"]
+   - lighting_style: natural/dramatic/golden_hour/night/neon
+   - reference_image_mode: single 或 quad_grid
+4. **人物恩怨关系边(character_relations)**：提取人物之间的带权有向关系边。
+   - from_character: 动作发出方角色名
+   - to_character: 动作承受方角色名
+   - relation_kind: humiliates(欺辱压迫) / protects(护短庇护) / subordinate_to(臣服从属) / family_oppresses(家族刁难) / enemy_of(死敌对立) / ally_of(忠实盟友) / reveals_identity_to(亮明底牌)
+   - description: 简要关系说明
+5. **短剧爽点节拍序列(narrative_beats)**：提取本集的情绪张力节拍链。
+   - beat_number: 1, 2, 3...
+   - beat_type: hook(黄金前3秒钩子) / suppression(极限施压羞辱) / reveal(亮信物底牌) / slap_reversal(打脸反转) / crowd_reaction(围观震惊反应) / cliffhanger(集末断章卡点) / transition(转场过渡)
+   - tension_level: 1~5 (张力级别，5为打脸/高潮巅峰)
+   - dominant_emotion: 屈辱/嚣张/震惊/爽快/肃杀
+   - power_shift: aggressor_dominant(恶人嚣张) / protagonist_counter(主角反击) / power_reversed(彻底翻盘) / stalemate(对峙)
+   - actors: [ { "name": "...", "role": "aggressor/protagonist/bystander" } ]
+   - revealed_prop_name: 若该节拍亮出信物，填道具名；否则留空
+   - event_summary: 本节拍核心冲突事件一句话概括
 
 【输出格式】：只输出纯 JSON 对象，格式如下：
 {
   "characters": [
-    { "name": "...", "gender": "...", "role": "...", "appearance": "...", "personality": "..." }
+    { "name": "...", "gender": "...", "role": "...", "archetype": "...", "surface_identity": "...", "hidden_identity": "...", "power_status": "...", "appearance": "...", "personality": "..." }
   ],
   "props": [
-    { "name": "...", "type": "武器/装备/证物/日常", "era_category": "ancient/modern/republic_china/sci_fi/fantasy/universal", "era_compatibility": "compatible/intentional_cross_era/incompatible/uncertain", "era_reason": "结合具体剧情时空说明理由", "physical_scale": "长约40cm，次要环境物件", "reference_image_mode": "single或quad_grid", "reference_image_reason": "...", "description": "..." }
+    { "name": "...", "type": "武器/装备/证物/日常", "prop_role": "key_token/slap_evidence/conflict_tool/ambient", "close_up_required": true, "owner_character_name": "...", "era_category": "...", "era_compatibility": "...", "era_reason": "...", "physical_scale": "...", "reference_image_mode": "single或quad_grid", "reference_image_reason": "...", "description": "..." }
   ],
   "scenes": [
-    { "location": "...", "time": "...", "landmarks": ["doorway", "cover"], "lighting_style": "dramatic", "reference_image_mode": "single或quad_grid", "reference_image_reason": "..." }
+    { "location": "...", "time": "...", "landmarks": ["main_seat", "doorway"], "power_axis": "center_stage_vs_crowd", "lighting_style": "dramatic", "reference_image_mode": "single或quad_grid", "reference_image_reason": "..." }
+  ],
+  "character_relations": [
+    { "from_character": "...", "to_character": "...", "relation_kind": "humiliates", "description": "..." }
+  ],
+  "narrative_beats": [
+    { "beat_number": 1, "beat_type": "hook", "tension_level": 4, "dominant_emotion": "屈辱", "power_shift": "aggressor_dominant", "actors": [], "revealed_prop_name": "", "event_summary": "..." }
   ]
 }`;
 
@@ -95,18 +125,43 @@ ${ep.script_content}
   for (const c of rawCharacters) {
     if (!c.name) continue;
     let exist = db.prepare('SELECT * FROM characters WHERE drama_id = ? AND name = ? AND deleted_at IS NULL').get(ep.drama_id, c.name);
+    const identityAnchorsObj = {
+      archetype: c.archetype || 'hidden_tycoon',
+      surface_identity: c.surface_identity || '',
+      hidden_identity: c.hidden_identity || '',
+      power_status: c.power_status || 'suppressed',
+    };
+    const identityAnchorsStr = JSON.stringify(identityAnchorsObj);
+
     if (!exist) {
-      const desc = [c.gender ? `性别：${c.gender}` : '', c.description || c.appearance || ''].filter(Boolean).join('；');
+      const desc = [
+        c.gender ? `性别：${c.gender}` : '',
+        c.role ? `身份：${c.role}` : '',
+        c.surface_identity ? `表面伪装：${c.surface_identity}` : '',
+        c.hidden_identity ? `真实底牌：${c.hidden_identity}` : '',
+        c.description || c.appearance || '',
+      ].filter(Boolean).join('；');
+
       const ins = db.prepare(`
-        INSERT INTO characters (drama_id, name, role, appearance, description, personality, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(ep.drama_id, c.name, c.role || '', c.appearance || '', desc, c.personality || '', now, now);
+        INSERT INTO characters (drama_id, name, role, appearance, description, personality, identity_anchors, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(ep.drama_id, c.name, c.role || '', c.appearance || '', desc, c.personality || '', identityAnchorsStr, now, now);
       exist = db.prepare('SELECT * FROM characters WHERE id = ?').get(ins.lastInsertRowid);
+    } else {
+      try {
+        db.prepare('UPDATE characters SET identity_anchors = COALESCE(NULLIF(identity_anchors, ""), ?) WHERE id = ?').run(identityAnchorsStr, exist.id);
+      } catch (_) {}
     }
     try {
       db.prepare('INSERT OR IGNORE INTO episode_characters (episode_id, character_id) VALUES (?, ?)').run(epId, exist.id);
     } catch (_) {}
     savedCharacters.push(exist);
+  }
+
+  // 建立角色名到 ID 的映射
+  const charNameToIdMap = new Map();
+  for (const c of savedCharacters) {
+    if (c.name) charNameToIdMap.set(c.name.trim(), c.id);
   }
 
   // 写入 scenes 表（含 Agent 视图模式规划）
@@ -132,23 +187,57 @@ ${ep.script_content}
     savedScenes.push(exist);
   }
 
-  // 写入 props 表（含 Agent 视图模式规划与真实物理尺度）
+  // 写入 props 表（含 Agent 视图模式规划、真实物理尺度与持有者关联）
   for (const p of rawProps) {
     if (!p.name) continue;
     let exist = db.prepare('SELECT * FROM props WHERE drama_id = ? AND name = ? AND deleted_at IS NULL').get(ep.drama_id, p.name);
     const mode = p.reference_image_mode === 'quad_grid' ? 'quad_grid' : 'single';
     const reason = p.reference_image_reason || (mode === 'quad_grid' ? '智能体建议：主要剧情物件，需四视图展现几何结构' : '智能体建议：单图优先保障道具细节与材质清晰度');
+    const ownerId = p.owner_character_name && charNameToIdMap.has(p.owner_character_name.trim())
+      ? charNameToIdMap.get(p.owner_character_name.trim())
+      : null;
+    const propRoleDesc = p.prop_role ? `[短剧作用:${p.prop_role}] ` : '';
+    const fullDesc = `${propRoleDesc}${p.description || ''}`.trim();
+
     if (!exist) {
       const promptText = `特写单体道具：${p.name}，${p.physical_scale || '正常尺寸'}，纯色无杂乱背景，高清真实摄影`;
       const ins = db.prepare(`
         INSERT INTO props (drama_id, name, type, description, era_category, era_compatibility, era_reason, physical_scale, prompt, image_prompt, reference_image_mode, reference_image_recommendation, reference_image_reason, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(ep.drama_id, p.name, p.type || '日常用品', p.description || '', p.era_category || 'universal', p.era_compatibility || 'uncertain', p.era_reason || '', p.physical_scale || '正常尺寸', promptText, promptText, mode, mode, reason, now, now);
+      `).run(ep.drama_id, p.name, p.type || '日常用品', fullDesc, p.era_category || 'universal', p.era_compatibility || 'uncertain', p.era_reason || '', p.physical_scale || '正常尺寸', promptText, promptText, mode, mode, reason, now, now);
       exist = db.prepare('SELECT * FROM props WHERE id = ?').get(ins.lastInsertRowid);
     } else {
       db.prepare(`UPDATE props SET physical_scale = COALESCE(NULLIF(physical_scale, ''), ?), era_category = ?, era_compatibility = ?, era_reason = ?, reference_image_recommendation = ?, reference_image_reason = ? WHERE id = ?`).run(p.physical_scale || '正常尺寸', p.era_category || 'universal', p.era_compatibility || 'uncertain', p.era_reason || '', mode, reason, exist.id);
     }
     savedProps.push(exist);
+  }
+
+  // 持久化短剧本体图扩展数据（人物恩怨关系边与爽点节拍序列）到 dramas.metadata
+  const extractedRelations = Array.isArray(parsed?.character_relations) ? parsed.character_relations : [];
+  const extractedBeats = Array.isArray(parsed?.narrative_beats) ? parsed.narrative_beats : [];
+  try {
+    let dramaMeta = {};
+    try { dramaMeta = JSON.parse(drama.metadata || '{}'); } catch (_) {}
+    if (!dramaMeta.ontology_graph) {
+      dramaMeta.ontology_graph = { relations: [], beats: {} };
+    }
+    if (extractedRelations.length > 0) {
+      // 合并关系边（去重）
+      const existingRels = Array.isArray(dramaMeta.ontology_graph.relations) ? dramaMeta.ontology_graph.relations : [];
+      const relKey = r => `${r.from_character}->${r.relation_kind}->${r.to_character}`;
+      const relMap = new Map(existingRels.map(r => [relKey(r), r]));
+      for (const r of extractedRelations) {
+        relMap.set(relKey(r), r);
+      }
+      dramaMeta.ontology_graph.relations = Array.from(relMap.values());
+    }
+    if (extractedBeats.length > 0) {
+      if (!dramaMeta.ontology_graph.beats) dramaMeta.ontology_graph.beats = {};
+      dramaMeta.ontology_graph.beats[epId] = extractedBeats;
+    }
+    db.prepare('UPDATE dramas SET metadata = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(dramaMeta), now, ep.drama_id);
+  } catch (err) {
+    log.warn('[本体提取] 保存短剧关系图与节拍元数据异常', { error: err.message });
   }
 
   // 4. 智能体世界观诊断：检测已存在但最新剧本中已无提及的“过时/孤儿资产”，建议删除
@@ -258,10 +347,10 @@ async function autocompleteEntityFromScript(db, log, cfg, { dramaId, episodeId, 
   let userPrompt = '';
 
   if (entityType === 'prop') {
-    systemPrompt = `你是一位严谨的短剧影视视听本体道具设计师。
+    systemPrompt = `你是一位严谨的短剧本体道具与打脸信物设计师。
 请结合剧本世界观与剧情，针对用户指定的道具进行深度分析与属性补全。
 【核心法则】：
-1. 必须强制给出具体的真实物理尺度 physical_scale（如“长约18cm单兵佩戴护目镜，贴合面部轮廓”、“长约45cm手提密码箱”），并注明为次要环境物件，严禁生图时夸大夺焦；
+1. 必须强制给出具体的真实物理尺度 physical_scale（如“标准银行卡尺寸”、“长约25cm玉质卷轴”、“约12cm精致古玉佩”）；对打脸信物/底牌（key_token），必须突出特写辨识度；
 2. 时代硬性约束：${isAncient ? '古风世界观：严禁出现手机、电脑、现代工业品！' : '符合剧本时代背景与现实物理常识'}；
    对穿越、梦境、游戏世界、回忆和剧情刻意跨时代元素，不得判为普通穿帮，必须用 intentional_cross_era 标记并说明依据；
 3. 参考图模式 reference_image_mode：若为主武器或复杂结构选 "quad_grid"，单一视角物件选 "single"。`;
@@ -277,18 +366,20 @@ ${hint ? `【补充线索/用户备注】：${hint}` : ''}
 {
   "name": "${name}",
   "type": "武器/装备/证物/日常/其他",
+  "prop_role": "key_token(核心身份信物/底牌) / slap_evidence(打脸证据) / conflict_tool(冲突器物) / ambient(环境道具)",
+  "close_up_required": true,
   "era_category": "ancient/modern/republic_china/sci_fi/fantasy/universal",
   "era_compatibility": "compatible/intentional_cross_era/incompatible/uncertain",
   "era_reason": "结合该道具实际出现的剧情时空说明理由",
-  "physical_scale": "真实物理尺寸描述（如：长约18cm单兵佩戴护目镜，紧密贴合面部，次要战术物件）",
+  "physical_scale": "真实物理尺寸描述（如：标准黑色磨砂银行卡，边角烫金纹理）",
   "description": "材质、细节特征与在剧中的用途描述（不少于40字）",
   "prompt": "特写单体道具：${name}，[材质质感]，[真实光照与物理细节]，纯色干净背景，超高清摄影，8k uhd",
   "reference_image_mode": "single 或 quad_grid",
   "reference_image_reason": "简要推荐理由"
 }`;
   } else if (entityType === 'character') {
-    systemPrompt = `你是一位专业的短剧影视角色造型与人设设计师。
-请结合剧本角色出场、台词与剧情关系，准确提炼该角色的身份定位、外貌锚点与人设特征。`;
+    systemPrompt = `你是一位专业的短剧角色造型与人设设计师。
+请结合剧本角色出场、台词与剧情关系，准确提炼该角色的身份定位、表里人设、外貌锚点与特征。`;
 
     userPrompt = `【剧名】：${drama.title || '短剧'}（时代：${dramaEra}，风格：${drama.style || '写实'}）
 【剧本内容摘要】：
@@ -301,6 +392,10 @@ ${hint ? `【补充线索/用户备注】：${hint}` : ''}
 {
   "name": "${name}",
   "role": "main/supporting/minor (主角/配角/次要角色选其一)",
+  "archetype": "hidden_tycoon(隐忍霸总/战神)/avenging_heiress(逆袭女主)/arrogant_antagonist(恶毒反派)/snobbish_inlaw(势利长辈)/bystander_crowd(吃瓜围观)",
+  "surface_identity": "表面伪装身份（如：保洁阿姨/落魄赘婿/底层职员）",
+  "hidden_identity": "隐藏真实底牌（如：千亿首富/龙王殿主/唯一继承人）",
+  "power_status": "dominant(强势)/suppressed(隐忍)/awakened(觉醒)/bystander(吃瓜)",
   "gender": "男/女",
   "appearance": "详细外貌特征（年龄外貌感、五官面容、发型发色、体型身材、典型服装配饰，不少于50字，供保持画风与人脸一致）",
   "description": "角色背景与在剧情中的身份定位（不少于30字）",

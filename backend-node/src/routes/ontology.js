@@ -13,6 +13,7 @@ const { validateAllInvariants } = require('../ontology/invariants');
 const { extractAllEntitiesFromScript, autocompleteEntityFromScript } = require('../ontology/extractionAgent');
 const { runFullDramaDirectorAgent, refineSingleStoryboard } = require('../ontology/directorAgent');
 const { enrichEpisodeOntologySlots, runTwoStageDirectorPipeline } = require('../ontology/directorEnrichmentService');
+const { getEffectiveConfig, saveConfig: saveOntologyConfig, resetToDefaults: resetOntologyConfig } = require('../ontology/ontologyConfigService');
 const taskService = require('../services/taskService');
 const directorCheckpoint = require('../services/directorCheckpoint');
 const { withTaskTokenUsage } = require('../services/agentTokenUsage');
@@ -85,6 +86,7 @@ function ontologyRoutes(db, log) {
           } catch (_) {}
         }
 
+        const ontologyConfig = getEffectiveConfig(db);
         const audit = validateAllInvariants(shots, {
           db,
           props: pkg.catalogs.props,
@@ -93,6 +95,7 @@ function ontologyRoutes(db, log) {
           scriptContent: fullDramaScript,
           dramaShots: allDramaShots,
           directorPlanningMode: 'persisted',
+          ontologyConfig,
         });
 
         response.success(res, {
@@ -445,14 +448,18 @@ function ontologyRoutes(db, log) {
           },
         };
 
+        const currentConfig = getEffectiveConfig(db);
         const list = Array.from(engine.rules.values()).map((r) => {
           const meta = ruleMetaMap[r.id] || {};
+          const ruleCfg = currentConfig.rules?.[r.id] || {};
           return {
             id: r.id,
             name: r.name || r.id,
             description: r.description || '',
             category: meta.category || '核心视听门禁',
-            severity: meta.severity || 'error',
+            severity: ruleCfg.severity || meta.severity || 'error',
+            enabled: ruleCfg.enabled !== undefined ? !!ruleCfg.enabled : true,
+            params: ruleCfg.params || {},
             target_fields: meta.target_fields || [],
             prevention: meta.prevention || '',
           };
@@ -461,6 +468,39 @@ function ontologyRoutes(db, log) {
         response.success(res, list);
       } catch (err) {
         log.error('ontology getRules', { error: err.message });
+        response.badRequest(res, err.message);
+      }
+    },
+
+    // 获取当前生效的短剧本体完整配置（对象、属性、关系、规则与阈值）
+    getConfig: (req, res) => {
+      try {
+        const config = getEffectiveConfig(db);
+        response.success(res, config);
+      } catch (err) {
+        log.error('ontology getConfig', { error: err.message });
+        response.badRequest(res, err.message);
+      }
+    },
+
+    // 保存更新短剧本体配置
+    saveConfig: (req, res) => {
+      try {
+        const updated = saveOntologyConfig(db, req.body);
+        response.success(res, updated);
+      } catch (err) {
+        log.error('ontology saveConfig', { error: err.message });
+        response.badRequest(res, err.message);
+      }
+    },
+
+    // 重置短剧本体配置为系统默认规范
+    resetConfig: (req, res) => {
+      try {
+        const defaults = resetOntologyConfig(db);
+        response.success(res, defaults);
+      } catch (err) {
+        log.error('ontology resetConfig', { error: err.message });
         response.badRequest(res, err.message);
       }
     },
@@ -539,6 +579,7 @@ function ontologyRoutes(db, log) {
             scenes_count: sceneCount,
             props_count: propCount,
           },
+          meta_model: schema.SHORT_DRAMA_ONTOLOGY_META_MODEL,
           action_atoms: {
             actions_count: Object.keys(atoms.ACTIONS || {}).length,
             body_parts_count: Object.keys(atoms.BODY_PARTS || {}).length,

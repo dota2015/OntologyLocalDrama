@@ -8,7 +8,7 @@
           <span class="logo-sub">LocalMiniDrama</span>
         </h1>
         <span class="breadcrumb-sep">›</span>
-        <span class="page-title">影视视听本体架构与配置 (Audiovisual Drama Ontology)</span>
+        <span class="page-title">短剧本体架构与配置 (Short Drama Ontology System)</span>
         <div class="header-actions">
           <el-button class="btn-theme" :title="isDark ? '切换到浅色模式' : '切换到暗色模式'" @click="toggleTheme">
             <el-icon><Sunny v-if="isDark" /><Moon v-else /></el-icon>
@@ -29,29 +29,29 @@
           <div class="hero-titles">
             <div class="hero-tag">
               <el-icon><Connection /></el-icon>
-              <span>AUDIOTISUAL DRAMA ONTOLOGY SYSTEM</span>
+              <span>SHORT DRAMA ONTOLOGY SYSTEM</span>
             </div>
-            <h2 class="hero-main-title">影视视听本体与导演智能体工程</h2>
+            <h2 class="hero-main-title">短剧本体与导演智能体工程</h2>
             <p class="hero-desc">
-              基于工业级视听三层编译架构（智能体推演 ➔ 本体门禁质检 ➔ 确定性执行编译），以纯结构化实体（ID、枚举、槽位关系）彻底杜绝自由文本猜测、人物偷渡、克隆人与时空穿帮。
+              短剧本体显式定义 7 大核心领域对象（叙事弧、爽点反转节拍、人物双身份与位阶、核心信物、竖屏空间轴线、分镜单元）与 8 类语义关系边，驱动导演智能体推演并经不可变质量门禁校验，彻底杜绝自由文本猜测、人物偷渡与爽点错位。
             </p>
           </div>
           <div class="hero-stats-grid">
             <div class="stat-card">
+              <div class="stat-num">7</div>
+              <div class="stat-label">类短剧本体核心对象</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-num">8</div>
+              <div class="stat-label">种短剧领域语义关系</div>
+            </div>
+            <div class="stat-card">
               <div class="stat-num">{{ stats.rules_count || 12 }}</div>
-              <div class="stat-label">项核心质量门禁</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-num">3</div>
-              <div class="stat-label">层确定性编译管线</div>
-            </div>
-            <div class="stat-card">
-              <div class="stat-num">{{ atomsSummary.actions_count || 24 }}+</div>
-              <div class="stat-label">个结构化动作原子</div>
+              <div class="stat-label">项不可变质量门禁</div>
             </div>
             <div class="stat-card">
               <div class="stat-num">100%</div>
-              <div class="stat-label">资产白名单校验</div>
+              <div class="stat-label">结构化语义门禁校验</div>
             </div>
           </div>
         </div>
@@ -70,7 +70,82 @@
 
       <!-- 主体选项卡 -->
       <el-tabs v-model="activeTab" class="ontology-tabs">
-        <!-- Tab 1: 三层架构与导演工作流 -->
+        <!-- Tab 1: 短剧本体元模型（对象·属性·关系边） -->
+        <el-tab-pane label="短剧本体元模型（对象·属性·关系边）" name="meta_model">
+          <div class="tab-panel">
+            <div class="panel-section-title">
+              <el-icon><Connection /></el-icon>
+              <span>短剧领域本体元模型（7 大对象类型 · 8 类语义关系边）</span>
+            </div>
+            <p class="panel-subtitle">
+              遵循 W3C OWL/SHACL 与知识图谱范式，本体决不是摄影参数字典，而是对短剧（爽剧/微短剧）人设反差、恩怨位阶、信物归属与爽点反转的结构化形式建模。
+            </p>
+
+            <!-- 7 大核心短剧对象类型 -->
+            <div class="meta-section">
+              <h3 class="meta-section-title">
+                <span class="section-badge">OBJECT TYPES</span>
+                短剧 7 大核心实体对象 (Entity Classes)
+              </h3>
+              <div class="objects-grid">
+                <div v-for="(obj, key) in (metaModel.object_types || {})" :key="key" class="object-card">
+                  <div class="obj-header">
+                    <span class="obj-icon">{{ objectTypeIcons[key] || '📦' }}</span>
+                    <div class="obj-title-box">
+                      <div class="obj-name">{{ obj.name || key }}</div>
+                      <div class="obj-code"><code>{{ key }}</code></div>
+                    </div>
+                  </div>
+                  <div class="obj-desc">{{ obj.description }}</div>
+                  <div class="obj-props-title">数据属性 (Properties)：</div>
+                  <div class="obj-props-list">
+                    <div v-for="prop in (obj.properties || [])" :key="prop.name" class="obj-prop-item">
+                      <div class="prop-top">
+                        <code class="prop-name">{{ prop.name }}</code>
+                        <span class="prop-type" :class="prop.type">{{ prop.type }}</span>
+                        <span class="prop-label">{{ prop.label }}</span>
+                      </div>
+                      <div class="prop-desc">{{ prop.desc }}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 8 类语义关系边 -->
+            <div class="meta-section">
+              <h3 class="meta-section-title">
+                <span class="section-badge">SEMANTIC RELATIONS</span>
+                短剧 8 大核心语义关系边 (Object Properties / Graph Edges)
+              </h3>
+              <div class="relations-grid">
+                <div v-for="(rel, rKey) in (metaModel.relation_types || {})" :key="rKey" class="relation-card">
+                  <div class="rel-header">
+                    <code class="rel-code">{{ rKey }}</code>
+                    <span class="rel-name">{{ rel.name }}</span>
+                  </div>
+                  <div class="rel-link-visual">
+                    <span class="entity-node src">{{ rel.source }}</span>
+                    <span class="link-arrow">
+                      <span class="arrow-line"></span>
+                      <span class="arrow-head">➔</span>
+                    </span>
+                    <span class="entity-node tgt">{{ rel.target }}</span>
+                  </div>
+                  <div class="rel-desc">{{ rel.description }}</div>
+                  <div v-if="rel.kinds?.length" class="rel-kinds">
+                    <span class="kinds-label">合法关系子类：</span>
+                    <div class="kinds-tags">
+                      <el-tag v-for="k in rel.kinds" :key="k" size="small" type="primary" effect="plain">{{ k }}</el-tag>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </el-tab-pane>
+
+        <!-- Tab 2: 三层架构与导演工作流 -->
         <el-tab-pane label="三层架构与导演工作流" name="architecture">
           <div class="tab-panel">
             <div class="panel-section-title">
@@ -425,6 +500,37 @@
                   </div>
                 </div>
               </div>
+
+              <!-- 短剧本体关系网络与爽点节拍 -->
+              <div v-if="semanticPackage.ontology_graph?.relations?.length || semanticPackage.ontology_graph?.beats || semanticPackage.narrative_beats?.length" class="graph-preview-card">
+                <div class="cat-header">
+                  <span>⚡ 短剧本体关系图谱与爽点节拍透视</span>
+                </div>
+                <div class="graph-content">
+                  <div v-if="semanticPackage.ontology_graph?.relations?.length" class="sub-network">
+                    <span class="sub-network-label">人物恩怨与位阶关系边：</span>
+                    <div class="rel-badges-wrap">
+                      <div v-for="(r, rIdx) in semanticPackage.ontology_graph.relations" :key="rIdx" class="rel-edge-pill">
+                        <span class="edge-from">{{ r.from_character }}</span>
+                        <span class="edge-kind">➔ [{{ r.relation_kind }}] ➔</span>
+                        <span class="edge-to">{{ r.to_character }}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div v-if="displayBeats.length" class="sub-beats">
+                    <span class="sub-network-label">叙事节拍推进序列 (Narrative Beats Flow)：</span>
+                    <div class="beats-timeline">
+                      <div v-for="(b, bIdx) in displayBeats" :key="bIdx" class="beat-step">
+                        <div class="beat-badge" :class="b.beat_type">{{ b.beat_type || 'beat' }}</div>
+                        <div class="beat-info">
+                          <div class="beat-title">{{ b.beat_id || ('B' + (bIdx + 1)) }}: {{ b.dominant_emotion || b.title || '节拍' }}</div>
+                          <div v-if="b.power_shift" class="beat-sub">位阶: {{ b.power_shift }}</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <!-- 门禁体检结果展示 -->
@@ -495,7 +601,7 @@ const route = useRoute()
 const router = useRouter()
 const { isDark, toggleTheme } = useTheme()
 
-const activeTab = ref('architecture')
+const activeTab = ref('meta_model')
 const selectedRuleCategory = ref('全部')
 const ruleKeyword = ref('')
 
@@ -503,6 +609,166 @@ const overview = ref({})
 const rulesList = ref([])
 const stats = ref({})
 const atomsSummary = ref({})
+
+const objectTypeIcons = {
+  EpisodeArc: '📜',
+  NarrativeBeat: '⚡',
+  Character: '🎭',
+  WardrobeStage: '👗',
+  Prop: '💎',
+  SceneZone: '🏛️',
+  Shot: '🎬'
+}
+
+const defaultMetaModel = {
+  object_types: {
+    EpisodeArc: {
+      name: '单集叙事弧 (EpisodeArc)',
+      description: '单集短剧的完整情绪钩子与反转结构周期，通常控制在 60~120 秒内。',
+      properties: [
+        { name: 'episode_number', type: 'integer', label: '集号', desc: '剧目中的绝对集序号' },
+        { name: 'hook_type', type: 'string', label: '开篇钩子类型', desc: 'golden_3s_crisis, betrayal, slap_counter, cliffhanger' },
+        { name: 'core_conflict', type: 'string', label: '核心矛盾', desc: '本集核心人物利益对抗或身份冲突' },
+        { name: 'climax_beat', type: 'string', label: '高潮爽点', desc: '本集最高情绪爆发或打脸反转节点' },
+        { name: 'cliffhanger', type: 'string', label: '集末断章卡点', desc: '强钩子断章，驱动用户立即点击下一集' }
+      ]
+    },
+    NarrativeBeat: {
+      name: '爽点反转节拍 (NarrativeBeat)',
+      description: '短剧剧情推进与情绪刺激的最小叙事原子，驱动分镜规划。',
+      properties: [
+        { name: 'beat_id', type: 'string', label: '节拍标识', desc: '唯一节拍编码，如 B1U1' },
+        { name: 'beat_type', type: 'enum', label: '节拍类型', desc: 'hook（前3秒钩子）、suppression（极限施压）、reveal（亮出底牌）、slap（打脸反转）、crowd_reaction（吃瓜震惊）、cliffhanger（断章卡点）' },
+        { name: 'dominant_emotion', type: 'string', label: '主导情绪', desc: '愤怒、惊恐、狂妄、嘲讽、震撼、决绝' },
+        { name: 'power_shift', type: 'string', label: '位阶转移', desc: '双方权力高低对比的跃迁方向，如 suppressed_to_dominant' },
+        { name: 'revealed_prop_id', type: 'integer', label: '亮明信物ID', desc: '反转时亮出的核心道具（黑金卡、至尊戒、协议书等）' }
+      ]
+    },
+    Character: {
+      name: '短剧人物实体 (Character)',
+      description: '短剧人物，显式具备表面伪装身份、隐藏真实身份与强权力位阶标签。',
+      properties: [
+        { name: 'name', type: 'string', label: '角色名称', desc: '剧本中的角色唯一称谓' },
+        { name: 'archetype', type: 'string', label: '人设原型', desc: '隐忍龙王、豪门赘婿、恶毒跋扈反派、冷酷战神、拜金亲戚等' },
+        { name: 'surface_identity', type: 'string', label: '表面伪装身份', desc: '剧情前期用于受辱施压的假身份，如 外卖员、保安、落魄子弟' },
+        { name: 'hidden_identity', type: 'string', label: '隐藏真实身份', desc: '后期反转打脸的顶级身份，如 隐世战神、千亿集团继承人、镇国殿主' },
+        { name: 'power_status', type: 'enum', label: '当前位阶状态', desc: 'concealed_weak（潜伏示弱）、oppressed（极限被辱）、countering（反客为主）、dominant（绝对掌控）' },
+        { name: 'identity_anchors', type: 'object', label: '跨镜视觉锚点', desc: '人脸五官、发型碎发、特异体貌、锁定生图首尾帧' }
+      ]
+    },
+    WardrobeStage: {
+      name: '服化道阶段状态 (WardrobeStage)',
+      description: '人物随剧情蜕变的阶段着装（如受辱布衣 ➔ 战神龙袍），跨阶段必须更换参考图。',
+      properties: [
+        { name: 'stage_tag', type: 'string', label: '阶段标签', desc: '如 initial_pauper、awakened_tycoon' },
+        { name: 'costume_prompt', type: 'string', label: '服装视觉描述', desc: '精确织物、颜色、佩戴物，避免模型联想' },
+        { name: 'status_milestone', type: 'string', label: '蜕变里程碑', desc: '触发换装的关键事件（如 签字离婚、继承即位）' }
+      ]
+    },
+    Prop: {
+      name: '打脸信物与伏笔道具 (Prop)',
+      description: '短剧推动反转的核心凭证与证物，严禁降级为“次要环境小物件”，必须支持怼脸特写。',
+      properties: [
+        { name: 'name', type: 'string', label: '道具名称', desc: '如 至尊黑金卡、龙纹玉佩、离婚协议书、特级任命状' },
+        { name: 'prop_role', type: 'enum', label: '短剧道具角色', desc: 'key_token（核心身份信物）、contract（契约协议）、evidence（录音证据）、slap_tool（打脸道具）、weapon（专属武器）' },
+        { name: 'close_up_required', type: 'boolean', label: '是否必须特写', desc: '反转亮相时刻必须作为主体大特写展示，配刺耳音效' },
+        { name: 'owner_character_name', type: 'string', label: '持有角色', desc: '显式声明该信物的合法持有者' }
+      ]
+    },
+    SceneZone: {
+      name: '竖屏空间区域与位阶轴 (SceneZone)',
+      description: '专为 9:16 竖屏短剧优化的空间区域，显式定义权力高低压制轴线。',
+      properties: [
+        { name: 'zone_name', type: 'string', label: '区域名称', desc: '如 豪门宴会厅主桌、总裁办公室落地窗、城中村出租屋' },
+        { name: 'power_axis', type: 'enum', label: '空间权力轴线', desc: 'high_ground（居高临下施压区）、suppression_corner（被堵死受辱角落）、neutral_center（对峙中心）' },
+        { name: 'landmarks', type: 'array', label: '标志性空间物', desc: '背景地标（水晶吊灯、破旧风扇、高窗大门），确保多机位连续性' }
+      ]
+    },
+    Shot: {
+      name: '竖屏分镜单元 (Shot)',
+      description: '9:16 竖屏短剧的视听呈现单元，集成三层槽位（semantic_slots, character_visuals, video_slots）。',
+      properties: [
+        { name: 'shot_number', type: 'integer', label: '分镜序号', desc: '从 1 递增' },
+        { name: 'shot_type', type: 'string', label: '景别', desc: '特写（怼脸微表情）、大特写（信物反转）、中景（正反打交锋）、近景' },
+        { name: 'movement', type: 'string', label: '镜头运镜', desc: 'push（逼近施压）、pull（震惊拉开）、orbit（围观吃瓜环绕）、static' },
+        { name: 'dialogue_framing', type: 'string', label: '对话构图语法', desc: 'single_close_up、ots_over_shoulder、crowd_reaction' },
+        { name: 'realized_beat_id', type: 'string', label: '实现节拍ID', desc: '关联的 NarrativeBeat ID' }
+      ]
+    }
+  },
+  relation_types: {
+    REL_CHARACTER_SOCIAL: {
+      name: '人物社会与恩怨关系',
+      source: 'Character',
+      target: 'Character',
+      kinds: ['rival_suppression (施压羞辱)', 'subordinate (主仆位阶)', 'identity_concealment (隐瞒身份)', 'blood_rival (宗族内斗)', 'alliance (利益同盟)'],
+      description: '人物之间的权力差距与恩怨网络，指导导演正反打站位与视线倾角。'
+    },
+    REL_CHARACTER_OWNS_PROP: {
+      name: '人物信物持有与争夺',
+      source: 'Character',
+      target: 'Prop',
+      kinds: ['exclusive_owner (合法持有)', 'stolen_by (被强占/伪造)', 'coveted_by (觊觎争夺)', 'reveals (出示亮牌)'],
+      description: '人物与反转道具的归属链，驱动争夺冲突与最终亮明。'
+    },
+    REL_CHARACTER_WEARS_STAGE: {
+      name: '人物服化道蜕变阶段',
+      source: 'Character',
+      target: 'WardrobeStage',
+      kinds: ['wears_stage (身着此阶段服饰)'],
+      description: '人物在不同剧情阶段的视觉状态，严格控制跨阶段参考图隔离。'
+    },
+    REL_BEAT_PARTICIPANT: {
+      name: '节拍参与角色',
+      source: 'NarrativeBeat',
+      target: 'Character',
+      kinds: ['aggressor (施压施暴方)', 'suppressed (受辱隐忍方)', 'avenger (反转打脸方)', 'bystander (吃瓜围观方)'],
+      description: '节拍内各角色的戏剧动作职责，严格限制单镜画内主角 ≤ 2 人。'
+    },
+    REL_BEAT_REVEALS_PROP: {
+      name: '节拍亮明核心信物',
+      source: 'NarrativeBeat',
+      target: 'Prop',
+      kinds: ['reveals_prop (亮出证物/信物)'],
+      description: '反转打脸时刻亮出的核心证物，自动触发大特写机位与音效。'
+    },
+    REL_SHOT_REALIZES_BEAT: {
+      name: '分镜实现叙事节拍',
+      source: 'Shot',
+      target: 'NarrativeBeat',
+      kinds: ['realizes_beat (分镜执行节拍)'],
+      description: '分镜与剧本叙事节拍的因果映射，确保每个爽点在视听上有清晰落脚点。'
+    },
+    REL_SHOT_IN_SCENE_ZONE: {
+      name: '分镜空间定位',
+      source: 'Shot',
+      target: 'SceneZone',
+      kinds: ['in_zone (位于该区域)'],
+      description: '分镜在竖屏空间与权力轴线中的物理定位，确保地标与轴线一致。'
+    },
+    REL_SHOT_CONTINUES_FROM: {
+      name: '分镜前后因果视听桥接',
+      source: 'Shot',
+      target: 'Shot',
+      kinds: ['scene_continuation', 'hard_cut_contrast', 'sound_bridge', 'tail_to_head_match'],
+      description: '镜头与上一镜的因果闭环与视听桥接，防止转场断裂。'
+    }
+  }
+}
+
+const metaModel = computed(() => overview.value?.meta_model || defaultMetaModel)
+
+const displayBeats = computed(() => {
+  const pkg = semanticPackage.value
+  if (!pkg) return []
+  if (Array.isArray(pkg.narrative_beats) && pkg.narrative_beats.length > 0) return pkg.narrative_beats
+  const beatsMap = pkg.ontology_graph?.beats
+  if (beatsMap && inspectEpisodeId.value) {
+    const list = beatsMap[inspectEpisodeId.value] || beatsMap[String(inspectEpisodeId.value)]
+    if (Array.isArray(list)) return list
+  }
+  return []
+})
 
 // 剧目透视数据
 const dramaList = ref([])
@@ -1551,6 +1817,373 @@ html.light .v-message {
   font-size: 0.78rem;
 }
 .v-conflict-label {
+  color: #94a3b8;
+}
+
+/* ── 短剧本体元模型卡片样式 ── */
+.meta-section {
+  margin-top: 32px;
+}
+.meta-section-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #f1f5f9;
+  margin-bottom: 18px;
+}
+html.light .meta-section-title {
+  color: #0f172a;
+}
+.section-badge {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  font-weight: 800;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(99, 102, 241, 0.2);
+  color: #a5b4fc;
+}
+.objects-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 20px;
+}
+.object-card {
+  background: rgba(30, 41, 59, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  transition: all 0.2s ease;
+}
+html.light .object-card {
+  background: #ffffff;
+  border-color: #e2e8f0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+.object-card:hover {
+  border-color: rgba(99, 102, 241, 0.4);
+  transform: translateY(-2px);
+}
+.obj-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.obj-icon {
+  font-size: 1.8rem;
+  line-height: 1;
+}
+.obj-title-box {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.obj-name {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #f8fafc;
+}
+html.light .obj-name {
+  color: #0f172a;
+}
+.obj-code code {
+  font-size: 0.78rem;
+  color: #818cf8;
+  background: rgba(99, 102, 241, 0.12);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.obj-desc {
+  font-size: 0.88rem;
+  color: #94a3b8;
+  line-height: 1.5;
+  margin-bottom: 14px;
+}
+html.light .obj-desc {
+  color: #64748b;
+}
+.obj-props-title {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #cbd5e1;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.08);
+  padding-top: 10px;
+}
+html.light .obj-props-title {
+  color: #475569;
+  border-top-color: #e2e8f0;
+}
+.obj-props-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.obj-prop-item {
+  background: rgba(15, 23, 42, 0.6);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+html.light .obj-prop-item {
+  background: #f8fafc;
+  border: 1px solid #f1f5f9;
+}
+.prop-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.prop-name {
+  font-weight: 700;
+  font-size: 0.82rem;
+  color: #38bdf8;
+}
+.prop-type {
+  font-size: 0.68rem;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(148, 163, 184, 0.2);
+  color: #cbd5e1;
+}
+.prop-type.enum {
+  background: rgba(245, 158, 11, 0.2);
+  color: #fbbf24;
+}
+.prop-type.boolean {
+  background: rgba(34, 197, 94, 0.2);
+  color: #4ade80;
+}
+.prop-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+html.light .prop-label {
+  color: #334155;
+}
+.prop-desc {
+  font-size: 0.78rem;
+  color: #94a3b8;
+  line-height: 1.4;
+}
+
+/* 关系卡片样式 */
+.relations-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 18px;
+}
+.relation-card {
+  background: rgba(30, 41, 59, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+}
+html.light .relation-card {
+  background: #ffffff;
+  border-color: #e2e8f0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+.rel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.rel-code {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #a78bfa;
+}
+.rel-name {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #f8fafc;
+}
+html.light .rel-name {
+  color: #0f172a;
+}
+.rel-link-visual {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: rgba(15, 23, 42, 0.6);
+  padding: 10px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+html.light .rel-link-visual {
+  background: #f1f5f9;
+}
+.entity-node {
+  font-size: 0.82rem;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 6px;
+}
+.entity-node.src {
+  background: rgba(56, 189, 248, 0.2);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.4);
+}
+.entity-node.tgt {
+  background: rgba(168, 85, 247, 0.2);
+  color: #c084fc;
+  border: 1px solid rgba(168, 85, 247, 0.4);
+}
+.link-arrow {
+  display: flex;
+  align-items: center;
+  color: #94a3b8;
+  font-weight: 700;
+}
+.rel-desc {
+  font-size: 0.84rem;
+  color: #94a3b8;
+  line-height: 1.5;
+  margin-bottom: 12px;
+}
+html.light .rel-desc {
+  color: #64748b;
+}
+.rel-kinds {
+  font-size: 0.78rem;
+  margin-top: auto;
+}
+.kinds-label {
+  color: #cbd5e1;
+  font-weight: 600;
+  display: block;
+  margin-bottom: 6px;
+}
+html.light .kinds-label {
+  color: #475569;
+}
+.kinds-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* 关系图与节拍透视卡片 */
+.graph-preview-card {
+  margin-top: 16px;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 16px;
+}
+html.light .graph-preview-card {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+}
+.sub-network {
+  margin-bottom: 16px;
+}
+.sub-network-label {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #e2e8f0;
+  margin-bottom: 8px;
+  display: block;
+}
+html.light .sub-network-label {
+  color: #334155;
+}
+.rel-badges-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.rel-edge-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(30, 41, 59, 0.8);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 0.8rem;
+}
+html.light .rel-edge-pill {
+  background: #ffffff;
+  border-color: #cbd5e1;
+}
+.edge-from {
+  font-weight: 700;
+  color: #38bdf8;
+}
+.edge-kind {
+  color: #a78bfa;
+  font-size: 0.74rem;
+}
+.edge-to {
+  font-weight: 700;
+  color: #f43f5e;
+}
+.beats-timeline {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding: 10px 4px;
+}
+.beat-step {
+  min-width: 140px;
+  background: rgba(30, 41, 59, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+html.light .beat-step {
+  background: #ffffff;
+  border-color: #e2e8f0;
+}
+.beat-badge {
+  display: inline-block;
+  align-self: flex-start;
+  font-size: 0.68rem;
+  font-weight: 800;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  background: rgba(99, 102, 241, 0.2);
+  color: #a5b4fc;
+}
+.beat-badge.slap {
+  background: rgba(239, 68, 68, 0.2);
+  color: #f87171;
+}
+.beat-badge.reveal {
+  background: rgba(234, 179, 8, 0.2);
+  color: #facc15;
+}
+.beat-badge.hook {
+  background: rgba(56, 189, 248, 0.2);
+  color: #38bdf8;
+}
+.beat-title {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #f8fafc;
+}
+html.light .beat-title {
+  color: #0f172a;
+}
+.beat-sub {
+  font-size: 0.72rem;
   color: #94a3b8;
 }
 

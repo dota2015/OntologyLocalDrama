@@ -406,4 +406,79 @@ describe('Director Boost Fixes Verification', () => {
     assert.equal(listenerViolations.length, 0, 'Should not complain about missing listener reaction for the segment speaker');
   });
 
+  it('directorAtomicPatchSchema for mouth_state violations uses sealed mouth enum instead of natural language const', () => {
+    const rulesToTest = [
+      'INVARIANT_CHARACTER_MOUTH_NOT_SEALED',
+      'INVARIANT_OFFSCREEN_SPEECH_LIP_SYNC_CONFLICT',
+      'INVARIANT_NONVERBAL_MOUTH_NOT_SEALED',
+      'INVARIANT_OFFSCREEN_LIP_SYNC_VIOLATION',
+    ];
+
+    const targetShot = {
+      shot_number: 1,
+      duration: 5,
+      video_slots: {
+        trajectories: [
+          { character_id: 26, name: '蜂医', mouth_state: 'speaker_synced' },
+        ],
+        shots_timeline: [
+          {
+            shot_number: 1,
+            character_trajectories: [
+              { character_id: 26, name: '蜂医', mouth_state: 'speaker_synced' },
+            ],
+          },
+        ],
+      },
+    };
+
+    for (const rule of rulesToTest) {
+      const violation = {
+        rule,
+        shot_number: 1,
+        message: `${rule} test violation`,
+        conflict_slots: ['trajectories', 'audio_lip_sync'],
+      };
+
+      const schema = directorAtomicPatchSchema(violation, targetShot);
+      assert.ok(schema, `Schema should be returned for ${rule}`);
+
+      // Check top-level video_slots schema
+      const vsSchema = schema.properties?.video_slots;
+      assert.ok(vsSchema, `video_slots should be present in patch schema for ${rule}`);
+
+      // Check trajectories mouth_state schema (supports prefixItems or items)
+      const trajArray = vsSchema.properties?.trajectories;
+      assert.ok(trajArray, 'trajectories schema should be present');
+      const trajItem = trajArray.prefixItems?.[0] || trajArray.items;
+      assert.ok(trajItem, 'trajectories item schema should be defined');
+      const mouthSchema = trajItem.properties?.mouth_state;
+      assert.ok(mouthSchema, 'mouth_state schema should be present');
+
+      // Crucial: enum must be defined and contain closed/offscreen_sealed; MUST NOT have const: '双唇紧闭无口型'
+      assert.ok(Array.isArray(mouthSchema.enum), 'mouth_state schema must be an enum array');
+      assert.deepEqual(
+        [...mouthSchema.enum].sort(),
+        [...SEALED_MOUTH_STATES].sort(),
+        'mouth_state enum should match SEALED_MOUTH_STATES'
+      );
+      assert.equal(mouthSchema.const, undefined, 'mouth_state must not have hardcoded const string');
+
+      // Check timeline trajectories mouth_state schema
+      const timelineArray = vsSchema.properties?.shots_timeline;
+      const timelineItem = timelineArray?.prefixItems?.[0] || timelineArray?.items;
+      const tlTrajArray = timelineItem?.properties?.character_trajectories;
+      const tlTrajItem = tlTrajArray?.prefixItems?.[0] || tlTrajArray?.items;
+      if (tlTrajItem?.properties?.mouth_state) {
+        const tlMouthSchema = tlTrajItem.properties.mouth_state;
+        assert.ok(Array.isArray(tlMouthSchema.enum), 'timeline character_trajectories mouth_state must be enum');
+        assert.deepEqual(
+          [...tlMouthSchema.enum].sort(),
+          [...SEALED_MOUTH_STATES].sort()
+        );
+        assert.equal(tlMouthSchema.const, undefined);
+      }
+    }
+  });
+
 });

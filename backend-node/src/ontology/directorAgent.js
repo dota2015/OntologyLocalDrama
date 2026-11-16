@@ -11,7 +11,7 @@ const { compileDramaSemanticPackage } = require('./semanticPackage');
 const { validateAllInvariants, SpeechTimingRule, planningFeasibilityViolations } = require('./invariants');
 const actionAtoms = require('./actionAtoms');
 const { PERFORMANCE_CONTRACT } = actionAtoms;
-const { validateVideoSlots, formatH3Timestamp } = require('./videoSlots');
+const { validateVideoSlots, formatH3Timestamp, SEALED_MOUTH_STATES } = require('./videoSlots');
 const { CONTINUUM_MIN_SECONDS } = require('../services/continuumPlan');
 const { validateCharacterVisualSlots, STRUCTURED_DEPTH_LAYERS, STRUCTURED_SCREEN_POSITIONS } = require('./visualSlots');
 const { extractAllEntitiesFromScript } = require('./extractionAgent');
@@ -57,7 +57,7 @@ function normalizeTimelineTimestamps(timeline) {
       }
       if (!alignment.speaker_character_id && !String(alignment.speaker_action || '').trim()) {
         const spk = seg.audio_lip_sync?.speaker_name || '角色';
-        alignment.speaker_action = `${spk}开口说话并保持战术戒备姿态`;
+        alignment.speaker_action = `${spk}开口说话并同步当前情绪与肢体动作`;
       }
       nextSeg.speech_action_alignment = alignment;
     }
@@ -669,6 +669,11 @@ function directorAtomicRepairHint(violation) {
     INVARIANT_REF2VA_REFERENCE_REQUIRED: 'Ref2VA 至少需要一项有效参考合同：在 semantic_slots.required_references 中按「当前 scene_id 场景 -> visible_characters/background_characters 画内角色 -> 入画道具 props」顺序填入白名单资产 ID（1～9 项），严禁留空 [] 且严禁列入 offscreen_characters。',
     INVARIANT_UNIVERSAL_SCENE_REFERENCE_REQUIRED: '全能分镜的 semantic_slots.required_references 第 1 项必须为当前镜头 scene_id 对应的场景参考 { type:"scene", id, name }。',
     INVARIANT_UNIVERSAL_CHARACTER_REFERENCE_MISSING: '全能分镜的 semantic_slots.required_references 必须包含所有 visible_characters 与 background_characters 角色参考 { type:"character", id, character_id, name }。',
+    INVARIANT_CHARACTER_MOUTH_NOT_SEALED: '画外音/旁白/无对白模式下，video_slots.trajectories 与 video_slots.shots_timeline[].character_trajectories 中所有画内角色的 mouth_state 必须设为闭集枚举 "closed" 或 "offscreen_sealed"，严禁填写中文自由文本（如“双唇紧闭无口型”）。',
+    INVARIANT_OFFSCREEN_LIP_SYNC_VIOLATION: '画外音模式下，必须将 video_slots.audio_lip_sync.visible_characters_lip_state 设为 "strictly_sealed"，且所有画内角色 mouth_state 设为 "closed" 或 "offscreen_sealed"。',
+    INVARIANT_OFFSCREEN_SPEECH_LIP_SYNC_CONFLICT: '画外说话时严禁使用 in_frame_dialogue 或让画内角色张嘴：请将 semantic_slots.audio_lip_sync 设为 "offscreen_voiceover"，video_slots.audio_lip_sync.visible_characters_lip_state 设为 "strictly_sealed"，并将画内角色 mouth_state 设为 "closed" 或 "offscreen_sealed"。',
+    INVARIANT_NONVERBAL_MOUTH_NOT_SEALED: '无语言声音模式（silent_ambient / bgm_only / is_silent）下，所有画内角色的 mouth_state 必须设为闭集枚举 "closed" 或 "offscreen_sealed"，严禁填写中文描述。',
+    INVARIANT_SPEAKER_MOUTH_STATE_INVALID: '画内说话人在对应有对白的 timeline 段中，其 character_trajectories[].mouth_state 必须设为 "speaker_synced"，其余倾听角色 mouth_state 设为 "closed"；speech_action_alignment.mode 保持 "concurrent"。',
   };
   const exact = fieldRules[item.rule] || '';
   const speechExtension = item.rule === 'INVARIANT_SPEECH_OVER_BUDGET'
@@ -898,21 +903,20 @@ function directorAtomicPatchSchemaSingle(violation, targetShot = null) {
   const semanticSlots = targetShot?.semantic_slots && typeof targetShot.semantic_slots === 'object'
     ? targetShot.semantic_slots
     : null;
-  if ([
-    'INVARIANT_CHARACTER_MOUTH_NOT_SEALED',
-    'INVARIANT_OFFSCREEN_LIP_SYNC_VIOLATION',
-    'INVARIANT_OFFSCREEN_SPEECH_LIP_SYNC_CONFLICT',
-  ].includes(violation?.rule)) {
-    const trajectories = Array.isArray(targetShot?.video_slots?.trajectories)
-      ? targetShot.video_slots.trajectories
-      : [];
-    const prefixItems = trajectories.map((trajectory) => {
-      const properties = Object.fromEntries(Object.entries(trajectory || {}).map(([key, value]) => [
+  const sealedMouthEnum = [...SEALED_MOUTH_STATES];
+  const buildLockedTrajectoryArraySchema = (trajectories, resolveFieldConstraint) => {
+    const list = Array.isArray(trajectories) ? trajectories : [];
+    const prefixItems = list.map((trajectory, index) => {
+      const overrides = resolveFieldConstraint(trajectory, index) || {};
+      const entries = Object.entries(trajectory || {});
+      const properties = Object.fromEntries(entries.map(([key, value]) => [
         key,
-        key === 'mouth_state' ? { const: '双唇紧闭无口型' } : { const: value },
+        Object.prototype.hasOwnProperty.call(overrides, key) ? overrides[key] : { const: value },
       ]));
-      if (!Object.prototype.hasOwnProperty.call(properties, 'mouth_state')) {
-        properties.mouth_state = { const: '双唇紧闭无口型' };
+      for (const [overrideKey, overrideSchema] of Object.entries(overrides)) {
+        if (!Object.prototype.hasOwnProperty.call(properties, overrideKey)) {
+          properties[overrideKey] = overrideSchema;
+        }
       }
       return {
         type: 'object',
@@ -922,31 +926,105 @@ function directorAtomicPatchSchemaSingle(violation, targetShot = null) {
       };
     });
     return {
-      type: 'object',
-      additionalProperties: false,
-      required: ['video_slots'],
-      properties: {
-        video_slots: {
-          type: 'object',
-          additionalProperties: false,
-          required: ['audio_lip_sync', 'trajectories'],
-          properties: {
-            audio_lip_sync: {
+      type: 'array',
+      minItems: list.length,
+      maxItems: list.length,
+      ...(prefixItems.length ? { prefixItems } : {}),
+      items: false,
+    };
+  };
+
+  if ([
+    'INVARIANT_CHARACTER_MOUTH_NOT_SEALED',
+    'INVARIANT_OFFSCREEN_LIP_SYNC_VIOLATION',
+    'INVARIANT_OFFSCREEN_SPEECH_LIP_SYNC_CONFLICT',
+    'INVARIANT_NONVERBAL_MOUTH_NOT_SEALED',
+  ].includes(violation?.rule)) {
+    const trajectories = Array.isArray(targetShot?.video_slots?.trajectories)
+      ? targetShot.video_slots.trajectories
+      : [];
+    const timeline = Array.isArray(targetShot?.video_slots?.shots_timeline)
+      ? targetShot.video_slots.shots_timeline
+      : [];
+    const sealedConstraint = { type: 'string', enum: sealedMouthEnum };
+    const videoSlotProps = {
+      audio_lip_sync: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['visible_characters_lip_state'],
+        properties: { visible_characters_lip_state: { const: 'strictly_sealed' } },
+      },
+      trajectories: buildLockedTrajectoryArraySchema(trajectories, () => ({ mouth_state: sealedConstraint })),
+    };
+    const requiredVideoKeys = ['audio_lip_sync', 'trajectories'];
+
+    if (timeline.length > 0) {
+      requiredVideoKeys.push('shots_timeline');
+      const segmentPrefixItems = timeline.map((segment) => {
+        const segProps = Object.fromEntries(Object.entries(segment || {}).map(([key, value]) => {
+          if (key === 'character_trajectories') {
+            return [key, buildLockedTrajectoryArraySchema(value, () => ({ mouth_state: sealedConstraint }))];
+          }
+          if (key === 'audio_lip_sync' && value && typeof value === 'object' && !Array.isArray(value)) {
+            const audioProps = Object.fromEntries(Object.entries(value).map(([ak, av]) => [
+              ak,
+              ak === 'speaker_in_frame'
+                ? { const: false }
+                : (ak === 'visible_characters_lip_state' ? { const: 'strictly_sealed' } : { const: av }),
+            ]));
+            return [key, {
               type: 'object',
               additionalProperties: false,
-              required: ['visible_characters_lip_state'],
-              properties: { visible_characters_lip_state: { const: 'strictly_sealed' } },
-            },
-            trajectories: {
-              type: 'array',
-              minItems: trajectories.length,
-              maxItems: trajectories.length,
-              prefixItems,
-              items: false,
-            },
-          },
-        },
+              required: Object.keys(audioProps),
+              properties: audioProps,
+            }];
+          }
+          return [key, { const: value }];
+        }));
+        if (!Object.prototype.hasOwnProperty.call(segProps, 'character_trajectories')) {
+          segProps.character_trajectories = buildLockedTrajectoryArraySchema([], () => ({ mouth_state: sealedConstraint }));
+        }
+        return {
+          type: 'object',
+          additionalProperties: false,
+          required: Object.keys(segProps),
+          properties: segProps,
+        };
+      });
+      videoSlotProps.shots_timeline = {
+        type: 'array',
+        minItems: timeline.length,
+        maxItems: timeline.length,
+        prefixItems: segmentPrefixItems,
+        items: false,
+      };
+    }
+
+    const patchProperties = {
+      video_slots: {
+        type: 'object',
+        additionalProperties: false,
+        required: requiredVideoKeys,
+        properties: videoSlotProps,
       },
+    };
+    const requiredTopKeys = ['video_slots'];
+    if (violation?.rule === 'INVARIANT_OFFSCREEN_SPEECH_LIP_SYNC_CONFLICT'
+      && (semanticSlots?.audio_lip_sync === 'in_frame_dialogue' || targetShot?.audio_lip_sync === 'in_frame_dialogue')) {
+      requiredTopKeys.push('semantic_slots');
+      patchProperties.semantic_slots = {
+        type: 'object',
+        additionalProperties: false,
+        required: ['audio_lip_sync'],
+        properties: { audio_lip_sync: { const: 'offscreen_voiceover' } },
+      };
+    }
+
+    return {
+      type: 'object',
+      additionalProperties: false,
+      required: requiredTopKeys,
+      properties: patchProperties,
     };
   }
   if (violation?.rule === 'INVARIANT_SPEECH_OVER_BUDGET') {
@@ -1083,8 +1161,70 @@ function directorAtomicPatchSchemaSingle(violation, targetShot = null) {
     posture: actionAtoms.POSTURES,
     hands_state: actionAtoms.HAND_STATES,
     expression: actionAtoms.EXPRESSIONS,
+    mouth_state: actionAtoms.MOUTH_STATES,
   };
   const slotPath = String(violation?.conflict_slots?.[0] || '');
+  const timelineTrajMatch = slotPath.match(
+    /^video_slots\.shots_timeline\[(\d+)\]\.character_trajectories\[(?:(\d+)|character_id=(\d+))\]\.([a-z0-9_]+)$/u
+  );
+  if (timelineTrajMatch && (
+    violation?.rule === 'INVARIANT_VISUAL_ENUM_INVALID'
+    || violation?.rule === 'INVARIANT_SPEAKER_MOUTH_STATE_INVALID'
+  )) {
+    const segIdx = Number(timelineTrajMatch[1]);
+    const rawTrajIdx = timelineTrajMatch[2] != null ? Number(timelineTrajMatch[2]) : null;
+    const rawCharId = timelineTrajMatch[3] != null ? Number(timelineTrajMatch[3]) : (
+      violation?.character_id != null ? Number(violation.character_id) : null
+    );
+    const trajField = timelineTrajMatch[4];
+    const timeline = Array.isArray(targetShot?.video_slots?.shots_timeline)
+      ? targetShot.video_slots.shots_timeline
+      : [];
+    const targetConstraint = violation.rule === 'INVARIANT_SPEAKER_MOUTH_STATE_INVALID'
+      ? { const: 'speaker_synced' }
+      : (structuredVisualEnums[trajField] ? { type: 'string', enum: structuredVisualEnums[trajField] } : null);
+    if (targetConstraint && segIdx >= 0 && segIdx < timeline.length) {
+      const segmentPrefixItems = timeline.map((segment, sIndex) => {
+        const segProps = Object.fromEntries(Object.entries(segment || {}).map(([key, value]) => {
+          if (key === 'character_trajectories' && sIndex === segIdx) {
+            return [key, buildLockedTrajectoryArraySchema(value, (traj, tIndex) => {
+              const matched = (rawTrajIdx != null && tIndex === rawTrajIdx)
+                || (rawCharId != null && Number(traj?.character_id) === rawCharId);
+              return matched ? { [trajField]: targetConstraint } : {};
+            })];
+          }
+          return [key, { const: value }];
+        }));
+        return {
+          type: 'object',
+          additionalProperties: false,
+          required: Object.keys(segProps),
+          properties: segProps,
+        };
+      });
+      return {
+        type: 'object',
+        additionalProperties: false,
+        required: ['video_slots'],
+        properties: {
+          video_slots: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['shots_timeline'],
+            properties: {
+              shots_timeline: {
+                type: 'array',
+                minItems: timeline.length,
+                maxItems: timeline.length,
+                prefixItems: segmentPrefixItems,
+                items: false,
+              },
+            },
+          },
+        },
+      };
+    }
+  }
   const visualMatch = slotPath.match(/^(character_visuals|last_frame_visuals)\[(\d+)\]\.([a-z0-9_]+)$/u);
   const visualField = visualMatch ? visualMatch[1] : (slotPath.startsWith('last_frame_visuals[') ? 'last_frame_visuals' : 'character_visuals');
   const targetField = visualMatch ? visualMatch[3] : '';
@@ -1829,9 +1969,17 @@ async function runFullDramaDirectorAgent(db, log, cfg, dramaId, options = {}, pr
 
   if (progressCallback) progressCallback(30, '导演智能体正在构建世界观，统一抽取角色、道具物理尺度与场景地标...');
 
-  // 2. 世界观资产抽取：以第 1 集为锚点统一抽取全剧核心角色、道具尺度与场景地标
-  log.info('[全流程导演Agent] 阶段二：抽取世界观本体资产...', { drama_id: did });
-  const extractedEntities = await extractAllEntitiesFromScript(db, log, cfg, dbEpisodes[0].id);
+  // 2. 世界观资产抽取：遍历全剧各集剧本，统一抽取并合并全剧核心短剧角色、打脸信物与场景空间地标
+  log.info('[全流程导演Agent] 阶段二：遍历全剧剧本抽取短剧本体资产与关系网络...', { drama_id: did, episode_count: dbEpisodes.length });
+  const extractedEntitiesList = [];
+  for (const ep of dbEpisodes) {
+    try {
+      const entities = await extractAllEntitiesFromScript(db, log, cfg, ep.id);
+      if (entities) extractedEntitiesList.push(entities);
+    } catch (e) {
+      log.warn(`[全流程导演Agent] 第 ${ep.episode_number} 集世界观资产抽取告警: ${e.message}`);
+    }
+  }
 
   // 3. 逐集导演视听编排与门禁自纠
   const episodeResults = [];

@@ -16,13 +16,18 @@ const {
   DELIVERY_MEDIUMS,
   LONG_TAKE_ROLES,
   CINEMATIC_LENSES,
+  AUDIOVISUAL_DATA_DICTIONARY,
   AUDIOTISUAL_DATA_DICTIONARY,
+  SHORT_DRAMA_ONTOLOGY_META_MODEL,
 } = require('../src/ontology/schema');
+const actionAtoms = require('../src/ontology/actionAtoms');
+const { STRUCTURED_DEPTH_LAYERS, STRUCTURED_SCREEN_POSITIONS } = require('../src/ontology/visualSlots');
 const { runMigrationsAndEnsure } = require('../src/db/migrate');
 const storyboardService = require('../src/services/storyboardService');
 
 test('AUDIOTISUAL_DATA_DICTIONARY contains all core slot definitions and closed-loop enums', () => {
   assert.ok(AUDIOTISUAL_DATA_DICTIONARY, 'Data dictionary exists');
+  assert.strictEqual(AUDIOTISUAL_DATA_DICTIONARY, AUDIOVISUAL_DATA_DICTIONARY, 'Alias equals canonical dictionary');
 
   const requiredSlots = [
     'dialogue_framing',
@@ -48,7 +53,32 @@ test('AUDIOTISUAL_DATA_DICTIONARY contains all core slot definitions and closed-
     assert.ok(Object.keys(slotDef.enums).length >= 3, `Slot "${slotKey}" has multiple enum choices`);
   }
 
-  // Check specific enum values for dialogue_framing (doing multiple choice, no facing camera)
+  // 严格校验闭集枚举与 actionAtoms / visualSlots 100% 一致
+  assert.deepStrictEqual(Object.keys(AUDIOTISUAL_DATA_DICTIONARY.depth_layer.enums), STRUCTURED_DEPTH_LAYERS);
+  assert.deepStrictEqual(Object.keys(AUDIOTISUAL_DATA_DICTIONARY.facing.enums), actionAtoms.FACING);
+  assert.deepStrictEqual(Object.keys(AUDIOTISUAL_DATA_DICTIONARY.head_pose.enums), actionAtoms.HEAD_POSES);
+  assert.deepStrictEqual(Object.keys(AUDIOTISUAL_DATA_DICTIONARY.gaze.enums), actionAtoms.GAZE_TYPES);
+  assert.deepStrictEqual(Object.keys(AUDIOTISUAL_DATA_DICTIONARY.posture.enums), actionAtoms.POSTURES);
+  assert.deepStrictEqual(Object.keys(AUDIOTISUAL_DATA_DICTIONARY.hands.enums), actionAtoms.HAND_STATES);
+  assert.deepStrictEqual(Object.keys(AUDIOTISUAL_DATA_DICTIONARY.expression.enums), actionAtoms.EXPRESSIONS);
+  assert.deepStrictEqual(Object.keys(AUDIOTISUAL_DATA_DICTIONARY.mouth_state.enums), actionAtoms.MOUTH_STATES);
+
+  // 校验短剧本体元模型完整性
+  assert.ok(SHORT_DRAMA_ONTOLOGY_META_MODEL, 'SHORT_DRAMA_ONTOLOGY_META_MODEL exists');
+  const expectedObjects = ['EpisodeArc', 'NarrativeBeat', 'Character', 'WardrobeStage', 'Prop', 'SceneZone', 'Shot'];
+  for (const objId of expectedObjects) {
+    assert.ok(SHORT_DRAMA_ONTOLOGY_META_MODEL.object_types[objId], `Object type ${objId} defined`);
+  }
+  const expectedRelations = [
+    'REL_CHARACTER_SOCIAL', 'REL_CHARACTER_OWNS_PROP', 'REL_CHARACTER_WEARS_STAGE',
+    'REL_BEAT_PARTICIPANT', 'REL_BEAT_REVEALS_PROP', 'REL_SHOT_REALIZES_BEAT',
+    'REL_SHOT_IN_SCENE_ZONE', 'REL_SHOT_CONTINUES_FROM'
+  ];
+  for (const relId of expectedRelations) {
+    assert.ok(SHORT_DRAMA_ONTOLOGY_META_MODEL.relation_types[relId], `Relation type ${relId} defined`);
+  }
+
+  // Check specific enum values for dialogue_framing
   const dfEnums = AUDIOTISUAL_DATA_DICTIONARY.dialogue_framing.enums;
   assert.ok(dfEnums.two_shot_face_to_face, 'has two_shot_face_to_face');
   assert.ok(dfEnums.over_the_shoulder, 'has over_the_shoulder');
@@ -56,11 +86,11 @@ test('AUDIOTISUAL_DATA_DICTIONARY contains all core slot definitions and closed-
   assert.ok(dfEnums.joint_observation, 'has joint_observation');
   assert.ok(dfEnums.solo_action, 'has solo_action');
 
-  // Verify constant objects match data dictionary keys
+  // Verify constant objects match actionAtoms unified mapping
   assert.equal(DIALOGUE_FRAMING.TWO_SHOT_FACE_TO_FACE, 'two_shot_face_to_face');
   assert.equal(DEPTH_LAYERS.FOREGROUND, 'foreground');
-  assert.equal(POSTURE_TYPES.CROUCHING_LOW, 'crouching_low');
-  assert.equal(HANDS_ACTIONS.HOLDING_WEAPON_ALERT, 'holding_weapon_alert');
+  assert.equal(POSTURE_TYPES.CROUCHING_LOW, 'crouching');
+  assert.equal(HANDS_ACTIONS.HOLDING_WEAPON_ALERT, 'holding_object');
   assert.equal(AUDIO_LIP_SYNC_MODES.OFFSCREEN_VOICEOVER, 'offscreen_voiceover');
   assert.equal(LONG_TAKE_ROLES.HEAD, 'head');
 });

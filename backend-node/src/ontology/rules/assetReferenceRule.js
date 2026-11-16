@@ -47,7 +47,10 @@ function semanticObject(shot) {
 
 function shotCharacterIds(shot) {
   const semantic = semanticObject(shot);
-  const visible = ids(shot?.characters ?? shot?.character_ids, ['character_id', 'id']);
+  const rawChars = Array.isArray(shot?.character_ids) && shot.character_ids.length
+    ? shot.character_ids
+    : (shot?.characters ?? shot?.character_ids);
+  const visible = ids(rawChars, ['character_id', 'id']);
   const background = ids(shot?.background_characters, ['character_id', 'id']);
   const semanticVisible = ids(semantic.visible_characters, ['id', 'character_id']);
   const semanticBackground = ids(semantic.background_characters, ['character_id', 'id']);
