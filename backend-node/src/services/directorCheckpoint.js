@@ -43,9 +43,24 @@ function fingerprint(db, episodeId, cfg) {
     rules: hash(codeFiles),
   };
 }
-function assertCompatible(saved, current) {
+function assertCompatible(saved, current, state = null, db = null, episodeId = null) {
   const labels = { script: '剧本', assets: '角色/场景/道具', settings: '生成配置', published: '已发布分镜', rules: '导演规则或提示词版本' };
-  const changed = Object.keys(current).filter(k => saved[k] !== current[k]);
+  const changed = Object.keys(current).filter(k => {
+    if (k === 'published' && saved[k] !== current[k]) {
+      // If Stage 1 completed in this checkpoint, the storyboards in DB may already be
+      // the ones created by this task. If their IDs match stage1Storyboards, they belong to this task.
+      if (state?.stage1Complete && Array.isArray(state?.stage1Storyboards) && state.stage1Storyboards.length > 0 && db && episodeId) {
+        try {
+          const currentIds = db.prepare('SELECT id FROM storyboards WHERE episode_id=? AND deleted_at IS NULL ORDER BY storyboard_number ASC').all(episodeId).map(s => s.id);
+          const stage1Ids = state.stage1Storyboards.map(s => s.id);
+          if (currentIds.length === stage1Ids.length && JSON.stringify(currentIds) === JSON.stringify(stage1Ids)) {
+            return false;
+          }
+        } catch (_) {}
+      }
+    }
+    return saved[k] !== current[k];
+  });
   if (changed.length) throw new Error(`无法继续旧任务：${changed.map(k => labels[k]).join('、')}已变化。检查点已保留，请选择重新生成，避免混用不同版本的数据。`);
 }
 function requireResume(db, taskId, episodeId, cfg) {
@@ -57,7 +72,7 @@ function requireResume(db, taskId, episodeId, cfg) {
   if (!saved) throw new Error('此旧任务没有断点记录，无法直接续跑；请重新生成，新任务将自动保存断点');
   if (saved.version !== VERSION || saved.episode_id !== Number(episodeId)) throw new Error('检查点版本或剧集不匹配，请重新生成');
   if (saved.state.published) throw new Error('此任务分镜已经发布，请刷新页面，不能重复发布');
-  assertCompatible(saved.fingerprint, fingerprint(db, episodeId, cfg));
+  assertCompatible(saved.fingerprint, fingerprint(db, episodeId, cfg), saved.state, db, episodeId);
   return saved;
 }
 function open(db, taskId, episodeId, cfg, options, resumeId) {
@@ -88,7 +103,7 @@ function open(db, taskId, episodeId, cfg, options, resumeId) {
         event.payload == null ? null : JSON.stringify(event.payload), new Date().toISOString());
   };
   save();
-  return { state, save, record, assertCurrent() { assertActive(); assertCompatible(initial, fingerprint(db, episodeId, cfg)); } };
+  return { state, save, record, assertCurrent() { assertActive(); assertCompatible(initial, fingerprint(db, episodeId, cfg), state, db, episodeId); } };
 }
 function summary(db, taskId) {
   ensureTable(db);
