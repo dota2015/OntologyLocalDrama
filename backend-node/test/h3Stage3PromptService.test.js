@@ -180,3 +180,41 @@ test('Stage 3 fails loudly with no silent fallback when LLM fails or output neve
   );
   assert.equal(db.prepare('SELECT h3_prompt_snapshot FROM storyboards WHERE id = 1267').get().h3_prompt_snapshot, null);
 });
+
+test('validateOfficialH3Prompt normalizes dialogue punctuation variations (curved vs straight quotes, etc.)', () => {
+  const spec = {
+    mode: 'ref2va',
+    picture_bindings: [{ tag: '<Picture 1>' }],
+    audio_bindings: [{ tag: '<Audio 1>' }],
+    spoken_lines: [{
+      key: 'character:24',
+      kind: 'dialogue',
+      speaker: '奕馨',
+      text: '你昨天说马上，后来一直玩到睡觉。‘马上’是不是根本不会来？',
+    }],
+  };
+  const promptWithStraightQuotes = [
+    'subject_definitions:',
+    '<Subject 1> is the room in <Picture 1>.',
+    '<Audio 1> is the voice reference.',
+    '',
+    'summary:',
+    'A tense confrontation between siblings.',
+    '',
+    'retention_analysis:',
+    '<Subject 1> (appears in [Shot 1]): fully_preserved.',
+    '<Audio 1>: vocal timbre only.',
+    '',
+    'detailed_description:',
+    '[Shot 1] Inside the room, <Subject 1> sets the scene. The character speaks sharply: <d>[Chinese] 你昨天说马上，后来一直玩到睡觉。\'马上\'是不是根本不会来？</d> while glaring across the desk.',
+    '',
+    'overall_soundscape:',
+    'Quiet room with ambient background hum.',
+    '',
+    'non_diegetic_music:',
+    'Low subtle piano undertone.',
+  ].join('\n');
+
+  const result = stage3.validateOfficialH3Prompt(promptWithStraightQuotes, spec);
+  assert.equal(result.valid, true, `Validation should pass with straight quotes: ${result.errors.join('; ')}`);
+});

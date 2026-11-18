@@ -343,7 +343,7 @@ function buildDeterministicStage3Skeleton(spec) {
 
         let lipConstraint = '';
         const mouthState = traj.mouth_state;
-        const dialogueContent = String(seg.audio_lip_sync?.dialogue_content || semantic.speech_plan?.text || '').trim();
+        const dialogueContent = String(semantic.speech_plan?.text || seg.audio_lip_sync?.dialogue_content || '').trim();
 
         if (!isGlobalNonSpeaking && mouthState === 'speaker_synced' && dialogueContent) {
           lipConstraint = `Mouth: speaker_synced speaking line <d>[Chinese] ${dialogueContent}</d>`;
@@ -425,6 +425,38 @@ function extractSectionMap(promptText, headers) {
   return { markers, sections };
 }
 
+function normalizeDialoguePunctuation(text) {
+  return String(text || '')
+    .replace(/[\u2018\u2019\u201A\u201B\u02BB\u02BC\u2032']/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F\u00AB\u00BB\u2033"]/g, '"')
+    .replace(/[\u2013\u2014]/g, '-')
+    .replace(/\u2026/g, '...')
+    .replace(/[，,]/g, ',')
+    .replace(/[。.]/g, '.')
+    .replace(/[！？!?]/g, '?')
+    .replace(/[：:]/g, ':')
+    .replace(/[；;]/g, ';')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function stripDialoguePunctuation(text) {
+  return String(text || '')
+    .replace(/[^\p{L}\p{N}\p{Script=Han}]/gu, '')
+    .trim();
+}
+
+function matchDialogueText(content, expectedText) {
+  if (!content || !expectedText) return false;
+  if (content === expectedText || content.includes(expectedText)) return true;
+  const normContent = normalizeDialoguePunctuation(content);
+  const normExpected = normalizeDialoguePunctuation(expectedText);
+  if (normContent === normExpected || normContent.includes(normExpected)) return true;
+  const strippedExpected = stripDialoguePunctuation(expectedText);
+  if (strippedExpected && stripDialoguePunctuation(content).includes(strippedExpected)) return true;
+  return false;
+}
+
 function validateOfficialH3Prompt(rawPrompt, spec) {
   const prompt = unwrapPromptText(rawPrompt);
   const errors = [];
@@ -471,7 +503,7 @@ function validateOfficialH3Prompt(rawPrompt, spec) {
   for (const line of spec.spoken_lines || []) {
     const expectedText = String(line.text || '').trim();
     if (!expectedText) continue;
-    const foundInMain = dContents.some((content) => content === expectedText || content.includes(expectedText));
+    const foundInMain = dContents.some((content) => matchDialogueText(content, expectedText));
     if (!foundInMain) {
       errors.push(`${mainSectionName} 的 <d> 标签缺少逐字台词：${JSON.stringify(expectedText)}`);
     }
