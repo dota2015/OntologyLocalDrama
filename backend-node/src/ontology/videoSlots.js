@@ -393,8 +393,8 @@ function createVideoSemanticSlots(data = {}) {
               shot_number: s.shot_number || (idx + 1),
               timestamp,
               duration: segDuration,
-              camera_transition: s.camera_transition,
           camera: {
+            shot_change: s.camera?.shot_change === true,
             shot_type: String(s.camera?.shot_type || '中景').trim(),
             movement: String(s.camera?.movement || 'tracking').trim(),
             movement_description: String(s.camera?.movement_description || '').trim(),
@@ -1049,7 +1049,7 @@ function synthesizeH3MultimodalSlots(shot, options = {}) {
       if (!st.timestamp) {
         desc = `Live-action, cinematic. A ${camType} establishes the scene.${visibleCue} The camera begins with ${move} as ${st.action || actionText || 'the action initiates'}.`;
       } else {
-        const explicitCut = st.camera?.shot_change === true || st.shot_change === true || st.camera_change === true;
+        const explicitCut = st.camera?.shot_change === true;
         const transition = explicitCut
           ? `At ${st.timestamp}, the camera cuts to a ${camType}.`
           : `At ${st.timestamp}, the continuous action develops without a cut in a ${camType} view.`;

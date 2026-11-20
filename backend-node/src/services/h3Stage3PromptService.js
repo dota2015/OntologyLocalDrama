@@ -205,9 +205,15 @@ function buildStage3PromptSpec(db, shot, context = {}) {
   // concatenated shot.description string so stale 【运镜】 labels cannot contradict video_slots.
   const timeline = Array.isArray(videoSlots.shots_timeline) ? videoSlots.shots_timeline : [];
   // Expose the script once. Segments retain the timing and voice source.
-  const executionTimeline = timeline.map(segment => {
+  const fragments = timeline.map(segment => segment.audio_lip_sync?.dialogue_content || '');
+  const hasExactSpans = fragments.join('') === audio.lines.map(line => line.text).join('');
+  let speechOffset = 0;
+  const executionTimeline = timeline.map((segment, index) => {
     const { dialogue_content, ...audioTiming } = segment.audio_lip_sync || {};
-    return { ...segment, audio_lip_sync: { ...audioTiming, has_speech: Boolean(dialogue_content?.trim()) } };
+    const start = speechOffset;
+    speechOffset += Array.from(fragments[index]).length;
+    const speechRange = hasExactSpans && speechOffset > start ? [start, speechOffset] : null;
+    return { ...segment, audio_lip_sync: { ...audioTiming, has_speech: Boolean(dialogue_content?.trim()), speech_range: speechRange } };
   });
   const { text: speechText, ...speechPlan } = semantic.speech_plan || {};
   const { dialogue_content: projectedText, ...voicePlan } = videoSlots.audio_lip_sync || {};
@@ -331,7 +337,7 @@ function buildDeterministicStage3Skeleton(spec) {
 
   let cameraShot = 0;
   const shotTimelineLines = timeline.map((seg, idx) => {
-    const newAngle = idx === 0 || seg.camera_transition === 'cut';
+    const newAngle = idx === 0 || seg.camera?.shot_change === true;
     if (newAngle) cameraShot++;
     const cutHeader = newAngle ? `[Shot ${cameraShot}]` : 'Continue same take';
     const timeLabel = seg.timestamp ? ` at ${seg.timestamp}` : '';
@@ -481,6 +487,15 @@ function validateOfficialH3Prompt(rawPrompt, spec) {
     errors.push(`${mainSectionName} 必须使用 [Shot 1] 标记镜头起始`);
   }
 
+  const timeline = spec.authoritative_contract?.video_slots?.shots_timeline || [];
+  if (timeline.length && mainBody) {
+    const expectedCuts = 1 + timeline.slice(1).filter(seg => seg.camera?.shot_change === true).length;
+    const markers = Array.from(mainBody.matchAll(/\[Shot (\d+)\]/g), match => Number(match[1]));
+    if (markers.length !== expectedCuts || markers.some((number, idx) => number !== idx + 1)) {
+      errors.push(`主描述需要按顺序标记 ${expectedCuts} 个机位。连续动作段共用机位，仅在 camera.shot_change 为 true 时切镜。`);
+    }
+  }
+
   // Official SKILL: rewrite sections must be in English; preserve original language only inside <d>...</d> and double-quoted visible text.
   const openDCount = (prompt.match(/<d>/g) || []).length;
   const closeDCount = (prompt.match(/<\/d>/g) || []).length;
@@ -582,7 +597,7 @@ ${spec.mode === 'fl2va'
     ? '   - Optional frame alignment sentence referencing <Picture 1> (and <Picture 2> if supplied), followed by integrated_multimodal_description:, overall_soundscape:, non_diegetic_music:'
     : '   - subject_definitions:, summary:, retention_analysis:, detailed_description:, overall_soundscape:, non_diegetic_music:'}
 2. Write every section in natural, concrete, filmable English prose describing composition, subjects, environment, lighting, camera movement, and audio timing. Never copy raw Chinese JSON keys, field labels, state enums (e.g. away_from_camera, closed, neutral, center_background), or engineering/TTS instructions into the prompt.
-3. Preserve original language ONLY inside <d>[Chinese] ...</d> (or <d>[English] ...</d>) for spoken lines and double quotes "..." for visibly rendered scene lettering. Every line in spoken_lines MUST appear verbatim inside <d>...</d> in the main visual description, and NEVER be repeated inside overall_soundscape or non_diegetic_music.
+3. Preserve original language ONLY inside <d>[Chinese] ...</d> (or <d>[English] ...</d>) for spoken lines and double quotes "..." for visibly rendered scene lettering. speech_range indexes the concatenated spoken_lines in Unicode characters [start,end). Every line in spoken_lines MUST appear verbatim inside <d>...</d> in the main visual description, and NEVER be repeated inside overall_soundscape or non_diegetic_music.
 4. Bind ONLY the exact tags given in picture_bindings (<Picture 1..N>) and audio_bindings (<Audio 1..K>). Follow ref-en.txt §2.1 & §2.2: in Ref2VA mode, define scene/environment, character, and prop image references as <Subject N> in subject_definitions citing their <Picture N>, track them consistently through summary, retention_analysis, and detailed_description (never leave the scene <Picture 1> unused inside detailed_description).
 5. Use a new shot marker only for an explicit camera cut. Preserve exact continuity, camera framing/movement and scheduled cuts ([Shot 1], [Shot 2] At MM:SS.mmm, ...), duration (${spec.duration_seconds}s), and aspect ratio (${spec.aspect_ratio}) from authoritative_contract without inventing unapproved characters, extra shots, or contradicting camera movements.
 6. Output ONLY the final formatted H3 prompt text itself—no markdown code fences, no preamble, no explanations.`;

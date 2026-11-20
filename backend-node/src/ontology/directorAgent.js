@@ -2063,6 +2063,18 @@ async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {})
         ...visualSlotViolations(currentShot, currentShot.character_visuals, currentShot.last_frame_visuals),
         ...shortDramaTimelineViolations(currentShot, currentShot.video_slots?.shots_timeline),
       ];
+      const segments = currentShot.video_slots?.shots_timeline;
+      if (Array.isArray(segments) && segments.length) {
+        const fragments = segments.map(seg => seg.audio_lip_sync?.dialogue_content || '');
+        const expected = plannedSemantic.speech_plan?.text || '';
+        if (fragments.join('') !== expected) {
+          errors.push({
+            rule: 'INVARIANT_TIMELINE_SPEECH_COVERAGE',
+            conflict_slots: ['video_slots.shots_timeline'],
+            message: `各段 dialogue_content 按顺序拼接必须等于本镜原文 ${JSON.stringify(expected)}。请只填写该段说出的原文片段，保留标点；无发声段填空。`,
+          });
+        }
+      }
       // Stage one owns the story structure. Under participant conservation,
       // stage two may adjust character distribution between visible, background,
       // and offscreen (e.g. resolving close dialogue background conflict, or

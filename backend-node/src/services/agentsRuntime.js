@@ -160,21 +160,21 @@ function timelineSegmentSchema() {
     type: 'object',
     additionalProperties: false,
     required: [
-      'shot_number', 'timestamp', 'duration', 'camera_transition', 'camera', 'action', 'result',
+      'shot_number', 'timestamp', 'duration', 'camera', 'action', 'result',
       'visible_characters', 'character_trajectories', 'audio_lip_sync', 'speech_action_alignment',
     ],
     properties: {
       shot_number: { type: 'integer', minimum: 1 },
       timestamp: { anyOf: [{ type: 'string' }, { type: 'null' }] },
-      camera_transition: { enum: ['continue', 'cut'], description: '与前段连续用 continue；仅实际切换机位时选择 cut。' },
       // Timeline entries are causal beats, not mandatory camera cuts.  A beat
       // may span the full logical shot when the action remains continuous.
       duration: { type: 'integer', minimum: 1, maximum: 30 },
       camera: {
         type: 'object',
         additionalProperties: false,
-        required: ['shot_type', 'movement', 'movement_description'],
+        required: ['shot_type', 'movement', 'movement_description', 'shot_change'],
         properties: {
+          shot_change: { type: 'boolean', description: '与前段连续用 false；仅实际切换机位时选择 true。' },
           shot_type: nonEmptyStringSchema(),
           movement: nonEmptyStringSchema(),
           movement_description: nonEmptyStringSchema(),
@@ -202,7 +202,7 @@ function timelineSegmentSchema() {
           mode: nonEmptyStringSchema(),
           speaker_name: { type: 'string' },
           speaker_in_frame: { type: 'boolean' },
-          dialogue_content: { type: 'string' },
+          dialogue_content: { type: 'string', description: '本段实际发声的连续原文片段，无发声填空。各段按顺序拼回完整台词一次，保留标点。' },
           lip_sync_rule: { type: 'string' },
         },
       },

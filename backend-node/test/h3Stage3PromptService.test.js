@@ -224,7 +224,7 @@ test('timeline performance continues across segments and preserves repeated spee
   const shot = db.prepare('SELECT * FROM storyboards WHERE id=1267').get();
   const spec = stage3.buildStage3PromptSpec(db, shot);
   const timeline = spec.authoritative_contract.video_slots.shots_timeline;
-  timeline.push({ ...timeline[0], camera_transition: 'continue', timestamp: '00:02.000' });
+  timeline.push({ ...timeline[0], camera: { shot_change: false }, timestamp: '00:02.000' });
   const skeleton = stage3.buildDeterministicStage3Skeleton(spec);
   assert.match(skeleton, /Continue same take/);
   assert.equal(skeleton.includes('[Shot 2]'), false);
