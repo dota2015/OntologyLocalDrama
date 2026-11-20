@@ -70,8 +70,9 @@ class BeatCinematographyRule extends BaseInvariantRule {
       name: '短剧爽点节拍视听语法',
       category: 'cinematography',
       defaultSeverity: 'warning',
-      description: '短剧爽点节拍视听语法硬约束（亮信物特写夺焦、施压/打脸音效刺入与权力位阶俯仰角）',
+      description: '可选爽剧风格建议（亮信物特写夺焦、施压/打脸音效刺入与权力位阶俯仰角）',
     });
+    this.enabled = false;
   }
 
   evaluate(context) {
@@ -136,7 +137,7 @@ class BeatCinematographyRule extends BaseInvariantRule {
           violations.push({
             rule: 'INVARIANT_KEY_PROP_REFERENCE_MISSING',
             shot_number: shotNum,
-            severity: 'error',
+            severity: 'warning',
             conflict_slots: ['props', 'semantic_slots.required_references'],
             message: `分镜 #${shotNum} 为亮明底牌/信物节拍（reveal），必须在 props 或 semantic_slots.required_references 中显式挂载核心信物/打脸证据道具（key_token / slap_evidence）！`,
           });

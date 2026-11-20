@@ -393,6 +393,7 @@ function createVideoSemanticSlots(data = {}) {
               shot_number: s.shot_number || (idx + 1),
               timestamp,
               duration: segDuration,
+              camera_transition: s.camera_transition,
           camera: {
             shot_type: String(s.camera?.shot_type || '中景').trim(),
             movement: String(s.camera?.movement || 'tracking').trim(),

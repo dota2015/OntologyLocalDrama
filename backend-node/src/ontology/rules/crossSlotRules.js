@@ -427,7 +427,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
       // 7. 同一分镜出现同一角色多套服装
       const charWardrobeMap = new Map();
       const charVisuals = characterVisuals.length > 0 ? characterVisuals : visibleChars;
-      for (const cv of charVisuals) {
+      for (const cv of [...charVisuals, ...(Array.isArray(shot.last_frame_visuals) ? shot.last_frame_visuals : [])]) {
         if (typeof cv === 'object' && cv.character_id != null && cv.wardrobe_id != null) {
           const cid = Number(cv.character_id);
           const wid = String(cv.wardrobe_id);
@@ -496,19 +496,6 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
             conflict_slots: ['first_frame_policy', 'location'],
           });
         }
-      }
-
-      // 9. 单镜包含造型切换
-      const mutationRegex = /(?:换上|换装|变身|脱去|脱下|脱掉|撕下面具|穿上|披上).{0,6}(?:衣|装|服|袍|甲|衫|裙|披风|斗篷)?/i;
-      const shotAction = `${shot.action || ''} ${shot.result || ''} ${shot.video_prompt || ''}`;
-      if (mutationRegex.test(shotAction)) {
-        violations.push({
-          rule: 'INVARIANT_MID_SHOT_WARDROBE_MUTATION',
-          shot_number: shotNum,
-          severity: this.defaultSeverity,
-          message: `分镜 #${shotNum} 镜头动作包含单镜换装/变身/造型改变描写（「${shotAction.slice(0, 40)}...」），单镜头生成无法维持造型突变，请拆分为换装前后两个分镜！`,
-          conflict_slots: ['action', 'wardrobe_id'],
-        });
       }
 
       // 10. 声音或参考素材超过 H3 上限 (严禁静默 slice)

@@ -226,6 +226,8 @@ async function enrichEpisodeOntologySlots(db, log, cfg, episodeId, options = {})
       h3_contract_json = ?,
       h3_contract_version = ?,
       h3_contract_status = ?,
+      h3_prompt_snapshot = CASE WHEN h3_prompt_manual = 1 THEN h3_prompt_snapshot END,
+      h3_prompt_fingerprint = CASE WHEN h3_prompt_manual = 1 THEN h3_prompt_fingerprint END,
       updated_at = ?
     WHERE id = ?
   `);
@@ -245,6 +247,7 @@ async function enrichEpisodeOntologySlots(db, log, cfg, episodeId, options = {})
 
   const now = new Date().toISOString();
   db.transaction(() => {
+    options.checkpoint?.assertCurrent?.();
     for (const shot of enrichedShots) {
       let resolvedCharIds = [];
       if (Array.isArray(shot.semantic_slots?.visible_characters) && shot.semantic_slots.visible_characters.length > 0) {
@@ -316,70 +319,23 @@ async function enrichEpisodeOntologySlots(db, log, cfg, episodeId, options = {})
         } catch (_) {}
       }
     }
+    options.checkpoint?.capturePublished?.();
   })();
 
-  let stage3Stats = { compiled: 0, cached: 0, manual_locked: 0 };
-  if (options.skipStage3 !== true) {
-    onProgress(86, '阶段二门禁通过，正在按官方 H3 SKILL 执行阶段三编译提示词...');
-    const h3Stage3 = require('../services/h3Stage3PromptService');
-    const persistedRows = db.prepare(
-      'SELECT * FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL ORDER BY storyboard_number ASC'
-    ).all(epId).map(normalizeStoryboardForAgent);
-    const rawMeta = pkg.drama?.metadata;
-    const dramaMeta = typeof rawMeta === 'string' ? parseJsonValue(rawMeta, {}) : (rawMeta || {});
-    const aspectRatio = String(dramaMeta?.aspect_ratio || pkg.drama?.aspect_ratio || '16:9');
-    const concurrency = Math.max(1, Math.min(6, Number(options.stage3Concurrency || 4)));
-    let completedCount = 0;
-    let nextIndex = 0;
-
-    async function stage3Worker() {
-      while (nextIndex < persistedRows.length) {
-        const i = nextIndex++;
-        const shot = persistedRows[i];
-        const res = await h3Stage3.ensureShotH3PromptCompiled(db, log, shot, {
-          dramaId: pkg.drama?.id,
-          aspectRatio,
-          forceRecompile: options.forceStage3 === true,
-        });
-        if (res.source === 'manual_locked') stage3Stats.manual_locked += 1;
-        else if (res.source === 'cache_hit') stage3Stats.cached += 1;
-        else stage3Stats.compiled += 1;
-
-        completedCount += 1;
-        onProgress(86 + Math.floor((completedCount / persistedRows.length) * 13), `阶段三正在编译第 ${completedCount}/${persistedRows.length} 镜官方 H3 提示词...`);
-        options.checkpoint?.record?.({
-          stage: 'stage3',
-          shot_number: Number(shot.storyboard_number || i + 1),
-          type: 'stage3_completed',
-          payload: { source: res.source, mode: res.mode },
-        });
-        options.checkpoint?.save?.();
-      }
-    }
-
-    const workers = [];
-    for (let w = 0; w < Math.min(concurrency, persistedRows.length); w++) {
-      workers.push(stage3Worker());
-    }
-    await Promise.all(workers);
-  }
-
-  log.info('[本体丰富] 阶段二/三完成并落库', {
+  log.info('[本体丰富] 阶段二完成并落库', {
     episode_id: epId,
     total_shots: enrichedShots.length,
     invariants_valid: audit.valid,
     remaining_errors: audit.error_count || 0,
-    stage3: stage3Stats,
   });
 
-  onProgress(100, `视听本体槽位与官方 H3 提示词装配完毕（${enrichedShots.length} 镜全部就绪，门禁质检 ${audit.valid ? '通过' : '告警'}）`);
+  onProgress(100, `视听执行合同已保存（${enrichedShots.length} 镜全部就绪，门禁质检 ${audit.valid ? '通过' : '告警'}）`);
 
   return {
     success: true,
     episode_id: epId,
     total_shots: enrichedShots.length,
     updated_shots: enrichedShots.length,
-    stage3: stage3Stats,
     audit,
   };
 }
@@ -446,6 +402,7 @@ async function runTwoStageDirectorPipeline(db, log, cfg, episodeId, options = {}
       stage1Result = await runStageOneBaseGeneration(db, log, epId, taskId, {
         ...options,
         // 阶段一必须先通过基础规划门禁，再把基础分镜发布给阶段二。
+        checkpoint,
         planningCatalogs: compileDramaSemanticPackage(db, epId).catalogs,
         planningRepairAttempts: options.planningRepairAttempts || 3,
       });

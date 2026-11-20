@@ -46,18 +46,7 @@ function stageOnePlanningViolations(storyboards, { catalogs, narrativeStyle, dur
     const deliveryOptions = delivery.budgetOptions(delivery.resolve(narrativeStyle, shot, { duration: dur }));
     violations.push(...speechTimingRule.evaluate({ shots: [{ ...shot, shot_number: shotNum, duration: dur }], options: { deliveryOptions } }));
 
-    // 单镜换装前置门禁：在具备拆镜能力的阶段一规划环中拦截并拆镜，绝不带病流入阶段二
-    const mutationRegex = /(?:换上|换装|变身|脱去|脱下|脱掉|撕下面具|穿上|披上).{0,6}(?:衣|装|服|袍|甲|衫|裙|披风|斗篷)?/i;
-    const shotAction = `${shot.action || ''} ${shot.result || ''} ${shot.video_prompt || ''}`.trim();
-    if (mutationRegex.test(shotAction)) {
-      violations.push({
-        rule: 'INVARIANT_MID_SHOT_WARDROBE_MUTATION',
-        shot_number: shotNum,
-        severity: 'error',
-        conflict_slots: ['action', 'wardrobe_id'],
-        message: `分镜 #${shotNum} 镜头动作包含单镜换装/变身/造型改变描写（「${shotAction.slice(0, 40)}...」），单镜头生成无法维持造型突变，阶段一必须拆分为换装前后两个分镜！`,
-      });
-    }
+
   }
   return violations;
 }
@@ -1646,9 +1635,15 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
     taskService.updateTaskStatus(db, taskId, 'processing', 70, '正在保存分镜头...');
 
     // Soft deletion and all inserts roll back together if saving fails.
-    const saved = db.transaction(() =>
-      saveStoryboards(db, log, episodeId, storyboards, cfg, style, null, deriveOpts)
-    )();
+    const saved = db.transaction(() => {
+      pipelineOptions?.checkpoint?.assertCurrent();
+      const rows = saveStoryboards(db, log, episodeId, storyboards, cfg, style, null, deriveOpts);
+      if (pipelineOptions?.checkpoint) {
+        Object.assign(pipelineOptions.checkpoint.state, { stage1Complete: true, stage1Storyboards: rows });
+        pipelineOptions.checkpoint.capturePublished?.();
+      }
+      return rows;
+    })();
 
     // 导演两阶段路径的人物清单是 Agent 的规划合同；不能再用文本扫描静默追加
     // 角色，否则阶段一门禁通过后又会把台词中提到的第三人写回 characters，
@@ -1969,7 +1964,7 @@ async function runStageOneBaseGeneration(db, log, episodeId, taskId, options = {
   const stage1DurationLabel = ctx.durationRange
     ? `${ctx.durationRange.min}～${ctx.durationRange.max}秒整数秒，严禁超过上限 ${ctx.durationRange.max} 秒`
     : '4～30秒整数秒，超过30秒才按语义拆镜';
-  ctx.systemPrompt = `你是短剧基础分镜导演。基于短剧本体图谱与爽点节拍，把本集剧本拆成完整、紧凑、可执行的剧情分镜，先保证剧情顺序和台词逐字覆盖。每镜${stage1DurationLabel}；每个分镜最多只允许 1 个说话人的单轮对白（或 1 段旁白），严禁两人轮流对话或对白与旁白混在同一镜，多人轮流对话必须按说话轮次拆成连续分镜；每镜对白/旁白字数必须能在本镜 duration 内按实际 TTS 速度（默认 1.25x，约 5 字/秒）自然说完，超长台词必须按语义拆镜；单镜最多2名有身份画内角色（characters），群众/敌军写成环境事件。动作与画面描写必须是可拍摄的纯写实物理动作，严禁文学心理隐喻及在画面中描述 UI 元素（如血条、准星、倒计时悬浮窗、屏幕小字）。不要输出 video_slots、character_visuals、动作原子、口型、视线枚举或 H3 提示词。只返回 JSON 对象 {"storyboards":[...]}，不要解释。
+  ctx.systemPrompt = `你是短剧基础分镜导演。基于本集人物关系与剧情节拍，把本集剧本拆成完整、紧凑、可执行的剧情分镜，先保证剧情顺序和台词逐字覆盖。每镜${stage1DurationLabel}；每个分镜最多只允许 1 个说话人的单轮对白（或 1 段旁白），严禁两人轮流对话或对白与旁白混在同一镜，多人轮流对话必须按说话轮次拆成连续分镜；每镜对白/旁白字数必须能在本镜 duration 内按实际 TTS 速度（默认 1.25x，约 5 字/秒）自然说完，超长台词必须按语义拆镜；单镜最多2名有身份画内角色（characters），群众/敌军写成环境事件。动作与画面描写必须是可拍摄的纯写实物理动作，严禁文学心理隐喻及在画面中描述 UI 元素（如血条、准星、倒计时悬浮窗、屏幕小字）。不要输出 video_slots、character_visuals、动作原子、口型、视线枚举或 H3 提示词。只返回 JSON 对象 {"storyboards":[...]}，不要解释。
 
 每镜字段：shot_number,title,scene_id,characters,background_characters,offscreen_characters,beat_type,props,duration,location,time,shot_type,angle_h,angle_v,angle_s,movement,action,result,dialogue,narration,emotion,start_framing,end_framing,transition_to_next。
 
@@ -1977,16 +1972,11 @@ async function runStageOneBaseGeneration(db, log, episodeId, taskId, options = {
 - scene_id 填可用场景目录中的数字 ID；
 - characters 必须填入可用角色目录中的数字 ID 数组（如 [26]，严禁写角色名字符串；画内无主体人物则为 []，最多2人）；
 - background_characters 为画内背景角色 ID 数组（如 []）；
-- offscreen_characters：通过电话、对讲机、门外喊话等参与本镜事件但不入画的角色，必须填入 offscreen_characters（如 [{"id": 102, "name": "露娜", "mode": "remote_voice"}]，模式可选 remote_voice、doorway、present_offscreen），严禁塞入画内 characters 或 background_characters；
+- offscreen_characters：通过电话、对讲机、门外喊话等参与本镜事件但不入画的角色，必须填入 offscreen_characters（如 [{"id": 102, "mode": "remote_voice"}]，模式可选 remote_voice、present_offscreen），严禁塞入画内 characters 或 background_characters；
 - props 必须填入可用道具目录中的数字 ID 数组（如 [37]；无道具则为 []）。
 
-【短剧节拍与视听映射规则（Beat-Driven Cinematography）】
-- beat_type 填入当前镜头承载的短剧爽点节拍类型（hook: 黄金前3秒钩子；suppression: 极限施压/羞辱；reveal: 亮明底牌/信物；slap_reversal: 打脸反转；cliffhanger: 集末断章卡点；crowd_reaction: 围观震惊反应；transition: 剧情过场衔接）。
-1. hook（前3秒钩子）：优先采用特写/近景或快节奏推拉（push/pull），第一时间抓住视觉冲突与悬念；
-2. suppression（极限施压/羞辱）：上位施压者（dominant）镜头优先采用仰拍（angle_v: 'low'），受辱隐忍方（suppressed）优先采用俯拍（angle_v: 'high'）；
-3. reveal（亮明底牌/信物）：凡涉及 prop_role === 'key_token' 或 close_up_required === true 的核心打脸信物/底牌道具，必须将该道具 ID 挂入本镜 props，且景别优先给特写/近景；
-4. slap_reversal（打脸反转）：采用快速推轨（push）或紧凑正反打，突出反转气场与重音音效（sound_effect）；
-5. crowd_reaction（吃瓜围观震惊反应）：画内有身份角色 characters 仍严格控制在 1～2 人（作为领头震惊议论的焦点代表），其余围观人群写入 action 与环境反应描写，绝不挂载超过 2 个角色 ID。
+【剧情节拍】
+按原剧本选择节拍。每镜用 action 交代正在发生的行动，用 result 写出局面、信息或人物选择的变化，transition_to_next 交代其与下一镜的因果。允许多个动作和对白同步完成，合并重复交代同一信息的镜头；重要节拍可以跨镜。景别、剪辑与声音由剧情和所选风格决定。
 
 对白和旁白必须逐字保留，动作必须与对白同时发生，禁止用互相看着或静止等待填时长。
 

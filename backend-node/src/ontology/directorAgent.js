@@ -22,7 +22,6 @@ const { shotSpeechTurns } = require('../services/dialogueDubbingService');
 const singleShotCrossSlotRule = new CrossSlotInvariantsRule();
 const STAGE2_SKIPPED_CROSS_SLOT_RULES = new Set([
   'INVARIANT_MULTI_SPEAKER_SHOT',
-  'INVARIANT_MID_SHOT_WARDROBE_MUTATION',
 ]);
 
 function crossSlotStage2Violations(shot, catalogs = {}) {
@@ -1896,7 +1895,6 @@ async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {})
       return byName.get(String(raw || '').trim()) || 0;
     }).filter(id => Number.isInteger(id) && id > 0).sort((a, b) => a - b);
   };
-  const sameIds = (left, right) => left.length === right.length && left.every((id, index) => id === right[index]);
   // Stage one owns the identity roster. If its semantic arrays are not yet
   // present, lock the top-level draft roster (names are resolved through the
   // immutable catalog) so stage two cannot invent background characters from
@@ -1907,12 +1905,6 @@ async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {})
   const lockedBackgroundIds = Array.isArray(semantic.background_characters)
     ? semanticCharacterIds(semantic.background_characters, true)
     : resolveRosterIds(shot.background_characters);
-  // Offscreen participation has no top-level fallback roster: lock it only
-  // when stage one explicitly declared the array. When stage one produced no
-  // semantic_slots (base-generation chain), stage two is the author of the
-  // offscreen list — locking it to [] would make every remote/offscreen
-  // speaker unsatisfiable (declare it -> lock error; omit it -> speaker
-  // not declared). The asset gate still validates whatever stage two declares.
   const hasOffscreenContract = Array.isArray(semantic.offscreen_characters);
   const lockedOffscreenIds = hasOffscreenContract
     ? semanticCharacterIds(semantic.offscreen_characters, true)
@@ -1977,9 +1969,7 @@ async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {})
       const compactNeighbours = [retryOptions.previousShot, retryOptions.nextShot]
         .filter(Boolean).map(item => compactExecutionShot(item));
       const compactCatalogs = compactExecutionCatalogs(retryOptions.catalogs || {}, candidateBase);
-      const rosterLockLine = hasOffscreenContract
-        ? `【阶段一参与角色总集守恒】参与本镜事件的角色锁定为：${JSON.stringify(lockedParticipantIds)}（初始分布：visible=${JSON.stringify(lockedVisibleIds)}，background=${JSON.stringify(lockedBackgroundIds)}，offscreen=${JSON.stringify(lockedOffscreenIds)}）。严禁凭空捏造未登记角色 ID。画内总人数（visible + background）严格 ≤ 2。若近景/过肩对话产生背景冲突，允许将 background 角色移入 offscreen（mode: present_offscreen）或移出画；若画外说话人/电话对讲误入画内，允许移入 offscreen_characters（注明 mode: remote_voice/present_offscreen）。画外参与者不入画，不得为其生成 character_visuals、轨迹或参考图。`
-        : `【阶段一参与角色总集守恒】参与本镜事件的角色锁定为：${JSON.stringify(lockedParticipantIds)}（初始分布：visible=${JSON.stringify(lockedVisibleIds)}，background=${JSON.stringify(lockedBackgroundIds)}）。严禁凭空捏造未登记角色 ID。画内总人数（visible + background）严格 ≤ 2。offscreen 阶段一未声明、未锁定：按对白声源与本镜事件如实填写 semantic_slots.offscreen_characters——通过通讯器/画外说话的人、被喊话的远程对象必须登记并注明 mode（present_offscreen/remote_voice），说话人必须出现在 visible/background/offscreen 之一；画外参与者不入画，不得为其生成 character_visuals、轨迹或参考图。`;
+      const rosterLockLine = `本镜参与者总集为 ${JSON.stringify(lockedParticipantIds)}，不得增减。初始主体 ${JSON.stringify(lockedVisibleIds)}，背景 ${JSON.stringify(lockedBackgroundIds)}，画外 ${JSON.stringify(lockedOffscreenIds)}。导演可调整参与方式。每段分别声明实际入画人物，特写中其他参与者可在画外发言；仅给当段入画者分配表演轨迹。一个动作可跨时间段持续，同机位保持连续。`;
       const gateFeedbackText = errors.map((item) => {
         const msg = String(item?.message || item || '');
         const slots = Array.isArray(item?.conflict_slots) && item.conflict_slots.length
@@ -2010,7 +2000,7 @@ async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {})
       const planned = await agentsRuntime.runAgent(db, log, {
         name: 'director-execution-slots-planner',
         instructions: patchMode
-          ? `你是短剧导演执行合同的局部修复节点。只修复门禁反馈列出的字段，禁止改写人物清单、场景、对白、旁白、总时长和其他已通过字段。h3_mode 固定 ref2va 时，semantic_slots.first_frame_policy 与 semantic_slots.last_frame_policy 必须固定填 'none'。${requiredReferencesContract}${executionBackendContract}。当镜头已有角色对白（dialogue 非空且 narration 为空）时，speech_plan.is_narration 必须为 false、text 与 dialogue 台词逐字一致，严禁把角色台词标为旁白。character_visuals 必须精确覆盖权威人物且每人有实际定格、多人不得占用完全相同的 screen_position；video_slots.shots_timeline 必须让每位画内角色在该段有与事件同步的动作或反应。凡存在对白的 timeline 段，speech_action_alignment.mode 固定填 'concurrent'（禁止填 sync/deliberate_pause/none），画内说话人 character_trajectories[].mouth_state 固定填 'speaker_synced'。当【本体资产白名单】的 props 为空或不含目标物体时，动作 target_type 禁止填 'prop'（无有效 target_id 必被门禁拒绝），改用 'event' 或 'scene' 并填写 target_label。只返回指定 repairs JSON，不要解释。`
+          ? `你是短剧导演执行合同的局部修复节点。只修复门禁反馈列出的字段，禁止改写人物清单、场景、对白、旁白、总时长和其他已通过字段。h3_mode 固定 ref2va 时，semantic_slots.first_frame_policy 与 semantic_slots.last_frame_policy 必须固定填 'none'。${requiredReferencesContract}${executionBackendContract}。当镜头已有角色对白（dialogue 非空且 narration 为空）时，speech_plan.is_narration 必须为 false，严禁把角色台词标为旁白。character_visuals 必须精确覆盖权威人物且每人有实际定格、多人不得占用完全相同的 screen_position；video_slots.shots_timeline 必须让每位画内角色在该段有与事件同步的动作或反应。凡存在对白的 timeline 段，speech_action_alignment.mode 固定填 'concurrent'（禁止填 sync/deliberate_pause/none），画内说话人 character_trajectories[].mouth_state 固定填 'speaker_synced'。当【本体资产白名单】的 props 为空或不含目标物体时，动作 target_type 禁止填 'prop'（无有效 target_id 必被门禁拒绝），改用 'event' 或 'scene' 并填写 target_label。只返回指定 repairs JSON，不要解释。`
           : `你是短剧导演执行合同节点。根据紧凑的当前镜头事实，一次输出完整 semantic_slots、character_visuals、last_frame_visuals 和 video_slots。禁止改写人物清单、场景、对白、旁白和总时长。semantic_slots.continuity_from_previous 必须完整；h3_mode 固定 ref2va，first_frame_policy 与 last_frame_policy 必须固定填 'none'；${requiredReferencesContract}${executionBackendContract}；当镜头已有角色对白（dialogue 非空且 narration 为空）时，speech_plan.is_narration 必须为 false，严禁把角色台词标为旁白。performance_contract 固定 ${PERFORMANCE_CONTRACT}；多人同框时 character_visuals 的 screen_position 必须互相错开。动作与对白必须同步，所有画内人物都要有本段可执行动作或反应；有对白段 speech_action_alignment.mode 固定填 'concurrent'，画内说话人 character_trajectories[].mouth_state 固定填 'speaker_synced'。当【本体资产白名单】的 props 为空或不含目标物体时，动作 target_type 禁止填 'prop'（无有效 target_id 必被门禁拒绝），改用 'event' 或 'scene' 并填写 target_label。动作与画面描述必须是可拍摄的纯写实物理事件，严禁文学心理隐喻及在画面中描述 UI 元素（如血条、准星、倒计时悬浮窗、屏幕小字）。${durationPlanContract}。只返回指定 JSON，不要解释。`,
         input: requestInput,
         outputType: patchMode
@@ -2086,10 +2076,14 @@ async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {})
           ...plannedOffscreenIds,
         ])).sort((a, b) => a - b);
 
-        const inventedIds = plannedParticipantIds.filter((id) => !lockedParticipantSet.has(id));
-        if (inventedIds.length > 0 && lockedParticipantSet.size > 0) {
+        const plannedSet = new Set(plannedParticipantIds);
+        const missing = lockedParticipantIds.filter(id => !plannedSet.has(id));
+        const invented = plannedParticipantIds.filter(id => !lockedParticipantSet.has(id));
+        if (missing.length || invented.length) {
           errors.push({
-            message: `阶段二不得引入未在阶段一登记的新角色：${JSON.stringify(inventedIds)}；允许参与的角色集合为：${JSON.stringify(lockedParticipantIds)}`,
+            rule: 'INVARIANT_PARTICIPANT_ROSTER_CHANGED',
+            conflict_slots: ['visible_characters', 'background_characters', 'offscreen_characters'],
+            message: `本镜参与者必须与阶段一一致，缺少 ID ${JSON.stringify(missing)}，新增 ID ${JSON.stringify(invented)}。请在画内或画外清单中保留参与者，并按每段实际入画人物规划轨迹。`,
           });
         }
 

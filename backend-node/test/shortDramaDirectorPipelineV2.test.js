@@ -245,19 +245,18 @@ test('ensureDirectorExecutionSlots: participant conservation allows offscreen re
   }
 });
 
-test('stageOnePlanningViolations: catches INVARIANT_MID_SHOT_WARDROBE_MUTATION in Stage 1 planning', () => {
+test('stageOnePlanningViolations: does not infer wardrobe changes from action text', () => {
   const mutatingShot = {
     shot_number: 1,
     duration: 5,
-    action: '陆天宇迅速换上黑色夜行衣，准备潜入密室',
+    action: '换上备用电池',
     result: '换装完毕，闪身消失在暗处',
     dialogue: '',
   };
 
   const violations = stageOnePlanningViolations([mutatingShot]);
   const wardrobeViolation = violations.find((v) => v.rule === 'INVARIANT_MID_SHOT_WARDROBE_MUTATION');
-  assert.ok(wardrobeViolation, 'Must catch mid-shot wardrobe mutation in Stage 1 planning');
-  assert.equal(wardrobeViolation.shot_number, 1);
+  assert.equal(wardrobeViolation, undefined);
 });
 
 test('deriveStoryboardFieldsFromAi: derives beat_type and offscreen_characters into semantic_slots', () => {
@@ -330,7 +329,7 @@ test('buildDeterministicStage3Skeleton & validateOfficialH3Prompt: enforces Subj
                 depth_layer: 'foreground',
                 facing: 'front',
                 mouth_state: 'speaker_synced',
-                action_atom: 'holding_token_high',
+                action_atom: { action: 'hold', action_detail: '高举令牌' },
                 result_state: 'commanding_stance',
               },
             ],
@@ -348,6 +347,7 @@ test('buildDeterministicStage3Skeleton & validateOfficialH3Prompt: enforces Subj
   assert.ok(skeleton.includes('<Subject 2>'));
   assert.ok(skeleton.includes('<Subject 3>'));
   assert.ok(skeleton.includes('[Shot 1]'));
+  assert.ok(skeleton.includes('高举令牌'));
   assert.ok(skeleton.includes('见此令如见龙主！'));
 
   // Validation: passing case
@@ -390,6 +390,7 @@ test('buildDeterministicStage3Skeleton & validateOfficialH3Prompt: enforces Subj
   // Validation: non-dialogue closed lips enforcement
   const silentSpec = {
     ...spec,
+    spoken_lines: [],
     dialogue_content: '',
     speaking_character_id: null,
     character_visuals: [{ character_id: 1, mouth_state: 'strictly_sealed' }],
@@ -417,7 +418,7 @@ test('buildDeterministicStage3Skeleton & validateOfficialH3Prompt: enforces Subj
     '',
     'detailed_description:',
     'Cinematic lighting.',
-    '[Shot 1] <Subject 2> <Picture 2> stands in <Subject 1> and is speaking loudly with open mouth.',
+    '[Shot 1] <Subject 2> <Picture 2> stands in <Subject 1> and says <d>[Chinese] 不该出现的发言</d>.',
     '',
     'overall_soundscape:',
     'Silent ambient.',
@@ -427,7 +428,7 @@ test('buildDeterministicStage3Skeleton & validateOfficialH3Prompt: enforces Subj
   ].join('\n');
   const reportViolatingSpeaking = validateOfficialH3Prompt(silentPrompt, silentSpec);
   assert.equal(reportViolatingSpeaking.valid, false);
-  assert.ok(reportViolatingSpeaking.errors.some((v) => v.includes('闭口')));
+  assert.ok(reportViolatingSpeaking.errors.some((v) => v.includes('逐字台词')));
 });
 
 test('extractionAgent: incrementally upserts relations and saves beats per episode', async () => {

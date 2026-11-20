@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { compileActionAtom } = require('../ontology/videoSlots');
 const agentsRuntime = require('./agentsRuntime');
 const angleService = require('./angleService');
 const wardrobeService = require('./wardrobeService');
@@ -203,6 +204,13 @@ function buildStage3PromptSpec(db, shot, context = {}) {
   // Deliberately project Stage 2's structured timeline and visuals without Stage 1's
   // concatenated shot.description string so stale 【运镜】 labels cannot contradict video_slots.
   const timeline = Array.isArray(videoSlots.shots_timeline) ? videoSlots.shots_timeline : [];
+  // Expose the script once. Segments retain the timing and voice source.
+  const executionTimeline = timeline.map(segment => {
+    const { dialogue_content, ...audioTiming } = segment.audio_lip_sync || {};
+    return { ...segment, audio_lip_sync: { ...audioTiming, has_speech: Boolean(dialogue_content?.trim()) } };
+  });
+  const { text: speechText, ...speechPlan } = semantic.speech_plan || {};
+  const { dialogue_content: projectedText, ...voicePlan } = videoSlots.audio_lip_sync || {};
   const authoritativeContract = {
     scene: sceneRow ? {
       id: Number(sceneRow.id),
@@ -225,9 +233,10 @@ function buildStage3PromptSpec(db, shot, context = {}) {
       visible_characters: semantic.visible_characters || [],
       background_characters: semantic.background_characters || [],
       offscreen_characters: semantic.offscreen_characters || [],
+      audio_lip_sync: semantic.audio_lip_sync,
       identity_visibility: semantic.identity_visibility || '',
       dialogue_framing: shot?.dialogue_framing || semantic.dialogue_framing || '',
-      speech_plan: semantic.speech_plan || {},
+      speech_plan: speechPlan,
       sound_plan: semantic.sound_plan || {},
       continuity_from_previous: semantic.continuity_from_previous || null,
       execution_backend: executionBackend,
@@ -237,11 +246,12 @@ function buildStage3PromptSpec(db, shot, context = {}) {
     character_visuals: characterVisuals,
     ...(mode === 'fl2va' && lastFrameVisuals.length ? { last_frame_visuals: lastFrameVisuals } : {}),
     video_slots: {
+      audio_lip_sync: voicePlan,
       camera: videoSlots.camera || null,
       timing: videoSlots.timing || { duration },
       environment_vfx: videoSlots.environment_vfx || null,
       h3_multimodal: videoSlots.h3_multimodal || null,
-      shots_timeline: timeline.length ? timeline : [{
+      shots_timeline: timeline.length ? executionTimeline : [{
         shot_number: 1,
         timestamp: null,
         duration,
@@ -256,7 +266,7 @@ function buildStage3PromptSpec(db, shot, context = {}) {
   };
 
   return {
-    version: 'h3_stage3_v1',
+    version: 'h3_stage3_v2',
     storyboard_id: Number(shot?.id || 0) || null,
     shot_number: Number(shot?.storyboard_number || shot?.shot_number || 1),
     mode,
@@ -319,11 +329,12 @@ function buildDeterministicStage3Skeleton(spec) {
   const nonSpeakingModes = new Set(['offscreen_voiceover', 'narration', 'silent_ambient', 'bgm_only']);
   const isGlobalNonSpeaking = nonSpeakingModes.has(semantic.audio_lip_sync) || Boolean(semantic.sound_plan?.is_silent);
 
+  let cameraShot = 0;
   const shotTimelineLines = timeline.map((seg, idx) => {
-    const shotNum = seg.shot_number || idx + 1;
-    const cutHeader = shotNum === 1 && !seg.timestamp
-      ? `[Shot 1]`
-      : (seg.timestamp ? `[Shot ${shotNum}] At ${seg.timestamp}` : `[Shot ${shotNum}]`);
+    const newAngle = idx === 0 || seg.camera_transition === 'cut';
+    if (newAngle) cameraShot++;
+    const cutHeader = newAngle ? `[Shot ${cameraShot}]` : 'Continue same take';
+    const timeLabel = seg.timestamp ? ` at ${seg.timestamp}` : '';
     const durStr = Number.isFinite(Number(seg.duration)) ? ` (duration: ${Number(seg.duration)}s)` : '';
     const cam = seg.camera || {};
     const camDesc = `Camera: ${cam.shot_type || 'medium_shot'}, movement: ${cam.movement || 'static'}, horizontal angle: ${cam.angle_h || 'eye_level'}, vertical angle: ${cam.angle_v || 'level'}`;
@@ -337,16 +348,14 @@ function buildDeterministicStage3Skeleton(spec) {
         const depth = traj.depth_layer || 'midground';
         const facing = traj.facing || 'front';
         const gaze = traj.gaze ? `${traj.gaze.gaze_type || 'direct'} towards ${traj.gaze.gaze_target_label || 'target'}` : 'directed';
-        const actAtom = traj.action_atom ? `performing ${traj.action_atom}` : '';
+        const actAtom = traj.action_atom?.action_detail || compileActionAtom(traj.action_atom, { actorName: charName });
         const resState = traj.result_state ? `ending in ${traj.result_state}` : '';
         const actionPart = [actAtom, resState].filter(Boolean).join(' -> ');
 
         let lipConstraint = '';
         const mouthState = traj.mouth_state;
-        const dialogueContent = String(semantic.speech_plan?.text || seg.audio_lip_sync?.dialogue_content || '').trim();
-
-        if (!isGlobalNonSpeaking && mouthState === 'speaker_synced' && dialogueContent) {
-          lipConstraint = `Mouth: speaker_synced speaking line <d>[Chinese] ${dialogueContent}</d>`;
+        if (!isGlobalNonSpeaking && mouthState === 'speaker_synced') {
+          lipConstraint = 'Mouth: sync to the scheduled speech during this segment';
         } else {
           lipConstraint = 'Mouth: keeps lips strictly closed without speaking';
         }
@@ -360,10 +369,12 @@ function buildDeterministicStage3Skeleton(spec) {
       }
     }
 
-    return `${cutHeader}${durStr}\n  ${camDesc}\n${charLines.length ? charLines.join('\n') : '  (Environment/Subject observation)'}`;
+    return `${cutHeader}${timeLabel}${durStr}\n  ${camDesc}\n${charLines.length ? charLines.join('\n') : '  (Environment/Subject observation)'}`;
   });
 
   return `=== DETERMINISTIC STAGE 3 SKELETON (AUTHORITATIVE ANCHORS) ===
+[Spoken lines in order; render each exactly once, across segments if needed]
+${(spec.spoken_lines || []).map(line => `${line.speaker || line.kind}: <d>[${line.language || 'Chinese'}] ${line.text}</d>`).join('\n') || 'None'}
 [Media & Subject Bindings]
 ${subjectLines.join('\n') || '- None'}
 ${audioLines.join('\n')}
@@ -433,28 +444,12 @@ function normalizeDialoguePunctuation(text) {
     .replace(/\u2026/g, '...')
     .replace(/[，,]/g, ',')
     .replace(/[。.]/g, '.')
-    .replace(/[！？!?]/g, '?')
+    .replace(/！/g, '!')
+    .replace(/？/g, '?')
     .replace(/[：:]/g, ':')
     .replace(/[；;]/g, ';')
     .replace(/\s+/g, ' ')
     .trim();
-}
-
-function stripDialoguePunctuation(text) {
-  return String(text || '')
-    .replace(/[^\p{L}\p{N}\p{Script=Han}]/gu, '')
-    .trim();
-}
-
-function matchDialogueText(content, expectedText) {
-  if (!content || !expectedText) return false;
-  if (content === expectedText || content.includes(expectedText)) return true;
-  const normContent = normalizeDialoguePunctuation(content);
-  const normExpected = normalizeDialoguePunctuation(expectedText);
-  if (normContent === normExpected || normContent.includes(normExpected)) return true;
-  const strippedExpected = stripDialoguePunctuation(expectedText);
-  if (strippedExpected && stripDialoguePunctuation(content).includes(strippedExpected)) return true;
-  return false;
 }
 
 function validateOfficialH3Prompt(rawPrompt, spec) {
@@ -500,17 +495,11 @@ function validateOfficialH3Prompt(rawPrompt, spec) {
 
   // Spoken lines must appear verbatim inside <d>...</d> in the visual timeline and not leak into audio sections.
   const dContents = [...mainBody.matchAll(/<d>(?:\[[A-Za-z]+\]\s*)?([\s\S]*?)<\/d>/g)].map((m) => m[1].trim());
-  for (const line of spec.spoken_lines || []) {
-    const expectedText = String(line.text || '').trim();
-    if (!expectedText) continue;
-    const foundInMain = dContents.some((content) => matchDialogueText(content, expectedText));
-    if (!foundInMain) {
-      errors.push(`${mainSectionName} 的 <d> 标签缺少逐字台词：${JSON.stringify(expectedText)}`);
-    }
-    const audioSectionsText = `${sections.overall_soundscape || ''}\n${sections.non_diegetic_music || ''}`;
-    if (audioSectionsText.includes(expectedText) || /<d>[\s\S]*?<\/d>/.test(audioSectionsText)) {
-      errors.push('overall_soundscape 与 non_diegetic_music 中不得重复写入 <d> 台词文本');
-    }
+  const expectedLines = (spec.spoken_lines || []).map(line => String(line.text || '').trim()).filter(Boolean);
+  const actualText = normalizeDialoguePunctuation(dContents.join(''));
+  const expectedText = normalizeDialoguePunctuation(expectedLines.join(''));
+  if (actualText !== expectedText || openDCount !== dContents.length) {
+    errors.push(`${mainSectionName} 的逐字台词与原文不一致，请检查顺序、遗漏、增词或重复。所有 <d> 标签须位于该段。`);
   }
 
   // Reference tag bounds check: no dangling <Picture N> or <Audio N>.
@@ -567,21 +556,6 @@ function validateOfficialH3Prompt(rawPrompt, spec) {
     errors.push('FL2VA 首帧模式必须明确说明 <Picture 1> 与 0.00s 帧锚点的衔接');
   }
 
-  // 非画内对白镜头的闭口保真校验
-  const semanticLipMode = spec.authoritative_contract?.semantic_slots?.audio_lip_sync;
-  const videoLipMode = spec.authoritative_contract?.video_slots?.audio_lip_sync?.mode;
-  const isSilentMode = spec.authoritative_contract?.semantic_slots?.sound_plan?.is_silent === true;
-  const nonSpeakingModes = ['offscreen_voiceover', 'narration', 'silent_ambient', 'bgm_only'];
-  const isNonInFrameDialogue = nonSpeakingModes.includes(semanticLipMode) || nonSpeakingModes.includes(videoLipMode) || isSilentMode;
-  const hasVisibleChars = (spec.authoritative_contract?.semantic_slots?.visible_characters || []).length > 0;
-
-  if (isNonInFrameDialogue && hasVisibleChars && mainBody) {
-    const speakingRegex = /\b(?:speaking|speaks|says|saying|talks|talking|opens?\s+mouth\s+to\s+speak|lip[- ]syncing)\b/i;
-    if (speakingRegex.test(mainBody)) {
-      errors.push('当前镜头处于非画内对白模式（画外音/旁白/无声环境），detailed_description 严禁将画内角色描写为开口说话，画内角色必须保持闭口（keeps lips strictly closed）');
-    }
-  }
-
   return { valid: errors.length === 0, errors, prompt };
 }
 
@@ -609,7 +583,7 @@ ${spec.mode === 'fl2va'
 2. Write every section in natural, concrete, filmable English prose describing composition, subjects, environment, lighting, camera movement, and audio timing. Never copy raw Chinese JSON keys, field labels, state enums (e.g. away_from_camera, closed, neutral, center_background), or engineering/TTS instructions into the prompt.
 3. Preserve original language ONLY inside <d>[Chinese] ...</d> (or <d>[English] ...</d>) for spoken lines and double quotes "..." for visibly rendered scene lettering. Every line in spoken_lines MUST appear verbatim inside <d>...</d> in the main visual description, and NEVER be repeated inside overall_soundscape or non_diegetic_music.
 4. Bind ONLY the exact tags given in picture_bindings (<Picture 1..N>) and audio_bindings (<Audio 1..K>). Follow ref-en.txt §2.1 & §2.2: in Ref2VA mode, define scene/environment, character, and prop image references as <Subject N> in subject_definitions citing their <Picture N>, track them consistently through summary, retention_analysis, and detailed_description (never leave the scene <Picture 1> unused inside detailed_description).
-5. Preserve exact continuity, camera framing/movement, shot timeline cuts ([Shot 1], [Shot 2] At MM:SS.mmm, ...), duration (${spec.duration_seconds}s), and aspect ratio (${spec.aspect_ratio}) from authoritative_contract without inventing unapproved characters, extra shots, or contradicting camera movements.
+5. Use a new shot marker only for an explicit camera cut. Preserve exact continuity, camera framing/movement and scheduled cuts ([Shot 1], [Shot 2] At MM:SS.mmm, ...), duration (${spec.duration_seconds}s), and aspect ratio (${spec.aspect_ratio}) from authoritative_contract without inventing unapproved characters, extra shots, or contradicting camera movements.
 6. Output ONLY the final formatted H3 prompt text itself—no markdown code fences, no preamble, no explanations.`;
 
   let feedback = '';
@@ -654,7 +628,7 @@ ${spec.mode === 'fl2va'
 
 function persistCompiledPrompt(db, shotId, prompt, fingerprint, manual = false) {
   if (!db || !shotId) return;
-  try {
+  {
     const cols = new Set(db.prepare('PRAGMA table_info(storyboards)').all().map((c) => c.name));
     const sets = [];
     const params = [];
@@ -666,7 +640,7 @@ function persistCompiledPrompt(db, shotId, prompt, fingerprint, manual = false) 
     sets.push('updated_at = ?');
     params.push(new Date().toISOString(), Number(shotId));
     db.prepare(`UPDATE storyboards SET ${sets.join(', ')} WHERE id = ?`).run(...params);
-  } catch (_) {}
+  }
 }
 
 async function ensureShotH3PromptCompiled(db, log, shot, context = {}) {
@@ -699,7 +673,15 @@ async function ensureShotH3PromptCompiled(db, log, shot, context = {}) {
   }
 
   const compiled = await compileShotH3Prompt(db, log, shot, context);
-  persistCompiledPrompt(db, shot?.id, compiled.prompt, compiled.fingerprint, false);
+  if (db && shot?.id) db.transaction(() => {
+    const current = db.prepare('SELECT * FROM storyboards WHERE id=?').get(shot.id);
+    if (!current || current.deleted_at || current.updated_at !== shot.updated_at ||
+        current.h3_prompt_snapshot !== shot.h3_prompt_snapshot ||
+        computeH3PromptFingerprint(buildStage3PromptSpec(db, current, context)) !== fingerprint) {
+      throw new Error('编译期间分镜已更新，请在当前镜头重新编译 H3 提示词。');
+    }
+    persistCompiledPrompt(db, shot.id, compiled.prompt, compiled.fingerprint, false);
+  })();
   return {
     ...compiled,
     source: 'stage3_compiled',

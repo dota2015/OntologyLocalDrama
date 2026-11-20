@@ -160,12 +160,13 @@ function timelineSegmentSchema() {
     type: 'object',
     additionalProperties: false,
     required: [
-      'shot_number', 'timestamp', 'duration', 'camera', 'action', 'result',
+      'shot_number', 'timestamp', 'duration', 'camera_transition', 'camera', 'action', 'result',
       'visible_characters', 'character_trajectories', 'audio_lip_sync', 'speech_action_alignment',
     ],
     properties: {
       shot_number: { type: 'integer', minimum: 1 },
       timestamp: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+      camera_transition: { enum: ['continue', 'cut'], description: '与前段连续用 continue；仅实际切换机位时选择 cut。' },
       // Timeline entries are causal beats, not mandatory camera cuts.  A beat
       // may span the full logical shot when the action remains continuous.
       duration: { type: 'integer', minimum: 1, maximum: 30 },
@@ -506,6 +507,13 @@ function directorExecutionSlotsOutputType(duration = 5, options = {}) {
   // continuity_from_previous is required even for shot 1 (with relationship
   // "opening" and an empty previous_end_state).
   const semantic = semanticSlotsSchema();
+  // These two display fields are projections of the Stage 1 speech record.
+  const speechPlan = semantic.properties.speech_plan;
+  const audioPlan = timeline.properties.audio_lip_sync;
+  delete speechPlan.properties.text;
+  delete audioPlan.properties.dialogue_content;
+  speechPlan.required = speechPlan.required.filter(key => key !== 'text');
+  audioPlan.required = audioPlan.required.filter(key => key !== 'dialogue_content');
   semantic.required = [...semantic.required, 'source_script_excerpt'];
   semantic.properties.source_script_excerpt = { type: 'string', maxLength: 2000 };
   semantic.properties.shot_duration = { const: seconds };

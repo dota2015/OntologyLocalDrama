@@ -34,7 +34,7 @@ async function extractAllEntitiesFromScript(db, log, cfg, episodeId) {
   const dramaEra = isAncient ? 'ancient' : (/民国/.test(text) ? 'republic_china' : (/赛博|科幻/.test(text) ? 'sci_fi' : 'modern'));
 
   const prompt = `你是一位严谨的短剧世界观与本体知识架构师。
-请阅读以下剧本，按照【短剧本体（Short-Drama Ontology）】标准，一次性抽取出该集出现的所有核心资产：短剧角色（Characters）、道具与打脸信物（Props）、空间场景与权力位阶（Scenes），以及角色间的恩怨关系边（Character Relations）和短剧爽点节拍序列（Narrative Beats）。
+请阅读以下剧本，按照【短剧本体（Short-Drama Ontology）】标准，一次性抽取出该集出现的所有核心资产：短剧角色（Characters）、道具与打脸信物（Props）、空间场景与权力位阶（Scenes），以及角色间的关系边（Character Relations）和剧情节拍序列（Narrative Beats）。
 
 【世界观时代】：${dramaEra}（${isAncient ? '古装/古风世界观：严禁出现手机、电脑、现代工业品' : '现代/通用世界观'}）
 【剧名】：${drama.title || '短剧'}
@@ -44,13 +44,13 @@ ${ep.script_content}
 【短剧本体抽取规则】：
 1. **角色(characters)**：提取所有登场人物。
    - name, gender(男/女), role(如赘婿/千金/霸总/岳母/打手等)
-   - archetype(人设原型: hidden_tycoon/avenging_heiress/arrogant_antagonist/snobbish_inlaw/loyal_sidekick/bystander_crowd)
+   - archetype(人设原型，按剧本描述，可留空；爽剧示例: hidden_tycoon/avenging_heiress/arrogant_antagonist/snobbish_inlaw/loyal_sidekick/bystander_crowd)
    - surface_identity(表面伪装身份，如“保洁大妈”、“穷酸外卖员”、“窝囊赘婿”)
    - hidden_identity(隐藏真实身份，如“千亿集团唯一继承人”、“退役龙王战神”)
-   - power_status(当前所处位阶: dominant强势压迫/suppressed低位隐忍/awakened觉醒/bystander围观)
+   - power_status(按剧情选填，可留空: dominant强势压迫/suppressed低位隐忍/awakened觉醒/bystander围观)
    - appearance(具体外貌特征与五官发型服装，不少于30字), personality(性格关键词)
 2. **道具与打脸信物(props)**：提取剧中有物理交互、关键情节推动、打脸反转或证物作用的物体（如黑金卡、龙王戒、离婚协议书、亲子鉴定、信件、佩剑）。
-   - prop_role: 必须分类为 key_token(核心身份信物/底牌) / slap_evidence(打脸证据/文书) / conflict_tool(冲突器物/武器) / ambient(普通环境物件)
+   - prop_role: 按原文用途描述，也可选 key_token(核心身份信物/底牌) / slap_evidence(打脸证据/文书) / conflict_tool(冲突器物/武器) / ambient(普通环境物件)
    - close_up_required: boolean(若为 key_token 或 slap_evidence 必须为 true，短剧镜头中必须给予高辨识度特写)
    - owner_character_name: 专属持有者或出示者姓名
    - physical_scale: 给出具体真实物理尺度（如“标准黑金银行卡尺寸”、“直径约2.5cm古玉扳指”、“A4纸质装订文件”）
@@ -66,14 +66,14 @@ ${ep.script_content}
    - landmarks: 场景内地标数组，如 ["main_seat", "doorway", "banquet_table", "window"]
    - lighting_style: natural/dramatic/golden_hour/night/neon
    - reference_image_mode: single 或 quad_grid
-4. **人物恩怨关系边(character_relations)**：提取人物之间的带权有向关系边。
+4. **人物关系边(character_relations)**：提取人物之间的带权有向关系边。
    - from_character: 动作发出方角色名
    - to_character: 动作承受方角色名
-   - relation_kind: humiliates(欺辱压迫) / protects(护短庇护) / subordinate_to(臣服从属) / family_oppresses(家族刁难) / enemy_of(死敌对立) / ally_of(忠实盟友) / reveals_identity_to(亮明底牌)
+   - relation_kind: 按原文描述关系，也可选 trusts(信任)、doubts(怀疑)、cares_for(照料)、humiliates(欺辱压迫) / protects(护短庇护) / subordinate_to(臣服从属) / family_oppresses(家族刁难) / enemy_of(死敌对立) / ally_of(忠实盟友) / reveals_identity_to(亮明底牌)
    - description: 简要关系说明
 5. **短剧爽点节拍序列(narrative_beats)**：提取本集的情绪张力节拍链。
    - beat_number: 1, 2, 3...
-   - beat_type: hook(黄金前3秒钩子) / suppression(极限施压羞辱) / reveal(亮信物底牌) / slap_reversal(打脸反转) / crowd_reaction(围观震惊反应) / cliffhanger(集末断章卡点) / transition(转场过渡)
+   - beat_type: 可选 decision(人物选择)、discovery(获得信息)、consequence(行动后果)、relationship_change(关系变化)，或按剧情选 hook(开场钩子) / suppression(极限施压羞辱) / reveal(亮信物底牌) / slap_reversal(打脸反转) / crowd_reaction(围观震惊反应) / cliffhanger(集末断章卡点) / transition(转场过渡)
    - tension_level: 1~5 (张力级别，5为打脸/高潮巅峰)
    - dominant_emotion: 屈辱/嚣张/震惊/爽快/肃杀
    - power_shift: aggressor_dominant(恶人嚣张) / protagonist_counter(主角反击) / power_reversed(彻底翻盘) / stalemate(对峙)
@@ -126,10 +126,10 @@ ${ep.script_content}
     if (!c.name) continue;
     let exist = db.prepare('SELECT * FROM characters WHERE drama_id = ? AND name = ? AND deleted_at IS NULL').get(ep.drama_id, c.name);
     const identityAnchorsObj = {
-      archetype: c.archetype || 'hidden_tycoon',
+      archetype: c.archetype || null,
       surface_identity: c.surface_identity || '',
       hidden_identity: c.hidden_identity || '',
-      power_status: c.power_status || 'suppressed',
+      power_status: c.power_status || null,
     };
     const identityAnchorsStr = JSON.stringify(identityAnchorsObj);
 
@@ -212,7 +212,7 @@ ${ep.script_content}
     savedProps.push(exist);
   }
 
-  // 持久化短剧本体图扩展数据（人物恩怨关系边与爽点节拍序列）到 dramas.metadata
+  // 持久化短剧本体图扩展数据（人物关系边与爽点节拍序列）到 dramas.metadata
   // 严格杜绝跨集抽取相互覆盖：人物关系边按三元组增量合并，爽点节拍按单集分槽存储
   const extractedRelations = Array.isArray(parsed?.character_relations) ? parsed.character_relations : [];
   const extractedBeats = Array.isArray(parsed?.narrative_beats) ? parsed.narrative_beats : [];

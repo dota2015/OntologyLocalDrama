@@ -112,7 +112,7 @@
         <div v-if="directorRunForDisplay.status === 'failed' && latestDirectorRun.checkpoint?.available" class="director-run-audit__checkpoint">
           <div>
             <strong>已保存断点</strong>
-            <span>{{ latestDirectorRun.checkpoint.stage }} · {{ latestDirectorRun.checkpoint.completed_shots }} 镜初稿</span>
+            <span>基础分镜 {{ latestDirectorRun.checkpoint.base_shots || 0 }} 镜 · 已完成执行合同 {{ latestDirectorRun.checkpoint.completed_shots }} 镜</span>
             <small>继续任务会沿用原规划；需要改变镜头数量或节奏，请重新生成。</small>
           </div>
           <el-button type="primary" size="small" :disabled="isAnyDirectorGenerating" :loading="directorGenerating" @click="onDirectorAgentGenerate(latestDirectorRun.id)">继续失败任务</el-button>
@@ -1066,7 +1066,7 @@
                   v-model="sbPromptH3SnapshotText"
                   type="textarea"
                   :rows="10"
-                  placeholder="三阶段会在二阶门禁通过后按官方 MiniMax-H3 SKILL 编译标准英文提示词；也可以直接在此手工微调并保存（手工修改后将锁定，不被自动重编覆盖，直到点击“重新编译 H3 提示词”）。"
+                  placeholder="生成视频时自动编译。也可以在此编译预览，或编辑并保存提示词。"
                 />
               </div>
             </div>

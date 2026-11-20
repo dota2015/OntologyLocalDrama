@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { compileDramaSemanticPackage } = require('../ontology/semanticPackage');
 
-const VERSION = 1;
+const VERSION = 2;
 const hash = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 function ensureTable(db) {
   db.exec(`CREATE TABLE IF NOT EXISTS director_checkpoints (
@@ -43,24 +43,39 @@ function fingerprint(db, episodeId, cfg) {
     rules: hash(codeFiles),
   };
 }
-function assertCompatible(saved, current, state = null, db = null, episodeId = null) {
+function publishedRows(db, episodeId) {
+  return db.prepare('SELECT * FROM storyboards WHERE episode_id=? AND deleted_at IS NULL ORDER BY storyboard_number,id').all(episodeId);
+}
+
+function rowVersions(rows) {
+  return rows.map(row => ({ id: row.id, number: row.storyboard_number, hash: hash(row) }));
+}
+
+function assertCompatible(saved, current, state, db, episodeId, resume = false) {
   const labels = { script: '剧本', assets: '角色/场景/道具', settings: '生成配置', published: '已发布分镜', rules: '导演规则或提示词版本' };
-  const changed = Object.keys(current).filter(k => {
-    if (k === 'published' && saved[k] !== current[k]) {
-      // If Stage 1 completed in this checkpoint, the storyboards in DB may already be
-      // the ones created by this task. If their IDs match stage1Storyboards, they belong to this task.
-      if (state?.stage1Complete && Array.isArray(state?.stage1Storyboards) && state.stage1Storyboards.length > 0 && db && episodeId) {
-        try {
-          const currentIds = db.prepare('SELECT id FROM storyboards WHERE episode_id=? AND deleted_at IS NULL ORDER BY storyboard_number ASC').all(episodeId).map(s => s.id);
-          const stage1Ids = state.stage1Storyboards.map(s => s.id);
-          if (currentIds.length === stage1Ids.length && JSON.stringify(currentIds) === JSON.stringify(stage1Ids)) {
-            return false;
-          }
-        } catch (_) {}
-      }
+  const changed = Object.keys(current).filter(k => saved[k] !== current[k]);
+  if (state?.rowVersions && db) {
+    const rows = publishedRows(db, episodeId);
+    const versions = rowVersions(rows);
+    const baseline = state.rowVersions;
+    const sameRoster = baseline.length === versions.length && versions.every((v, i) =>
+      v.id === baseline[i].id && v.number === baseline[i].number);
+    if (!sameRoster) throw new Error('分镜数量或顺序已变化，请按当前分镜重新规划');
+    const invalid = new Set();
+    versions.forEach((v, i) => {
+      if (v.hash === baseline[i].hash) return;
+      invalid.add(v.id);
+      if (i > 0) invalid.add(versions[i - 1].id);
+      if (i + 1 < versions.length) invalid.add(versions[i + 1].id);
+    });
+    if (invalid.size && !resume) throw new Error('执行期间分镜已编辑，已保留人工修改。点击继续即可按最新分镜恢复。');
+    if (resume && invalid.size) {
+      state.enrichedShots = (state.enrichedShots || []).filter(shot => !invalid.has(shot.id));
+      state.rowVersions = versions;
     }
-    return saved[k] !== current[k];
-  });
+    const index = changed.indexOf('published');
+    if (index >= 0) changed.splice(index, 1);
+  }
   if (changed.length) throw new Error(`无法继续旧任务：${changed.map(k => labels[k]).join('、')}已变化。检查点已保留，请选择重新生成，避免混用不同版本的数据。`);
 }
 function requireResume(db, taskId, episodeId, cfg) {
@@ -72,7 +87,7 @@ function requireResume(db, taskId, episodeId, cfg) {
   if (!saved) throw new Error('此旧任务没有断点记录，无法直接续跑；请重新生成，新任务将自动保存断点');
   if (saved.version !== VERSION || saved.episode_id !== Number(episodeId)) throw new Error('检查点版本或剧集不匹配，请重新生成');
   if (saved.state.published) throw new Error('此任务分镜已经发布，请刷新页面，不能重复发布');
-  assertCompatible(saved.fingerprint, fingerprint(db, episodeId, cfg), saved.state, db, episodeId);
+  assertCompatible(saved.fingerprint, fingerprint(db, episodeId, cfg), saved.state, db, episodeId, true);
   return saved;
 }
 function open(db, taskId, episodeId, cfg, options, resumeId) {
@@ -103,13 +118,16 @@ function open(db, taskId, episodeId, cfg, options, resumeId) {
         event.payload == null ? null : JSON.stringify(event.payload), new Date().toISOString());
   };
   save();
-  return { state, save, record, assertCurrent() { assertActive(); assertCompatible(initial, fingerprint(db, episodeId, cfg), state, db, episodeId); } };
+  return { state, save, record,
+    capturePublished() { state.rowVersions = rowVersions(publishedRows(db, episodeId)); save(); },
+    assertCurrent() { assertActive(); assertCompatible(initial, fingerprint(db, episodeId, cfg), state, db, episodeId); } };
 }
 function summary(db, taskId) {
   ensureTable(db);
   const s = db.prepare(`SELECT json_extract(state_json,'$.published') AS published,
     json_extract(state_json,'$.stage') AS stage, json_extract(state_json,'$.nextBatch') AS completed_batches,
-    json_array_length(state_json,'$.shots') AS completed_shots,
+    json_array_length(state_json,'$.enrichedShots') AS completed_shots,
+    json_array_length(state_json,'$.stage1Storyboards') AS base_shots,
     json_extract(state_json,'$.resumed_from') AS resumed_from,
     json_extract(state_json,'$.currentShot') AS current_shot,
     json_extract(state_json,'$.reflectionRound') AS reflection_round,

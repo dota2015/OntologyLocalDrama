@@ -68,7 +68,7 @@ test('directorTwoStageEnrichment: stage-two whitelist carries the full drama cas
     // visible to the Agent; a cropped whitelist is what made it guess 28.
     const whitelistLine = received.input.split('\n').find((line) => line.startsWith('【本体资产白名单】'));
     assert.ok(whitelistLine && whitelistLine.includes('"id":26'), `whitelist must carry the full cast: ${whitelistLine}`);
-    assert.ok(received.input.includes('offscreen=[27]'), 'stage-two prompt must carry the locked offscreen participants');
+    assert.ok(received.input.includes('画外 [27]'), 'stage-two prompt must carry the locked offscreen participants');
   } finally {
     agentsRuntime.runAgent = originalRunAgent;
   }
@@ -83,7 +83,7 @@ test('directorTwoStageEnrichment: execution slots schema physically allows offsc
   assert.deepEqual([...modes].sort(), ['present_offscreen', 'remote_voice']);
 });
 
-test('directorTwoStageEnrichment: without a stage-one semantic contract, stage two may author offscreen participants', async () => {
+test('directorTwoStageEnrichment: stage two may redistribute declared participants but cannot invent an offscreen speaker', async () => {
   const originalRunAgent = agentsRuntime.runAgent;
   let received;
   agentsRuntime.runAgent = async (_db, _log, options) => {
@@ -120,9 +120,7 @@ test('directorTwoStageEnrichment: without a stage-one semantic contract, stage t
       error = err;
     }
     assert.ok(error, 'incomplete mock contract must still be rejected overall');
-    assert.ok(received.input.includes('offscreen 阶段一未声明、未锁定'), 'prompt must tell the Agent offscreen is authorable when stage one never declared it');
-    assert.equal(error.message.includes('offscreen_characters 应为 []'), false, `offscreen must not be locked to []: ${error.message}`);
-    assert.equal(error.message.includes('未出现在任何人物清单'), false, `declared offscreen speaker must satisfy the speaker gate: ${error.message}`);
+    assert.match(error.message, /新增 ID \[27\]/);
   } finally {
     agentsRuntime.runAgent = originalRunAgent;
   }

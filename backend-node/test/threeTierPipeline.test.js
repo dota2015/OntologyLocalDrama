@@ -225,14 +225,15 @@ describe('Three-Tier Architectural Evolution: Agent First, Ontology Gatekeeper, 
       assert.ok(violations.some((v) => v.rule === 'INVARIANT_LONG_TAKE_CONTINUATION_EXECUTION_CONFLICT'));
     });
 
-    it('Rule 9: Rejects mid-shot wardrobe mutation (单镜包含换装变身描写)', () => {
+    it('Rule 9: Checks declared first and last frame wardrobe IDs', () => {
       const shot = {
         shot_number: 9,
-        action: '苏凤仪突然换上一身黑色劲装，迅速拔剑迎战',
+        character_visuals: [{ character_id: 1, wardrobe_id: 2 }],
+        last_frame_visuals: [{ character_id: 1, wardrobe_id: 3 }],
         semantic_slots: {},
       };
       const violations = checkCrossSlotInvariants([shot]);
-      const v = violations.find(x => x.rule === 'INVARIANT_MID_SHOT_WARDROBE_MUTATION');
+      const v = violations.find(x => x.rule === 'INVARIANT_SAME_SHOT_MULTIPLE_WARDROBES');
       assert.ok(v, 'Should detect mid-shot wardrobe change');
     });
 

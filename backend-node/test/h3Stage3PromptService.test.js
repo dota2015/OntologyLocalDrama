@@ -218,3 +218,52 @@ test('validateOfficialH3Prompt normalizes dialogue punctuation variations (curve
   const result = stage3.validateOfficialH3Prompt(promptWithStraightQuotes, spec);
   assert.equal(result.valid, true, `Validation should pass with straight quotes: ${result.errors.join('; ')}`);
 });
+
+test('timeline performance continues across segments and preserves repeated speech exactly as scripted', (t) => {
+  const db = setupDb(t);
+  const shot = db.prepare('SELECT * FROM storyboards WHERE id=1267').get();
+  const spec = stage3.buildStage3PromptSpec(db, shot);
+  const timeline = spec.authoritative_contract.video_slots.shots_timeline;
+  timeline.push({ ...timeline[0], camera_transition: 'continue', timestamp: '00:02.000' });
+  const skeleton = stage3.buildDeterministicStage3Skeleton(spec);
+  assert.match(skeleton, /Continue same take/);
+  assert.equal(skeleton.includes('[Shot 2]'), false);
+  assert.equal(skeleton.match(/<d>/g).length, 1);
+  const line = spec.spoken_lines[0].text;
+  const duplicate = VALID_STAGE3_PROMPT.replace(line, line + line);
+  assert.equal(stage3.validateOfficialH3Prompt(duplicate, spec).valid, false);
+  spec.spoken_lines[0].text += line;
+  assert.equal(stage3.validateOfficialH3Prompt(duplicate, spec).valid, true);
+});
+
+test('resume after an in-place edit invalidates only the edited shot and its continuity neighbors', (t) => {
+  const db = setupDb(t);
+  const checkpoint = require('../src/services/directorCheckpoint');
+  for (let n = 2; n <= 5; n++) {
+    db.prepare('INSERT INTO storyboards (episode_id, storyboard_number, created_at, updated_at) VALUES (10,?,?,?)').run(n, '', '');
+  }
+  for (const id of ['original', 'retry']) {
+    db.prepare("INSERT INTO async_tasks (id,type,resource_id,status,created_at,updated_at) VALUES (?,'director_storyboard_generation','10','processing','','')").run(id);
+  }
+  const original = checkpoint.open(db, 'original', 10, {}, {});
+  const rows = db.prepare('SELECT * FROM storyboards ORDER BY storyboard_number').all();
+  Object.assign(original.state, { stage1Complete: true, stage1Storyboards: rows, enrichedShots: rows });
+  original.capturePublished();
+  db.prepare("UPDATE storyboards SET action='人工修改' WHERE storyboard_number=3").run();
+  assert.throws(() => original.assertCurrent(), /已编辑/);
+  db.prepare("UPDATE async_tasks SET status='failed' WHERE id='original'").run();
+  const resumed = checkpoint.open(db, 'retry', 10, {}, {}, 'original');
+  assert.deepEqual(resumed.state.enrichedShots.map(row => row.storyboard_number), [1, 5]);
+  resumed.assertCurrent();
+});
+
+test('a manual edit during prompt compilation survives the pending model response', async (t) => {
+  const db = setupDb(t);
+  const shot = db.prepare('SELECT * FROM storyboards WHERE id=1267').get();
+  t.mock.method(agentsRuntime, 'runAgent', async () => {
+    db.prepare("UPDATE storyboards SET h3_prompt_manual=1,h3_prompt_snapshot='手动版本' WHERE id=1267").run();
+    return VALID_STAGE3_PROMPT;
+  });
+  await assert.rejects(() => stage3.ensureShotH3PromptCompiled(db, silentLog, shot), /已更新/);
+  assert.equal(db.prepare('SELECT h3_prompt_snapshot FROM storyboards WHERE id=1267').get().h3_prompt_snapshot, '手动版本');
+});

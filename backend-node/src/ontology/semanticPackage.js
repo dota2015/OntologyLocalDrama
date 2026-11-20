@@ -84,10 +84,10 @@ function compileDramaSemanticPackage(db, episodeId) {
       state: 'normal',
       voice,
       identityAnchors: anchors,
-      archetype: anchors?.archetype || 'hidden_tycoon',
+      archetype: anchors?.archetype || null,
       surfaceIdentity: anchors?.surface_identity || '',
       hiddenIdentity: anchors?.hidden_identity || '',
-      powerStatus: anchors?.power_status || 'suppressed',
+      powerStatus: anchors?.power_status || null,
     });
   });
 
@@ -273,11 +273,11 @@ function compileDramaSemanticPackage(db, episodeId) {
       const relLines = relations.filter(r => r.type === 'REL_CHARACTER_SOCIAL').map(r => `- ${r.properties?.from_character || r.from_id} ➔ [${r.properties?.relation_kind || '恩怨'}] ➔ ${r.properties?.to_character || r.to_id}${r.properties?.description ? ` (${r.properties.description})` : ''}`).join('\n');
       const beatLines = storedBeats.map(b => `- 节拍${b.beat_number} [${b.beat_type}]: 张力${b.tension_level}星 | 主情绪:${b.dominant_emotion || '强冲突'} | ${b.event_summary || ''}`).join('\n');
 
-      return `【短剧本体世界观】剧名：${drama.title || '短剧'} | 时代：${dramaEra} | 风格：${drama.style || '快节奏爽剧'}
+      return `【短剧本体世界观】剧名：${drama.title || '短剧'} | 时代：${dramaEra} | 风格：${drama.style || '依剧本'}
 【短剧人物关系网与身份反差】
 ${relLines || '(无预设关系边，依剧情推演)'}
-【本集爽点节拍链（Beats）】
-${beatLines || '(依短剧黄金钩子-施压-打脸-反转-卡点节奏推演)'}
+【本集剧情节拍（Beats）】
+${beatLines || '(依本集事件、选择与后果规划)'}
 【角色身份选择】人物身份以 ID 为准，名字不是唯一键。优先复用本集已关联人物；同名多个 ID 时必须核对本集选择、外貌与剧情身份，不能在不同镜头随机切换 ID。\n【可用角色本体目录】\n${charLines || '(暂无)'}
 【可用场景空间地标】\n${sceneLines || '(暂无)'}
 【可用短剧道具与打脸信物】\n${propLines || '(暂无)'}`;
