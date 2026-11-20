@@ -11,6 +11,8 @@ function normalizeText(value) {
 }
 
 function compareSpeech(expected, transcript) {
+  // Qwen3-ASR's vLLM endpoint can return its language header inside text.
+  transcript = String(transcript || '').replace(/^language [^<>\r\n]+<asr_text>\s*/iu, '').trim();
   const script = normalizeText(expected);
   const heard = normalizeText(transcript);
   const isSubsequence = (a, b) => {

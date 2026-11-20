@@ -274,4 +274,6 @@ test('ASR flags inserted, missing and repeated words including in silent shots',
   assert.equal(compareSpeech('马上马上。', '马上').missing_expected_dialogue, true);
   assert.equal(compareSpeech('马上马上。', '马上，马上').passed, true);
   assert.equal(compareSpeech('', '马上').unexpected_speech, true);
+  assert.equal(compareSpeech('马上', 'language Chinese<asr_text>马上').passed, true);
+  assert.equal(compareSpeech('', 'language None<asr_text>').passed, true);
 });
