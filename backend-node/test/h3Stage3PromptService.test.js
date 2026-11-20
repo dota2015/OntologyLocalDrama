@@ -277,3 +277,47 @@ test('ASR flags inserted, missing and repeated words including in silent shots',
   assert.equal(compareSpeech('马上', 'language Chinese<asr_text>马上').passed, true);
   assert.equal(compareSpeech('', 'language None<asr_text>').passed, true);
 });
+
+test('a manual draft stays intact when its scene reference changes and can be reviewed against the new asset', async t => {
+  const db = setupDb(t);
+  const load = () => db.prepare('SELECT * FROM storyboards WHERE id=1267').get();
+  const saveReview = () => storyboardService.updateStoryboard(db, silentLog, 1267, {
+    h3_prompt_manual: true, h3_prompt_snapshot: VALID_STAGE3_PROMPT,
+  });
+  saveReview();
+  db.prepare("UPDATE scenes SET local_path='replacement.png' WHERE id=38").run();
+  await assert.rejects(stage3.ensureShotH3PromptCompiled(db, silentLog, load()), /复核（参考素材）/);
+  assert.equal(load().h3_prompt_snapshot, VALID_STAGE3_PROMPT);
+  saveReview();
+  assert.equal((await stage3.ensureShotH3PromptCompiled(db, silentLog, load())).source, 'manual_locked');
+});
+
+test('reverse shots use each visible actor’s subject number with all their cards retained', t => {
+  const db = setupDb(t);
+  const shot = db.prepare('SELECT * FROM storyboards WHERE id=1267').get();
+  const spec = stage3.buildStage3PromptSpec(db, shot, { refs: [
+    { type: 'scene', id: 38 }, { type: 'character_sheet', character_id: 26 },
+    { type: 'wardrobe', character_id: 26 }, { type: 'character', character_id: 27 },
+  ] });
+  const timeline = spec.authoritative_contract.video_slots.shots_timeline;
+  timeline.push({ camera: { shot_change: true }, visible_characters: [{ character_id: 27 }] });
+  const prompt = VALID_STAGE3_PROMPT.replace('gear in <Picture 2>.', 'gear in <Picture 2> and <Picture 3>.\n<Subject 3> is the listener in <Picture 4>.')
+    .replace('\noverall_soundscape:', '\n[Shot 2] <Subject 3> turns to the doorway.\noverall_soundscape:');
+  assert.deepEqual(stage3.validateOfficialH3Prompt(prompt, spec).errors, []);
+  const wrong = prompt.replace('[Shot 2] <Subject 3>', '[Shot 2] <Subject 2>');
+  assert.equal(stage3.validateOfficialH3Prompt(wrong, spec).valid, false);
+  const wrongCard = prompt.replace('and <Picture 3>.', 'and <Picture 4>.');
+  assert.equal(stage3.validateOfficialH3Prompt(wrongCard, spec).valid, false);
+});
+
+test('an unobservable outcome or unavailable vision provider cannot pass the visual review', async t => {
+  const { auditVisibleOutcome } = require('../src/services/videoQualityGate');
+  const client = require('../src/services/aiClient');
+  const vision = t.mock.method(client, 'generateTextWithVision', async () => JSON.stringify({ status: 'mismatch', evidence: '书仍然打开。' }));
+  const mismatch = await auditVisibleOutcome(null, silentLog, '书已合拢', 'tail.png');
+  assert.equal(mismatch.status, 'mismatch');
+  assert.equal(mismatch.frame, 'tail_frame');
+  assert.equal(mismatch.target, '书已合拢');
+  vision.mock.mockImplementation(async () => { throw new Error('offline'); });
+  assert.equal((await auditVisibleOutcome(null, silentLog, '书已合拢', 'tail.png')).status, 'unverified');
+});

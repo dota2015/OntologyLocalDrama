@@ -5,9 +5,10 @@ const path = require('path');
 const crypto = require('crypto');
 const { compileActionAtom } = require('../ontology/videoSlots');
 const agentsRuntime = require('./agentsRuntime');
+const { referenceCharacterId, groupSubjects, resolveRequiredReference } = require('./h3ReferenceBindings');
 const angleService = require('./angleService');
 const wardrobeService = require('./wardrobeService');
-const { resolveH3Mode, storedManualPlan, deriveManualRef2vaReferences } = require('./h3ModeResolver');
+const { resolveH3Mode, resolveH3SubmissionPlan, deriveManualRef2vaReferences } = require('./h3ModeResolver');
 const { resolvedStreamStyleFromDrama } = require('../utils/dramaStyleMerge');
 
 const SKILL_DIR = path.resolve(__dirname, '../skills/h3-prompt-writing');
@@ -128,17 +129,18 @@ function buildPictureBindings({ mode, refs = [], firstFramePresent = false, last
 
   return (Array.isArray(refs) ? refs : []).map((ref, idx) => {
     const type = String(ref?.type || ref?.kind || 'context').toLowerCase();
-    const charId = ref?.character_id != null ? Number(ref.character_id) : (type === 'character' || type === 'character_sheet' || type === 'character_outfit' ? Number(ref?.id) : null);
+    const charId = referenceCharacterId(ref);
     const catalogChar = Number.isFinite(charId) && charId > 0 ? charAppearanceById.get(charId) : null;
     const wardrobeChar = Number.isFinite(charId) && charId > 0 ? wardrobeByCharId.get(charId) : null;
     return {
       tag: `<Picture ${idx + 1}>`,
-      type: type === 'character_sheet' || type === 'character_outfit' ? 'character' : type,
+      type: charId ? 'character' : type,
       role: ref?.kind || type,
       id: ref?.id != null ? Number(ref.id) : (Number.isFinite(charId) ? charId : null),
       character_id: Number.isFinite(charId) && charId > 0 ? charId : null,
-      name: String(ref?.name || catalogChar?.name || '').trim(),
-      appearance: String(wardrobeChar?.description || wardrobeChar?.appearance || ref?.appearance || catalogChar?.appearance || '').trim(),
+      name: String(catalogChar?.name || ref?.name || '').trim(),
+      reference_label: String(ref?.name || '').trim(),
+      appearance: String(wardrobeChar?.description || wardrobeChar?.appearance || ref?.appearance || ref?.description || catalogChar?.appearance || '').trim(),
     };
   });
 }
@@ -158,14 +160,14 @@ function buildStage3PromptSpec(db, shot, context = {}) {
   })();
   const clothing = context.clothing || (db && shot?.id ? wardrobeService.getShot(db, shot.id) : { characters: [] });
 
-  const plan = context.executionPlan || resolveH3Mode(shot, context.manualPlan || {});
+  const plan = context.executionPlan || (db && dramaId ? resolveH3SubmissionPlan(db, dramaId, shot) : resolveH3Mode(shot, context.manualPlan || {}));
   const mode = plan?.mode === 'fl2va' ? 'fl2va' : 'ref2va';
   const duration = Math.max(4, Math.min(30, Math.round(Number(context.duration || semantic.shot_duration || shot?.duration || videoSlots?.timing?.duration || 5))));
   const executionBackend = String(semantic.execution_backend || videoSlots.execution_backend || (duration >= 9 ? 'h3_continuum' : 'h3_single'));
   const lightingStyle = String(shot?.lighting_style || videoSlots?.lighting_style || '').trim();
   const lightingDesc = context.lightingDesc || (lightingStyle ? angleService.lightingToPrompt(lightingStyle) : '');
   const style = String(context.style || resolvedStreamStyleFromDrama('', dramaRow) || dramaRow.style || '').trim();
-  const aspectRatio = String(context.aspect_ratio || context.aspectRatio || '16:9').trim();
+  const aspectRatio = String(context.aspect_ratio || context.aspectRatio || parseJson(dramaRow.metadata, {})?.aspect_ratio || '16:9').trim();
 
   const rawRefs = context.refs
     || (mode === 'ref2va'
@@ -174,7 +176,7 @@ function buildStage3PromptSpec(db, shot, context = {}) {
         : (db && dramaId ? deriveManualRef2vaReferences(db, dramaId, shot) : []))
       : []);
   const firstFramePresent = mode === 'fl2va'
-    ? Boolean(context.firstFramePresent ?? (context.anchors?.first || shot?.first_frame_image_id || shot?.local_path || shot?.image_url))
+    ? Boolean(context.firstFramePresent ?? (context.anchors?.first || plan?.first_frame_policy === 'inherit_tail' || shot?.first_frame_image_id || shot?.local_path || shot?.image_url))
     : false;
   const lastFramePresent = mode === 'fl2va'
     ? Boolean(context.lastFramePresent ?? (context.anchors?.last || (plan?.last_frame_policy === 'generate_tail' && (shot?.last_frame_image_id || shot?.last_frame_local_path || shot?.last_frame_image_url))))
@@ -218,6 +220,7 @@ function buildStage3PromptSpec(db, shot, context = {}) {
   const { text: speechText, ...speechPlan } = semantic.speech_plan || {};
   const { dialogue_content: projectedText, ...voicePlan } = videoSlots.audio_lip_sync || {};
   const authoritativeContract = {
+    expected_visible_end_state: String(shot?.result || '').trim(),
     scene: sceneRow ? {
       id: Number(sceneRow.id),
       location: String(sceneRow.location || sceneRow.name || shot?.location || '').trim(),
@@ -272,7 +275,7 @@ function buildStage3PromptSpec(db, shot, context = {}) {
   };
 
   return {
-    version: 'h3_stage3_v2',
+    version: 'h3_stage3_v3',
     storyboard_id: Number(shot?.id || 0) || null,
     shot_number: Number(shot?.storyboard_number || shot?.shot_number || 1),
     mode,
@@ -314,19 +317,10 @@ function buildDeterministicStage3Skeleton(spec) {
       subjectLines.push(`- ${pb.tag}: ${pb.role} (${pb.description || ''})`);
     }
   } else {
-    for (let i = 0; i < picBindings.length; i++) {
-      const pb = picBindings[i];
-      const subjTag = `<Subject ${i + 1}>`;
-      if (pb.type === 'scene') {
-        subjectLines.push(`- ${subjTag}: Scene environment referenced from ${pb.tag} (${pb.name || contract.scene?.location || 'Setting'})`);
-      } else if (pb.type === 'character') {
-        const outfit = pb.appearance ? `wearing ${pb.appearance}` : 'in signature drama costume';
-        subjectLines.push(`- ${subjTag}: Character ${pb.name || ''} (${outfit}) referenced from ${pb.tag}`);
-      } else if (pb.type === 'prop') {
-        subjectLines.push(`- ${subjTag}: Prop ${pb.name || ''} (${pb.appearance || 'key drama token'}) referenced from ${pb.tag}`);
-      } else {
-        subjectLines.push(`- ${subjTag}: Asset ${pb.name || pb.role || ''} referenced from ${pb.tag}`);
-      }
+    for (const subject of groupSubjects(picBindings)) {
+      const first = subject.pictures[0];
+      const sources = subject.pictures.map(p => `${p.tag} (${[p.reference_label, p.role, p.appearance].filter(Boolean).join(', ')})`);
+      subjectLines.push(`- ${subject.tag}: ${first.type} ${first.name || ''} referenced from ${sources.join(' and ')}`);
     }
   }
 
@@ -335,6 +329,7 @@ function buildDeterministicStage3Skeleton(spec) {
   const nonSpeakingModes = new Set(['offscreen_voiceover', 'narration', 'silent_ambient', 'bgm_only']);
 
 
+  const actorTags = new Map(groupSubjects(picBindings).filter(s => s.characterId).map(s => [s.characterId, s.tag]));
   let cameraShot = 0;
   const shotTimelineLines = timeline.map((seg, idx) => {
     const newAngle = idx === 0 || seg.camera?.shot_change === true;
@@ -346,12 +341,12 @@ function buildDeterministicStage3Skeleton(spec) {
     const camDesc = `Camera: ${cam.shot_type || 'medium_shot'}, movement: ${cam.movement || 'static'}, horizontal angle: ${cam.angle_h || 'eye_level'}, vertical angle: ${cam.angle_v || 'level'}`;
 
     const voiceMode = seg.audio_lip_sync?.mode || semantic.audio_lip_sync;
-    const inFrameSpeech = !nonSpeakingModes.has(voiceMode) && !semantic.sound_plan?.is_silent;
+    const inFrameSpeech = !nonSpeakingModes.has(voiceMode) && seg.audio_lip_sync?.speaker_in_frame === true && seg.audio_lip_sync?.has_speech && !semantic.sound_plan?.is_silent;
     const charLines = [];
     const trajectories = Array.isArray(seg.character_trajectories) ? seg.character_trajectories : [];
     if (trajectories.length > 0) {
       for (const traj of trajectories) {
-        const charName = traj.character_name || traj.name || (traj.character_id ? `Character ID ${traj.character_id}` : 'Character');
+        const charName = actorTags.get(Number(traj.character_id)) || traj.character_name || traj.name || (traj.character_id ? `Character ID ${traj.character_id}` : 'Character');
         const pos = traj.screen_position || 'center';
         const depth = traj.depth_layer || 'midground';
         const facing = traj.facing || 'front';
@@ -548,24 +543,29 @@ function validateOfficialH3Prompt(rawPrompt, spec) {
       errors.push('Ref2VA detailed_description 未引用任何已定义的 <Subject N> 或 <Picture N>（参考素材悬空）');
     }
 
-    // Ref2VA 全画内可见角色 <Subject N> 覆盖校验
-    const charBindings = (spec.picture_bindings || [])
-      .map((pb, idx) => ({ ...pb, index: idx + 1 }))
-      .filter((pb) => pb.type === 'character');
-    const charGroups = new Map();
-    for (const cb of charBindings) {
-      const key = (cb.character_id != null && cb.character_id > 0) ? `id:${cb.character_id}` : (cb.name || `idx:${cb.index}`);
-      if (!charGroups.has(key)) charGroups.set(key, []);
-      charGroups.get(key).push(cb);
+    const subjects = groupSubjects(spec.picture_bindings);
+    // Parse the official subject declaration tags only. Audio references can mention subjects separately.
+    const definitions = [...subjDefs.matchAll(/^\s*(?:[-*]\s*)?(<Subject \d+>)([^\n]*)/gim)];
+    const tags = new Set(subjects.map(s => s.tag));
+    if ([...prompt.matchAll(/<Subject \d+>/g)].some(m => !tags.has(m[0]))) errors.push('存在未绑定参考图的 Subject 编号');
+    for (const subject of subjects) {
+      const declarations = definitions.filter(match => match[1] === subject.tag);
+      const actual = new Set(declarations.flatMap(match => match[2].match(/<Picture \d+>/g) || []));
+      if (declarations.length !== 1 || actual.size !== subject.pictures.length || subject.pictures.some(p => !actual.has(p.tag))) {
+        errors.push(`${subject.tag} 需要单独一行定义并绑定 ${subject.pictures.map(p => p.tag).join('、')}`);
+      }
     }
-    for (const [, bindings] of charGroups) {
-      const covered = bindings.some((b) => {
-        const regex = new RegExp(`<(?:Subject|Picture)\\s+${b.index}>`, 'i');
-        return mainBody && regex.test(mainBody);
-      });
-      if (!covered) {
-        const firstBinding = bindings[0];
-        errors.push(`Ref2VA detailed_description 缺少画内可见角色 <Subject ${firstBinding.index}> / <Picture ${firstBinding.index}>（${firstBinding.name || '角色'}）的描述与引用`);
+    for (const subject of subjects) {
+      if (subject.characterId && !mainBody.includes(subject.tag)) errors.push(`主描述缺少角色 ${subject.tag}`);
+    }
+    const shots = mainBody.split(/\[Shot \d+\]/g).slice(1);
+    let cameraIndex = -1;
+    for (const [index, segment] of timeline.entries()) {
+      if (!index || segment.camera?.shot_change === true) cameraIndex++;
+      for (const actor of segment.visible_characters || []) {
+        const id = Number(actor?.character_id ?? actor?.id ?? actor);
+        const subject = subjects.find(s => s.characterId === id);
+        if (subject && !shots[cameraIndex]?.includes(subject.tag)) errors.push(`[Shot ${cameraIndex + 1}] 需要引用入画角色 ${id} 的 ${subject.tag}`);
       }
     }
   } else if (spec.mode === 'fl2va' && spec.firstFramePresent && !/<Picture\s+1>/i.test(prompt)) {
@@ -599,6 +599,8 @@ ${spec.mode === 'fl2va'
 2. Write every section in natural, concrete, filmable English prose describing composition, subjects, environment, lighting, camera movement, and audio timing. Never copy raw Chinese JSON keys, field labels, state enums (e.g. away_from_camera, closed, neutral, center_background), or engineering/TTS instructions into the prompt.
 3. Preserve original language ONLY inside <d>[Chinese] ...</d> (or <d>[English] ...</d>) for spoken lines and double quotes "..." for visibly rendered scene lettering. speech_range indexes the concatenated spoken_lines in Unicode characters [start,end). Every line in spoken_lines MUST appear verbatim inside <d>...</d> in the main visual description, and NEVER be repeated inside overall_soundscape or non_diegetic_music.
 4. Bind ONLY the exact tags given in picture_bindings (<Picture 1..N>) and audio_bindings (<Audio 1..K>). Follow ref-en.txt §2.1 & §2.2: in Ref2VA mode, define scene/environment, character, and prop image references as <Subject N> in subject_definitions citing their <Picture N>, track them consistently through summary, retention_analysis, and detailed_description (never leave the scene <Picture 1> unused inside detailed_description).
+Use exactly one definition line starting with each assigned <Subject N> and cite all and only its assigned pictures there. A costume or multiview sheet of the same actor is the same subject. Cite each visible actor by their subject tag in each camera shot.
+End on the expected_visible_end_state when provided.
 5. Use a new shot marker only for an explicit camera cut. Preserve exact continuity, camera framing/movement and scheduled cuts ([Shot 1], [Shot 2] At MM:SS.mmm, ...), duration (${spec.duration_seconds}s), and aspect ratio (${spec.aspect_ratio}) from authoritative_contract without inventing unapproved characters, extra shots, or contradicting camera movements.
 6. Output ONLY the final formatted H3 prompt text itself—no markdown code fences, no preamble, no explanations.`;
 
@@ -659,6 +661,26 @@ function persistCompiledPrompt(db, shotId, prompt, fingerprint, manual = false) 
   }
 }
 
+// Store component digests so a manual draft can identify which input needs review.
+function manualPromptVersion(db, shot, spec = buildStage3PromptSpec(db, shot)) {
+  const dramaId = db && shot.episode_id ? db.prepare('SELECT drama_id FROM episodes WHERE id=?').get(shot.episode_id)?.drama_id : null;
+  const references = dramaId && spec.mode === 'ref2va' ? resolveH3SubmissionPlan(db, dramaId, shot).references : [];
+  const media = references.map(ref => {
+    try { return resolveRequiredReference(db, dramaId, shot, ref); }
+    catch { return null; } // A later asset assignment must invalidate this draft.
+  });
+  const fields = {
+    '画面规格': [spec.mode, spec.duration_seconds, spec.aspect_ratio, spec.firstFramePresent, spec.lastFramePresent],
+    '执行槽位': spec.authoritative_contract,
+    '台词': spec.spoken_lines.map(l => [l.kind, l.text]),
+    '画风': spec.visual_style,
+    '参考素材': [spec.picture_bindings.map(p => [p.tag, p.type, p.character_id, p.id, p.name, p.appearance]),
+      references, media, ...(spec.mode === 'fl2va' ? [shot.first_frame_image_id, shot.last_frame_image_id,
+        shot.local_path, shot.image_url, shot.last_frame_local_path, shot.last_frame_image_url] : [])],
+  };
+  return Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, sha256(value)]));
+}
+
 async function ensureShotH3PromptCompiled(db, log, shot, context = {}) {
   const spec = buildStage3PromptSpec(db, shot, context);
   const fingerprint = computeH3PromptFingerprint(spec);
@@ -666,9 +688,15 @@ async function ensureShotH3PromptCompiled(db, log, shot, context = {}) {
   const manualLocked = Boolean(shot?.h3_prompt_manual);
 
   if (!context.forceRecompile && manualLocked && existingPrompt) {
+    const baseline = parseJson(shot.h3_prompt_fingerprint, {});
+    const current = manualPromptVersion(db, shot, spec);
+    const changed = Object.keys(current).filter(key => current[key] !== baseline?.[key]);
+    if (changed.length) throw new Error(`手工 H3 提示词需要复核（${changed.join('、')}）。请打开「编辑视频提示词」，勾选「已按当前分镜复核手工提示词」后保存，或点击重新编译。`);
+    const checked = validateOfficialH3Prompt(existingPrompt, spec);
+    if (!checked.valid) throw new Error(`手工 H3 提示词与当前合同不符：${checked.errors.join('；')}。请编辑后保存或重新编译。`);
     return {
       prompt: existingPrompt,
-      fingerprint: shot?.h3_prompt_fingerprint || fingerprint,
+      fingerprint: sha256([fingerprint, existingPrompt]),
       mode: spec.mode,
       source: 'manual_locked',
       manual: true,
@@ -706,6 +734,7 @@ async function ensureShotH3PromptCompiled(db, log, shot, context = {}) {
 }
 
 module.exports = {
+  manualPromptVersion,
   loadOfficialH3Skill,
   buildStage3PromptSpec,
   buildDeterministicStage3Skeleton,

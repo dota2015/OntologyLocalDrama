@@ -19,7 +19,7 @@ const {
 } = require('../src/ontology/extractionAgent');
 const aiClient = require('../src/services/aiClient');
 
-test('projectCanonicalShotContract: projects duration, execution_backend, character IDs, and sealed lips for non-speaking', () => {
+test('projectCanonicalShotContract: projects duration, execution_backend, character IDs, without rewriting opening performances', () => {
   // Case A: Long shot (>= 9s) -> h3_continuum, dialogue synced
   const shotA = {
     duration: 10,
@@ -36,7 +36,7 @@ test('projectCanonicalShotContract: projects duration, execution_backend, charac
       },
     },
     character_visuals: [
-      { character_id: 1, mouth_state: 'speaking' },
+      { character_id: 1, mouth_state: 'strictly_sealed' },
       { character_id: 2, mouth_state: 'speaking' }, // invalid for non-speaking listener
     ],
     video_slots: {
@@ -50,8 +50,8 @@ test('projectCanonicalShotContract: projects duration, execution_backend, charac
   assert.deepEqual(projectedA.characters, [1, 2]);
   assert.deepEqual(projectedA.background_characters, [3]);
   assert.equal(projectedA.video_slots.audio_lip_sync.dialogue_content, '你们今日对我的羞辱，日后必当百倍奉还！');
-  assert.equal(projectedA.character_visuals[0].mouth_state, 'speaking');
-  assert.equal(projectedA.character_visuals[1].mouth_state, 'strictly_sealed');
+  assert.equal(projectedA.character_visuals[0].mouth_state, 'strictly_sealed');
+  assert.equal(projectedA.character_visuals[1].mouth_state, 'speaking');
 
   // Case B: Short shot (< 9s) -> h3_single, silent ambient -> strictly_sealed
   const shotB = {
@@ -77,7 +77,7 @@ test('projectCanonicalShotContract: projects duration, execution_backend, charac
   const projectedB = projectCanonicalShotContract(shotB);
   assert.equal(projectedB.duration, 4);
   assert.equal(projectedB.video_slots.execution_backend, 'h3_single');
-  assert.equal(projectedB.character_visuals[0].mouth_state, 'strictly_sealed');
+  assert.equal(projectedB.character_visuals[0].mouth_state, 'speaking');
   assert.equal(projectedB.video_slots.audio_lip_sync.dialogue_content, '');
 });
 
@@ -147,6 +147,7 @@ test('ensureDirectorExecutionSlots: participant conservation allows offscreen re
       speaker_name: '神秘人',
       speaker_in_frame: false,
       dialogue_content: '事情办得怎么样了？',
+      visible_characters_lip_state: 'strictly_sealed',
       lip_sync_rule: '画外音闭口',
     },
     speech_action_alignment: {
@@ -221,6 +222,7 @@ test('ensureDirectorExecutionSlots: participant conservation allows offscreen re
         speaker_name: '神秘人',
         speaker_in_frame: false,
         dialogue_content: '事情办得怎么样了？',
+        visible_characters_lip_state: 'strictly_sealed',
         lip_sync_rule: '画外音闭口',
       },
       shots_timeline: [baseSegment],
@@ -592,4 +594,32 @@ test('extractionAgent: incrementally upserts relations and saves beats per episo
     aiClient.generateText = originalGenerateText;
     db.close();
   }
+});
+
+test('consecutive single-speaker clips can advance the same narrative beat', () => {
+  const clips = ['甲：回去吗？', '乙：回去。'].map((dialogue, i) => ({ shot_number: i + 1, duration: 4, beat_id: 1, dialogue }));
+  assert.deepEqual(stageOnePlanningViolations(clips), []);
+  const errors = stageOnePlanningViolations([...clips, { ...clips[0], beat_id: 2 }, clips[0]]);
+  assert.ok(errors.some(v => v.rule === 'INVARIANT_STAGE1_BEAT_GROUP'));
+});
+
+test('mouth synchronization follows the active speaking segment, including a silent opening', () => {
+  const { validateVideoSlots } = require('../src/ontology/videoSlots');
+  const segments = [
+    { mode: 'silent_ambient', speaker_in_frame: false, dialogue_content: '' },
+    { mode: 'in_frame_dialogue', speaker_in_frame: true, dialogue_content: '到了。' },
+    { mode: 'offscreen_voiceover', speaker_in_frame: false, dialogue_content: '走吧。' },
+  ].map((audio, i) => ({
+    duration: 2, timestamp: i * 2, audio_lip_sync: audio, visible_characters: [1, 2],
+    character_trajectories: [1, 2].map(id => ({ character_id: id, mouth_state: i === 1 && id === 1 ? 'speaker_synced' : 'closed' })),
+    speech_action_alignment: { mode: 'concurrent', speaker_character_id: 1 },
+  }));
+  const slots = { performance_contract: 'structured_sync', timing: { duration: 6 }, shots_timeline: segments };
+  const check = () => validateVideoSlots({ duration: 6, semantic_slots: { speech_plan: { speaker_id: 1 } } }, slots)
+    .filter(item => ['INVARIANT_SEGMENT_MOUTH_CONFLICT', 'INVARIANT_SPEAKER_MOUTH_STATE_INVALID'].includes(item.rule));
+  assert.deepEqual(check(), []);
+  segments[0].character_trajectories[0].mouth_state = 'speaker_synced';
+  segments[1].character_trajectories[1].mouth_state = 'speaker_synced';
+  segments[2].character_trajectories[0].mouth_state = 'speaker_synced';
+  assert.equal(check().length, 3);
 });

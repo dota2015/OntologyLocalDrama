@@ -67,9 +67,14 @@
             <div class="quality-audit-header">
               <span class="qa-title">🎥 视频抽帧质检 (首帧/中帧/尾帧)</span>
               <el-tag size="small" :type="data.quality_audit.passed ? 'success' : 'danger'">
-                {{ data.quality_audit.passed ? '质检通过' : '质量门禁警告' }}
+                {{ data.quality_audit.passed ? '媒体检查通过' : '媒体检查异常' }}
               </el-tag>
             </div>
+            <div>台词核对 · {{ data.quality_audit.asr?.status === 'completed' ? (data.quality_audit.asr.passed ? '一致' : '有出入') : '未验证' }}</div>
+            <div v-if="data.quality_audit.asr?.status === 'completed'">原文：{{ data.quality_audit.asr.expected || '无台词' }}　识别：{{ data.quality_audit.asr.transcript || '无台词' }}</div>
+            <div>片末状态 · {{ ({ observed: '尾帧可见', mismatch: '尾帧不符' })[data.quality_audit.outcome?.status] || '未验证' }}</div>
+            <div v-if="data.quality_audit.outcome?.target">预期：{{ data.quality_audit.outcome.target }}</div>
+            <div v-if="data.quality_audit.outcome?.evidence">尾帧观察：{{ data.quality_audit.outcome.evidence }}</div>
             <div v-if="data.quality_audit.summary" class="qa-summary">{{ data.quality_audit.summary }}</div>
             <div v-if="data.quality_audit.violations && data.quality_audit.violations.length" class="qa-violations">
               <div v-for="(v, i) in data.quality_audit.violations" :key="i" class="qa-violation-item">

@@ -269,8 +269,27 @@ async function auditGeneratedVideo(videoPath, shot = {}, options = {}) {
   };
 }
 
+async function auditVisibleOutcome(db, log, target, tailFrame) {
+  const result = { status: 'unverified', target: target || '', frame: 'tail_frame', evidence: '' };
+  if (!target || !tailFrame) return result;
+  try {
+    const raw = await require('./aiClient').generateTextWithVision(db, log, 'text',
+      JSON.stringify({ expected_visible_end_state: target }),
+      '对照提供的尾帧，判断片末可见状态。只依据可见证据；无法辨认、涉及运动过程、身份无法区分时选 unverified。输出 JSON 对象，status 为 observed、mismatch 或 unverified，evidence 用中文简述在图片中实际看到什么。',
+      { localAbsPath: tailFrame });
+    const review = JSON.parse(raw.trim().replace(/^```(?:json)?\s*|\s*```$/gi, ''));
+    if (['observed', 'mismatch', 'unverified'].includes(review?.status) && typeof review.evidence === 'string' && review.evidence.trim()) {
+      return { ...result, status: review.status, evidence: review.evidence };
+    }
+  } catch (error) {
+    log.warn('[成片验收] 尾帧核对未完成', { error: error.message });
+  }
+  return result;
+}
+
 module.exports = {
   probeVideoMetadata,
   extractKeyFrames,
   auditGeneratedVideo,
+  auditVisibleOutcome,
 };

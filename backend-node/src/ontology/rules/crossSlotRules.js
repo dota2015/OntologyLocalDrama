@@ -4,15 +4,13 @@
  * 存在任何歧义与冲突均输出结构化违规项 (Violations)，退回 ReAct Agent 修正。
  */
 
+const { MAX_VISIBLE_CHARACTERS, MAX_REFERENCE_IMAGES } = require('../../services/h3Limits');
 const BaseInvariantRule = require('./baseRule');
 const { shotSpeechTurns } = require('../../services/dialogueDubbingService');
 const { OFFSCREEN_PARTICIPATION_MODES } = require('../schema');
 
 const VALID_OFFSCREEN_MODES = new Set(Object.values(OFFSCREEN_PARTICIPATION_MODES));
 const SEALED_MOUTH_STATES = new Set(['closed', 'offscreen_sealed']);
-const CLOSE_DIALOGUE_FRAMINGS = new Set(['over_the_shoulder', 'ots_reverse', 'two_shot_face_to_face']);
-const WIDE_SHOT_TYPES = new Set(['全景', '大远景', '远景', 'wide', 'long_shot', 'extreme_wide', 'establishing']);
-
 function parseJsonValue(value) {
   if (typeof value !== 'string' || !value.trim()) return value;
   try { return JSON.parse(value); } catch (_) { return value; }
@@ -177,14 +175,14 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
           });
         }
         if (shot.character_visuals != null && shot.character_visuals !== '') {
-          const expectedVisualIds = [...uniqueSortedIds(topVisible, characterNameToId), ...uniqueSortedIds(topBackground, characterNameToId)];
+          const expectedVisualIds = require('../visualSlots').frameCharacterIds(shot);
           if (!sameIds(characterVisuals, expectedVisualIds, characterNameToId)) {
             violations.push({
               rule: 'INVARIANT_CHARACTER_VISUAL_SLOT_DIVERGENCE',
               shot_number: shotNum,
               severity: this.defaultSeverity,
-              message: `分镜 #${shotNum} character_visuals 人物集合必须与主角及背景人物并集完全一致。`,
-              conflict_slots: ['character_visuals', 'characters', 'background_characters'],
+              message: `分镜 #${shotNum} character_visuals 人物集合必须与起幅实际入画人物一致。`,
+              conflict_slots: ['character_visuals', 'video_slots.shots_timeline[0].visible_characters'],
             });
           }
         }
@@ -255,7 +253,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
         const unsealedOffscreen = videoTrajectories(videoSlots).find(
           (trajectory) => !SEALED_MOUTH_STATES.has(String(trajectory?.mouth_state || '').trim())
         );
-        if (unsealedOffscreen) {
+        if (!videoSlots?.shots_timeline?.length && unsealedOffscreen) {
           violations.push({
             rule: 'INVARIANT_OFFSCREEN_SPEECH_LIP_SYNC_CONFLICT',
             shot_number: shotNum,
@@ -360,50 +358,6 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
         });
       }
 
-      // 5. 单人/双人构图与实际人数不一致
-      const framing = slots.dialogue_framing || shot.dialogue_framing || '';
-      const shotType = shot.shot_type || '';
-      const visibleCount = visibleIds.length > 0 ? visibleIds.length : visibleChars.length;
-      if (framing === 'solo_action' && visibleCount > 1) {
-        violations.push({
-          rule: 'INVARIANT_FRAMING_CHARACTER_COUNT_MISMATCH',
-          shot_number: shotNum,
-          severity: this.defaultSeverity,
-          message: `分镜 #${shotNum} 构图选择为单人专注动作 (solo_action)，但可见角色数为 ${visibleCount} 人，构图与人数冲突！`,
-          conflict_slots: ['dialogue_framing', 'visible_characters'],
-        });
-      }
-      const twoShotFramings = ['two_shot_face_to_face', 'over_the_shoulder', 'joint_observation'];
-      if (twoShotFramings.includes(framing) && visibleCount !== 2 && visibleCount > 0) {
-        violations.push({
-          rule: 'INVARIANT_FRAMING_CHARACTER_COUNT_MISMATCH',
-          shot_number: shotNum,
-          severity: this.defaultSeverity,
-          message: `分镜 #${shotNum} 构图选择为双人对话构图 (${framing})，但可见角色数为 ${visibleCount} 人（应严格为 2 人）！`,
-          conflict_slots: ['dialogue_framing', 'visible_characters'],
-        });
-      }
-
-      // Close/over-the-shoulder dialogue is a two-person identity contract.
-      // A third character declared as background is still promoted to a H3
-      // Subject by the Ref2VA compiler, where it can cause face fusion or a
-      // duplicate person in a tight composition. Keep background presence for
-      // wide establishing/joint-observation shots only; the Director must
-      // choose a wide three-person composition or remove the background role.
-      const framingEnum = String(framing || '').trim();
-      const shotTypeEnum = String(shotType || '').trim();
-      const isOverShoulderDialogue = CLOSE_DIALOGUE_FRAMINGS.has(framingEnum);
-      const isWideComposition = WIDE_SHOT_TYPES.has(shotTypeEnum) || WIDE_SHOT_TYPES.has(framingEnum);
-      if (isOverShoulderDialogue && bgIds.length > 0 && !isWideComposition && visibleCount > 0 && visibleCount <= 2) {
-        violations.push({
-          rule: 'INVARIANT_CLOSE_DIALOGUE_BACKGROUND_CONFLICT',
-          shot_number: shotNum,
-          severity: this.defaultSeverity,
-          message: `分镜 #${shotNum} 是近景/过肩双人对话构图，却声明了 ${bgIds.length} 个背景人物。紧凑构图中背景人物也会成为 H3 Subject，容易造成脸部融合或克隆人；请由导演选择宽景三人构图，或将背景人物和对应参考图移出本镜。`,
-          conflict_slots: ['dialogue_framing', 'background_characters', 'semantic_slots.background_characters', 'semantic_slots.required_references', 'universal_segment_text'],
-        });
-      }
-
       // 6. 清晰正脸与背影、剪影冲突（仅校验结构化朝向枚举）
       const identityVis = slots.identity_visibility || shot.identity_visibility || '';
       if (identityVis === 'clear_frontal') {
@@ -499,7 +453,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
       }
 
       // 10. 声音或参考素材超过 H3 上限 (严禁静默 slice)
-      if (requiredRefs.length > 9) {
+      if (requiredRefs.length > MAX_REFERENCE_IMAGES) {
         violations.push({
           rule: 'INVARIANT_REFERENCE_CAPACITY_EXCEEDED',
           shot_number: shotNum,
@@ -518,11 +472,11 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
           conflict_slots: ['speech_plan.audio_references'],
         });
       }
-      if (visibleCount > 2) {
+      const visibleCount = visibleIds.length;
+      if (visibleCount > MAX_VISIBLE_CHARACTERS) {
         const isCrowdReaction = shot.is_crowd_reaction
           || shot.beat_type === 'crowd_reaction'
-          || shot.dialogue_framing === 'crowd_reaction'
-          || (shot.title && (shot.title.includes('反应') || shot.title.includes('围观') || shot.title.includes('众人')));
+          || shot.dialogue_framing === 'crowd_reaction';
         violations.push({
           rule: 'INVARIANT_REFERENCE_CAPACITY_EXCEEDED',
           shot_number: shotNum,

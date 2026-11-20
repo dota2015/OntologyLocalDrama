@@ -1,6 +1,7 @@
 /**
  * 门禁：H3视频参考图物理上限与复杂度审查（单镜身份角色<=2，核心道具<=2）
  */
+const { MAX_VISIBLE_CHARACTERS, MAX_REFERENCE_IMAGES } = require('../../services/h3Limits');
 const BaseInvariantRule = require('./baseRule');
 const { shotCharacterIds } = require('./assetReferenceRule');
 
@@ -20,9 +21,9 @@ class H3ReferenceCapacityRule extends BaseInvariantRule {
     const violations = [];
     if (!Array.isArray(shots)) return violations;
 
-    const maxChars = Number(context.ruleConfig?.params?.max_characters ?? context.options?.max_characters) || 2;
+    const maxChars = Number(context.ruleConfig?.params?.max_characters ?? context.options?.max_characters) || MAX_VISIBLE_CHARACTERS;
     const maxProps = Number(context.ruleConfig?.params?.max_props ?? context.options?.max_props) || 2;
-    const maxRefs = Number(context.ruleConfig?.params?.max_references ?? context.options?.max_references) || 9;
+    const maxRefs = Number(context.ruleConfig?.params?.max_references ?? context.options?.max_references) || MAX_REFERENCE_IMAGES;
     const severity = context.ruleConfig?.severity || this.defaultSeverity;
 
     shots.forEach((shot, idx) => {
@@ -31,8 +32,7 @@ class H3ReferenceCapacityRule extends BaseInvariantRule {
       // 短剧本体特性：围观吃瓜反应镜头具名领头焦点仍限 ≤ 2 人，防生图模型人脸崩坏
       const isCrowdReaction = shot.is_crowd_reaction
         || shot.beat_type === 'crowd_reaction'
-        || shot.dialogue_framing === 'crowd_reaction'
-        || (shot.title && (shot.title.includes('反应') || shot.title.includes('围观') || shot.title.includes('众人')));
+        || shot.dialogue_framing === 'crowd_reaction';
 
       const charIds = shotCharacterIds(shot).all;
       const propIds = Array.isArray(shot.props) ? shot.props : (Array.isArray(shot.prop_ids) ? shot.prop_ids : []);

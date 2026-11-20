@@ -16,11 +16,21 @@ const { compileDramaSemanticPackage } = require('../ontology/semanticPackage');
 
 function stageOnePlanningViolations(storyboards, { catalogs, narrativeStyle, durationRange } = {}) {
   const violations = [...planningFeasibilityViolations(storyboards, { catalogs })];
+  const seenBeats = new Set();
+  let previousBeat;
   const speechTimingRule = new SpeechTimingRule();
   const delivery = require('./speechDeliveryService');
   for (let idx = 0; idx < (Array.isArray(storyboards) ? storyboards.length : 0); idx++) {
     const shot = storyboards[idx];
     const shotNum = Number(shot?.shot_number || shot?.storyboard_number || idx + 1);
+    const beat = shot.beat_id ?? shot.semantic_slots?.beat_id;
+    if (!Number.isInteger(beat) || beat < 1 ||
+        (previousBeat !== beat && seenBeats.has(beat))) {
+      violations.push({ rule: 'INVARIANT_STAGE1_BEAT_GROUP', shot_number: shotNum, severity: 'error',
+        conflict_slots: ['beat_id'], message: `分镜 #${shotNum} 需要有效的 beat_id，同一节拍的执行片段必须相邻。` });
+    }
+    seenBeats.add(beat);
+    previousBeat = beat;
     const turns = shotSpeechTurns(shot);
     if (turns.length > 1) {
       const speakers = turns.map((t) => t.speaker || (t.kind === 'narration' ? '旁白' : '对白')).join('、');
@@ -1601,9 +1611,9 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
           db,
           log,
           buildPlanningRepairPrompt(userPrompt, storyboards, planningViolations, attempt, pipelineOptions.planningCatalogs),
-          `你是阶段一基础分镜的规划修复节点。只修复门禁反馈指定的镜头人物集合、超长台词或多人对白问题：
+          `你是阶段一基础分镜的规划修复节点。按门禁反馈修复相应镜头的规划字段：
 1) 遇到「包含多个发言段」或「对白与旁白超出时长预算」时，必须把该镜头按说话轮次与句意拆成多个连续镜头，每镜最多 1 个说话人的单轮台词（或 1 段旁白），严禁两人轮流对白或对白与旁白混在同一镜，并保证每镜台词能在 duration 预算内说完（约 5 字/秒）；
-2) 逐字完整保留原剧本台词与旁白，重排连续 shot_number，保持其他无问题镜头内容不变；
+2) 按剧情声明 beat_id；拆出的相邻执行片段沿用所属节拍的 ID。逐字完整保留原剧本台词与旁白，重排连续 shot_number，保持其他无问题镜头内容不变；
 3) 每镜最多 2 名有身份角色；环境事件、敌军和群众不得挂载角色 ID；通过通讯器/对讲机/电话远程参与或同场画外的角色不要加入 characters/background_characters。
 只返回完整 JSON：{"storyboards":[...]}，不要解释。`,
           { model: model || undefined, temperature: 0.1 }
@@ -1964,9 +1974,9 @@ async function runStageOneBaseGeneration(db, log, episodeId, taskId, options = {
   const stage1DurationLabel = ctx.durationRange
     ? `${ctx.durationRange.min}～${ctx.durationRange.max}秒整数秒，严禁超过上限 ${ctx.durationRange.max} 秒`
     : '4～30秒整数秒，超过30秒才按语义拆镜';
-  ctx.systemPrompt = `你是短剧基础分镜导演。基于本集人物关系与剧情节拍，把本集剧本拆成完整、紧凑、可执行的剧情分镜，先保证剧情顺序和台词逐字覆盖。每镜${stage1DurationLabel}；每个分镜最多只允许 1 个说话人的单轮对白（或 1 段旁白），严禁两人轮流对话或对白与旁白混在同一镜，多人轮流对话必须按说话轮次拆成连续分镜；每镜对白/旁白字数必须能在本镜 duration 内按实际 TTS 速度（默认 1.25x，约 5 字/秒）自然说完，超长台词必须按语义拆镜；单镜最多2名有身份画内角色（characters），群众/敌军写成环境事件。动作与画面描写必须是可拍摄的纯写实物理动作，严禁文学心理隐喻及在画面中描述 UI 元素（如血条、准星、倒计时悬浮窗、屏幕小字）。不要输出 video_slots、character_visuals、动作原子、口型、视线枚举或 H3 提示词。只返回 JSON 对象 {"storyboards":[...]}，不要解释。
+  ctx.systemPrompt = `你是短剧基础分镜导演。基于本集人物关系与剧情节拍，把本集剧本拆成完整、紧凑、可执行的剧情分镜，先保证剧情顺序和台词逐字覆盖。每镜${stage1DurationLabel}；每个分镜最多只允许 1 个说话人的单轮对白（或 1 段旁白），严禁两人轮流对话或对白与旁白混在同一镜，多人轮流对话必须按说话轮次拆成连续分镜；每镜对白/旁白字数必须能在本镜 duration 内按实际 TTS 速度（默认 1.25x，约 5 字/秒）自然说完，超长台词必须按语义拆镜；单镜最多2名有身份画内角色（characters），群众/敌军写成环境事件。用可见的行为和结果表现剧情，画面元素遵循剧本与所选风格。不要输出 video_slots、character_visuals、动作原子、口型、视线枚举或 H3 提示词。只返回 JSON 对象 {"storyboards":[...]}，不要解释。
 
-每镜字段：shot_number,title,scene_id,characters,background_characters,offscreen_characters,beat_type,props,duration,location,time,shot_type,angle_h,angle_v,angle_s,movement,action,result,dialogue,narration,emotion,start_framing,end_framing,transition_to_next。
+每镜字段：shot_number,title,scene_id,characters,background_characters,offscreen_characters,beat_id,beat_type,props,duration,location,time,shot_type,angle_h,angle_v,angle_s,movement,action,result,dialogue,narration,emotion,start_framing,end_framing,transition_to_next。
 
 【角色与画外参与规则】
 - scene_id 填可用场景目录中的数字 ID；
@@ -1976,7 +1986,7 @@ async function runStageOneBaseGeneration(db, log, episodeId, taskId, options = {
 - props 必须填入可用道具目录中的数字 ID 数组（如 [37]；无道具则为 []）。
 
 【剧情节拍】
-按原剧本选择节拍。每镜用 action 交代正在发生的行动，用 result 写出局面、信息或人物选择的变化，transition_to_next 交代其与下一镜的因果。允许多个动作和对白同步完成，合并重复交代同一信息的镜头；重要节拍可以跨镜。景别、剪辑与声音由剧情和所选风格决定。
+导演先确定因果节拍，再给执行片段编号。每个节拍使用正整数 beat_id；相邻片段可以共用该 ID，一场问答的正反打可以推进同一个节拍。result 写出片末可以从画面核对的具体状态。每镜用 action 交代正在发生的行动，用 result 写出局面、信息或人物选择的变化，transition_to_next 交代其与下一镜的因果。允许多个动作和对白同步完成，合并重复交代同一信息的镜头；重要节拍可以跨镜。景别、剪辑与声音由剧情和所选风格决定。
 
 对白和旁白必须逐字保留，动作必须与对白同时发生，禁止用互相看着或静止等待填时长。
 

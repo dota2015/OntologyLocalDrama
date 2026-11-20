@@ -85,7 +85,7 @@ test('H3 detail exposes the actual prepared request while polling lists omit the
   t.mock.method(native, 'prepare', async () => ({
     prompt: '最终槽位正文', h3_mode: 'ref2va', h3_mixed_references: true,
     reference_urls: ['data:image/png;base64,YQ=='], h3_audio_references: [{ key: 'character:28', url: 'data:audio/wav;base64,Yg==' }],
-    input_references: [{ source: 'people/28.png', character_id: 28 }], input_storyboard: { id: 9, updated_at: 'old' },
+    input_references: [{ source: 'people/28.png', character_id: 28 }], input_storyboard: { id: 9, updated_at: 'old', result: '书在桌上', dialogue: '甲：好了。', narration: '' },
     h3_native: { width: 1344, height: 768, steps: 23 },
   }));
   let sent;
@@ -93,6 +93,7 @@ test('H3 detail exposes the actual prepared request while polling lists omit the
   const result = await client.callVideoApi(db, null, { video_gen_id: 1, storyboard_id: 9, drama_id: 1, prompt: '预览不是最终正文', duration: 6 });
   assert.equal(result.task_id, 'sample');
   const saved = service.getById(db, 1).input_snapshot.attempts[0];
+  assert.deepEqual(saved.acceptance, { result: '书在桌上', dialogue: '甲：好了。', narration: '' });
   assert.equal(saved.prompt, sent.content[0].text);
   assert.deepEqual(saved.request, snapshots.sanitize(sent));
   assert.equal(saved.parameters.steps, 23);

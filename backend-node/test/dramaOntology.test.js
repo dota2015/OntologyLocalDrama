@@ -176,7 +176,8 @@ describe('Audiovisual Drama Ontology & Semantic Invariants', () => {
     const char = pkg.getCharacter(101);
     assert.equal(char.name, '红狼');
     const scene = pkg.getScene(201);
-    assert.ok(scene.landmarks.includes('cover'));
+    assert.deepEqual(scene.landmarks, []);
+    assert.equal(scene.power_axis, null);
 
     const digest = pkg.getSystemDigest();
     assert.match(digest, /三角洲行动/);

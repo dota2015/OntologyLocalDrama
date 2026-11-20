@@ -296,7 +296,7 @@ const SHORT_DRAMA_ONTOLOGY_META_MODEL = Object.freeze({
       name_zh: '单集叙事弧',
       description: '短剧单集叙事结构骨架，管控黄金3秒钩子、核心矛盾与集末断章卡点',
       properties: {
-        hook_type: { type: 'enum', enums: ['crisis_opening', 'humiliation_opening', 'identity_suspense', 'high_conflict'], required: true },
+        hook_type: { type: 'string', default: null },
         core_conflict: { type: 'string', required: true },
         cliffhanger_type: { type: 'enum', enums: ['resolved', 'open_question', 'identity_reveal_cut', 'danger_imminent', 'betrayal_shock', 'slap_pending'], required: true },
         pacing_tempo: { type: 'string', default: 'fast_paced' },
@@ -304,14 +304,14 @@ const SHORT_DRAMA_ONTOLOGY_META_MODEL = Object.freeze({
     },
     NarrativeBeat: {
       id: 'NarrativeBeat',
-      name_zh: '短剧爽点节拍',
+      name_zh: '短剧剧情节拍',
       description: '短剧叙事张力与情绪推进单元，直接驱动分镜机位构图与音画重音',
       properties: {
         beat_number: { type: 'number', required: true },
         beat_type: { type: 'enum', enums: ['decision', 'discovery', 'consequence', 'relationship_change', 'hook', 'suppression', 'reveal', 'slap_reversal', 'crowd_reaction', 'cliffhanger', 'transition'], required: true },
         tension_level: { type: 'number', min: 1, max: 5, default: 1 },
-        dominant_emotion: { type: 'string', default: '屈辱' },
-        power_shift: { type: 'enum', enums: ['aggressor_dominant', 'protagonist_counter', 'power_reversed', 'stalemate'], default: 'aggressor_dominant' },
+        dominant_emotion: { type: 'string', default: '' },
+        power_shift: { type: 'enum', enums: ['aggressor_dominant', 'protagonist_counter', 'power_reversed', 'stalemate'], default: null },
         pre_conditions: { type: 'array', default: [] },
         post_conditions: { type: 'array', default: [] },
       },
@@ -325,7 +325,7 @@ const SHORT_DRAMA_ONTOLOGY_META_MODEL = Object.freeze({
         name: { type: 'string', required: true },
         gender: { type: 'string', default: '女' },
         role: { type: 'string', default: '主演' },
-        archetype: { type: 'enum', enums: ['hidden_tycoon', 'avenging_heiress', 'arrogant_antagonist', 'snobbish_inlaw', 'loyal_sidekick', 'bystander_crowd'], default: null },
+        archetype: { type: 'string', default: null },
         surface_identity: { type: 'string', default: '' },
         hidden_identity: { type: 'string', default: '' },
         power_status: { type: 'enum', enums: ['dominant', 'suppressed', 'awakened', 'bystander'], default: null },
@@ -373,7 +373,7 @@ const SHORT_DRAMA_ONTOLOGY_META_MODEL = Object.freeze({
         location: { type: 'string', required: true },
         time: { type: 'string', default: '日景' },
         spatial_type: { type: 'string', default: 'interior' },
-        power_axis: { type: 'enum', enums: ['high_seat_vs_floor', 'entrance_intrusion', 'center_stage_vs_crowd', 'corridor_ambush'], default: 'center_stage_vs_crowd' },
+        power_axis: { type: 'enum', enums: ['high_seat_vs_floor', 'entrance_intrusion', 'center_stage_vs_crowd', 'corridor_ambush'], default: null },
         landmarks: { type: 'array', default: [] },
         lighting_env: { type: 'string', default: 'natural' },
         acoustics: { type: 'string', default: '' },
@@ -438,7 +438,7 @@ const SHORT_DRAMA_ONTOLOGY_META_MODEL = Object.freeze({
       source: 'Shot',
       target: 'NarrativeBeat',
       cardinality: 'N:1',
-      description: '分镜所承载和实现的短剧爽点节拍',
+      description: '分镜所承载和实现的短剧剧情节拍',
     },
     REL_SHOT_IN_SCENE_ZONE: {
       id: 'REL_SHOT_IN_SCENE_ZONE',
@@ -506,14 +506,14 @@ function createCharacterEntity({
   };
 }
 
-function createSceneSpatialEntity({ id, location, time, spatialType = 'interior', lightingEnv = 'natural', landmarks = [], acoustics = '', powerAxis = 'center_stage_vs_crowd' }) {
+function createSceneSpatialEntity({ id, location, time, spatialType = 'interior', lightingEnv = 'natural', landmarks = [], acoustics = '', powerAxis = null }) {
   return {
     entity_type: 'scene_spatial',
     id: Number(id),
     location: String(location || '').trim(),
     time: String(time || '').trim(),
     spatial_type: spatialType, // interior_tight, interior_open, exterior_open
-    power_axis: String(powerAxis || 'center_stage_vs_crowd'),
+    power_axis: powerAxis || null,
     lighting_env: lightingEnv,
     landmarks: Array.isArray(landmarks) ? landmarks : [], // e.g. ['doorway', 'desk', 'window']
     acoustics: String(acoustics),
@@ -698,8 +698,8 @@ function createBeatEntity({
   title = '',
   beatType = 'hook',
   tensionLevel = 1,
-  dominantEmotion = '屈辱',
-  powerShift = 'aggressor_dominant',
+  dominantEmotion = '',
+  powerShift = null,
   eventSummary = '',
   preConditions = [],
   postConditions = [],
@@ -716,7 +716,7 @@ function createBeatEntity({
     beat_type: String(beatType || 'hook'),
     tension_level: Math.max(1, Math.min(5, Number(tensionLevel) || 1)),
     dominant_emotion: String(dominantEmotion || '').trim(),
-    power_shift: String(powerShift || 'aggressor_dominant'),
+    power_shift: powerShift || null,
     event_summary: String(eventSummary || '').trim(),
     pre_conditions: Array.isArray(preConditions) ? preConditions : [],
     post_conditions: Array.isArray(postConditions) ? postConditions : [],

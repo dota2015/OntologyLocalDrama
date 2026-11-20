@@ -188,6 +188,19 @@ function validateStructuredVisualSlots(shot, slots = [], slotField = 'character_
   return violations;
 }
 
+// A still frame only depicts the cast at its own end of the timeline.
+function frameCharacterIds(shot, last = false) {
+  const read = value => typeof value === 'string' ? (value.trim() ? JSON.parse(value) : null) : value;
+  const timeline = read(shot.video_slots)?.shots_timeline;
+  const segment = last ? timeline?.at(-1) : timeline?.[0];
+  const semantic = read(shot.semantic_slots) || {};
+  const cast = segment?.visible_characters ?? [
+    ...(semantic.visible_characters ?? read(shot.characters) ?? []),
+    ...(semantic.background_characters ?? read(shot.background_characters) ?? []),
+  ];
+  return [...new Set(cast.map(c => Number(c?.character_id ?? c?.id ?? c)))];
+}
+
 function validateCharacterVisualSlots(shot, slots = [], slotField = 'character_visuals') {
   return validateStructuredVisualSlots(shot, slots, slotField);
 }
@@ -333,6 +346,7 @@ function compileLastFramePromptFromSlots(shot, slots = [], options = {}) {
 }
 
 module.exports = {
+  frameCharacterIds,
   STRUCTURED_DEPTH_LAYERS,
   STRUCTURED_SCREEN_POSITIONS,
   validateStructuredVisualSlots,

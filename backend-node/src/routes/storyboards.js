@@ -1240,20 +1240,11 @@ function routes(db, log) {
         const drama = dramaId ? db.prepare('SELECT * FROM dramas WHERE id = ? AND deleted_at IS NULL').get(dramaId) : null;
         let meta = {};
         try { meta = drama?.metadata ? JSON.parse(drama.metadata) : {}; } catch (_) {}
-        const { storedManualPlan, resolveH3Mode, deriveManualRef2vaReferences } = require('../services/h3ModeResolver');
         const h3Stage3 = require('../services/h3Stage3PromptService');
-        const manual = storedManualPlan(db, dramaId, storyboardId);
-        const executionPlan = resolveH3Mode(shot, {
-          manualModeOverride: manual.mode,
-          manualFirstFramePolicy: manual.first_frame_policy,
-          manualLastFramePolicy: manual.last_frame_policy,
-          manualReferences: manual.mode === 'ref2va' ? deriveManualRef2vaReferences(db, dramaId, shot) : [],
-        });
         const compiled = await h3Stage3.ensureShotH3PromptCompiled(db, log, shot, {
           dramaId,
           project: drama,
           aspectRatio: meta.aspect_ratio || req.body?.aspect_ratio || '16:9',
-          executionPlan,
           forceRecompile: true,
         });
         response.success(res, {

@@ -100,20 +100,9 @@ function compileDramaSemanticPackage(db, episodeId) {
     } else if (typeof r.landmarks === 'string' && r.landmarks.trim().startsWith('[')) {
       try { landmarks = JSON.parse(r.landmarks); } catch (_) {}
     }
-    if (landmarks.length === 0) {
-      const desc = `${r.location || ''} ${r.prompt || ''}`.toLowerCase();
-      if (/门|门口|door/.test(desc)) landmarks.push('doorway');
-      if (/窗|窗口|window/.test(desc)) landmarks.push('window');
-      if (/桌|案几|台|desk|table/.test(desc)) landmarks.push('desk');
-      if (/箱|货箱|掩体|cover|crate/.test(desc)) landmarks.push('cover');
-      if (/走廊|过道|通道|corridor/.test(desc)) landmarks.push('corridor');
-      if (/主位|高台|宝座|main_seat/.test(desc)) landmarks.push('main_seat');
-    }
-
     const lighting = r.lighting_style || r.lighting_env || 'natural';
-    const spatialType = r.spatial_type || (/室外|街道|广场|荒野|outdoor/.test((r.location || '').toLowerCase()) ? 'exterior_open' : 'interior');
-    const powerAxis = r.power_axis || 'center_stage_vs_crowd';
-
+    const spatialType = r.spatial_type || null;
+    const powerAxis = r.power_axis || null;
     return createSceneSpatialEntity({
       id: r.id,
       location: r.location,
@@ -225,7 +214,7 @@ function compileDramaSemanticPackage(db, episodeId) {
     drama_era: dramaEra,
     script_hash: crypto.createHash('sha256').update(ep.script_content || '').digest('hex'),
     characters: characters.map(c => ({ id: c.id, name: c.name, stage: c.wardrobe_stage_id, in_episode: episodeCharacterIds.has(c.id) })),
-    scenes: scenes.map(s => ({ id: s.id, loc: s.location, landmarks: s.landmarks })),
+    scenes: scenes.map(s => ({ id: s.id, loc: s.location, landmarks: s.landmarks, power_axis: s.power_axis })),
     props: props.map(p => ({ id: p.id, name: p.name, scale: p.physical_scale, era: p.era_category, compatibility: p.era_compatibility })),
     relations_count: relations.length,
     beats_count: storedBeats.length,
@@ -268,7 +257,7 @@ function compileDramaSemanticPackage(db, episodeId) {
     // 生成供大模型理解的紧凑结构化提示词概要
     getSystemDigest() {
       const charLines = characters.map(c => `- ID:${c.id} [${c.name}] ${episodeCharacterIds.has(c.id) ? "【本集已关联】" : "【剧库可复用，未关联本集】"} (${c.gender}/${c.role}) [人设:${c.archetype || '主演'}] ${c.surface_identity ? `表:${c.surface_identity}` : ''} ${c.hidden_identity ? `底牌:${c.hidden_identity}` : ''} ${c.appearance ? `外貌:${c.appearance.slice(0, 50)}` : ''}`).join('\n');
-      const sceneLines = scenes.map(s => `- ID:${s.id} [${s.location}] 地标:[${s.landmarks.join(',')}] 权力轴:[${s.power_axis || '中心焦点'}] 光照:${s.lighting_env || '自然光'}`).join('\n');
+      const sceneLines = scenes.map(s => `- ID:${s.id} [${s.location}] 地标:[${s.landmarks.join(',')}]${s.power_axis ? ` 权力轴:[${s.power_axis}]` : ''} 光照:${s.lighting_env || '自然光'}`).join('\n');
       const propLines = props.map(p => `- ID:${p.id} [${p.name}] 作用:${p.prop_role || 'ambient'}${p.close_up_required ? '【打脸信物必须给大特写】' : ''} 尺度:[${p.physical_scale}] 时代使用:${p.era_compatibility || '未声明'}${p.era_reason ? `(${p.era_reason})` : ''}`).join('\n');
       const relLines = relations.filter(r => r.type === 'REL_CHARACTER_SOCIAL').map(r => `- ${r.properties?.from_character || r.from_id} ➔ [${r.properties?.relation_kind || '恩怨'}] ➔ ${r.properties?.to_character || r.to_id}${r.properties?.description ? ` (${r.properties.description})` : ''}`).join('\n');
       const beatLines = storedBeats.map(b => `- 节拍${b.beat_number} [${b.beat_type}]: 张力${b.tension_level}星 | 主情绪:${b.dominant_emotion || '强冲突'} | ${b.event_summary || ''}`).join('\n');

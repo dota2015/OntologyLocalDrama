@@ -1,3 +1,5 @@
+const { referenceCharacterId, groupSubjects, resolveRequiredReference, localFile, canonicalSource, imageSource } = require('./h3ReferenceBindings');
+const { MAX_VISIBLE_CHARACTERS, MAX_REFERENCE_IMAGES } = require('./h3Limits');
 const fs = require('fs');
 const path = require('path');
 const { createHash, randomUUID } = require('crypto');
@@ -22,8 +24,8 @@ function parse(value, fallback) { try { return typeof value === 'string' ? JSON.
 function shotInputSnapshot(shot) {
   const fields = [
     'id', 'episode_id', 'storyboard_number', 'scene_id', 'description', 'location',
-    'time', 'duration', 'dialogue', 'narration', 'action', 'atmosphere',
-    'characters', 'background_characters', 'character_visuals',
+    'time', 'duration', 'dialogue', 'narration', 'action', 'result', 'atmosphere',
+    'characters', 'background_characters', 'character_visuals', 'last_frame_visuals',
     'video_slots', 'semantic_slots', 'shot_type', 'angle', 'angle_h', 'angle_v',
     'angle_s', 'movement', 'lighting_style', 'depth_of_field', 'sound_effect',
     'bgm_prompt', 'first_frame_image_id', 'last_frame_image_id',
@@ -81,32 +83,6 @@ function selectedVideo(db, dramaId, shot) {
   return db.prepare(`SELECT * FROM video_generations WHERE drama_id=? AND storyboard_id=? AND deleted_at IS NULL
     AND status='completed' AND local_path IS NOT NULL AND local_path<>'' ORDER BY id DESC LIMIT 1`).get(Number(dramaId), shot.id);
 }
-function localFile(root, relative) {
-  if (typeof relative !== 'string' || path.isAbsolute(relative) || relative.includes('\\') || relative.includes('\0')) throw new Error('H3 素材路径无效');
-  const realRoot = fs.realpathSync(root);
-  const file = fs.realpathSync(path.resolve(realRoot, relative));
-  if (!file.startsWith(realRoot + path.sep) || !fs.statSync(file).isFile()) throw new Error('H3 素材路径无效');
-  return file;
-}
-// Reconcile browser /static URLs with database-relative paths before assigning Picture indices.
-function canonicalSource(root, source) {
-  if (typeof source !== 'string') return '';
-  source = source.trim();
-  let relative = source;
-  if (/^https?:\/\//i.test(source)) {
-    try {
-      const url = new URL(source);
-      if (!url.pathname.startsWith('/static/')) return source;
-      relative = decodeURIComponent(url.pathname.slice(8));
-    } catch { return source; }
-  } else relative = source.replace(/^\/static\//, '');
-  if (root) {
-    try { return path.relative(fs.realpathSync(root), localFile(root, relative)).split(path.sep).join('/'); }
-    catch { /* Keep external URLs and report missing local files when preparing inputs. */ }
-  }
-  return /^https?:/i.test(source) ? source : relative;
-}
-function imageSource(entity) { return entity?.local_path || entity?.ref_image || entity?.image_url || ''; }
 function characterIds(db, shot) {
   const parsed = parse(shot.characters, []);
   let ids = Array.isArray(parsed) ? parsed.map(c => Number(c && typeof c === 'object' ? c.id : c)).filter(id => id > 0) : [];
@@ -174,38 +150,6 @@ function assetReferences(db, dramaId, shot, speakerIds = [], root, maxSlots = 7)
   return refs;
 }
 
-function resolveRequiredReference(db, dramaId, shot, ref, root) {
-  const explicit = ref?.url || ref?.image_url || ref?.local_path || '';
-  if (explicit) return canonicalSource(root, explicit);
-  const type = ref?.type || 'character';
-  const id = Number(ref?.id ?? ref?.character_id);
-  let entity = null;
-  if (type === 'character' && id > 0) {
-    entity = db.prepare('SELECT * FROM characters WHERE id=? AND drama_id=? AND deleted_at IS NULL').get(id, Number(dramaId));
-  } else if (type === 'scene' && id > 0) {
-    entity = db.prepare('SELECT * FROM scenes WHERE id=? AND drama_id=? AND deleted_at IS NULL').get(id, Number(dramaId));
-  } else if (type === 'prop' && id > 0) {
-    entity = db.prepare('SELECT * FROM props WHERE id=? AND drama_id=? AND deleted_at IS NULL').get(id, Number(dramaId));
-  } else if (type === 'costume' || type === 'wardrobe') {
-    const characterId = Number(ref?.character_id ?? ref?.id);
-    const state = wardrobe.getShot(db, shot.id).characters.find(c => Number(c.id) === characterId);
-    if (!state) throw new Error(`H3 必要服装参考对应的人物不存在（角色 ID:${characterId || '空'}）`);
-    if (ref?.stage_id && state.stage_id !== ref.stage_id) {
-      const stage = state.stages?.find(s => s.id === ref.stage_id);
-      if (!stage) throw new Error(`H3 必要服装参考阶段不存在（角色 ID:${characterId}，阶段:${ref.stage_id}）`);
-      const source = canonicalSource(root, stage.reference_image || '');
-      if (!source) throw new Error(`H3 必要服装参考「${ref.name || stage.name}」尚未生成或上传图片`);
-      return source;
-    }
-    const source = canonicalSource(root, state.reference_image || '');
-    if (!source) throw new Error(`H3 必要服装参考「${ref.name || state.stage_name || characterId}」尚未生成或上传图片`);
-    return source;
-  }
-  if (!entity) throw new Error(`H3 必要参考素材不存在或不属于当前项目（${type}:${ref?.id ?? '空'}）`);
-  const source = canonicalSource(root, imageSource(entity));
-  if (!source) throw new Error(`H3 必要参考素材「${ref?.name || entity.name || `${type}:${id}`}」尚未生成或上传图片`);
-  return source;
-}
 function nativeCanvas(ratio) {
   const presets = { '16:9': [1344, 768], '9:16': [768, 1344], '1:1': [992, 992], '4:3': [1152, 864], '3:4': [864, 1152], '21:9': [1536, 672] };
   return presets[ratio] || presets['16:9'];
@@ -225,24 +169,18 @@ function getSettings(db, dramaId, shotId) {
     ? generationPlan.references.map(ref => ({
         source: resolveRequiredReference(db, dramaId, shot, ref),
         kind: ref.kind || (['wardrobe', 'costume'].includes(ref.type) ? 'character_outfit' : (ref.type || 'character')),
-        character_id: ref.character_id ?? (ref.type === 'character' ? ref.id : null),
+        character_id: referenceCharacterId(ref),
         name: ref.name || '未命名参考',
         appearance: ref.description || '',
       }))
     : [];
 
-  // Map Subject IDs for character references
-  const subjectsMap = new Map();
-  const references = rawRefs.map((r, i) => {
-    let subject_index = null;
-    let retention_role = 'fully_preserved';
-    if (r.character_id) {
-      if (!subjectsMap.has(r.character_id)) {
-        subjectsMap.set(r.character_id, subjectsMap.size + 1);
-      }
-      subject_index = subjectsMap.get(r.character_id);
-      retention_role = r.kind === 'character_sheet' ? 'partially_preserved' : 'fully_preserved';
-    }
+  const pictures = rawRefs.map((r, i) => ({ ...r, tag: `<Picture ${i + 1}>` }));
+  const subjects = groupSubjects(pictures);
+  const subjectsMap = new Map(subjects.map((s, i) => [s.characterId, i + 1]));
+  const references = pictures.map((r, i) => {
+    const subject_index = subjects.findIndex(s => s.pictures.includes(r)) + 1;
+    const retention_role = r.kind === 'character_sheet' ? 'partially_preserved' : 'fully_preserved';
     return {
       ...r,
       index: i + 1,
@@ -315,7 +253,7 @@ function getSettings(db, dramaId, shotId) {
 
   let quality_audit = null;
   try {
-    const latestVideo = db.prepare('SELECT id, quality_audit, status, video_url, local_path FROM video_generations WHERE storyboard_id=? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1').get(shotId);
+    const latestVideo = db.prepare('SELECT id, quality_audit FROM video_generations WHERE storyboard_id=? AND deleted_at IS NULL ORDER BY CASE WHEN id=? THEN 0 ELSE 1 END, id DESC LIMIT 1').get(shotId, shot.selected_video_id ?? null);
     if (latestVideo?.quality_audit) {
       quality_audit = JSON.parse(latestVideo.quality_audit);
       const cfg = require('../config').loadConfig();
@@ -347,7 +285,7 @@ function getSettings(db, dramaId, shotId) {
     opening_anchor,
     voice_references,
     previous_storyboard: prev ? { id: prev.id, number: prev.storyboard_number, same_scene: sameScene(shot, prev), video_ready: !!video } : null,
-    max_images: 9,
+    max_images: MAX_REFERENCE_IMAGES,
     max_voices: 3,
     steps: H3_STEPS
   };
@@ -425,76 +363,20 @@ function wireImage(root, source) {
   return 'data:' + mime + ';base64,' + bytes.toString('base64');
 }
 
-function assertTightFramingReferences(refs = [], options = {}, speech = {}) {
-  const framing = String(options.dialogueFraming || options.shot?.dialogue_framing || options.framing || "").toLowerCase();
-  const shotType = String(options.shotType || options.shot?.shot_type || options.shot?.camera?.shot_type || "").toLowerCase();
-  const framingNorm = framing.replace(/[-\s]/g, "_");
-  const isTightFraming = /(?:over_the_shoulder|two_shot_close|single_close|ots_reverse|two_shot_face_to_face|single_reaction|close_up|extreme_close_up|ots)/i.test(framingNorm)
-    || /(?:近景|特写|大特写|过肩|正反打|反打|双人对话)/i.test(`${framing} ${shotType}`);
-  if (!isTightFraming) return;
-
-  const isTwoShotFraming = /(?:over_the_shoulder|two_shot_close|ots_reverse|two_shot_face_to_face|ots|过肩|正反打|反打|双人)/i.test(`${framingNorm} ${shotType}`);
-  const isSingleFraming = !isTwoShotFraming && (
-    /(?:single_close|single_reaction|close_up|extreme_close_up|solo_action|single_focus)/i.test(framingNorm)
-      || /(?:特写|大特写)/i.test(`${framing} ${shotType}`)
-  );
-  const maxFocalSubjects = isSingleFraming ? 1 : (isTwoShotFraming ? 2 : 3);
-
-  const bgIds = new Set();
-  const rawBg = options.backgroundCharacters
-    || options.shot?.background_characters
-    || (typeof options.shot?.semantic_slots === "object" ? options.shot?.semantic_slots?.background_characters : null)
-    || (typeof options.semanticSlots === "object" ? options.semanticSlots?.background_characters : null);
-  (Array.isArray(rawBg) ? rawBg : (typeof rawBg === "string" ? parse(rawBg, []) : [])).forEach(c => {
-    const id = Number(c?.character_id ?? c?.id ?? c);
-    if (Number.isFinite(id) && id > 0) bgIds.add(id);
-  });
-  const charVisuals = options.shot?.character_visuals
-    || (typeof options.shot?.character_visuals === "string" ? parse(options.shot.character_visuals, []) : []);
-  if (Array.isArray(charVisuals)) {
-    charVisuals.forEach(cv => {
-      if (cv && cv.depth_layer === "background" && cv.character_id != null) {
-        const id = Number(cv.character_id);
-        if (Number.isFinite(id) && id > 0) bgIds.add(id);
-      }
-    });
+function assertSegmentReferences(refs, shot) {
+  const timeline = parse(shot.video_slots, {})?.shots_timeline;
+  if (!Array.isArray(timeline) || !timeline.length) throw new Error('缺少 H3 分段时间轴，请补充视听槽位');
+  const visible = new Set();
+  for (const [index, segment] of timeline.entries()) {
+    if (!Array.isArray(segment.visible_characters)) throw new Error(`第 ${index + 1} 段缺少入画人物清单`);
+    const ids = new Set(segment.visible_characters.map(c => Number(c?.character_id ?? c?.id ?? c)));
+    if ([...ids].some(id => !Number.isInteger(id) || id <= 0)) throw new Error(`第 ${index + 1} 段入画人物 ID 无效`);
+    if (ids.size > MAX_VISIBLE_CHARACTERS) throw new Error(`第 ${index + 1} 段最多允许 ${MAX_VISIBLE_CHARACTERS} 名有身份人物入画`);
+    for (const id of ids) visible.add(id);
   }
-  refs.forEach(r => {
-    if ((r.depth_layer === "background" || r.is_background) && r.character_id != null) {
-      const id = Number(r.character_id);
-      if (Number.isFinite(id) && id > 0) bgIds.add(id);
-    }
-  });
-
-  const visibleIds = new Set();
-  const rawVisible = options.visibleCharacters
-    || options.shot?.visible_characters
-    || (typeof options.shot?.semantic_slots === "object" ? options.shot?.semantic_slots?.visible_characters : null)
-    || (typeof options.semanticSlots === "object" ? options.semanticSlots?.visible_characters : null);
-  if (rawVisible) {
-    (Array.isArray(rawVisible) ? rawVisible : (typeof rawVisible === "string" ? parse(rawVisible, []) : [])).forEach(c => {
-      const id = Number(c?.character_id ?? c?.id ?? c);
-      if (Number.isFinite(id) && id > 0) visibleIds.add(id);
-    });
-    for (const line of speech?.lines || []) {
-      const match = /^character:(\d+)$/.exec(line?.key || "");
-      if (match) visibleIds.add(Number(match[1]));
-    }
-  }
-
-  const subjects = new Set();
-  for (const ref of refs) {
-    const refCharId = ref.character_id != null ? Number(ref.character_id) : null;
-    const isKnownSubject = refCharId && subjects.has(refCharId);
-    const isBackgroundInTight = Boolean(
-      refCharId && !isKnownSubject &&
-      (bgIds.has(refCharId) || (visibleIds.size > 0 && !visibleIds.has(refCharId)) || subjects.size >= maxFocalSubjects)
-    );
-    if (isBackgroundInTight) {
-      throw new Error(`H3 近景/正反打包含未规划的背景人物 ${ref.name || refCharId}；请由导演移出本镜或改为宽景，后端不静默降级人物参考`);
-    }
-    if (refCharId) subjects.add(refCharId);
-  }
+  const cards = new Set(refs.filter(r => r.character_id != null).map(r => Number(r.character_id)));
+  for (const id of cards) if (!visible.has(id)) throw new Error(`人物 ${id} 在所有分段均未入画，请核对角色参考图`);
+  for (const id of visible) if (!cards.has(id)) throw new Error(`入画人物 ${id} 缺少绑定到该角色的参考图`);
 }
 async function prepare(db, log, opts) {
   const { drama_id: dramaId, storyboard_id: shotId, storage_local_path: root } = opts;
@@ -515,9 +397,18 @@ async function prepare(db, log, opts) {
   }
   const { resolveH3Mode, deriveManualRef2vaReferences } = require('./h3ModeResolver');
   const requestedEngineMode = opts.h3_engine_mode || opts.h3_mode || initial.engine_mode || 'auto';
-  const explicitManualReferences = Array.isArray(opts.reference_urls)
-    ? opts.reference_urls.filter(Boolean).map((url, index) => ({ type: 'context', url, name: `人工参考 ${index + 1}` }))
-    : [];
+  const explicitUrls = Array.isArray(opts.reference_urls) ? opts.reference_urls.filter(Boolean) : [];
+  const manualRefs = requestedEngineMode === 'ref2va' ? deriveManualRef2vaReferences(db, dramaId, initial.shot) : [];
+  const explicitManualReferences = explicitUrls.map((url, index) => {
+    const source = canonicalSource(root, url);
+    const candidates = manualRefs.filter(r => {
+      if (r.type !== 'character') return false;
+      const character = db.prepare('SELECT * FROM characters WHERE id=? AND drama_id=?').get(r.character_id, dramaId);
+      return canonicalSource(root, imageSource(character)) === source;
+    });
+    if (candidates.length > 1) throw new Error('人工参考图关联多个角色，请在分镜参考素材中指定角色 ID');
+    return { ...(candidates[0] || { type: 'context', name: `人工参考 ${index + 1}` }), url };
+  });
   const executionPlan = resolveH3Mode(initial.shot, {
     manualModeOverride: requestedEngineMode === 'auto' ? null : requestedEngineMode,
     manualFirstFramePolicy: initial.first_frame_policy,
@@ -525,7 +416,7 @@ async function prepare(db, log, opts) {
     manualReferences: requestedEngineMode === 'ref2va'
       ? (explicitManualReferences.length
         ? explicitManualReferences
-        : deriveManualRef2vaReferences(db, dramaId, initial.shot))
+        : manualRefs)
       : [],
     characterVoices: voiceMap,
     throwOnViolation: true,
@@ -550,7 +441,10 @@ async function prepare(db, log, opts) {
   const refs = [];
   const add = (source, kind, details = {}) => {
     source = canonicalSource(root, source);
-    if (source && !refs.some(r => r.source === source)) {
+    if (source) {
+      if (details.character_id && refs.some(r => r.source === source && r.character_id && r.character_id !== details.character_id)) {
+        throw new Error('不同角色共用了同一张人物参考图，请核对角色素材');
+      }
       refs.push({ source, kind, name: kind === 'first_frame' ? '首帧锚点' : kind === 'last_frame' ? '尾帧锚点' : (details.name || '补充参考'), ...details });
     }
   };
@@ -573,7 +467,8 @@ async function prepare(db, log, opts) {
     for (const r of plannedReferences) {
       const src = resolveRequiredReference(db, dramaId, initial.shot, r, root);
       add(src, r.kind || (['wardrobe', 'costume'].includes(r.type) ? 'character_outfit' : (r.type || 'character')), {
-        character_id: r.character_id ?? (['character', 'costume', 'wardrobe'].includes(r.type) ? r.id : null),
+        type: r.type, id: r.id,
+        character_id: referenceCharacterId(r),
         name: r.name,
         appearance: r.description || '',
       });
@@ -590,8 +485,8 @@ async function prepare(db, log, opts) {
   }
 
   // 4. 硬门禁：超过 9 张直接阻断，杜绝后端静默裁剪
-  if (refs.length > 9) {
-    throw new Error(`MiniMax-H3 单镜最多支持 9 张参考图（当前 ${refs.length} 张），后端禁止静默裁剪与删除人物/道具/参考图，请退回 Agent 拆镜或精简参考素材！`);
+  if (refs.length > MAX_REFERENCE_IMAGES) {
+    throw new Error(`MiniMax-H3 单镜最多支持 ${MAX_REFERENCE_IMAGES} 张参考图（当前 ${refs.length} 张），后端禁止静默裁剪与删除人物/道具/参考图，请退回 Agent 拆镜或精简参考素材！`);
   }
 
   const relevantCharacterIds = new Set([
@@ -685,14 +580,7 @@ async function prepare(db, log, opts) {
   const isFl2va = targetMode === 'fl2va';
 
   if (!isFl2va) {
-    assertTightFramingReferences(refs, {
-      shot: initial.shot,
-      dialogueFraming: initial.shot.dialogue_framing,
-      shotType: initial.shot.shot_type,
-      visibleCharacters: initial.shot.characters || parse(initial.shot.semantic_slots, {})?.visible_characters,
-      backgroundCharacters: initial.shot.background_characters,
-      semanticSlots: parse(initial.shot.semantic_slots, {}),
-    }, speech);
+    assertSegmentReferences(refs, initial.shot);
   }
 
   const compiled = await stage3.ensureShotH3PromptCompiled(db, log, initial.shot, {
@@ -765,5 +653,5 @@ module.exports = {
   nativeCanvas,
   tailFrame,
   localFile,
-  assertTightFramingReferences,
+  assertSegmentReferences,
 };

@@ -31,12 +31,11 @@ class VisualSlotCompletenessRule extends BaseInvariantRule {
     const violations = [];
     if (!Array.isArray(shots)) return violations;
 
-    const { validateCharacterVisualSlots } = require('../visualSlots');
+    const { validateCharacterVisualSlots, frameCharacterIds } = require('../visualSlots');
 
     shots.forEach((shot, idx) => {
       const shotNum = shot.shot_number || shot.storyboard_number || (idx + 1);
-      const charIds = parseCharacterIds(shot.characters || shot.character_ids);
-      if (charIds.length === 0) return;
+      const charIds = frameCharacterIds(shot);
 
       let visuals = shot.character_visuals;
       if (typeof visuals === 'string') {
@@ -45,7 +44,7 @@ class VisualSlotCompletenessRule extends BaseInvariantRule {
 
       if (Array.isArray(visuals) && visuals.length > 0) {
         violations.push(...validateCharacterVisualSlots(shot, visuals));
-      } else {
+      } else if (charIds.length) {
         violations.push({
           rule: 'INVARIANT_CHARACTER_VISUAL_SLOTS_REQUIRED',
           shot_number: shotNum,

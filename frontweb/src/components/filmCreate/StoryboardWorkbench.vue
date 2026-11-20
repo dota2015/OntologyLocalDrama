@@ -1068,6 +1068,7 @@
                   :rows="10"
                   placeholder="生成视频时自动编译。也可以在此编译预览，或编辑并保存提示词。"
                 />
+                <el-checkbox v-if="sbPromptH3Manual" v-model="sbPromptH3Reviewed">已按当前分镜复核手工提示词</el-checkbox>
               </div>
             </div>
           </el-form>
@@ -1761,6 +1762,7 @@ const sbPromptH3Loading = ref(false)     // H3 素材加载中
 const sbPromptH3SnapshotText = ref('')   // Stage 3 / 手工锁定的官方 H3 提交提示词
 const sbPromptH3SnapshotInitial = ref('')
 const sbPromptH3Manual = ref(false)
+const sbPromptH3Reviewed = ref(false)
 const sbPromptH3Compiling = ref(false)
 const sbPromptSaving = ref(false)
 const sbPromptPolishing = ref(false)
@@ -3080,6 +3082,7 @@ async function onOpenSbPromptDialog(sb, initialTab = 'image') {
   sbPromptPolishedText.value = formatImagePromptForEdit((sb.polished_prompt || '').toString())
   sbPromptH3SnapshotText.value = (sb.h3_prompt_snapshot || '').toString()
   sbPromptH3SnapshotInitial.value = sbPromptH3SnapshotText.value
+  sbPromptH3Reviewed.value = false
   sbPromptH3Manual.value = Boolean(sb.h3_prompt_manual)
   let rawSlots = sb.video_slots
   if (typeof rawSlots === 'string') {
@@ -3390,7 +3393,7 @@ async function onSaveSbPromptDialog() {
     }
     const nextH3Snapshot = sbPromptH3SnapshotText.value.trim()
     const initH3Snapshot = sbPromptH3SnapshotInitial.value.trim()
-    if (nextH3Snapshot !== initH3Snapshot) {
+    if (nextH3Snapshot !== initH3Snapshot || (sbPromptH3Reviewed.value && sbPromptH3Manual.value && nextH3Snapshot)) {
       patch.h3_prompt_snapshot = nextH3Snapshot || null
       patch.h3_prompt_manual = Boolean(nextH3Snapshot)
     }

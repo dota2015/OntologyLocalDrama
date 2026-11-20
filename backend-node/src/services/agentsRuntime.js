@@ -1,3 +1,5 @@
+const { AUDIO_LIP_SYNC_MODES } = require('../ontology/schema');
+const { MAX_VISIBLE_CHARACTERS } = require('./h3Limits');
 const aiConfigService = require('./aiConfigService');
 const { instrumentClient } = require('./agentTokenUsage');
 const { flattenModelIds, pickModelId, remapArkModelId } = require('./modelId');
@@ -183,7 +185,7 @@ function timelineSegmentSchema() {
       action: { type: 'string', minLength: 1, maxLength: 120 },
       result: { type: 'string', minLength: 1, maxLength: 120, description: '本段事件的实际结果，与参与人物的 result_state 一致；未完成或被打断须按剧情明确结果。' },
       visible_characters: {
-        type: 'array', maxItems: 2,
+        type: 'array', maxItems: MAX_VISIBLE_CHARACTERS,
         description: '本段构图中实际入画的人物；特写、过肩和画外音可只列出当前可见人物，不得把未入画人物塞入轨迹。',
         items: {
           type: 'object', additionalProperties: false, required: ['character_id', 'name'],
@@ -199,7 +201,7 @@ function timelineSegmentSchema() {
         additionalProperties: true,
         required: ['mode', 'speaker_name', 'speaker_in_frame', 'dialogue_content', 'lip_sync_rule'],
         properties: {
-          mode: nonEmptyStringSchema(),
+          mode: { enum: Object.values(AUDIO_LIP_SYNC_MODES) },
           speaker_name: { type: 'string' },
           speaker_in_frame: { type: 'boolean' },
           dialogue_content: { type: 'string', description: '本段实际发声的连续原文片段，无发声填空。各段按顺序拼回完整台词一次，保留标点。' },
@@ -262,9 +264,9 @@ function videoSlotsSchema() {
         type: 'object', additionalProperties: false,
         required: ['mode', 'speaker_name', 'speaker_in_frame', 'delivery_medium', 'dialogue_content', 'visible_characters_lip_state', 'lip_sync_rule'],
         properties: {
-          mode: stringSchema(80), speaker_name: stringSchema(80), speaker_in_frame: { type: 'boolean' },
+          mode: { enum: Object.values(AUDIO_LIP_SYNC_MODES) }, speaker_name: stringSchema(80), speaker_in_frame: { type: 'boolean' },
           delivery_medium: stringSchema(80), dialogue_content: stringSchema(500),
-          visible_characters_lip_state: stringSchema(160), lip_sync_rule: stringSchema(300),
+          visible_characters_lip_state: { enum: ['strictly_sealed', 'synchronized_lip'] }, lip_sync_rule: stringSchema(300),
         },
       },
       trajectories: { type: 'array', items: characterTrajectorySchema() },
@@ -387,7 +389,7 @@ function semanticSlotsSchema(assignedIds = null) {
           },
         },
       },
-      audio_lip_sync: nonEmptyStringSchema(),
+      audio_lip_sync: { enum: Object.values(AUDIO_LIP_SYNC_MODES) },
       shot_duration: { type: 'integer', minimum: 4, maximum: 30 },
       execution_backend: { enum: ['h3_single', 'h3_continuum'] },
       continuum_plan: {

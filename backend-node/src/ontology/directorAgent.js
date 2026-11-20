@@ -31,11 +31,10 @@ function crossSlotStage2Violations(shot, catalogs = {}) {
 }
 
 /**
- * 单源权威确定性投影器：消除 4 层同义重复报错
+ * 单源权威确定性投影器：归一化时长、人物与台词
  * 1. 时长与执行后端单向投影（<9s: h3_single, >=9s: h3_continuum）
  * 2. 人物清单单向投影（visible_characters -> characters, background_characters -> background_characters）
  * 3. 单说话人台词单向投影（shotSpeechTurns -> speech_plan.text & dialogue_content）
- * 4. 画外音/无语言闭口状态兜底对齐（strictly_sealed）
  */
 function projectCanonicalShotContract(shot) {
   if (!shot || typeof shot !== 'object') return shot;
@@ -122,17 +121,6 @@ function projectCanonicalShotContract(shot) {
       }
       shot.video_slots.audio_lip_sync.dialogue_content = authoritativeText;
     }
-    const speakerId = Number(shot.semantic_slots?.speech_plan?.speaker_id);
-    if (Array.isArray(shot.character_visuals) && Number.isInteger(speakerId) && speakerId > 0 && !isNarration) {
-      for (const cv of shot.character_visuals) {
-        const cvId = Number(cv.character_id ?? cv.id);
-        if (cvId === speakerId) {
-          cv.mouth_state = 'speaking';
-        } else if (cv.mouth_state === 'speaking' || cv.mouth_state === 'speaker_synced') {
-          cv.mouth_state = 'strictly_sealed';
-        }
-      }
-    }
   } else if (turns.length === 0) {
     if (shot.semantic_slots && typeof shot.semantic_slots === 'object' && shot.semantic_slots.speech_plan) {
       shot.semantic_slots.speech_plan.text = '';
@@ -145,44 +133,6 @@ function projectCanonicalShotContract(shot) {
     }
     if (shot.dialogue == null) shot.dialogue = '';
     if (shot.narration == null) shot.narration = '';
-  }
-
-  // 4. 画外音/无语言闭口状态兜底对齐
-  const semanticAudioMode = shot.semantic_slots?.audio_lip_sync || shot.semantic_slots?.speech_plan?.mode;
-  const videoAudioMode = shot.video_slots?.audio_lip_sync?.mode;
-  const isSilent = Boolean(shot.semantic_slots?.sound_plan?.is_silent) || semanticAudioMode === 'silent_ambient';
-  const nonSpeakingModes = new Set(['offscreen_voiceover', 'narration', 'silent_ambient', 'bgm_only']);
-
-  if (
-    nonSpeakingModes.has(semanticAudioMode) ||
-    nonSpeakingModes.has(videoAudioMode) ||
-    isSilent
-  ) {
-    if (Array.isArray(shot.character_visuals)) {
-      for (const cv of shot.character_visuals) {
-        if (cv.mouth_state === 'speaking' || cv.mouth_state === 'speaker_synced') {
-          cv.mouth_state = 'strictly_sealed';
-        }
-      }
-    }
-    if (shot.video_slots && typeof shot.video_slots === 'object') {
-      if (!shot.video_slots.audio_lip_sync || typeof shot.video_slots.audio_lip_sync !== 'object') {
-        shot.video_slots.audio_lip_sync = {};
-      }
-      shot.video_slots.audio_lip_sync.visible_characters_lip_state = 'strictly_sealed';
-      if (Array.isArray(shot.video_slots.shots_timeline)) {
-        for (const seg of shot.video_slots.shots_timeline) {
-          if (seg.audio_lip_sync?.mode === 'in_frame_dialogue' && !isSilent) continue;
-          if (Array.isArray(seg.character_trajectories)) {
-            for (const traj of seg.character_trajectories) {
-              if (traj.mouth_state === 'speaker_synced') {
-                traj.mouth_state = 'offscreen_sealed';
-              }
-            }
-          }
-        }
-      }
-    }
   }
 
   return shot;
@@ -524,6 +474,8 @@ function compactExecutionShot(shot, options = {}) {
     end_framing: value.end_framing || '',
     transition_to_next: value.transition_to_next || '',
     semantic_slots: {
+      beat_id: semantic.beat_id ?? null,
+      beat_type: semantic.beat_type ?? null,
       visible_characters: semantic.visible_characters || [],
       background_characters: semantic.background_characters || [],
       offscreen_characters: semantic.offscreen_characters || [],
@@ -811,7 +763,7 @@ function directorAtomicRepairHint(violation) {
     INVARIANT_REQUIRED_AGENT_SLOT_MISSING: '由 Agent 显式补齐目标字段，不得改动其他已确认语义。无人镜头也必须显式输出 character_visuals: []；空数组合法，缺字段或 null 不合法。',
     INVARIANT_DIRECTOR_DURATION_RANGE: '遵守违规详情中的本任务时长范围，同步调整 duration、semantic_slots.shot_duration、video_slots.timing.duration 与镜内时间线。不得删改台词；超出范围上限仍说不完时按语义拆镜。',
     INVARIANT_VISUAL_ENUM_INVALID: 'character_visuals / last_frame_visuals 的每个视觉字段必须严格使用 actionAtoms 结构化枚举值，禁止退回自由文本。',
-    INVARIANT_SLOT_DUPLICATE_POSITION: '多人同框时 character_visuals 的 screen_position 必须互不相同并区分前景/中景/后景。',
+    INVARIANT_SLOT_DUPLICATE_POSITION: 'character_visuals 只覆盖第一段入画人物，多人同框时 的 screen_position 必须互不相同并区分前景/中景/后景。',
     INVARIANT_CHARACTER_VISUAL_SLOTS_REQUIRED: '包含出场人物的镜头必须由 Agent 显式提供结构化 character_visuals 数组。',
     INVARIANT_H3_PERFORMANCE_CONTRACT_VERSION: `video_slots.performance_contract 必须固定为 "${PERFORMANCE_CONTRACT}"。`,
     INVARIANT_UNIVERSAL_CREATION_MODE_REQUIRED: '本轮只能修改顶层 creation_mode，且值必须为 universal；不得返回 semantic_slots、video_slots 或其他字段。',
@@ -819,7 +771,6 @@ function directorAtomicRepairHint(violation) {
     INVARIANT_INCOMING_CONTINUITY_INCOMPLETE: '在 semantic_slots.continuity_from_previous 中补齐门禁指出的字段，并保持上一镜结束状态、本镜进入状态和因果关系一致。',
     INVARIANT_EYELINE_MATCH_WITHOUT_EYE_TARGET: '修正 continuity_from_previous 与对应 character_visuals/video_slots 的视线目标，明确上一镜视线来源、本镜目标和注意力落点。',
     INVARIANT_SPEECH_SLOT_DIVERGENCE: '先修复台词槽位冲突，再重新评估时长：以当前镜头数据库 dialogue/narration 为不可变原文，逐字同步 semantic_slots.speech_plan.text 与 video_slots.audio_lip_sync.dialogue_content；禁止因为派生的超时结果直接拆镜或把下一镜台词带入本镜。',
-    INVARIANT_CLOSE_DIALOGUE_BACKGROUND_CONFLICT: '近景/过肩/正反打双人对话构图中，背景角色容易造成面部融合或克隆人：必须将 background_characters 设为 []，semantic_slots.background_characters 设为 []；并从 character_visuals、semantic_slots.required_references 中移除背景角色（或将 dialogue_framing 改为宽景三人构图 wide_group/group_blocking）。',
     INVARIANT_CHARACTER_PARTICIPATION_CONFLICT: '同一角色在同一镜只能有一种参与方式：入画列入 visible_characters/background_characters，不入画列入 semantic_slots.offscreen_characters，必须二选一并保持顶层与 semantic_slots 一致。',
     INVARIANT_OFFSCREEN_CHARACTER_VISUALIZED: '画外参与者（semantic_slots.offscreen_characters）不入画：必须从 character_visuals、last_frame_visuals 与角色类 required_references 中移除，不得为其生成视觉定格或参考图；若该角色实际入画，改列入 visible_characters/background_characters 并确保单镜最多2人。',
     INVARIANT_SPEAKER_NOT_DECLARED: '说话人必须先声明参与方式：入画列入 visible_characters/background_characters，不入画（通讯器、画外喊话）列入 semantic_slots.offscreen_characters 并注明 mode（present_offscreen/remote_voice），再同步 speech_plan.speaker_id。',
@@ -945,34 +896,6 @@ function directorAtomicPatchSchemaSingle(violation, targetShot = null) {
     return { type: 'object', additionalProperties: false, required: [field], properties: {
       [field]: agentsRuntime.directorCharacterVisualsOutputType().schema.properties[field],
     } };
-  }
-  if (violation?.rule === 'INVARIANT_CLOSE_DIALOGUE_BACKGROUND_CONFLICT') {
-    return {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        background_characters: { const: [] },
-        dialogue_framing: { type: 'string' },
-        shot_type: { type: 'string' },
-        universal_segment_text: { type: 'string' },
-        character_visuals: agentsRuntime.directorCharacterVisualsOutputType().schema.properties.character_visuals,
-        required_references: {
-          type: 'array',
-          items: { type: 'object' },
-        },
-        semantic_slots: {
-          type: 'object',
-          additionalProperties: false,
-          properties: {
-            background_characters: { const: [] },
-            required_references: {
-              type: 'array',
-              items: { type: 'object' },
-            },
-          },
-        },
-      },
-    };
   }
   if (violation?.rule === 'INVARIANT_UNIVERSAL_CREATION_MODE_REQUIRED') {
     return {
@@ -1177,6 +1100,9 @@ function directorAtomicPatchSchemaSingle(violation, targetShot = null) {
     if (timeline.length > 0) {
       requiredVideoKeys.push('shots_timeline');
       const segmentPrefixItems = timeline.map((segment) => {
+        if (segment.audio_lip_sync?.mode === 'in_frame_dialogue' && segment.audio_lip_sync.speaker_in_frame && segment.audio_lip_sync.dialogue_content) {
+          return { const: segment };
+        }
         const segProps = Object.fromEntries(Object.entries(segment || {}).map(([key, value]) => {
           if (key === 'character_trajectories') {
             return [key, buildLockedTrajectoryArraySchema(value, () => ({ mouth_state: sealedConstraint }))];
@@ -1290,20 +1216,6 @@ function directorAtomicPatchSchemaSingle(violation, targetShot = null) {
         },
       };
     }
-  }
-  if (violation?.rule === 'INVARIANT_FRAMING_CHARACTER_COUNT_MISMATCH') {
-    const visibleCount = Array.isArray(semanticSlots?.visible_characters)
-      ? semanticSlots.visible_characters.length
-      : 0;
-    const allowed = visibleCount > 2
-      ? ['group_blocking', 'multi_character_reaction', 'wide_group']
-      : (visibleCount === 2 ? ['two_shot_face_to_face', 'over_the_shoulder', 'joint_observation'] : ['solo_action']);
-    return {
-      type: 'object',
-      additionalProperties: false,
-      required: ['dialogue_framing'],
-      properties: { dialogue_framing: { type: 'string', enum: allowed } },
-    };
   }
   if (semanticSlots && [
     'INVARIANT_UNIVERSAL_SCENE_REFERENCE_REQUIRED',
@@ -1769,18 +1681,10 @@ function shortDramaTimelineViolations(shot, timeline) {
   return validateVideoSlots(shot, videoSlots).filter((item) => item.severity === 'error');
 }
 
-function directorCharacterIds(shot) {
-  const semantic = shot?.semantic_slots && typeof shot.semantic_slots === 'object' ? shot.semantic_slots : {};
-  const ids = [];
-  for (const entry of [...(semantic.visible_characters || []), ...(semantic.background_characters || [])]) {
-    const id = Number(entry && typeof entry === 'object' ? (entry.id ?? entry.character_id) : entry);
-    if (id > 0 && !ids.includes(id)) ids.push(id);
-  }
-  return ids;
-}
-
 function visualSlotViolations(shot, characterVisuals, lastFrameVisuals) {
-  const expected = directorCharacterIds(shot).sort((a, b) => a - b);
+  const { frameCharacterIds } = require('./visualSlots');
+  const expected = frameCharacterIds(shot).sort((a, b) => a - b);
+  const expectedTail = frameCharacterIds(shot, true).sort((a, b) => a - b);
   const actual = (Array.isArray(characterVisuals) ? characterVisuals : [])
     .map((item) => Number(item?.character_id)).filter((id) => id > 0).sort((a, b) => a - b);
   const violations = [];
@@ -1797,8 +1701,8 @@ function visualSlotViolations(shot, characterVisuals, lastFrameVisuals) {
   }
   const lastIds = (Array.isArray(lastFrameVisuals) ? lastFrameVisuals : [])
     .map((item) => Number(item?.character_id)).filter((id) => id > 0).sort((a, b) => a - b);
-  if (policy === 'generate_tail' && JSON.stringify(lastIds) !== JSON.stringify(expected)) {
-    push(`last_frame_policy=generate_tail 时 last_frame_visuals 必须覆盖 ${JSON.stringify(expected)}`, ['last_frame_visuals']);
+  if (policy === 'generate_tail' && JSON.stringify(lastIds) !== JSON.stringify(expectedTail)) {
+    push(`last_frame_policy=generate_tail 时 last_frame_visuals 必须覆盖 ${JSON.stringify(expectedTail)}`, ['last_frame_visuals']);
   }
   if (policy !== 'generate_tail' && lastIds.length) {
     push(`last_frame_policy=${policy} 时 last_frame_visuals 必须为空数组`, ['last_frame_visuals']);
@@ -1807,7 +1711,7 @@ function visualSlotViolations(shot, characterVisuals, lastFrameVisuals) {
   if (expected.length > 0 && Array.isArray(characterVisuals) && characterVisuals.length > 0) {
     violations.push(...validateCharacterVisualSlots(shot, characterVisuals, 'character_visuals').filter((item) => item.severity === 'error'));
   }
-  if (policy === 'generate_tail' && expected.length > 0 && Array.isArray(lastFrameVisuals) && lastFrameVisuals.length > 0) {
+  if (policy === 'generate_tail' && expectedTail.length > 0 && Array.isArray(lastFrameVisuals) && lastFrameVisuals.length > 0) {
     violations.push(...validateCharacterVisualSlots(shot, lastFrameVisuals, 'last_frame_visuals').filter((item) => item.severity === 'error'));
   }
   return violations;
@@ -2001,8 +1905,8 @@ async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {})
       const planned = await agentsRuntime.runAgent(db, log, {
         name: 'director-execution-slots-planner',
         instructions: patchMode
-          ? `你是短剧导演执行合同的局部修复节点。只修复门禁反馈列出的字段，禁止改写人物清单、场景、对白、旁白、总时长和其他已通过字段。h3_mode 固定 ref2va 时，semantic_slots.first_frame_policy 与 semantic_slots.last_frame_policy 必须固定填 'none'。${requiredReferencesContract}${executionBackendContract}。当镜头已有角色对白（dialogue 非空且 narration 为空）时，speech_plan.is_narration 必须为 false，严禁把角色台词标为旁白。character_visuals 必须精确覆盖权威人物且每人有实际定格、多人不得占用完全相同的 screen_position；video_slots.shots_timeline 必须让每位画内角色在该段有与事件同步的动作或反应。凡存在对白的 timeline 段，speech_action_alignment.mode 固定填 'concurrent'（禁止填 sync/deliberate_pause/none），画内说话人 character_trajectories[].mouth_state 固定填 'speaker_synced'。当【本体资产白名单】的 props 为空或不含目标物体时，动作 target_type 禁止填 'prop'（无有效 target_id 必被门禁拒绝），改用 'event' 或 'scene' 并填写 target_label。只返回指定 repairs JSON，不要解释。`
-          : `你是短剧导演执行合同节点。根据紧凑的当前镜头事实，一次输出完整 semantic_slots、character_visuals、last_frame_visuals 和 video_slots。禁止改写人物清单、场景、对白、旁白和总时长。semantic_slots.continuity_from_previous 必须完整；h3_mode 固定 ref2va，first_frame_policy 与 last_frame_policy 必须固定填 'none'；${requiredReferencesContract}${executionBackendContract}；当镜头已有角色对白（dialogue 非空且 narration 为空）时，speech_plan.is_narration 必须为 false，严禁把角色台词标为旁白。performance_contract 固定 ${PERFORMANCE_CONTRACT}；多人同框时 character_visuals 的 screen_position 必须互相错开。动作与对白必须同步，所有画内人物都要有本段可执行动作或反应；有对白段 speech_action_alignment.mode 固定填 'concurrent'，画内说话人 character_trajectories[].mouth_state 固定填 'speaker_synced'。当【本体资产白名单】的 props 为空或不含目标物体时，动作 target_type 禁止填 'prop'（无有效 target_id 必被门禁拒绝），改用 'event' 或 'scene' 并填写 target_label。动作与画面描述必须是可拍摄的纯写实物理事件，严禁文学心理隐喻及在画面中描述 UI 元素（如血条、准星、倒计时悬浮窗、屏幕小字）。${durationPlanContract}。只返回指定 JSON，不要解释。`,
+          ? `你是短剧导演执行合同的局部修复节点。只修复门禁反馈列出的字段，禁止改写人物清单、场景、对白、旁白、总时长和其他已通过字段。h3_mode 固定 ref2va 时，semantic_slots.first_frame_policy 与 semantic_slots.last_frame_policy 必须固定填 'none'。${requiredReferencesContract}${executionBackendContract}。当镜头已有角色对白（dialogue 非空且 narration 为空）时，speech_plan.is_narration 必须为 false，严禁把角色台词标为旁白。character_visuals 只覆盖第一段入画人物且每人有实际定格、多人不得占用完全相同的 screen_position；video_slots.shots_timeline 必须让每位画内角色在该段有与事件同步的动作或反应。凡存在对白的 timeline 段，speech_action_alignment.mode 固定填 'concurrent'（禁止填 sync/deliberate_pause/none），按本段台词与 speaker_in_frame 分配口型：仅本段画内发言者填 speaker_synced，听者及无发言段填 closed 或 offscreen_sealed；首帧只描述开场瞬间。当【本体资产白名单】的 props 为空或不含目标物体时，动作 target_type 禁止填 'prop'（无有效 target_id 必被门禁拒绝），改用 'event' 或 'scene' 并填写 target_label。只返回指定 repairs JSON，不要解释。`
+          : `你是短剧导演执行合同节点。根据紧凑的当前镜头事实，一次输出完整 semantic_slots、character_visuals、last_frame_visuals 和 video_slots。禁止改写人物清单、场景、对白、旁白和总时长。semantic_slots.continuity_from_previous 必须完整；h3_mode 固定 ref2va，first_frame_policy 与 last_frame_policy 必须固定填 'none'；${requiredReferencesContract}${executionBackendContract}；当镜头已有角色对白（dialogue 非空且 narration 为空）时，speech_plan.is_narration 必须为 false，严禁把角色台词标为旁白。performance_contract 固定 ${PERFORMANCE_CONTRACT}；character_visuals 只覆盖第一段入画人物，多人同框时 的 screen_position 必须互相错开。动作与对白必须同步，所有画内人物都要有本段可执行动作或反应；有对白段 speech_action_alignment.mode 固定填 'concurrent'，按本段台词与 speaker_in_frame 分配口型：仅本段画内发言者填 speaker_synced，听者及无发言段填 closed 或 offscreen_sealed；首帧只描述开场瞬间。当【本体资产白名单】的 props 为空或不含目标物体时，动作 target_type 禁止填 'prop'（无有效 target_id 必被门禁拒绝），改用 'event' 或 'scene' 并填写 target_label。用可见的行为和结果表现剧情，画面元素遵循剧本与所选风格。${durationPlanContract}。只返回指定 JSON，不要解释。`,
         input: requestInput,
         outputType: patchMode
           ? agentsRuntime.directorExecutionRepairOutputType(shotNumber)
@@ -2105,7 +2009,7 @@ async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {})
         currentShot.background_characters = plannedBackgroundIds;
 
         const planningDrift = planningFeasibilityViolations([currentShot], { catalogs: retryOptions.catalogs || {} });
-        errors.push(...planningDrift.map((item) => ({ message: item.message })));
+        errors.push(...planningDrift);
       }
       if (requireSemantic) {
         const existingMsgs = new Set(errors.map((item) => String(item?.message || item || '')));

@@ -1,3 +1,4 @@
+const { MAX_REFERENCE_IMAGES } = require('./h3Limits');
 const videoService = require('./videoService');
 const taskService = require('./taskService');
 const { validateVideoSpeech } = require('./videoSpeechService');
@@ -56,7 +57,7 @@ function submitVideo(db, log, requested) {
     const lastFrameUrl = body.last_frame_url ?? body.last_frame_local_path ?? null;
     // 多图模式：sxy，存 JSON 数组到 reference_image_urls（严禁静默截断）
     if (isH3Request && body.reference_image_urls && Array.isArray(body.reference_image_urls)) {
-      if (body.reference_image_urls.length > 9) {
+      if (body.reference_image_urls.length > MAX_REFERENCE_IMAGES) {
         throw Object.assign(new Error(`参考图片数量 (${body.reference_image_urls.length}) 超过上限 (9 张)，后端禁止静默截断，请拆分分镜或精简参考素材`), { status: 400 });
       }
     }

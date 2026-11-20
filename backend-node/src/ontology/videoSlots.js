@@ -13,6 +13,7 @@ const angleService = require('../services/angleService');
 const { stripChineseExclusions } = require('../utils/framePromptSanitize');
 const { synthesizeLightingChiaroscuro } = require('./visualSlots');
 const { CONTINUUM_MAX_SECONDS, SINGLE_MAX_SECONDS, CONTINUUM_MIN_SECONDS } = require('../services/continuumPlan');
+const { MAX_VISIBLE_CHARACTERS } = require('../services/h3Limits');
 const actionAtoms = require('./actionAtoms');
 const {
   ACTIONS,
@@ -220,7 +221,7 @@ function validateStructuredExecutionContract(shot, slots) {
   timeline.forEach((segment, index) => {
     const segmentVisibleIds = [...new Set((Array.isArray(segment?.visible_characters) ? segment.visible_characters : [])
       .map((c) => Number(c?.character_id ?? c?.id ?? c)).filter((id) => id > 0))];
-    if (segmentVisibleIds.length > 2) add('INVARIANT_SHORT_DRAMA_VISIBLE_CHARACTER_LIMIT', `video_slots.shots_timeline[${index}].visible_characters`, `分镜 ${shotNum} 第 ${index + 1} 段最多只能有 2 个有身份人物。`);
+    if (segmentVisibleIds.length > MAX_VISIBLE_CHARACTERS) add('INVARIANT_SHORT_DRAMA_VISIBLE_CHARACTER_LIMIT', `video_slots.shots_timeline[${index}].visible_characters`, `分镜 ${shotNum} 第 ${index + 1} 段最多只能有 ${MAX_VISIBLE_CHARACTERS} 个有身份人物。`);
     const trajectories = Array.isArray(segment?.character_trajectories) ? segment.character_trajectories : [];
     const trajectoryIds = trajectories.map((t) => Number(t?.character_id)).filter((id) => id > 0);
     if (trajectoryIds.length !== new Set(trajectoryIds).size) add('INVARIANT_SHORT_DRAMA_TRAJECTORY_DUPLICATE', `video_slots.shots_timeline[${index}].character_trajectories`, `分镜 ${shotNum} 第 ${index + 1} 段人物轨迹重复。`);
@@ -233,7 +234,27 @@ function validateStructuredExecutionContract(shot, slots) {
     });
     const dialogue = String(segment?.audio_lip_sync?.dialogue_content || '').trim();
     const alignment = segment?.speech_action_alignment || {};
+    const voiceMode = segment?.audio_lip_sync?.mode;
+    if (dialogue && !['in_frame_dialogue', 'offscreen_voiceover', 'narration'].includes(voiceMode)) {
+      add('INVARIANT_SEGMENT_AUDIO_MODE', `video_slots.shots_timeline[${index}].audio_lip_sync.mode`,
+        `分镜 ${shotNum} 第 ${index + 1} 段有台词，mode=${JSON.stringify(voiceMode)}；画内发言选 in_frame_dialogue，画外角色选 offscreen_voiceover，旁白选 narration。`);
+    }
+    const speaksInFrame = Boolean(dialogue) && segment.audio_lip_sync?.mode === 'in_frame_dialogue'
+      && segment.audio_lip_sync?.speaker_in_frame === true;
+    const activeSpeaker = speaksInFrame ? Number(alignment.speaker_character_id) : null;
+    trajectories.forEach((person, personIndex) => {
+      if (person.mouth_state === 'speaker_synced' && Number(person.character_id) !== activeSpeaker) {
+        add('INVARIANT_SEGMENT_MOUTH_CONFLICT', `video_slots.shots_timeline[${index}].character_trajectories[${personIndex}].mouth_state`,
+          `分镜 ${shotNum} 第 ${index + 1} 段人物 ${person.character_id} 无画内发言却声明了同步口型。`);
+      }
+    });
     if (dialogue) {
+      if ((segment.audio_lip_sync?.mode === 'in_frame_dialogue') !== (segment.audio_lip_sync?.speaker_in_frame === true)) {
+        add('INVARIANT_SEGMENT_MOUTH_CONFLICT', `video_slots.shots_timeline[${index}].audio_lip_sync`, `分镜 ${shotNum} 第 ${index + 1} 段 mode=${voiceMode} 与 speaker_in_frame=${segment.audio_lip_sync?.speaker_in_frame} 冲突。画内发言请填 in_frame_dialogue / true，画外发言填 offscreen_voiceover / false，旁白填 narration / false。`);
+      }
+      if (speaksInFrame && semantic.speech_plan?.speaker_id != null && Number(semantic.speech_plan.speaker_id) !== activeSpeaker) {
+        add('INVARIANT_SEGMENT_MOUTH_CONFLICT', `video_slots.shots_timeline[${index}].speech_action_alignment.speaker_character_id`, `分镜 ${shotNum} 第 ${index + 1} 段口型人物与本镜发言人不同。`);
+      }
       if (alignment.mode !== 'concurrent') add('INVARIANT_SPEECH_ACTION_NOT_CONCURRENT', `video_slots.shots_timeline[${index}].speech_action_alignment.mode`, `分镜 ${shotNum} 第 ${index + 1} 段对白必须与动作同步，speech_action_alignment.mode 必须为 'concurrent'（当前为 '${alignment.mode || ''}'；有对白段请勿填 sync / deliberate_pause / none）。`);
       const speakerId = Number(alignment.speaker_character_id || 0);
       const speakerInFrame = segment?.audio_lip_sync?.speaker_in_frame !== false;
@@ -243,7 +264,7 @@ function validateStructuredExecutionContract(shot, slots) {
       if (speakerInFrame && speakerId && !segmentVisibleIds.includes(speakerId)) {
         add('INVARIANT_SPEAKER_NOT_VISIBLE', `video_slots.shots_timeline[${index}].speech_action_alignment.speaker_character_id`, `分镜 ${shotNum} 第 ${index + 1} 段说话人 ${speakerId} 不在 visible_characters 中。`);
       }
-      if (segmentVisibleIds.includes(speakerId)) {
+      if (speaksInFrame && segmentVisibleIds.includes(speakerId)) {
         const speaker = trajectories.find((t) => Number(t.character_id) === speakerId);
         if (!speaker) add('INVARIANT_SPEAKER_TRAJECTORY_MISSING', `video_slots.shots_timeline[${index}].character_trajectories`, `分镜 ${shotNum} 第 ${index + 1} 段说话人缺少动作轨迹。`);
         if (speaker && speaker.mouth_state !== 'speaker_synced') add('INVARIANT_SPEAKER_MOUTH_STATE_INVALID', `video_slots.shots_timeline[${index}].character_trajectories[character_id=${speakerId}].mouth_state`, `分镜 ${shotNum} 第 ${index + 1} 段说话人 ID ${speakerId} 的 character_trajectories[].mouth_state 必须为 'speaker_synced'（当前为 '${speaker.mouth_state || ''}'；speech_action_alignment.mode 保持 'concurrent'，不要改为 speaker_synced）。`);
@@ -321,17 +342,7 @@ function createVideoSemanticSlots(data = {}) {
       speaker_in_frame: Boolean(audio.speaker_in_frame),
       delivery_medium: String(audio.delivery_medium || 'direct_speech').trim(), // 'direct_speech' | 'radio_headset' | 'phone_call' | 'intercom' | 'voiceover' | 'narration'
       dialogue_content: String(audio.dialogue_content || '').trim(),
-      visible_characters_lip_state: (() => {
-        const raw = String(audio.visible_characters_lip_state || '').trim();
-        const isSealedMode = !audio.speaker_in_frame || audio.mode === 'offscreen_voiceover' || audio.mode === 'narration' || audio.mode === 'silent_ambient' || audio.mode === 'bgm_only';
-        if (isSealedMode) {
-          if (raw && (raw === 'strictly_sealed' || /(?:双唇紧闭|双唇自然闭合|双唇闭合|闭唇|闭口|闭合|紧闭|无说话口型|无口型|strictly_sealed)/iu.test(raw))) {
-            return 'strictly_sealed';
-          }
-          return raw || 'strictly_sealed';
-        }
-        return raw || 'synchronized_lip';
-      })(),
+      visible_characters_lip_state: String(audio.visible_characters_lip_state || '').trim(),
       lip_sync_rule: String(audio.lip_sync_rule || '').trim(),
     },
     trajectories: Array.isArray(data.trajectories)
@@ -368,7 +379,7 @@ function createVideoSemanticSlots(data = {}) {
           hands_target_id: t.hands_target_id != null ? Number(t.hands_target_id) : null,
           expression: String(t.expression || '').trim(),
           expression_detail: String(t.expression_detail || '').trim(),
-          mouth_state: String(t.mouth_state || 'closed').trim(),
+          mouth_state: String(t.mouth_state || '').trim(),
         }))
       : [],
     environment_vfx: {
@@ -441,7 +452,7 @@ function createVideoSemanticSlots(data = {}) {
                 hands_target_id: t.hands_target_id != null ? Number(t.hands_target_id) : null,
                 expression: String(t.expression || '').trim(),
                 expression_detail: String(t.expression_detail || '').trim(),
-                mouth_state: String(t.mouth_state || 'closed').trim(),
+                mouth_state: String(t.mouth_state || '').trim(),
                 shot_number: s.shot_number || (idx + 1),
               }))
             : [],
@@ -534,7 +545,7 @@ function validateVideoSlots(shot, slots) {
       });
     }
 
-    if (Array.isArray(slots.trajectories)) {
+    if (!slots.shots_timeline?.length && Array.isArray(slots.trajectories)) {
       slots.trajectories.forEach((traj) => {
         if (!SEALED_MOUTH_STATES.has(String(traj?.mouth_state || '').trim())) {
           violations.push({
@@ -627,10 +638,18 @@ function validateVideoSlots(shot, slots) {
     }
     const timeline = Array.isArray(slots.shots_timeline) ? slots.shots_timeline : [];
     const visibleIds = (Array.isArray(semantic.visible_characters) ? semantic.visible_characters : [])
-      .map(c => Number(c && typeof c === 'object' ? c.id : c)).filter(id => id > 0);
+      .map(c => Number(c?.id ?? c?.character_id ?? c)).filter(id => id > 0);
     const backgroundIds = (Array.isArray(semantic.background_characters) ? semantic.background_characters : [])
       .map(c => Number(c && typeof c === 'object' ? (c.character_id ?? c.id) : c)).filter(id => id > 0);
     const allowedSegmentIds = new Set([...visibleIds, ...backgroundIds]);
+    const appearedIds = new Set(timeline.flatMap(seg => (Array.isArray(seg?.visible_characters) ? seg.visible_characters : [])
+      .map(c => Number(c?.id ?? c?.character_id ?? c))));
+    const absent = [...allowedSegmentIds].filter(id => !appearedIds.has(id));
+    if (timeline.length && absent.length) {
+      violations.push({ rule: 'INVARIANT_CAST_NEVER_VISIBLE', shot_number: shotNum, severity: 'error',
+        conflict_slots: ['semantic_slots.visible_characters', 'semantic_slots.background_characters', 'semantic_slots.offscreen_characters', 'semantic_slots.required_references', 'video_slots.shots_timeline'],
+        message: `本镜声明人物 ${absent.join('、')} 入画，但各段均未出现。请导演确认对应分段或画外参与方式及参考图。` });
+    }
     const minSegments = Math.ceil(duration / MAX_SHORT_DRAMA_TIMELINE_SEGMENT_SECONDS);
     if (timeline.length < minSegments) {
       violations.push({

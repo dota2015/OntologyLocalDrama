@@ -34,7 +34,7 @@ async function extractAllEntitiesFromScript(db, log, cfg, episodeId) {
   const dramaEra = isAncient ? 'ancient' : (/民国/.test(text) ? 'republic_china' : (/赛博|科幻/.test(text) ? 'sci_fi' : 'modern'));
 
   const prompt = `你是一位严谨的短剧世界观与本体知识架构师。
-请阅读以下剧本，按照【短剧本体（Short-Drama Ontology）】标准，一次性抽取出该集出现的所有核心资产：短剧角色（Characters）、道具与打脸信物（Props）、空间场景与权力位阶（Scenes），以及角色间的关系边（Character Relations）和剧情节拍序列（Narrative Beats）。
+请阅读以下剧本，按照【短剧本体（Short-Drama Ontology）】标准，一次性抽取出该集出现的所有核心资产：短剧角色（Characters）、道具（Props）、场景（Scenes），以及角色间的关系边（Character Relations）和剧情节拍序列（Narrative Beats）。
 
 【世界观时代】：${dramaEra}（${isAncient ? '古装/古风世界观：严禁出现手机、电脑、现代工业品' : '现代/通用世界观'}）
 【剧名】：${drama.title || '短剧'}
@@ -43,15 +43,15 @@ ${ep.script_content}
 
 【短剧本体抽取规则】：
 1. **角色(characters)**：提取所有登场人物。
-   - name, gender(男/女), role(如赘婿/千金/霸总/岳母/打手等)
+   - name, gender(男/女), role(主角/配角/次要角色)
    - archetype(人设原型，按剧本描述，可留空；爽剧示例: hidden_tycoon/avenging_heiress/arrogant_antagonist/snobbish_inlaw/loyal_sidekick/bystander_crowd)
-   - surface_identity(表面伪装身份，如“保洁大妈”、“穷酸外卖员”、“窝囊赘婿”)
-   - hidden_identity(隐藏真实身份，如“千亿集团唯一继承人”、“退役龙王战神”)
+   - surface_identity(剧本明确的公开身份，可留空)
+   - hidden_identity(剧本明确揭示的隐藏身份，可留空)
    - power_status(按剧情选填，可留空: dominant强势压迫/suppressed低位隐忍/awakened觉醒/bystander围观)
    - appearance(具体外貌特征与五官发型服装，不少于30字), personality(性格关键词)
-2. **道具与打脸信物(props)**：提取剧中有物理交互、关键情节推动、打脸反转或证物作用的物体（如黑金卡、龙王戒、离婚协议书、亲子鉴定、信件、佩剑）。
+2. **道具(props)**：提取剧中有物理交互、关键情节推动、打脸反转或证物作用的物体（如黑金卡、龙王戒、离婚协议书、亲子鉴定、信件、佩剑）。
    - prop_role: 按原文用途描述，也可选 key_token(核心身份信物/底牌) / slap_evidence(打脸证据/文书) / conflict_tool(冲突器物/武器) / ambient(普通环境物件)
-   - close_up_required: boolean(若为 key_token 或 slap_evidence 必须为 true，短剧镜头中必须给予高辨识度特写)
+   - close_up_required: boolean(剧情需要看清道具细节时填 true)
    - owner_character_name: 专属持有者或出示者姓名
    - physical_scale: 给出具体真实物理尺度（如“标准黑金银行卡尺寸”、“直径约2.5cm古玉扳指”、“A4纸质装订文件”）
    - era_category: ancient/modern/republic_china/sci_fi/fantasy/universal
@@ -62,7 +62,7 @@ ${ep.script_content}
    - location(地点名，如豪门寿宴大厅/总裁办公室/阴暗地下室)
    - time(时间与光照，如奢华暖金顶光/冰冷日光灯/夜景暗调)
    - spatial_type: interior_tight / interior_open / exterior_open
-   - power_axis: 空间权力轴向(high_seat_vs_floor 主座高位对堂下 / entrance_intrusion 门口踹开闯入轴 / center_stage_vs_crowd 焦点对围观区)
+   - power_axis: 仅在剧本明确安排权力关系时填写，否则为 null。示例（high_seat_vs_floor 主座高位对堂下 / entrance_intrusion 门口踹开闯入轴 / center_stage_vs_crowd 焦点对围观区)
    - landmarks: 场景内地标数组，如 ["main_seat", "doorway", "banquet_table", "window"]
    - lighting_style: natural/dramatic/golden_hour/night/neon
    - reference_image_mode: single 或 quad_grid
@@ -71,12 +71,12 @@ ${ep.script_content}
    - to_character: 动作承受方角色名
    - relation_kind: 按原文描述关系，也可选 trusts(信任)、doubts(怀疑)、cares_for(照料)、humiliates(欺辱压迫) / protects(护短庇护) / subordinate_to(臣服从属) / family_oppresses(家族刁难) / enemy_of(死敌对立) / ally_of(忠实盟友) / reveals_identity_to(亮明底牌)
    - description: 简要关系说明
-5. **短剧爽点节拍序列(narrative_beats)**：提取本集的情绪张力节拍链。
+5. **剧情节拍序列(narrative_beats)**：提取本集的情绪张力节拍链。
    - beat_number: 1, 2, 3...
    - beat_type: 可选 decision(人物选择)、discovery(获得信息)、consequence(行动后果)、relationship_change(关系变化)，或按剧情选 hook(开场钩子) / suppression(极限施压羞辱) / reveal(亮信物底牌) / slap_reversal(打脸反转) / crowd_reaction(围观震惊反应) / cliffhanger(集末断章卡点) / transition(转场过渡)
-   - tension_level: 1~5 (张力级别，5为打脸/高潮巅峰)
-   - dominant_emotion: 屈辱/嚣张/震惊/爽快/肃杀
-   - power_shift: aggressor_dominant(恶人嚣张) / protagonist_counter(主角反击) / power_reversed(彻底翻盘) / stalemate(对峙)
+   - tension_level: 1~5 (张力级别，5 为本集张力最高点)
+   - dominant_emotion: 按当前节拍实际情绪填写，可留空
+   - power_shift: 无权力变化填 null；适用时示例：aggressor_dominant(恶人嚣张) / protagonist_counter(主角反击) / power_reversed(彻底翻盘) / stalemate(对峙)
    - actors: [ { "name": "...", "role": "aggressor/protagonist/bystander" } ]
    - revealed_prop_name: 若该节拍亮出信物，填道具名；否则留空
    - event_summary: 本节拍核心冲突事件一句话概括
@@ -90,13 +90,13 @@ ${ep.script_content}
     { "name": "...", "type": "武器/装备/证物/日常", "prop_role": "key_token/slap_evidence/conflict_tool/ambient", "close_up_required": true, "owner_character_name": "...", "era_category": "...", "era_compatibility": "...", "era_reason": "...", "physical_scale": "...", "reference_image_mode": "single或quad_grid", "reference_image_reason": "...", "description": "..." }
   ],
   "scenes": [
-    { "location": "...", "time": "...", "landmarks": ["main_seat", "doorway"], "power_axis": "center_stage_vs_crowd", "lighting_style": "dramatic", "reference_image_mode": "single或quad_grid", "reference_image_reason": "..." }
+    { "location": "...", "time": "...", "landmarks": [], "power_axis": null, "lighting_style": "dramatic", "reference_image_mode": "single或quad_grid", "reference_image_reason": "..." }
   ],
   "character_relations": [
     { "from_character": "...", "to_character": "...", "relation_kind": "humiliates", "description": "..." }
   ],
   "narrative_beats": [
-    { "beat_number": 1, "beat_type": "hook", "tension_level": 4, "dominant_emotion": "屈辱", "power_shift": "aggressor_dominant", "actors": [], "revealed_prop_name": "", "event_summary": "..." }
+    { "beat_number": 1, "beat_type": "hook", "tension_level": 4, "dominant_emotion": "", "power_shift": null, "actors": [], "revealed_prop_name": "", "event_summary": "..." }
   ]
 }`;
 
@@ -184,7 +184,14 @@ ${ep.script_content}
       const episodeSceneService = require('../services/episodeSceneService');
       episodeSceneService.add(db, ep.drama_id, epId, exist.id);
     } catch (_) {}
-    savedScenes.push(exist);
+    if (Array.isArray(s.landmarks)) {
+      db.prepare('UPDATE scenes SET landmarks=? WHERE id=?').run(JSON.stringify(s.landmarks), exist.id);
+    }
+    if (s.spatial_type) db.prepare('UPDATE scenes SET spatial_type=? WHERE id=?').run(s.spatial_type, exist.id);
+    if (Object.hasOwn(s, 'power_axis')) {
+      db.prepare('UPDATE scenes SET power_axis=? WHERE id=?').run(s.power_axis || null, exist.id);
+    }
+    savedScenes.push(db.prepare('SELECT * FROM scenes WHERE id=?').get(exist.id));
   }
 
   // 写入 props 表（含 Agent 视图模式规划、真实物理尺度与持有者关联）
@@ -421,10 +428,10 @@ ${hint ? `【补充线索/用户备注】：${hint}` : ''}
 {
   "name": "${name}",
   "role": "main/supporting/minor (主角/配角/次要角色选其一)",
-  "archetype": "hidden_tycoon(隐忍霸总/战神)/avenging_heiress(逆袭女主)/arrogant_antagonist(恶毒反派)/snobbish_inlaw(势利长辈)/bystander_crowd(吃瓜围观)",
-  "surface_identity": "表面伪装身份（如：保洁阿姨/落魄赘婿/底层职员）",
-  "hidden_identity": "隐藏真实底牌（如：千亿首富/龙王殿主/唯一继承人）",
-  "power_status": "dominant(强势)/suppressed(隐忍)/awakened(觉醒)/bystander(吃瓜)",
+  "archetype": "按剧本描述，无明确原型填 null",
+  "surface_identity": "公开身份，可留空",
+  "hidden_identity": "剧本明确的隐藏身份，可留空",
+  "power_status": "仅在原文支持时填写，否则为 null",
   "gender": "男/女",
   "appearance": "详细外貌特征（年龄外貌感、五官面容、发型发色、体型身材、典型服装配饰，不少于50字，供保持画风与人脸一致）",
   "description": "角色背景与在剧情中的身份定位（不少于30字）",

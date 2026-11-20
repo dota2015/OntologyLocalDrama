@@ -298,3 +298,19 @@ test('Director references reject missing people and overflow instead of silently
   db.prepare('UPDATE characters SET local_path=NULL WHERE id=20').run();
   assert.throws(() => plan.resolveReferences(db,shot,{},[],{ total:4,maxCharacters:3,maxObjects:4 }), /缺少图片/);
 });
+
+test('a reverse shot uses only the opening actor in its first image and the arriving actor in its tail', t => {
+  const db = makeDb(t);
+  db.exec("INSERT INTO dramas(id,title) VALUES(1,'测试'); INSERT INTO characters(id,drama_id,name,local_path) VALUES(10,1,'甲','a.png'),(20,1,'乙','b.png')");
+  const plan = require('../src/services/storyboardImagePlan');
+  const shot = { id: 501, semantic_slots: { visible_characters: [10,20] }, local_path: 'first.png',
+    video_slots: JSON.stringify({ shots_timeline: [10,20].map(character_id => ({ visible_characters: [{ character_id }] })) }),
+    character_visuals: [{ character_id: 10, name: '甲', posture: 'standing' }],
+    last_frame_visuals: [{ character_id: 20, name: '乙', posture: 'standing' }] };
+  const limits = { total: 4, maxCharacters: 2, maxObjects: 2 };
+  assert.match(plan.compileFrame(shot, null, 'first'), /【甲】/);
+  assert.doesNotMatch(plan.compileFrame(shot, null, 'first'), /【乙】/);
+  assert.match(plan.compileFrame(shot, null, 'last'), /【乙】/);
+  assert.deepEqual(plan.resolveReferences(db, shot, { frame_type: 'first' }, [], limits).refs.map(r => r.source), ['a.png']);
+  assert.deepEqual(plan.resolveReferences(db, shot, { frame_type: 'last' }, [], limits).refs.map(r => r.source), ['first.png', 'b.png']);
+});

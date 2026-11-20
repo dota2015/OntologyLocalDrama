@@ -24,9 +24,10 @@ function buildOfficialMockPromptFromSpec(spec) {
       : '';
     return `${align}integrated_multimodal_description: [Shot 1] Starting from <Picture 1>, the character acts continuously in natural lighting${outfitHint ? ' with updated silver tactical uniform' : ''}. ${speechText}\n\noverall_soundscape:\nQuiet room ambience.\n\nnon_diegetic_music:\nN/A`;
   }
-  const picDefs = (spec.picture_bindings || []).map((p, idx) => `<Subject ${idx + 1}> is the referenced ${p.type || 'context'} in ${p.tag}.`);
+  const subjects = require('../src/services/h3ReferenceBindings').groupSubjects(spec.picture_bindings);
+  const picDefs = subjects.map(s => `${s.tag} is the referenced asset in ${s.pictures.map(p => p.tag).join(' and ')}.`);
   const audioDefs = (spec.audio_bindings || []).map((a) => `${a.tag} is the voice-timbre reference for ${a.kind === 'narration' ? 'the off-screen narrator' : '<Subject 1>'} (S1).`);
-  const picRets = (spec.picture_bindings || []).map((_, idx) => `<Subject ${idx + 1}> (appears in [Shot 1]): fully_preserved - retained.`);
+  const picRets = subjects.map((_, idx) => `<Subject ${idx + 1}> (appears in [Shot 1]): fully_preserved - retained.`);
   const audioRets = (spec.audio_bindings || []).map((a) => `${a.tag}: reference - vocal timbre only.`);
   return [
     'subject_definitions:',
@@ -42,7 +43,7 @@ function buildOfficialMockPromptFromSpec(spec) {
     '',
     'detailed_description:',
     'Natural cinematic lighting.',
-    `[Shot 1] Wide framing establishing <Subject 1>${(spec.picture_bindings || []).length > 1 ? ` alongside ${(spec.picture_bindings || []).slice(1).map((_, i) => `<Subject ${i + 2}>`).join(', ')}` : ''} inside the room. ${speechText}`,
+    `[Shot 1] Wide framing establishing <Subject 1>${subjects.length > 1 ? ` alongside ${subjects.slice(1).map((_, i) => `<Subject ${i + 2}>`).join(', ')}` : ''} inside the room. ${speechText}`,
     '',
     'overall_soundscape:',
     'Quiet indoor ambience.',
@@ -70,6 +71,10 @@ function setup(t) {
     INSERT INTO characters VALUES(5,1,'王奕宸','card.png',NULL,NULL,'["profile.png"]','少年，黑色短发','',NULL);
     INSERT INTO scenes VALUES(2,1,'房间','room.png',NULL),(3,1,'操场','field.png',NULL);
     INSERT INTO image_generations VALUES(1,5,'card.png','character reference sheet',NULL);`);
+  db.exec('ALTER TABLE storyboards ADD COLUMN video_slots TEXT');
+  db.prepare('UPDATE storyboards SET video_slots=? WHERE episode_id=10').run(JSON.stringify({
+    shots_timeline: [{ duration: 5, visible_characters: [{ character_id: 5 }] }],
+  }));
   const flPlan = JSON.stringify({ h3_mode:'fl2va', h3_mode_reason:'精确起幅优先', first_frame_policy:'generate_new', first_frame_reason:'锁定开场', last_frame_policy:'generate_tail', last_frame_reason:'锁定落幅', required_references:[], speech_plan:{ audio_references:[] } });
   db.prepare('UPDATE storyboards SET semantic_slots=? WHERE episode_id=10').run(flPlan);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'h3-native-'));
@@ -101,6 +106,9 @@ test('Stage 3 official validator enforces 6-section Ref2VA format, <Picture>/<Au
     },
   });
   const validPrompt = buildOfficialMockPromptFromSpec(spec);
+  assert.ok(validPrompt.includes('<Picture 1> and <Picture 2>'));
+  assert.ok(!validPrompt.includes('<Subject 2>'));
+  assert.equal(stage3.validateOfficialH3Prompt(validPrompt.replace('and <Picture 2>', '\n<Subject 2> uses <Picture 2>'), spec).valid, false);
   const res = stage3.validateOfficialH3Prompt(validPrompt, spec);
   assert.deepEqual(res.errors, []);
   assert.deepEqual([...validPrompt.matchAll(/^(\w+):$/gm)].map(m => m[1]), ['subject_definitions', 'summary', 'retention_analysis', 'detailed_description', 'overall_soundscape', 'non_diegetic_music']);

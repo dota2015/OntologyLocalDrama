@@ -209,6 +209,11 @@ function updateStoryboard(db, log, id, req) {
       const ins = db.prepare('INSERT OR IGNORE INTO storyboard_props (storyboard_id, prop_id) VALUES (?, ?)');
       for (const pid of propIds) ins.run(Number(id), Number(pid));
     }
+    if (req.h3_prompt_manual && String(req.h3_prompt_snapshot || '').trim()) {
+      const updated = db.prepare('SELECT * FROM storyboards WHERE id=?').get(id);
+      const version = require('./h3Stage3PromptService').manualPromptVersion(db, updated);
+      db.prepare('UPDATE storyboards SET h3_prompt_fingerprint=? WHERE id=?').run(JSON.stringify(version), id);
+    }
   })();
   log.info('Storyboard updated', { id });
   return getStoryboardById(db, id);

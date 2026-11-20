@@ -94,6 +94,7 @@ function loadStoryboard(db, storyboardId) {
         end_framing: row.end_framing || '',
         character_visuals: row.character_visuals || '[]',
         semantic_slots: row.semantic_slots || null,
+        video_slots: row.video_slots || null,
         environment_depth: row.environment_depth || '',
         cinematic_lens: row.cinematic_lens || '',
         lighting_chiaroscuro: row.lighting_chiaroscuro || '',

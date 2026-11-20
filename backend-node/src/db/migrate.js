@@ -238,6 +238,9 @@ function ensureAllColumns(database) {
 
   // --- scenes ---
   ensureColumns(database, 'scenes', [
+    { name: 'landmarks', type: 'TEXT' },
+    { name: 'spatial_type', type: 'TEXT' },
+    { name: 'power_axis', type: 'TEXT' },
     { name: 'reference_image_mode', type: 'TEXT' },
     { name: 'reference_image_recommendation', type: 'TEXT' },
     { name: 'reference_image_reason', type: 'TEXT' },

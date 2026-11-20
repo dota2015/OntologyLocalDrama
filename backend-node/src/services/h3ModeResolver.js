@@ -1,3 +1,4 @@
+const { MAX_REFERENCE_IMAGES } = require('./h3Limits');
 /**
  * MiniMax-H3 执行方案编译器。
  * 模式与参考帧由导演 Agent 写入 semantic_slots；执行层只应用人工覆盖、
@@ -123,7 +124,7 @@ function resolveH3Mode(shot, context = {}) {
       ['semantic_slots.h3_mode']
     ));
   }
-  if (effectiveRefs.length > 9) {
+  if (effectiveRefs.length > MAX_REFERENCE_IMAGES) {
     violations.push(violation(
       'INVARIANT_REFERENCE_CAPACITY_EXCEEDED',
       `MiniMax-H3 单镜最多支持 9 张参考图（当前 ${effectiveRefs.length} 张），后端禁止静默截断，请 Agent 拆分分镜或精简参考素材`,

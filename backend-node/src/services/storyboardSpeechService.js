@@ -143,7 +143,7 @@ async function enforceStoryboardSpeechTiming(storyboards, {
         : `将此超出对白预算或包含多发言段的分镜按语义与说话轮次拆分为至少 ${minCount} 个连续分镜（当前约需 ${assessment.requiredSeconds} 秒，单镜上限 ${durationRange?.max || duration} 秒）。`;
       const userPrompt = `${reasonHeader}
 【必须拆镜】严禁只返回 1 个分镜！${speakerRuleLine}拆分后每个新分镜的台词/旁白字数绝不能超过 ${maxBudgetPerShot} 个中文字！只返回 JSON 数组，每项保留原分镜的字段结构。
-对白和旁白必须逐字完整、按句号/逗号原顺序分配切分到各个分镜中，保留说话人，禁止增删改写；不得重复整段台词。保持人物、场景、道具及动作连续，合理分配动作与停顿。
+对白和旁白必须逐字完整、按句号/逗号原顺序分配切分到各个分镜中，保留说话人，禁止增删改写；不得重复整段台词。拆分片段沿用本节拍 beat_id，分别声明实际入画与画外的人物；保持场景、道具及动作连续，合理分配动作与停顿。
 ${durationRange ? `每镜 duration 在 ${durationRange.min}–${durationRange.max} 秒内按动作与台词分别规划，不突破上限。` : `每镜 duration 固定为 ${duration} 秒，不通过增加 duration 逃避拆镜。`}允许空旁白。重写各镜头的动作、结果、标题；不要返回 universal_segment_text/video_prompt/image_prompt，它们由系统重建。
 原分镜：${JSON.stringify(source)}\n上次校验：${lastError}`;
       try {
@@ -158,7 +158,7 @@ ${durationRange ? `每镜 duration 在 ${durationRange.min}–${durationRange.ma
           const fragment = { ...source, ...item, dialogue: item.dialogue || '', narration: item.narration || '' };
           Object.assign(fragment,plan(fragment).shot);
           // Scene/character/prop associations remain authoritative.
-          for (const key of ['scene_id', 'characters', 'props', 'segment_index', 'segment_title']) {
+          for (const key of ['scene_id', 'props', 'segment_index', 'segment_title', 'beat_id', 'beat_type']) {
             if (source[key] !== undefined) fragment[key] = source[key];
           }
           if(index>0)delete fragment.wardrobe_change;

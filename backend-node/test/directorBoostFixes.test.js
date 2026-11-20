@@ -95,101 +95,16 @@ describe('Director Boost Fixes Verification', () => {
     );
   });
 
-  it('provides repair hint and explicit patch schema for INVARIANT_CLOSE_DIALOGUE_BACKGROUND_CONFLICT', () => {
-    const violation = {
-      rule: 'INVARIANT_CLOSE_DIALOGUE_BACKGROUND_CONFLICT',
-      shot_number: 5,
-      message: '近景双人对话构图声明了背景人物',
-    };
-    const hint = directorAtomicRepairHint(violation);
-    assert.match(hint, /background_characters 设为 \[\]/);
-    assert.match(hint, /semantic_slots\.background_characters 设为 \[\]/);
-
-    const schema = directorAtomicPatchSchema(violation, {
-      dialogue_framing: 'over_the_shoulder',
-      background_characters: [{ character_id: 3, name: '背景人' }],
-      character_visuals: [
-        { character_id: 1, name: '主角' },
-        { character_id: 2, name: '配角' },
-        { character_id: 3, name: '背景人', depth_layer: 'background' },
-      ],
-    });
-
-    assert.ok(schema.properties.background_characters);
-    assert.deepEqual(schema.properties.background_characters, { const: [] });
-    assert.ok(schema.properties.semantic_slots.properties.background_characters);
-    assert.deepEqual(schema.properties.semantic_slots.properties.background_characters, { const: [] });
-    assert.ok(schema.properties.character_visuals);
-    assert.ok(schema.properties.dialogue_framing);
-  });
-
-  it('prunes background characters from Subjects and Subject Count in tight framing (h3NativeService)', () => {
-    const refs = [
-      { source: 'scene.png', kind: 'scene', character_id: null },
-      { source: 'focal1.png', kind: 'character', character_id: 1, name: '主角A' },
-      { source: 'focal2.png', kind: 'character', character_id: 2, name: '主角B' },
-      { source: 'bg.png', kind: 'character', character_id: 3, name: '背景角色C' },
-    ];
-    const speech = {
-      references: [
-        { key: 'character:1', kind: 'dialogue' },
-      ],
-      lines: [
-        { key: 'character:1', kind: 'dialogue', text: '行动开始。' },
-      ],
-    };
-    const translated = {
-      visual_description: 'Two characters stand close facing each other over the shoulder in the control room.',
-      overall_soundscape: 'Humming server ambience.',
-      non_diegetic_music: 'N/A',
-      shot_descriptions: [],
-    };
-
-    assert.throws(() => h3NativeService.assertTightFramingReferences(refs, {
-      dialogueFraming: 'over_the_shoulder', shotType: '近景',
-      backgroundCharacters: [{ character_id: 3, name: '背景角色C' }], duration: 5,
-    }, speech), /未规划的背景人物/);
-  });
-
-  it('prunes third character in tight OTS when background_characters is empty (Drama 5 Episode 17 clone scenario)', () => {
-    const refs = [
-      { source: 'scene.png', kind: 'scene', character_id: null },
-      { source: 'focal1.png', kind: 'character', character_id: 1, name: '主角A' },
-      { source: 'focal2.png', kind: 'character', character_id: 2, name: '主角B' },
-      { source: 'third.png', kind: 'character', character_id: 3, name: '非焦点角色C' },
-    ];
-    const speech = {
-      references: [
-        { key: 'character:1', kind: 'dialogue' },
-      ],
-      lines: [
-        { key: 'character:1', kind: 'dialogue', text: '你在说什么？' },
-      ],
-    };
-
-    // In Drama 5 / Episode 17, background_characters was [] (or cleared by agent),
-    // but the 3rd character was present in refs (e.g. from episode assets).
-    // The compiler must reject character 3 because visible_characters only includes [1, 2].
-    assert.throws(() => h3NativeService.assertTightFramingReferences(refs, {
-      dialogueFraming: 'over_the_shoulder', shotType: '近景', backgroundCharacters: [],
-      visibleCharacters: [{ id: 1, name: '主角A' }, { id: 2, name: '主角B' }], duration: 5,
-    }, speech), /未规划的背景人物/);
-  });
-
-  it('prunes non-focal character in single close framing', () => {
-    const refs = [
-      { source: 'focal1.png', kind: 'character', character_id: 1, name: '主角A' },
-      { source: 'second.png', kind: 'character', character_id: 2, name: '配角B' },
-    ];
-    const speech = {
-      references: [{ key: 'character:1', kind: 'dialogue' }],
-      lines: [{ key: 'character:1', kind: 'dialogue', text: '我不相信。' }],
-    };
-
-    assert.throws(() => h3NativeService.assertTightFramingReferences(refs, {
-      dialogueFraming: 'single_close', shotType: '特写',
-      visibleCharacters: [{ id: 1, name: '主角A' }], duration: 4,
-    }, speech), /未规划的背景人物/);
+  it('binds the union of reverse-shot subjects and enforces each segment separately', () => {
+    const refs = [{ character_id: 1 }, { character_id: 2 }, { kind: 'context' }];
+    const shot = (...segments) => ({ shot_type: '特写', video_slots: JSON.stringify({
+      shots_timeline: segments.map(ids => ({ visible_characters: ids.map(character_id => ({ character_id })) })),
+    }) });
+    assert.doesNotThrow(() => h3NativeService.assertSegmentReferences(refs, shot([1], [2])));
+    assert.throws(() => h3NativeService.assertSegmentReferences(refs, shot([1])), /均未入画/);
+    assert.throws(() => h3NativeService.assertSegmentReferences(refs, shot([1,2,3])), /最多允许/);
+    assert.throws(() => h3NativeService.assertSegmentReferences(refs.slice(0,1), shot([1], [2])), /缺少绑定/);
+    assert.throws(() => h3NativeService.assertSegmentReferences(refs, shot()), /缺少 H3 分段时间轴/);
   });
 
   it('dynamic schema for last_frame_visuals restricts to maxItems 0 when last_frame_policy is not generate_tail', () => {
@@ -227,20 +142,6 @@ describe('Director Boost Fixes Verification', () => {
     assert.equal(normalized[0].timestamp, '00:00.000');
     assert.equal(normalized[1].timestamp, '00:02.000');
     assert.equal(normalized[2].timestamp, '00:04.000');
-  });
-
-  it('patch schema for INVARIANT_CLOSE_DIALOGUE_BACKGROUND_CONFLICT allows shot_type and universal_segment_text', () => {
-    const violation = {
-      rule: 'INVARIANT_CLOSE_DIALOGUE_BACKGROUND_CONFLICT',
-      shot_number: 3,
-      message: '近景双人对话构图声明了背景人物',
-    };
-    const schema = directorAtomicPatchSchema(violation, {
-      dialogue_framing: 'over_the_shoulder',
-      shot_type: '近景',
-    });
-    assert.ok(schema.properties.shot_type, 'shot_type should be allowed in patch schema');
-    assert.ok(schema.properties.universal_segment_text, 'universal_segment_text should be allowed in patch schema');
   });
 
   it('validateCharacterVisualSlots enforces closed structured screen_position enums', () => {

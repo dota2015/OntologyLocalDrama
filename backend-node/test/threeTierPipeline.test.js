@@ -117,17 +117,10 @@ describe('Three-Tier Architectural Evolution: Agent First, Ontology Gatekeeper, 
       assert.ok(v, 'Should detect dual-role character conflict');
     });
 
-    it('Rule 5: Rejects framing vs character count mismatches (构图人数与实际在场人数不一致)', () => {
-      const shot = {
-        shot_number: 5,
-        dialogue_framing: 'two_shot_face_to_face',
-        semantic_slots: {
-          visible_characters: [{ id: 1, name: '苏凤仪' }], // 只有 1 人，但是双人面对面构图
-        },
-      };
-      const violations = checkCrossSlotInvariants([shot]);
-      const v = violations.find(x => x.rule === 'INVARIANT_FRAMING_CHARACTER_COUNT_MISMATCH');
-      assert.ok(v, 'Should detect framing count mismatch');
+    it('allows a reverse-shot sequence with one visible actor per camera angle', () => {
+      const shot = { dialogue_framing: 'solo_action', semantic_slots: { visible_characters: [1, 2] },
+        video_slots: { shots_timeline: [1, 2].map(id => ({ visible_characters: [{ character_id: id }] })) } };
+      assert.ok(!checkCrossSlotInvariants([shot]).some(v => v.rule.includes('FRAMING_CHARACTER_COUNT')));
     });
 
     it('Rule 6: Rejects identity visibility vs back-view / silhouette conflicts (清晰正脸与背影/剪影冲突)', () => {

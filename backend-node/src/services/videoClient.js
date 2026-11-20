@@ -1,3 +1,4 @@
+const { MAX_REFERENCE_IMAGES } = require('./h3Limits');
 const inputSnapshot = require('./generationInputSnapshot');
 const fs = require('fs');
 const path = require('path');
@@ -252,7 +253,7 @@ async function callContentVideoApi(config, log, opts = {}) {
   const references = Array.isArray(reference_urls) ? reference_urls.filter(Boolean).map(String) : [];
   const usesGuides = !!(firstImage || lastImage);
   const mixedH3 = opts.h3_mixed_references === true;
-  if ((!usesGuides || mixedH3) && references.length > 9) {
+  if ((!usesGuides || mixedH3) && references.length > MAX_REFERENCE_IMAGES) {
     return { error: 'MiniMax-H3 最多支持 9 张参考图，请减少参考图后重试' };
   }
 
@@ -315,6 +316,12 @@ async function callContentVideoApi(config, log, opts = {}) {
   const snapshotAttempt = inputSnapshot.record(opts.snapshot_db, 'video', video_gen_id, {
     provider: 'minimax_h3', model: finalModel, mode: isFl2va ? 'fl2va' : 'ref2va',
     storyboard: inputSnapshot.storyboardVersion(opts.input_storyboard),
+    acceptance: opts.input_storyboard ? {
+      storyboard_number: opts.input_storyboard.storyboard_number,
+      result: opts.input_storyboard.result,
+      dialogue: opts.input_storyboard.dialogue,
+      narration: opts.input_storyboard.narration,
+    } : null,
     input_fingerprint: opts.input_fingerprint || null,
     prompt: body.content[0].text, references: submittedReferences,
     parameters: {

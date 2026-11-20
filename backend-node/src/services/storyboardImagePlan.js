@@ -1,5 +1,5 @@
 // One projection of Director-owned state into image conditioning. No LLM repair.
-const { compileImagePromptFromSlots, compileLastFramePromptFromSlots } = require('../ontology/visualSlots');
+const { frameCharacterIds, compileImagePromptFromSlots, compileLastFramePromptFromSlots } = require('../ontology/visualSlots');
 
 function parse(value, fallback) {
   if (value == null || value === '') return fallback;
@@ -15,23 +15,22 @@ function compileFrame(shot, scene, kind, style = '') {
   const last = kind === 'last';
   if (!['first', 'last'].includes(kind)) throw new Error('结构化分镜关键帧尚无独立定格规划，请使用导演规划的首帧或尾帧');
   const visuals = parse(last ? shot.last_frame_visuals : shot.character_visuals, []);
-  const ids = (semantic.visible_characters || []).map(c => Number(c.id ?? c.character_id ?? c));
+  const ids = frameCharacterIds(shot, last);
   if (!Array.isArray(visuals) || ids.some(id => !visuals.some(v => Number(v.character_id ?? v.id) === id))) {
     throw new Error(`${last ? '尾帧' : '首帧'}人物槽位缺失，请让导演 Agent 补全后生成`);
   }
+  const focal = (semantic.visible_characters || []).map(c => Number(c.id ?? c.character_id ?? c));
   const backgrounds = semantic.background_characters || [];
   const visualIds = visuals.map(v => Number(v.character_id ?? v.id));
-  if (visualIds.some(id => !ids.includes(id)) || new Set(visualIds).size !== visualIds.length || backgrounds.some(v => ids.includes(Number(v.id ?? v.character_id ?? v)))) {
+  if (visualIds.some(id => !ids.includes(id)) || new Set(visualIds).size !== visualIds.length || backgrounds.some(v => focal.includes(Number(v.id ?? v.character_id ?? v)))) {
     throw new Error('人物定格与画内人物清单冲突，请让导演 Agent 修复，未自动删减人物');
   }
-  const allVisuals = [...visuals, ...backgrounds.filter(c => !visuals.some(v => Number(v.character_id ?? v.id) === Number(c.id ?? c.character_id)))];
   const resolved = { ...shot, location: shot.location || scene?.location, time: shot.time || scene?.time };
   const compiler = last ? compileLastFramePromptFromSlots : compileImagePromptFromSlots;
-  return compiler(resolved, allVisuals, { style });
+  return compiler(resolved, visuals, { style });
 }
 
 function resolveReferences(db, shot, row, looks, limits) {
-  const semantic = parse(shot.semantic_slots, {});
   const refs = [];
   const key = source => String(source).replace(/^https?:\/\/[^/]+\/static\//, '').replace(/^\/static\//, '');
   const add = (source, role, name, id) => {
@@ -49,14 +48,15 @@ function resolveReferences(db, shot, row, looks, limits) {
       ? db.prepare('SELECT * FROM image_generations WHERE id=? AND deleted_at IS NULL').get(shot.first_frame_image_id) : null;
     add(first?.local_path || first?.image_url || shot.local_path || shot.image_url, 'first_frame', '本镜首帧', first?.id);
   }
+  const openingCast = frameCharacterIds(shot);
+  for (const id of frameCharacterIds(shot, tail)) {
+    if (lock && openingCast.includes(id)) continue;
+    const character = db.prepare('SELECT * FROM characters WHERE id=? AND deleted_at IS NULL').get(id);
+    if (!character) throw new Error(`参考人物 ${id} 不存在，请让导演 Agent 修复`);
+    const look = looks.find(l => Number(l.id) === id);
+    add(look?.reference_image || character.local_path || character.image_url, 'character', character.name, id);
+  }
   if (!lock) {
-    for (const c of [...(semantic.visible_characters || []), ...(semantic.background_characters || [])]) {
-      const id = Number(c.id ?? c.character_id ?? c);
-      const character = db.prepare('SELECT * FROM characters WHERE id=? AND deleted_at IS NULL').get(id);
-      if (!character) throw new Error(`参考人物 ${id} 不存在，请让导演 Agent 修复`);
-      const look = looks.find(l => Number(l.id) === id);
-      add(look?.reference_image || character.local_path || character.image_url, 'character', character.name, id);
-    }
     if (shot.scene_id) {
       const scene = db.prepare('SELECT * FROM scenes WHERE id=? AND deleted_at IS NULL').get(shot.scene_id);
       add(scene?.local_path || scene?.image_url, 'scene', scene?.location || `场景 ${shot.scene_id}`, shot.scene_id);

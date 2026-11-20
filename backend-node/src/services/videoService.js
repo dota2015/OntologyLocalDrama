@@ -298,25 +298,25 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
     };
   } else if (localPath) {
     try {
-      const { auditGeneratedVideo } = require('./videoQualityGate');
+      const { auditGeneratedVideo, auditVisibleOutcome } = require('./videoQualityGate');
       const cfg = require('../config').loadConfig();
       const storagePath = resolveStoragePath(cfg);
       const absPath = path.isAbsolute(localPath) ? localPath : path.join(storagePath, localPath);
-      const shotRow = row.storyboard_id ? db.prepare('SELECT * FROM storyboards WHERE id=?').get(row.storyboard_id) : {};
+      const captured = db.prepare('SELECT input_snapshot FROM video_generations WHERE id=?').get(videoGenId);
+      const submitted = require('./generationInputSnapshot').read(captured)?.attempts?.at(-1)?.acceptance;
+      const shotRow = { ...submitted, h3_mode: row.h3_mode };
       const firstFramePath = row.first_frame_url || row.image_url;
       const firstFrameAbs = resolveLocalMediaPath(storagePath, firstFramePath);
       qualityAudit = await auditGeneratedVideo(absPath, shotRow, {
+        tempDir: path.join(path.dirname(absPath), 'quality_frames', String(videoGenId)),
         expectedDuration: row.duration,
         firstFrameSourcePath: firstFrameAbs,
         firstFrameRequired: !!firstFramePath,
       });
+      qualityAudit.outcome = await auditVisibleOutcome(db, log, submitted?.result, qualityAudit.frames?.tail_frame);
       try {
         const { auditGeneratedSpeech } = require('./asrQualityAudit');
-        qualityAudit.asr = await auditGeneratedSpeech(absPath, shotRow);
-        if (row.storyboard_id) {
-          db.prepare('UPDATE storyboards SET h3_quality_audit=?, updated_at=? WHERE id=?')
-            .run(JSON.stringify(qualityAudit), new Date().toISOString(), row.storyboard_id);
-        }
+        qualityAudit.asr = submitted ? await auditGeneratedSpeech(absPath, shotRow) : { status: 'unavailable', reason: '缺少提交时台词快照' };
       } catch (asrError) {
         qualityAudit.asr = { status: 'error', reason: asrError.message };
         log.warn('[ASR] 生成后语音质检未执行', { video_gen_id: videoGenId, error: asrError.message });
@@ -391,8 +391,8 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
   }
   if (row.storyboard_id) {
     try {
-      db.prepare('UPDATE storyboards SET video_url = ?, selected_video_id = ?, updated_at = ? WHERE id = ?').run(
-        videoUrl, videoGenId, now, row.storyboard_id
+      db.prepare('UPDATE storyboards SET video_url = ?, selected_video_id = ?, h3_quality_audit = ?, updated_at = ? WHERE id = ?').run(
+        videoUrl, videoGenId, qualityAuditJson, now, row.storyboard_id
       );
       log.info('Updated storyboard video' + (logLabel ? ` (${logLabel})` : ''), {
         storyboard_id: row.storyboard_id,

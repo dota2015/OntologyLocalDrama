@@ -185,6 +185,9 @@ test('dramas.metadata.ontology_graph safely merges relations and partitions beat
 
   // Verify compileDramaSemanticPackage for Ep 101 and 102
   const pkg101 = compileDramaSemanticPackage(db, 101);
+  const hall = pkg101.catalogs.scenes.find(scene => scene.location === '宴会大厅');
+  assert.deepEqual(hall.landmarks, ['红毯', '主桌']);
+  assert.equal(hall.power_axis, '主位');
   assert.equal(pkg101.narrative_beats.length, 1);
   assert.equal(pkg101.narrative_beats[0].beat_type, 'reveal');
   assert.equal(pkg101.ontology_graph.relations.length, 2);

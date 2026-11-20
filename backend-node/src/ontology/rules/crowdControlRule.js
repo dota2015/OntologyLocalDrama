@@ -1,6 +1,7 @@
 /**
  * 门禁 3：群戏防人脸崩溃与防克隆人检查（单镜身份角色 <= 2）
  */
+const { MAX_VISIBLE_CHARACTERS } = require('../../services/h3Limits');
 const BaseInvariantRule = require('./baseRule');
 const { shotCharacterIds } = require('./assetReferenceRule');
 
@@ -20,7 +21,7 @@ class CrowdControlRule extends BaseInvariantRule {
     const violations = [];
     if (!Array.isArray(shots)) return violations;
 
-    const maxChars = Number(context.ruleConfig?.params?.max_characters ?? context.options?.max_characters) || 2;
+    const maxChars = Number(context.ruleConfig?.params?.max_characters ?? context.options?.max_characters) || MAX_VISIBLE_CHARACTERS;
     const severity = context.ruleConfig?.severity || this.defaultSeverity;
 
     shots.forEach((shot, idx) => {
@@ -32,8 +33,7 @@ class CrowdControlRule extends BaseInvariantRule {
         // 领头吃瓜代表（焦点）最多 2 人挂参考图，其余群众必须改写为环境事件或无ID背景，杜绝生图模型克隆人
         const isCrowdReaction = shot.is_crowd_reaction
           || shot.beat_type === 'crowd_reaction'
-          || shot.dialogue_framing === 'crowd_reaction'
-          || (shot.title && (shot.title.includes('反应') || shot.title.includes('围观') || shot.title.includes('众人')));
+          || shot.dialogue_framing === 'crowd_reaction';
 
         const message = isCrowdReaction
           ? `分镜 ${shotNum} 为围观吃瓜镜头，具名焦点角色仍须 ≤ ${maxChars} 人（作为领头震惊/议论的焦点代表），其余围观群众严禁分配角色ID或挂入人脸参考图（会导致生图模型克隆人崩溃），必须改写为 background_characters 无ID群像或环境氛围描述（environment_vfx）！`

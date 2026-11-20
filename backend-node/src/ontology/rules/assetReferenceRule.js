@@ -6,6 +6,7 @@
  * 必须在执行槽位 Agent 之前运行，否则执行 Agent 会收到一个物理上不可
  * 满足的合同（例如四个人却只能输出三项 character_visuals）。
  */
+const { MAX_VISIBLE_CHARACTERS } = require('../../services/h3Limits');
 const BaseInvariantRule = require('./baseRule');
 
 function parseValue(value) {
@@ -252,11 +253,10 @@ function planningFeasibilityViolations(shots, options = {}) {
       });
     }
 
-    if (chars.all.length > 2) {
+    if (chars.all.length > MAX_VISIBLE_CHARACTERS) {
       const isCrowdReaction = shot.is_crowd_reaction
         || shot.beat_type === 'crowd_reaction'
-        || shot.dialogue_framing === 'crowd_reaction'
-        || (shot.title && (shot.title.includes('反应') || shot.title.includes('围观') || shot.title.includes('众人')));
+        || shot.dialogue_framing === 'crowd_reaction';
       const message = isCrowdReaction
         ? `分镜 #${shotNumber} 为围观吃瓜镜头，具名有身份角色去重后共有 ${chars.all.length} 人，仍须 ≤ 2 人（作为领头震惊/议论的焦点代表）。其余吃瓜群众严禁填入角色ID或挂人脸参考图，必须改写为环境背景或 environment_vfx，杜绝克隆人与人脸崩溃！`
         : `分镜 #${shotNumber} 的有身份主体与背景人物去重后共有 ${chars.all.length} 人，超过短剧单镜最多 2 个角色的制作上限。路人/敌军群体必须写成环境事件，或按剧情拆成连续镜头；禁止后端静默删除人物。`;
