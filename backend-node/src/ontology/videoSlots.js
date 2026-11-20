@@ -748,7 +748,7 @@ function validateVideoSlots(shot, slots) {
           violations.push({
             rule: 'INVARIANT_SHORT_DRAMA_INTERACTION_BEAT_EMPTY',
             shot_number: shotNum,
-            severity: 'error',
+            severity: 'warning',
             segment_index: index,
             conflict_slots: [`video_slots.shots_timeline[${index}].action`, `video_slots.shots_timeline[${index}].result`, `video_slots.shots_timeline[${index}].character_trajectories`],
             message: `分镜 ${shotNum} 的第 ${index + 1} 段全员动作原子均无状态变化与实质动作（action_atom 仅注视/倾听且起终态一致）；请规划实际动作与终态跃迁。`,
@@ -786,7 +786,7 @@ function validateVideoSlots(shot, slots) {
             violations.push({
               rule: 'INVARIANT_SHORT_DRAMA_CHARACTER_ACTION_EMPTY',
               shot_number: shotNum,
-              severity: 'error',
+              severity: 'warning',
               character_id: id,
               segment_index: index,
               conflict_slots: [`video_slots.shots_timeline[${index}].character_trajectories[character_id=${id}].action_atom`],

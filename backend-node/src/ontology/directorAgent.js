@@ -172,6 +172,7 @@ function projectCanonicalShotContract(shot) {
       shot.video_slots.audio_lip_sync.visible_characters_lip_state = 'strictly_sealed';
       if (Array.isArray(shot.video_slots.shots_timeline)) {
         for (const seg of shot.video_slots.shots_timeline) {
+          if (seg.audio_lip_sync?.mode === 'in_frame_dialogue' && !isSilent) continue;
           if (Array.isArray(seg.character_trajectories)) {
             for (const traj of seg.character_trajectories) {
               if (traj.mouth_state === 'speaker_synced') {

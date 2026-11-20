@@ -1,5 +1,6 @@
 'use strict';
 
+const { shotSpeechTurns } = require('./dialogueDubbingService');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { getFfmpegPath } = require('../utils/ffmpegPath');
@@ -7,6 +8,23 @@ const { spawn } = require('node:child_process');
 
 function normalizeText(value) {
   return String(value || '').replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase();
+}
+
+function compareSpeech(expected, transcript) {
+  const script = normalizeText(expected);
+  const heard = normalizeText(transcript);
+  const isSubsequence = (a, b) => {
+    let index = 0;
+    for (const char of b) if (char === a[index]) index++;
+    return index === a.length;
+  };
+  const words = Array.from(script);
+  const recognized = Array.from(heard);
+  return {
+    expected, transcript, passed: script === heard,
+    missing_expected_dialogue: !isSubsequence(words, recognized),
+    unexpected_speech: !isSubsequence(recognized, words),
+  };
 }
 
 function extractWav(videoPath, target) {
@@ -28,7 +46,7 @@ function extractWav(videoPath, target) {
 async function auditGeneratedSpeech(videoPath, shot, options = {}) {
   const endpoint = String(options.endpoint || process.env.QWEN_ASR_URL || process.env.ASR_URL || '').trim().replace(/\/$/u, '');
   if (!endpoint) return { status: 'unavailable', reason: '未配置 Qwen3-ASR endpoint' };
-  const expected = String(shot?.dialogue || shot?.narration || '').trim();
+  const expected = shotSpeechTurns(shot).map(turn => turn.text).join('');
   const tmp = path.join(path.dirname(videoPath), `.asr-${Date.now()}-${Math.random().toString(16).slice(2)}.wav`);
   try {
     await extractWav(videoPath, tmp);
@@ -40,18 +58,7 @@ async function auditGeneratedSpeech(videoPath, shot, options = {}) {
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(body.error?.message || body.message || `ASR HTTP ${response.status}`);
     const transcript = String(body.text || body.transcript || body.result?.text || '').trim();
-    const expectedNorm = normalizeText(expected);
-    const transcriptNorm = normalizeText(transcript);
-    const hasSpeech = Boolean(transcriptNorm);
-    const missingWords = expectedNorm && !transcriptNorm.includes(expectedNorm);
-    return {
-      status: 'completed',
-      passed: expectedNorm ? !missingWords : !hasSpeech,
-      expected,
-      transcript,
-      missing_expected_dialogue: Boolean(missingWords),
-      unexpected_speech: !expectedNorm && hasSpeech,
-    };
+    return { status: 'completed', ...compareSpeech(expected, transcript) };
   } catch (error) {
     return { status: 'error', passed: false, reason: error.message };
   } finally {
@@ -59,4 +66,4 @@ async function auditGeneratedSpeech(videoPath, shot, options = {}) {
   }
 }
 
-module.exports = { auditGeneratedSpeech };
+module.exports = { auditGeneratedSpeech, compareSpeech };

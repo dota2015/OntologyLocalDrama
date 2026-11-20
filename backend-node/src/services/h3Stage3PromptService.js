@@ -327,7 +327,7 @@ function buildDeterministicStage3Skeleton(spec) {
   const audioLines = audioBindings.map((ab) => `- ${ab.tag}: Audio reference for ${ab.speaker_name || ab.key || 'voice'} (${ab.kind})`);
 
   const nonSpeakingModes = new Set(['offscreen_voiceover', 'narration', 'silent_ambient', 'bgm_only']);
-  const isGlobalNonSpeaking = nonSpeakingModes.has(semantic.audio_lip_sync) || Boolean(semantic.sound_plan?.is_silent);
+
 
   let cameraShot = 0;
   const shotTimelineLines = timeline.map((seg, idx) => {
@@ -339,22 +339,24 @@ function buildDeterministicStage3Skeleton(spec) {
     const cam = seg.camera || {};
     const camDesc = `Camera: ${cam.shot_type || 'medium_shot'}, movement: ${cam.movement || 'static'}, horizontal angle: ${cam.angle_h || 'eye_level'}, vertical angle: ${cam.angle_v || 'level'}`;
 
+    const voiceMode = seg.audio_lip_sync?.mode || semantic.audio_lip_sync;
+    const inFrameSpeech = !nonSpeakingModes.has(voiceMode) && !semantic.sound_plan?.is_silent;
     const charLines = [];
     const trajectories = Array.isArray(seg.character_trajectories) ? seg.character_trajectories : [];
     if (trajectories.length > 0) {
       for (const traj of trajectories) {
-        const charName = traj.character_name || (traj.character_id ? `Character ID ${traj.character_id}` : 'Character');
+        const charName = traj.character_name || traj.name || (traj.character_id ? `Character ID ${traj.character_id}` : 'Character');
         const pos = traj.screen_position || 'center';
         const depth = traj.depth_layer || 'midground';
         const facing = traj.facing || 'front';
-        const gaze = traj.gaze ? `${traj.gaze.gaze_type || 'direct'} towards ${traj.gaze.gaze_target_label || 'target'}` : 'directed';
-        const actAtom = traj.action_atom?.action_detail || compileActionAtom(traj.action_atom, { actorName: charName });
+        const gaze = [traj.gaze_type || traj.gaze?.gaze_type, traj.gaze_target_label || traj.gaze?.gaze_target_label].filter(Boolean).join(' towards ');
+        const actAtom = [...new Set([compileActionAtom(traj.action_atom, { actorName: charName }), traj.action_atom?.action_detail].filter(Boolean))].join(' — ');
         const resState = traj.result_state ? `ending in ${traj.result_state}` : '';
         const actionPart = [actAtom, resState].filter(Boolean).join(' -> ');
 
         let lipConstraint = '';
         const mouthState = traj.mouth_state;
-        if (!isGlobalNonSpeaking && mouthState === 'speaker_synced') {
+        if (inFrameSpeech && mouthState === 'speaker_synced') {
           lipConstraint = 'Mouth: sync to the scheduled speech during this segment';
         } else {
           lipConstraint = 'Mouth: keeps lips strictly closed without speaking';
@@ -362,14 +364,13 @@ function buildDeterministicStage3Skeleton(spec) {
 
         charLines.push(`  * ${charName}: position at ${pos} (${depth}), facing ${facing}, gaze ${gaze}. ${actionPart}. ${lipConstraint}`);
       }
-    } else if (Array.isArray(semantic.visible_characters) && semantic.visible_characters.length > 0) {
-      for (const vc of semantic.visible_characters) {
-        const charName = vc.name || (vc.id ? `Character ID ${vc.id}` : 'Character');
-        charLines.push(`  * ${charName}: in frame. Mouth: ${isGlobalNonSpeaking ? 'keeps lips strictly closed without speaking' : 'natural'}`);
+    } else {
+      for (const vc of seg.visible_characters || []) {
+        charLines.push(`  * ${vc.name || vc.character_id}: in frame`);
       }
     }
 
-    return `${cutHeader}${timeLabel}${durStr}\n  ${camDesc}\n${charLines.length ? charLines.join('\n') : '  (Environment/Subject observation)'}`;
+    return `${cutHeader}${timeLabel}${durStr}\n  ${camDesc}\n  Action: ${seg.action || ''}; outcome: ${seg.result || ''}\n${charLines.length ? charLines.join('\n') : '  (Environment/Subject observation)'}`;
   });
 
   return `=== DETERMINISTIC STAGE 3 SKELETON (AUTHORITATIVE ANCHORS) ===

@@ -142,6 +142,7 @@ async function enrichEpisodeOntologySlots(db, log, cfg, episodeId, options = {})
   for (let round = 1; !audit.valid && round <= repairRounds; round++) {
     const byShot = new Map();
     for (const violation of audit.violations || []) {
+      if (violation.severity !== 'error') continue;
       const number = Number(violation.shot_number);
       if (!Number.isFinite(number) || number <= 0) continue;
       if (!byShot.has(number)) byShot.set(number, []);

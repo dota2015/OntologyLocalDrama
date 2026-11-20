@@ -267,3 +267,11 @@ test('a manual edit during prompt compilation survives the pending model respons
   await assert.rejects(() => stage3.ensureShotH3PromptCompiled(db, silentLog, shot), /已更新/);
   assert.equal(db.prepare('SELECT h3_prompt_snapshot FROM storyboards WHERE id=1267').get().h3_prompt_snapshot, '手动版本');
 });
+
+test('ASR flags inserted, missing and repeated words including in silent shots', () => {
+  const { compareSpeech } = require('../src/services/asrQualityAudit');
+  assert.equal(compareSpeech('马上。', '马上马上').unexpected_speech, true);
+  assert.equal(compareSpeech('马上马上。', '马上').missing_expected_dialogue, true);
+  assert.equal(compareSpeech('马上马上。', '马上，马上').passed, true);
+  assert.equal(compareSpeech('', '马上').unexpected_speech, true);
+});
