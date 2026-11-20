@@ -1,3 +1,4 @@
+const { shotRevision, reviewReason } = require('./videoAcceptance');
 const { validateVideoSpeech } = require('./videoSpeechService');
 /** 轮询/同步返回的 video_url 须为 http(s)，避免中转 FAILURE 时 result_url 为错误文案 */
 function resolveRemoteVideoUrl(videoUrl, fallbackError) {
@@ -83,6 +84,7 @@ function rowToItem(r) {
     video_url: r.video_url,
     local_path: r.local_path,
     status: r.status,
+    pending_dispatch: Boolean(r.pending_dispatch),
     task_id: r.task_id,
     error_msg: r.error_msg,
     created_at: r.created_at,
@@ -373,49 +375,25 @@ async function finalizeSuccessfulVideo(db, log, videoGenId, row, rowForAspect, v
     return { ok: false, error: errMsg, quality_audit: qualityAudit };
   }
 
-  // 3. 质量门禁通过：原子写入完成状态、持久化 quality_audit 并绑定至分镜
-  const qualityAuditJson = qualityAudit ? JSON.stringify(qualityAudit) : null;
-  let updateRes;
-  try {
-    updateRes = db.prepare(
-      "UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, quality_audit = ?, completed_at = ?, updated_at = ? WHERE id = ? AND status NOT IN ('failed', 'cancelled')"
-    ).run('completed', videoUrl, localPath, qualityAuditJson, now, now, videoGenId);
-  } catch (e) {
-    updateRes = db.prepare(
-      "UPDATE video_generations SET status = ?, video_url = ?, local_path = ?, quality_audit = ?, updated_at = ? WHERE id = ? AND status NOT IN ('failed', 'cancelled')"
-    ).run('completed', videoUrl, localPath, qualityAuditJson, now, videoGenId);
-  }
-  if (!updateRes || updateRes.changes === 0) {
-    log.info('Video generation was cancelled/failed concurrently, skip storyboard binding', { id: videoGenId });
-    return { ok: false, error: '任务已被取消' };
-  }
-  if (row.storyboard_id) {
-    try {
-      db.prepare('UPDATE storyboards SET video_url = ?, selected_video_id = ?, h3_quality_audit = ?, updated_at = ? WHERE id = ?').run(
-        videoUrl, videoGenId, qualityAuditJson, now, row.storyboard_id
-      );
-      log.info('Updated storyboard video' + (logLabel ? ` (${logLabel})` : ''), {
-        storyboard_id: row.storyboard_id,
-        video_url: videoUrl,
-        selected_video_id: videoGenId,
-      });
-    } catch (_) {}
-  }
-  if (row.task_id) {
-    taskService.updateTaskResult(db, row.task_id, {
-      video_generation_id: videoGenId,
-      video_url: videoUrl,
-      status: 'completed',
-      quality_audit: qualityAudit,
+  return db.transaction(() => {
+    const shot = row.storyboard_id && db.prepare('SELECT * FROM storyboards WHERE id=? AND deleted_at IS NULL').get(row.storyboard_id);
+    let reason = reviewReason(qualityAudit);
+    if (row.storyboard_id && (!shot || row.shot_revision !== shotRevision(db, shot))) reason = '生成期间分镜版本已变化';
+    const status = reason ? 'needs_review' : 'completed';
+    const report = JSON.stringify(qualityAudit);
+    const saved = db.prepare(`UPDATE video_generations SET status=?, error_msg=?,video_url=?, local_path=?,
+      quality_audit=?,completed_at=?,updated_at=? WHERE id=? AND status='processing' AND deleted_at IS NULL`)
+      .run(status, reason || null, videoUrl, localPath, report, now, now, videoGenId);
+    if (!saved.changes) return { ok: false, error: '任务已被取消' };
+    if (shot && !reason) {
+      db.prepare('UPDATE storyboards SET video_url=?,selected_video_id=?,h3_quality_audit=?,updated_at=? WHERE id=?')
+        .run(videoUrl, videoGenId, report, now, shot.id);
+    }
+    if (row.task_id) taskService.updateTaskResult(db, row.task_id, {
+      video_generation_id: videoGenId, video_url: videoUrl, quality_audit: qualityAudit, status, reason,
     });
-  }
-  log.info('Video generation completed' + (logLabel ? ` (${logLabel})` : ''), {
-    id: videoGenId,
-    video_url: videoUrl,
-    local_path: localPath,
-    quality_passed: true,
-  });
-  return { ok: true, local_path: localPath, quality_audit: qualityAudit };
+    return { ok: true, status, local_path: localPath, quality_audit: qualityAudit };
+  })();
 }
 
 async function pollProviderTaskAndFinalize(db, log, videoGenId, row, rowForAspect, providerTaskId, config) {
@@ -586,13 +564,13 @@ function resumeFailedVideoPoll(db, log, videoGenId) {
   return { ok: true, item: getById(db, id) };
 }
 
-/** 启动时恢复 processing 视频任务；无 provider_task_id 的视为中断 */
+/** Reattach submitted work before dispatching the durable FIFO. A claimed request without a provider ID has an uncertain result. */
 function resumeProcessingVideoGenerations(db, log) {
   const stuck = db
     .prepare(
       `SELECT id, task_id FROM video_generations
        WHERE status = 'processing' AND deleted_at IS NULL
-         AND (provider_task_id IS NULL OR TRIM(provider_task_id) = '')
+         AND COALESCE(pending_dispatch,0)=0 AND (provider_task_id IS NULL OR TRIM(provider_task_id) = '')
        ORDER BY id`
     )
     .all();
@@ -627,6 +605,13 @@ function resumeProcessingVideoGenerations(db, log) {
       });
     });
   }
+  const queued = db.prepare(`SELECT id,task_id FROM video_generations WHERE status='processing'
+    AND pending_dispatch=1 AND NULLIF(TRIM(provider_task_id),'') IS NULL AND deleted_at IS NULL ORDER BY id`).all();
+  for (const row of queued) {
+    if (row.task_id) taskService.updateTaskStatus(db, row.task_id, 'pending', 0, '等待 H3');
+    setImmediate(() => processVideoGeneration(db, log, row.id).catch(error =>
+      log.error('恢复 H3 排队失败', { id: row.id, error: error.message })));
+  }
 }
 
 async function processVideoGenerationUnlocked(db, log, videoGenId) {
@@ -640,6 +625,12 @@ async function processVideoGenerationUnlocked(db, log, videoGenId) {
   if (!row) {
     activeVideoPolls.delete(videoGenId);
     log.error('Video generation not found', { id: videoGenId });
+    return;
+  }
+  const claimed = db.prepare(`UPDATE video_generations SET pending_dispatch=0 WHERE id=?
+    AND pending_dispatch=1 AND status='processing' AND deleted_at IS NULL`).run(videoGenId);
+  if (!claimed.changes) {
+    activeVideoPolls.delete(videoGenId);
     return;
   }
   const stopHeartbeat = startVideoHeartbeat(db, row.task_id);
@@ -671,6 +662,10 @@ async function processVideoGenerationUnlocked(db, log, videoGenId) {
         reference_urls = JSON.parse(row.reference_image_urls);
         if (!Array.isArray(reference_urls)) reference_urls = null;
       } catch (_) {}
+    }
+    if (row.storyboard_id) {
+      const shot = db.prepare('SELECT * FROM storyboards WHERE id=? AND deleted_at IS NULL').get(row.storyboard_id);
+      if (!shot || row.shot_revision !== shotRevision(db, shot)) throw new Error('排队期间分镜已修改，请按当前版本重新生成');
     }
     // Revalidate queued/manual submissions with the actual model duration before GPU work.
     const timing = validateVideoSpeech(db, row, config);

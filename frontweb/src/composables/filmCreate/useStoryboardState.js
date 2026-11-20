@@ -359,7 +359,7 @@ export function useStoryboardState({
   function getSbAllVideos(storyboardId) {
     const list = sbVideos.value[storyboardId]
     if (!Array.isArray(list)) return []
-    return list.filter((i) => i.status === 'completed' && recordHasPlayableVideoUrl(i))
+    return list.filter((i) => ['completed', 'needs_review'].includes(i.status) && recordHasPlayableVideoUrl(i))
   }
 
   function getSbVideo(storyboardId) {
@@ -380,7 +380,7 @@ export function useStoryboardState({
       const found = all.find((v) => v.video_url === sb.video_url || v.local_path === sb.video_url)
       if (found) return found
     }
-    return all[0]
+    return all.find(v => v.status === 'completed') || null
   }
 
   function getNextStoryboard(storyboardId) {
@@ -414,23 +414,25 @@ export function useStoryboardState({
         video: v,
         src: assetVideoUrl(v),
         isActive,
-        label: isActive ? `版${idx + 1}(当前)` : `第${idx + 1}版`,
+        label: `第${idx + 1}版${isActive ? '（当前）' : v.status === 'needs_review' ? '（待复核）' : ''}`,
       }
     })
   }
 
-  function onSelectSbMainVideo(sb, video) {
+  async function onSelectSbMainVideo(sb, video) {
     const vUrl = video.video_url || ''
+    try {
+      await storyboardsAPI.update(sb.id, { selected_video_id: video.id, video_url: vUrl || null })
+    } catch (error) {
+      ElMessage.error(error.message || '保存选片失败')
+      return
+    }
     sbSelectedVideoId.value = { ...sbSelectedVideoId.value, [sb.id]: video.id }
     const row = (store.storyboards || []).find((b) => b.id === sb.id)
     if (row) {
       row.selected_video_id = video.id
       row.video_url = vUrl
     }
-    storyboardsAPI.update(sb.id, {
-      selected_video_id: video.id,
-      video_url: vUrl || null,
-    }).catch(e => console.warn('[主视频] 保存后端失败', e))
   }
 
   function getSbVideoError(storyboardId) {

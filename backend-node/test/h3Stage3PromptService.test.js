@@ -248,12 +248,17 @@ test('resume after an in-place edit invalidates only the edited shot and its con
   const original = checkpoint.open(db, 'original', 10, {}, {});
   const rows = db.prepare('SELECT * FROM storyboards ORDER BY storyboard_number').all();
   Object.assign(original.state, { stage1Complete: true, stage1Storyboards: rows, enrichedShots: rows });
+  original.state.pendingRepair = { candidate: rows[2], errors: [{ rule: 'TEST' }] };
   original.capturePublished();
+  db.exec("UPDATE storyboards SET selected_video_id=504,updated_at='rendered' WHERE storyboard_number=4");
+  db.exec("INSERT INTO ai_service_configs(service_type, name,provider, base_url,model) VALUES('image','test','test','test','test')");
+  original.assertCurrent();
   db.prepare("UPDATE storyboards SET action='人工修改' WHERE storyboard_number=3").run();
   assert.throws(() => original.assertCurrent(), /已编辑/);
   db.prepare("UPDATE async_tasks SET status='failed' WHERE id='original'").run();
   const resumed = checkpoint.open(db, 'retry', 10, {}, {}, 'original');
   assert.deepEqual(resumed.state.enrichedShots.map(row => row.storyboard_number), [1, 5]);
+  assert.equal(resumed.state.pendingRepair, undefined);
   resumed.assertCurrent();
 });
 
@@ -304,6 +309,8 @@ test('reverse shots use each visible actor’s subject number with all their car
   const prompt = VALID_STAGE3_PROMPT.replace('gear in <Picture 2>.', 'gear in <Picture 2> and <Picture 3>.\n<Subject 3> is the listener in <Picture 4>.')
     .replace('\noverall_soundscape:', '\n[Shot 2] <Subject 3> turns to the doorway.\noverall_soundscape:');
   assert.deepEqual(stage3.validateOfficialH3Prompt(prompt, spec).errors, []);
+  const extra = prompt.replace('[Shot 2] <Subject 3>', '[Shot 2] <Subject 2> stands behind <Subject 3> as she');
+  assert.match(stage3.validateOfficialH3Prompt(extra, spec).errors.join(' '), /不得引用画外角色 26/);
   const wrong = prompt.replace('[Shot 2] <Subject 3>', '[Shot 2] <Subject 2>');
   assert.equal(stage3.validateOfficialH3Prompt(wrong, spec).valid, false);
   const wrongCard = prompt.replace('and <Picture 3>.', 'and <Picture 4>.');
@@ -320,4 +327,17 @@ test('an unobservable outcome or unavailable vision provider cannot pass the vis
   assert.equal(mismatch.target, '书已合拢');
   vision.mock.mockImplementation(async () => { throw new Error('offline'); });
   assert.equal((await auditVisibleOutcome(null, silentLog, '书已合拢', 'tail.png')).status, 'unverified');
+});
+
+test('director generation and independent enrichment observe the same episode claim', async t => {
+  const db = setupDb(t);
+  const routes = require('../src/routes/ontology')(db, silentLog);
+  db.exec("INSERT INTO async_tasks(id,type,resource_id,status) VALUES('running','director_storyboard_generation','10','processing')");
+  for (const start of [routes.enrichSlots, routes.directorGenerate]) {
+    const res = { status(code) { this.code = code; return this; }, json(body) { this.body = body; } };
+    await start({ params: { episode_id: 10 }, body: {} }, res);
+    assert.equal(res.code, 409);
+    assert.equal(res.body.error.details.task_id, 'running');
+  }
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM async_tasks').get().n, 1);
 });

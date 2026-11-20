@@ -406,6 +406,8 @@ function ensureAllColumns(database) {
 
   // --- video_generations ---
   ensureColumns(database, 'video_generations', [
+    { name: 'pending_dispatch', type: 'INTEGER DEFAULT 0' },
+    { name: 'shot_revision', type: 'TEXT' },
     { name: 'input_snapshot', type: 'TEXT' },
     { name: 'drama_id',             type: 'INTEGER' },
     { name: 'storyboard_id',        type: 'INTEGER' },

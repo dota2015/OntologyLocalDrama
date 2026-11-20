@@ -66,11 +66,13 @@ function submitVideo(db, log, requested) {
         ? JSON.stringify(body.reference_image_urls)
         : null;
 
+    let shotRevision = null;
     let h3Mode = null;
     let resolutionPlanJson = null;
     if (storyboardId && isH3Request) {
       const shotRow = db.prepare('SELECT * FROM storyboards WHERE id=? AND deleted_at IS NULL').get(storyboardId);
       if (!shotRow) throw Object.assign(new Error('分镜不存在或已删除'), { status: 400 });
+      shotRevision = require('./videoAcceptance').shotRevision(db, shotRow);
       const { resolveH3SubmissionPlan } = require('./h3ModeResolver');
       const plan = resolveH3SubmissionPlan(db, dramaId, shotRow, body);
       // Keep the execution backend alongside the resolved H3 mode so queued
@@ -87,9 +89,9 @@ function submitVideo(db, log, requested) {
     }
 
     db.prepare(
-      `INSERT INTO video_generations (drama_id, storyboard_id, provider, prompt, model, duration, aspect_ratio, resolution, seed, camera_fixed, watermark, image_url, first_frame_url, last_frame_url, reference_image_urls, h3_mode, resolution_plan, status, task_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing', ?, ?, ?)`
-    ).run(dramaId, storyboardId, provider, prompt, model, duration, aspectRatio, resolution, seed, cameraFixed, watermark, imageUrl, firstFrameUrl, lastFrameUrl, refImagesJson, h3Mode, resolutionPlanJson, task.id, now, now);
+      `INSERT INTO video_generations (drama_id, storyboard_id, provider, prompt, model, duration, aspect_ratio, resolution, seed, camera_fixed, watermark, image_url, first_frame_url, last_frame_url, reference_image_urls, h3_mode, resolution_plan, shot_revision, pending_dispatch, status, task_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'processing', ?, ?, ?)`
+    ).run(dramaId, storyboardId, provider, prompt, model, duration, aspectRatio, resolution, seed, cameraFixed, watermark, imageUrl, firstFrameUrl, lastFrameUrl, refImagesJson, h3Mode, resolutionPlanJson, shotRevision, task.id, now, now);
     const videoGenId = db.prepare('SELECT last_insert_rowid() as id').get().id;
     const item = videoService.getById(db, videoGenId);
     return item || { id: videoGenId, task_id: task.id, status: 'processing' };

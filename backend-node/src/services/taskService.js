@@ -175,9 +175,12 @@ function failOrphanedAsyncTasksOnStartup(db, log) {
     `SELECT id, type, status, resource_id FROM async_tasks
      WHERE status IN ('pending', 'processing') AND deleted_at IS NULL`
   ).all();
-  if (!rows.length) return 0;
-  log.warn('Failing orphaned async tasks after startup', { count: rows.length });
-  for (const row of rows) {
+  const recoverableVideos = hasTable(db, 'video_generations')
+    ? db.prepare("SELECT 1 FROM video_generations WHERE task_id=? AND status='processing' AND deleted_at IS NULL") : null;
+  const orphans = rows.filter(row => row.type !== 'video_generation' || !recoverableVideos?.get(row.id));
+  if (!orphans.length) return 0;
+  log.warn('Failing orphaned async tasks after startup', { count: orphans.length });
+  for (const row of orphans) {
     updateTaskError(db, row.id, ORPHAN_ASYNC_TASK_MSG);
     log.info('Orphaned async task marked failed', {
       task_id: row.id,
@@ -187,7 +190,7 @@ function failOrphanedAsyncTasksOnStartup(db, log) {
     });
   }
 
-  return rows.length;
+  return orphans.length;
 }
 
 module.exports = {

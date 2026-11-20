@@ -365,8 +365,14 @@ async function runTwoStageDirectorPipeline(db, log, cfg, episodeId, options = {}
   };
 
   log.info('[两阶段导演流水线] 启动', { episode_id: epId, task_id: taskId });
-  saveProgress('stage1', '启动快速分镜引擎');
-  onProgress(5, '【阶段 1/2】启动快速分镜引擎，正在解析剧本并流式生成基础分镜...');
+  if (options.existingShotsOnly && !checkpointState.stage1Complete) {
+    const rows = db.prepare('SELECT * FROM storyboards WHERE episode_id=? AND deleted_at IS NULL ORDER BY storyboard_number,id').all(epId);
+    if (!rows.length) throw new Error('请先为当前集创建基础分镜');
+    Object.assign(checkpointState, { stage1Complete: true, stage1Storyboards: rows });
+    checkpoint.capturePublished?.();
+  }
+  saveProgress('stage1', '载入基础分镜');
+  onProgress(5, checkpointState.stage1Complete ? '已载入基础分镜，准备继续视听规划' : '【阶段 1/2】正在解析剧本并生成基础分镜...');
 
   // 确保 storyboards 表具备本体列
   try {

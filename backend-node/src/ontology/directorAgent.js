@@ -1782,7 +1782,11 @@ async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {})
   }
   if (errors.length === 0) return projectCanonicalShotContract(shot);
 
-  let currentShot = shot;
+  const checkpoint = retryOptions.checkpoint;
+  const pending = checkpoint?.state?.pendingRepair;
+  const resumed = pending?.candidate?.id != null && pending.candidate.id === shot.id;
+  let currentShot = resumed ? pending.candidate : shot;
+  if (resumed) errors = pending.errors;
   const semanticCharacterIds = (value, background = false) => {
     const list = Array.isArray(value) ? value : [];
     return list.map(item => Number(item && typeof item === 'object'
@@ -1829,7 +1833,7 @@ async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {})
       // Each retry must see the latest candidate. Sending the original shot
       // made the loop forget every previous repair and repeat the same omission.
       const candidateBase = currentShot;
-      const patchMode = attempt > 1;
+      const patchMode = resumed || attempt > 1;
       const patchFields = new Set();
       let hasUnclassifiedViolation = false;
       const classifySlot = (slot, targetSet) => {
@@ -2026,6 +2030,11 @@ async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {})
       }
       if (Math.abs(Number(currentShot.video_slots?.timing?.duration || 0) - duration) > 0.1) {
         errors.push({ message: `video_slots.timing.duration 必须等于权威时长 ${duration} 秒` });
+      }
+      if (checkpoint?.state) {
+        checkpoint.state.currentShot = Number(shotNumber);
+        if (errors.length) checkpoint.state.pendingRepair = { candidate: currentShot, errors };
+        else delete checkpoint.state.pendingRepair;
       }
       retryOptions.checkpoint?.record?.({
         stage: 'stage2',

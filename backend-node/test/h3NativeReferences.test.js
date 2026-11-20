@@ -71,7 +71,7 @@ function setup(t) {
     INSERT INTO characters VALUES(5,1,'王奕宸','card.png',NULL,NULL,'["profile.png"]','少年，黑色短发','',NULL);
     INSERT INTO scenes VALUES(2,1,'房间','room.png',NULL),(3,1,'操场','field.png',NULL);
     INSERT INTO image_generations VALUES(1,5,'card.png','character reference sheet',NULL);`);
-  db.exec('ALTER TABLE storyboards ADD COLUMN video_slots TEXT');
+  db.exec('ALTER TABLE storyboards ADD COLUMN video_slots TEXT; ALTER TABLE video_generations ADD COLUMN shot_revision TEXT; ALTER TABLE dramas ADD COLUMN style TEXT');
   db.prepare('UPDATE storyboards SET video_slots=? WHERE episode_id=10').run(JSON.stringify({
     shots_timeline: [{ duration: 5, visible_characters: [{ character_id: 5 }] }],
   }));
@@ -91,6 +91,7 @@ function setup(t) {
 test('Stage 3 official validator enforces 6-section Ref2VA format, <Picture>/<Audio> bounds, verbatim <d> speech, and English prose', () => {
   const shot = {
     id: 2,
+    video_slots: { shots_timeline: [{ duration: 5, visible_characters: [5] }] },
     storyboard_number: 1,
     duration: 5,
     semantic_slots: { h3_mode: 'ref2va', required_references: [{ type: 'character', id: 5, character_id: 5, name: '王奕宸' }] },
@@ -355,7 +356,9 @@ test('FL2VA continuity can inherit the prior video tail while Ref2VA ignores all
   const run = promisify(require('child_process').execFile);
   const ffmpeg = require('../src/utils/ffmpegPath').getFfmpegPath();
   await run(ffmpeg, ['-v','error','-y','-f','lavfi','-i','testsrc2=s=128x96:r=24:d=1','-c:v','libx264','-pix_fmt','yuv420p',path.join(root,'previous.mp4')]);
-  db.prepare('UPDATE storyboards SET local_path=? WHERE id=1').run('previous.mp4');
+  const predecessor = db.prepare('SELECT * FROM storyboards WHERE id=1').get();
+  db.prepare("INSERT INTO video_generations(drama_id,storyboard_id,status,local_path,shot_revision) VALUES(1,1,'completed','previous.mp4',?)")
+    .run(require('../src/services/videoAcceptance').shotRevision(db, predecessor));
   // Default is 'off' (uses own first frame)
   assert.equal(native.getSettings(db, 1, 2).continuity, 'off');
   const defaultOff = await native.prepare(db, log, { ...opts, h3_engine_mode: 'fl2va', first_frame_url: 'first.png' });
@@ -397,7 +400,7 @@ test('an explicit wardrobe transition skips previous-tail selection and rejects 
   const wardrobe=require('../src/services/wardrobeService');
   wardrobe.saveShot(db,2,{change:{reason:'进入梦境，更换训练服',characters:[{character_id:5,description:'银色训练服，黑色靴子'}]}});
   // A completed predecessor exists but its local file is deliberately unavailable.
-  db.prepare("INSERT INTO video_generations VALUES(1,1,1,'completed','prior-outfit.mp4',NULL)").run();
+  db.prepare("INSERT INTO video_generations(id,drama_id,storyboard_id,status,local_path) VALUES(1,1,1,'completed','prior-outfit.mp4')").run();
   const prepared=await native.prepare(db,log,{...opts,h3_engine_mode:'fl2va',first_frame_url:'first.png'});
   assert.ok(prepared.first_frame_url);
   assert.match(prepared.prompt,/updated silver tactical uniform/);

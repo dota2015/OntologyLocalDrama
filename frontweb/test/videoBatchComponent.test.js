@@ -32,18 +32,18 @@ function setup() {
   return {handlers,bindings,requests}
 }
 
-test('batch button sends one complete durable batch, keeps selected inputs and skips completed videos',async()=>{
+test('batch button sends one complete durable batch, keeps selected inputs and leaves version-aware reuse to the server',async()=>{
   const {handlers,bindings,requests}=setup()
   await handlers.startBatchVideoGeneration()
   assert.equal(requests.length,1)
   const {episodeId,body}=requests[0]
   assert.equal(episodeId,7); assert.equal(body.drama_id,3); assert.equal(body.continuity,true)
-  assert.deepEqual(body.shots.map(s=>s.storyboard_id),[8,9])
-  assert.deepEqual(body.shots.map(s=>s.duration),[6,10])
-  assert.equal(body.shots[0].model,'minimax_h3')
-  assert.equal(body.shots[0].first_frame_url,'/first-8.png')
-  assert.equal(body.shots[0].last_frame_url,'/tail-8.png')
-  assert.deepEqual(body.shots[0].reference_image_urls,['/first-8.png','/tail-8.png'])
+  assert.deepEqual(body.shots.map(s=>s.storyboard_id),[7,8,9])
+  assert.deepEqual(body.shots.map(s=>s.duration),[10,6,10])
+  assert.equal(body.shots[1].model,'minimax_h3')
+  assert.equal(body.shots[1].first_frame_url,'/first-8.png')
+  assert.equal(body.shots[1].last_frame_url,'/tail-8.png')
+  assert.deepEqual(body.shots[1].reference_image_urls,['/first-8.png','/tail-8.png'])
   assert.equal(bindings.batchVideoRunning.value,true)
   await handlers.startBatchVideoGeneration()
   assert.equal(requests.length,1,'a repeated click must not resubmit')

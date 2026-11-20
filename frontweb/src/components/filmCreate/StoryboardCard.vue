@@ -771,6 +771,8 @@
               >
                 <video :src="item.src" preload="metadata" class="sb-video-thumb-player" />
                 <span class="sb-video-thumb-label">{{ item.label }}</span>
+                <a v-if="item.video.status === 'needs_review'" :href="item.src" target="_blank" rel="noopener"
+                  :title="item.video.error_msg" @click.stop>预览待复核成片</a>
                 <button
                   v-if="item.video?.id"
                   type="button"

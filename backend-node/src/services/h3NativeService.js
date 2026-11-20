@@ -18,21 +18,7 @@ const MODES = ['auto', 'off', 'previous_tail'];
 const H3_STEPS = 23;
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 function parse(value, fallback) { try { return typeof value === 'string' ? JSON.parse(value) : value ?? fallback; } catch { return fallback; } }
-// Only fields that can alter the prepared H3 request belong in the concurrency
-// fingerprint. Output/status columns are written by generation jobs and must not
-// make an otherwise immutable input look stale while the prompt is translated.
-function shotInputSnapshot(shot) {
-  const fields = [
-    'id', 'episode_id', 'storyboard_number', 'scene_id', 'description', 'location',
-    'time', 'duration', 'dialogue', 'narration', 'action', 'result', 'atmosphere',
-    'characters', 'background_characters', 'character_visuals', 'last_frame_visuals',
-    'video_slots', 'semantic_slots', 'shot_type', 'angle', 'angle_h', 'angle_v',
-    'angle_s', 'movement', 'lighting_style', 'depth_of_field', 'sound_effect',
-    'bgm_prompt', 'first_frame_image_id', 'last_frame_image_id',
-    'last_frame_image_url', 'last_frame_local_path',
-  ];
-  return Object.fromEntries(fields.map(field => [field, shot?.[field] ?? null]));
-}
+const { shotInputSnapshot, usableVideo } = require('./videoAcceptance');
 function h3SettingsSnapshot(loaded) {
   return {
     continuity: loaded.continuity,
@@ -79,9 +65,7 @@ function previous(db, shot) {
 }
 function selectedVideo(db, dramaId, shot) {
   if (!shot) return null;
-  if (/\.(mp4|webm|mov|mkv)$/i.test(shot.local_path || '')) return { local_path: shot.local_path, storyboard_id: shot.id };
-  return db.prepare(`SELECT * FROM video_generations WHERE drama_id=? AND storyboard_id=? AND deleted_at IS NULL
-    AND status='completed' AND local_path IS NOT NULL AND local_path<>'' ORDER BY id DESC LIMIT 1`).get(Number(dramaId), shot.id);
+  return usableVideo(db, shot, { localOnly: true });
 }
 function characterIds(db, shot) {
   const parsed = parse(shot.characters, []);

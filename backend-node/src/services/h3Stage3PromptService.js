@@ -275,7 +275,7 @@ function buildStage3PromptSpec(db, shot, context = {}) {
   };
 
   return {
-    version: 'h3_stage3_v3',
+    version: 'h3_stage3_v4',
     storyboard_id: Number(shot?.id || 0) || null,
     shot_number: Number(shot?.storyboard_number || shot?.shot_number || 1),
     mode,
@@ -371,7 +371,8 @@ function buildDeterministicStage3Skeleton(spec) {
       }
     }
 
-    return `${cutHeader}${timeLabel}${durStr}\n  ${camDesc}\n  Action: ${seg.action || ''}; outcome: ${seg.result || ''}\n${charLines.length ? charLines.join('\n') : '  (Environment/Subject observation)'}`;
+    const cast = (seg.visible_characters || []).map(actor => actorTags.get(Number(actor?.character_id ?? actor?.id ?? actor))).filter(Boolean);
+    return `${cutHeader}${timeLabel}${durStr}\n  Visible performers: ${cast.join(', ') || 'none with character references'}\n  ${camDesc}\n  Action: ${seg.action || ''}; outcome: ${seg.result || ''}\n${charLines.length ? charLines.join('\n') : '  (Environment/Subject observation)'}`;
   });
 
   return `=== DETERMINISTIC STAGE 3 SKELETON (AUTHORITATIVE ANCHORS) ===
@@ -559,13 +560,26 @@ function validateOfficialH3Prompt(rawPrompt, spec) {
       if (subject.characterId && !mainBody.includes(subject.tag)) errors.push(`主描述缺少角色 ${subject.tag}`);
     }
     const shots = mainBody.split(/\[Shot \d+\]/g).slice(1);
-    let cameraIndex = -1;
+    const cameraCasts = [];
     for (const [index, segment] of timeline.entries()) {
-      if (!index || segment.camera?.shot_change === true) cameraIndex++;
+      if (!index || segment.camera?.shot_change) cameraCasts.push(new Set());
+      const cast = cameraCasts.at(-1);
       for (const actor of segment.visible_characters || []) {
-        const id = Number(actor?.character_id ?? actor?.id ?? actor);
-        const subject = subjects.find(s => s.characterId === id);
-        if (subject && !shots[cameraIndex]?.includes(subject.tag)) errors.push(`[Shot ${cameraIndex + 1}] 需要引用入画角色 ${id} 的 ${subject.tag}`);
+        cast.add(Number(actor?.character_id ?? actor?.id ?? actor));
+      }
+    }
+    for (const [index, cast] of cameraCasts.entries()) {
+      // Subject tags in visual prose identify visible performers. Speech uses
+      // the audio binding instead; literal dialogue/lettering is not a tag.
+      const visual = (shots[index] || '').replace(/<d>[\s\S]*?<\/d>|"[^"\n]*"/g, '');
+      for (const subject of subjects.filter(s => s.characterId)) {
+        const present = visual.includes(subject.tag);
+        if (!cast.has(Number(subject.characterId)) && subject.pictures.some(picture => visual.includes(picture.tag))) {
+          errors.push(`[Shot ${index + 1}] 不得使用画外角色 ${subject.characterId} 的 Picture 编号`);
+        }
+        if (cast.has(Number(subject.characterId)) !== present) {
+          errors.push(`[Shot ${index + 1}] ${present ? '不得引用画外角色' : '需要引用入画角色'} ${subject.characterId} 的 ${subject.tag}`);
+        }
       }
     }
   } else if (spec.mode === 'fl2va' && spec.firstFramePresent && !/<Picture\s+1>/i.test(prompt)) {
@@ -599,7 +613,7 @@ ${spec.mode === 'fl2va'
 2. Write every section in natural, concrete, filmable English prose describing composition, subjects, environment, lighting, camera movement, and audio timing. Never copy raw Chinese JSON keys, field labels, state enums (e.g. away_from_camera, closed, neutral, center_background), or engineering/TTS instructions into the prompt.
 3. Preserve original language ONLY inside <d>[Chinese] ...</d> (or <d>[English] ...</d>) for spoken lines and double quotes "..." for visibly rendered scene lettering. speech_range indexes the concatenated spoken_lines in Unicode characters [start,end). Every line in spoken_lines MUST appear verbatim inside <d>...</d> in the main visual description, and NEVER be repeated inside overall_soundscape or non_diegetic_music.
 4. Bind ONLY the exact tags given in picture_bindings (<Picture 1..N>) and audio_bindings (<Audio 1..K>). Follow ref-en.txt §2.1 & §2.2: in Ref2VA mode, define scene/environment, character, and prop image references as <Subject N> in subject_definitions citing their <Picture N>, track them consistently through summary, retention_analysis, and detailed_description (never leave the scene <Picture 1> unused inside detailed_description).
-Use exactly one definition line starting with each assigned <Subject N> and cite all and only its assigned pictures there. A costume or multiview sheet of the same actor is the same subject. Cite each visible actor by their subject tag in each camera shot.
+Use exactly one definition line starting with each assigned <Subject N> and cite all and only its assigned pictures there. A costume or multiview sheet of the same actor is the same subject. In each camera shot use character Subject tags only for the visible cast declared in its segments. For an offscreen speaker describe the offscreen voice using its audio binding or role without a visual Subject tag.
 End on the expected_visible_end_state when provided.
 5. Use a new shot marker only for an explicit camera cut. Preserve exact continuity, camera framing/movement and scheduled cuts ([Shot 1], [Shot 2] At MM:SS.mmm, ...), duration (${spec.duration_seconds}s), and aspect ratio (${spec.aspect_ratio}) from authoritative_contract without inventing unapproved characters, extra shots, or contradicting camera movements.
 6. Output ONLY the final formatted H3 prompt text itself—no markdown code fences, no preamble, no explanations.`;

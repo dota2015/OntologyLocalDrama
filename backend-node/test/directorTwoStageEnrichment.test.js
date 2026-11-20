@@ -298,11 +298,18 @@ test('directorTwoStageEnrichment: speaker_synced feedback pinpoints mouth_state,
   };
   try {
     const source = { id: 11, storyboard_number: 11, duration: 4, dialogue: '说话人A: 转备用路线！', action: '发出指令', characters: [27], scene_id: 10 };
-    const planned = await ensureDirectorExecutionSlots({}, { info() {}, warn() {} }, source, {
-      forceAgent: true,
-      maxAttempts: 2,
+    const options = {
+      forceAgent: true, maxAttempts: 1,
       catalogs: { characters: [{ id: 27, name: '说话人A' }], scenes: [{ id: 10, name: '峡谷' }], props: [] },
-    });
+      checkpoint: { state: {}, save() {} },
+    };
+    const log = { info() {}, warn() {} };
+    await assert.rejects(ensureDirectorExecutionSlots({}, log, source, options), /门禁反馈/);
+    const saved = JSON.parse(JSON.stringify(options.checkpoint.state));
+    assert.equal(saved.pendingRepair.candidate.id, source.id);
+    options.checkpoint.state = saved;
+    const planned = await ensureDirectorExecutionSlots({}, log, source, options);
+    assert.equal(options.checkpoint.state.pendingRepair, undefined);
     assert.equal(inputs.length, 2, 'should converge on attempt 2 once feedback specifies field path');
     assert.match(inputs[1], /character_trajectories\[\]\.mouth_state/);
     assert.match(inputs[1], /冲突字段:.*mouth_state/);

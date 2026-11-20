@@ -23,6 +23,7 @@ describe('H3 image conditioning', () => {
       (1, 'processing', NULL, NULL, NULL, 'MiniMax-H3', 5, '16:9', 'shot', ?, ?, ?, ?)`)
       .run('https://cdn/first.png', 'https://cdn/first.png', 'https://cdn/last.png',
         JSON.stringify(['https://cdn/first.png', 'https://cdn/last.png']));
+    db.exec('ALTER TABLE video_generations ADD COLUMN pending_dispatch INTEGER DEFAULT 1');
     t.mock.method(client, 'getDefaultVideoConfig', () => config);
     let captured;
     t.mock.method(client, 'callVideoApi', async (_db, _log, opts) => {

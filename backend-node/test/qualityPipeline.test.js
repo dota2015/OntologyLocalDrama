@@ -34,7 +34,7 @@ test('Stage 3 H3 spec leaves physical actions and spoken lines under Director co
   const spec = h3Stage3.buildStage3PromptSpec(null, {
     ...fixture.shot,
     description: '【运镜】wrong_stage1_movement',
-    video_slots: { shots_timeline: [fixture.segment] },
+    video_slots: { shots_timeline: [{ ...fixture.segment, visible_characters: [28] }] },
   }, { refs: fixture.refs, speech, duration: 6 });
   assert.equal(spec.authoritative_contract.video_slots.shots_timeline.length, 1);
   assert.equal(spec.spoken_lines[0].text, '她放下了碗。');
@@ -46,7 +46,7 @@ test('Stage 3 H3 validator enforces verbatim spoken lines and rejects leaked Chi
   fixture.speech.lines[0].text = '明天我扶您出去。';
   const spec = h3Stage3.buildStage3PromptSpec(null, {
     ...fixture.shot,
-    video_slots: { shots_timeline: [fixture.segment] },
+    video_slots: { shots_timeline: [{ ...fixture.segment, visible_characters: [28] }] },
   }, { refs: fixture.refs, speech: fixture.speech, duration: 6 });
 
   const picDefs = fixture.refs.map((_, idx) => `<Subject ${idx + 1}> is the character in <Picture ${idx + 1}>.`).join('\n');

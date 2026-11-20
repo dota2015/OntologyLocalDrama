@@ -287,3 +287,70 @@ test('clearBatch marks finished batch cleared and latestBatch ignores it', t => 
   batches.clearBatch(db, 7, batch.id);
   assert.equal(batches.latestBatch(db, 7), null);
 });
+
+test('a queued video survives restart, preserves FIFO and cannot be submitted twice', async t => {
+  const { db, body } = setup(t);
+  const queued = [body.shots[1], body.shots[2]].map(shot => submissions.submitVideo(db, log, { ...shot, drama_id: 1 }));
+  const sent = [];
+  let release;
+  t.mock.method(videoClient, 'callVideoApi', async (_db, _log, opts) => {
+    sent.push(opts.video_gen_id);
+    if (sent.length === 1) await new Promise(resolve => { release = resolve; });
+    return { error: '模拟上游拒绝，结束本次测试' };
+  });
+  tasks.failOrphanedAsyncTasksOnStartup(db, log);
+  videos.resumeProcessingVideoGenerations(db, log);
+  await flush();
+  assert.deepEqual(sent, [queued[0].id]);
+  assert.equal(videos.getById(db, queued[1].id).pending_dispatch, true);
+  const duplicate = videos.processVideoGeneration(db, log, queued[1].id);
+  release();
+  await duplicate;
+  assert.deepEqual(sent, queued.map(row => row.id));
+});
+
+test('only a matching storyboard version can be reused, with explicit selection for mismatched candidates', async t => {
+  const { db, body } = setup(t);
+  const { usableVideo, reviewReason } = require('../src/services/videoAcceptance');
+  const video = submissions.submitVideo(db, log, { ...body.shots[1], drama_id: 1 });
+  const shot = () => db.prepare('SELECT * FROM storyboards WHERE id=80').get();
+  assert.ok(reviewReason({ outcome: { status: 'mismatch' } }));
+  assert.ok(reviewReason({ asr: { status: 'completed', passed: false } }));
+  assert.equal(reviewReason({ outcome: { status: 'unverified' }, asr: { status: 'error', passed: false } }), '');
+  finish(db, video.id);
+  assert.equal(usableVideo(db, shot()).id, video.id);
+  db.prepare("UPDATE video_generations SET status='needs_review' WHERE id=?").run(video.id);
+  assert.equal(usableVideo(db, shot()), undefined);
+  db.prepare('UPDATE storyboards SET selected_video_id=? WHERE id=80').run(video.id);
+  assert.equal(usableVideo(db, shot()).id, video.id);
+  db.exec("UPDATE storyboards SET action='打开书本' WHERE id=80");
+  assert.equal(usableVideo(db, shot()), undefined);
+  const batch = batches.createBatch(db, log, 7, body);
+  const calls = [];
+  await batches.createWorker(db, log, { process: async (_db, _log, id) => calls.push(id) }).tick();
+  await flush();
+  assert.equal(calls.length, 1);
+  assert.notEqual(batches.getBatch(db, batch.id).items[0].video_gen_id, video.id);
+});
+
+test('a generated mismatch remains playable in history without replacing the chosen video', async t => {
+  const { db, body } = setup(t);
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'h3-audit-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  t.mock.method(require('../src/config'), 'loadConfig', () => ({ storage: { local_path: directory } }));
+  t.mock.method(videoClient, 'callVideoApi', async () => ({ video_url: 'https://media.example/candidate.mp4' }));
+  t.mock.method(global, 'fetch', async () => new Response(Buffer.from('test candidate')));
+  const quality = require('../src/services/videoQualityGate');
+  t.mock.method(quality, 'auditGeneratedVideo', async () => ({ passed: true, violations: [], frames: {} }));
+  t.mock.method(quality, 'auditVisibleOutcome', async () => ({ status: 'mismatch', evidence: '道具仍摊开' }));
+  const current = submissions.submitVideo(db, log, { ...body.shots[1], drama_id: 1 });
+  finish(db, current.id);
+  db.prepare('UPDATE storyboards SET selected_video_id=? WHERE id=80').run(current.id);
+  const next = submissions.submitVideo(db, log, { ...body.shots[1], drama_id: 1 });
+  await videos.processVideoGeneration(db, log, next.id);
+  const candidate = videos.getById(db, next.id);
+  assert.equal(candidate.status, 'needs_review');
+  assert.ok(fs.existsSync(path.join(directory, candidate.local_path)));
+  assert.equal(db.prepare('SELECT selected_video_id FROM storyboards WHERE id=80').get().selected_video_id, current.id);
+  assert.equal(JSON.parse(tasks.getTask(db, next.task_id).result).status, 'needs_review');
+});

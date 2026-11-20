@@ -799,65 +799,19 @@ function isVideoPath(p) {
   );
 }
 
-/**
- * 取某分镜的视频地址：优先使用用户手动选定的 storyboard.video_url，否则取最新完成的 video_generations 记录
- */
 function getVideoUrlForStoryboard(db, storyboardId, baseUrl) {
-  // 1. 获取 storyboard 表中的视频信息（代表用户选定或上次同步的结果）
-  const sb = db.prepare('SELECT video_url, local_path, updated_at FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(storyboardId);
-  
-  // 2. 获取 video_generations 表中最新完成的记录
-  const vg = db.prepare(
-    "SELECT video_url, local_path, completed_at, updated_at, created_at FROM video_generations WHERE storyboard_id = ? AND status = 'completed' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1"
-  ).get(storyboardId);
-
-  // 辅助函数：构造完整 URL，优先使用本地路径（避免远程URL过期导致无法合并）
-  // 核心安全约束：localPath 必须是视频文件，绝不能使用分镜首帧图片路径（.jpg/.png）！
-  const buildUrl = (videoUrl, localPath) => {
-    if (localPath && isVideoPath(localPath) && baseUrl) {
-      const base = (baseUrl || '').replace(/\/$/, '');
-      const p = String(localPath).replace(/^\//, '');
-      return p ? base + '/' + p : null;
-    }
-    if (videoUrl && String(videoUrl).trim()) {
-      const u = videoUrl.trim();
-      if (!isVideoPath(u) && !u.startsWith('http://') && !u.startsWith('https://')) {
-        return null;
-      }
-      return u;
-    }
-    return null;
-  };
-
-  // storyboard 表的 local_path 字段通常为分镜首帧图片路径（如 media/images/xxx.jpg），只有当其本身是视频格式时才传入
-  const sbVideoPath = (sb && isVideoPath(sb.local_path)) ? sb.local_path : null;
-  const sbUrl = sb ? buildUrl(sb.video_url, sbVideoPath) : null;
-  const vgUrl = vg ? buildUrl(vg.video_url, vg.local_path) : null;
-
-  // 策略：
-  // 如果只有其中一个有 URL，直接用那个
-  if (sbUrl && !vgUrl) return sbUrl;
-  if (!sbUrl && vgUrl) return vgUrl;
-  if (!sbUrl && !vgUrl) return null;
-
-  // 都有有效视频 URL：
-  // 如果 vg.local_path 存在且为本地真实视频文件，优先使用本地已就绪的 vgUrl（避免重复网络下载）
-  if (vg && vg.local_path && isVideoPath(vg.local_path)) {
-    if (sb && sb.video_url && (sb.video_url === vg.video_url || sb.video_url === vgUrl)) {
-      return vgUrl;
-    }
+  const shot = db.prepare('SELECT * FROM storyboards WHERE id=? AND deleted_at IS NULL').get(storyboardId);
+  if (!shot) return null;
+  const video = require('./videoAcceptance').usableVideo(db, shot);
+  if (video?.local_path && isVideoPath(video.local_path) && baseUrl) {
+    return baseUrl.replace(/\/$/, '') + '/' + video.local_path.replace(/^\//, '');
   }
-
-  // 比较时间：
-  // 注意：用户编辑台词、图片、绑定尾帧会刷新 sb.updated_at，但生成记录 vgTime 代表实际出片完成时间
-  const sbTime = sb.updated_at || '1970-01-01';
-  const vgTime = vg.completed_at || vg.updated_at || vg.created_at || '1970-01-01';
-
-  if (vgTime > sbTime) {
-    return vgUrl;
-  }
-  
-  return sbUrl || vgUrl;
+  if (video?.video_url) return video.video_url;
+  // A directly uploaded video has no generation record.
+  if (!shot.selected_video_id && shot.video_url && !db.prepare(
+    'SELECT 1 FROM video_generations WHERE storyboard_id=? AND (video_url=? OR local_path=?)'
+  ).get(storyboardId, shot.video_url, shot.video_url)) return shot.video_url;
+  return null;
 }
 
 function finalizeEpisode(db, log, episodeId, baseUrl, body = {}) {
@@ -873,6 +827,9 @@ function finalizeEpisode(db, log, episodeId, baseUrl, body = {}) {
     const sb = storyboards[i];
     const videoUrl = getVideoUrlForStoryboard(db, sb.id, baseUrl);
     if (!videoUrl) {
+      if (db.prepare("SELECT 1 FROM video_generations WHERE storyboard_id=? AND status IN ('completed','needs_review') AND deleted_at IS NULL LIMIT 1").get(sb.id)) {
+        return { message: `分镜 #${sb.storyboard_number} 缺少当前版本可采用的成片，请复核或重新生成后合成`, merge_id: null, episode_id: episodeId, task_id: null };
+      }
       log.warn('Finalize skip storyboard (no video)', { storyboard_id: sb.id, storyboard_number: sb.storyboard_number });
       continue;
     }

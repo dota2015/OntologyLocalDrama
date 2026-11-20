@@ -583,6 +583,7 @@ describe('Three-Tier Architectural Evolution: Agent First, Ontology Gatekeeper, 
         id: 1,
         storyboard_number: 1,
         duration: 5,
+        video_slots: { shots_timeline: [{ duration: 5, visible_characters: [10] }] },
         semantic_slots: {
           h3_mode: 'ref2va',
           first_frame_policy: 'none',

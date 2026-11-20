@@ -323,6 +323,7 @@ test('buildDeterministicStage3Skeleton & validateOfficialH3Prompt: enforces Subj
             shot_number: 1,
             duration: 5,
             camera: { shot_type: 'close_up', movement: 'push', angle_h: 'eye_level', angle_v: 'level' },
+            visible_characters: [{ character_id: 1 }],
             character_trajectories: [
               {
                 character_name: '陆天宇',

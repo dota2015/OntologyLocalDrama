@@ -157,7 +157,7 @@ function videoDb(t) {
   const db = new Database(':memory:');
   t.after(() => db.close());
   db.exec(`CREATE TABLE storyboards (id INTEGER PRIMARY KEY, storyboard_number INTEGER, duration REAL, dialogue TEXT, narration TEXT, creation_mode TEXT, universal_segment_text TEXT, deleted_at TEXT);
-    CREATE TABLE video_generations (id INTEGER PRIMARY KEY, storyboard_id INTEGER, duration REAL, model TEXT, prompt TEXT, status TEXT, error_msg TEXT, updated_at TEXT, deleted_at TEXT);
+    CREATE TABLE video_generations (id INTEGER PRIMARY KEY, pending_dispatch INTEGER DEFAULT 1, shot_revision TEXT, storyboard_id INTEGER, duration REAL, model TEXT, prompt TEXT, status TEXT, error_msg TEXT, updated_at TEXT, deleted_at TEXT);
     INSERT INTO storyboards (id, storyboard_number, duration, dialogue) VALUES (1, 2, 5, '');`);
   db.prepare('UPDATE storyboards SET dialogue = ? WHERE id = 1').run(dialogue);
   db.exec("CREATE TABLE dramas (id INTEGER PRIMARY KEY,metadata TEXT,deleted_at TEXT); CREATE TABLE episodes(id INTEGER PRIMARY KEY,drama_id INTEGER,deleted_at TEXT); INSERT INTO dramas VALUES(1,'{}',NULL); INSERT INTO episodes VALUES(1,1,NULL); ALTER TABLE storyboards ADD COLUMN episode_id INTEGER DEFAULT 1");
@@ -191,6 +191,8 @@ test('queued video submission rechecks manual edits before calling model API', a
   const db = videoDb(t);
   db.exec("INSERT INTO video_generations (id, storyboard_id, duration, model, status) VALUES (1, 1, 15, 'MiniMax-H3', 'processing')");
   t.mock.method(videoClient, 'getDefaultVideoConfig', () => h3);
+  db.exec('ALTER TABLE dramas ADD COLUMN style TEXT');
+  db.prepare('UPDATE video_generations SET shot_revision=?').run(require('../src/services/videoAcceptance').shotRevision(db, db.prepare('SELECT * FROM storyboards').get()));
   t.mock.method(videoClient, 'callVideoApi', () => assert.fail('Over-budget shot reached model API'));
   await videoService.processVideoGeneration(db, log, 1);
   const row = db.prepare('SELECT * FROM video_generations').get();

@@ -1580,7 +1580,6 @@ const assetVideoUrl = ctx.assetVideoUrl
 const imageUrl = ctx.imageUrl
 const hasAssetImage = ctx.hasAssetImage
 const isHttpVideoUrl = ctx.isHttpVideoUrl
-const recordHasPlayableVideoUrl = ctx.recordHasPlayableVideoUrl
 const getSbVideo = ctx.getSbVideo
 const getSbAllVideos = ctx.getSbAllVideos
 const getSbFirstImage = ctx.getSbFirstImage
@@ -1961,7 +1960,6 @@ async function startBatchVideoGeneration(options = {}) {
     const filterIds = options.filterIds
     const todo = orderedVideoShots(store.storyboards || []).filter(sb => {
       if (filterIds && !filterIds.has(Number(sb.id))) return false
-      if (!filterIds && (sbVideos.value[sb.id] || []).some(v => v.status === 'completed' && recordHasPlayableVideoUrl(v))) return false
       // H3 以权威槽位为输入；具体首帧与参考素材由后端门禁。
       return sbCanSubmitVideo(sb)
     })
@@ -2406,7 +2404,7 @@ async function onRemoveSbHistoryVideo(storyboardId, videoGenId) {
     await videosAPI.delete(videoGenId)
     await loadSingleStoryboardMedia(storyboardId)
     const remaining = getSbAllVideos(storyboardId)
-    const nextCurrent = remaining[0] || null
+    const nextCurrent = remaining.find(video => video.status === 'completed') || null
     const row = (store.storyboards || []).find((b) => b.id === storyboardId)
     if (row && (wasSelected || row.selected_video_id === videoGenId)) {
       row.selected_video_id = nextCurrent ? nextCurrent.id : null
@@ -3618,27 +3616,8 @@ async function onEnrichOntologySlots() {
     const data = res?.data ?? res
     const taskId = data?.task_id
     if (!taskId) throw new Error(data?.message || '未能创建视听槽位任务')
-    const meta = {
-      dramaId: dramaId.value,
-      episodeId: currentEpisodeId.value,
-      dramaTitle: store.drama?.title,
-      episodeNumber: store.currentEpisode?.episode_number,
-      resourceType: GEN_RESOURCE.DIRECTOR_ENRICHMENT,
-      resourceId: Number(currentEpisodeId.value),
-      label: `${store.currentEpisode?.title || '当前集'} 视听槽位规划`,
-      taskId,
-    }
-    genStore?.markRunning(meta)
-    ElMessage.success('视听槽位 Agent 已在后台规划，刷新页面不会中断')
-    genStore?.pollTask(taskId, meta, async () => {
-      await loadDrama()
-      ElNotification({
-        title: '视听槽位规划完成',
-        message: '导演 Agent 已输出完整执行合同并通过本体门禁。',
-        type: 'success',
-        duration: 5000,
-      })
-    }, { ElMessage, maxAttempts: 21600, interval: 2000 })
+    await loadLatestDirectorRun(currentEpisodeId.value)
+    ElMessage.success('视听槽位规划已加入导演后台任务')
   } catch (e) {
     ElMessage.error(e.message || '装配视听本体槽位失败')
   } finally {
@@ -3786,7 +3765,7 @@ async function onDirectorAgentGenerate(resumeTaskId = null) {
   try {
     planningInputs = resumeTaskId ? {} : directorPlanningInputs(storyboardCount.value, videoDuration.value, { min: shotDurationMin.value, max: shotDurationMax.value })
   } catch (error) { ElMessage.warning(error.message); return }
-  if (storyboards.value.length > 0) {
+  if (!resumeTaskId && storyboards.value.length > 0) {
     try {
       await ElMessageBox.confirm(
         '导演智能体将执行【两阶段极速编排：阶段 1 快速生成全集分镜 ➔ 阶段 2 视听本体槽位装配与门禁闭环】。当前已有分镜将被覆盖更新，是否继续？',
@@ -4019,7 +3998,9 @@ async function onGenerateSbVideo(sb) {
         sbVideoErrors.value[sb.id] = pollRes.error || '视频生成失败'
       } else if (pollRes?.status === 'completed') {
         sbVideoErrors.value[sb.id] = ''
-        if (pollRes?.result?.video_generation_id) {
+        if (pollRes?.result?.status === 'needs_review') {
+          ElMessage.warning(pollRes.result.reason || '成片已保存，请复核')
+        } else if (pollRes?.result?.video_generation_id) {
           sbSelectedVideoId.value = { ...sbSelectedVideoId.value, [sb.id]: pollRes.result.video_generation_id }
           const row = (store.storyboards || []).find((b) => b.id === sb.id)
           if (row) {
@@ -4027,7 +4008,7 @@ async function onGenerateSbVideo(sb) {
             if (pollRes.result.video_url) row.video_url = pollRes.result.video_url
           }
         }
-        ElMessage.success('视频生成完成')
+        if (pollRes.result?.status !== 'needs_review') ElMessage.success('视频生成完成')
       } else if (pollRes?.status === 'cancelled') {
         sbVideoErrors.value[sb.id] = '用户已取消'
       }
@@ -4069,7 +4050,9 @@ async function onResumeSbVideoPoll(sb) {
       sbVideoErrors.value[sb.id] = pollRes.error || '继续查询失败'
     } else if (pollRes?.status === 'completed') {
       sbVideoErrors.value[sb.id] = ''
-      if (pollRes?.result?.video_generation_id) {
+      if (pollRes?.result?.status === 'needs_review') {
+        ElMessage.warning(pollRes.result.reason || '成片已保存，请复核')
+      } else if (pollRes?.result?.video_generation_id) {
         sbSelectedVideoId.value = { ...sbSelectedVideoId.value, [sb.id]: pollRes.result.video_generation_id }
         const row = (store.storyboards || []).find((b) => b.id === sb.id)
         if (row) {
@@ -4077,7 +4060,7 @@ async function onResumeSbVideoPoll(sb) {
           if (pollRes.result.video_url) row.video_url = pollRes.result.video_url
         }
       }
-      ElMessage.success('视频查询完成')
+      if (pollRes.result?.status !== 'needs_review') ElMessage.success('视频查询完成')
     } else if (pollRes?.status === 'cancelled') {
       sbVideoErrors.value[sb.id] = '用户已取消'
     }

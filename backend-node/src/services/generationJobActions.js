@@ -77,7 +77,7 @@ function createExecutor(db,cfg,log) {
     ]);
   }
   function videoDone(sb) {
-    return db.prepare("SELECT * FROM video_generations WHERE storyboard_id=? AND status='completed' AND deleted_at IS NULL ORDER BY id DESC").all(sb.id).find(v=>v.local_path || require('./videoClient').isPlausibleHttpVideoUrl(v.video_url));
+    return require('./videoAcceptance').usableVideo(db, sb);
   }
   async function observe(type,id) {
     if (type === 'timer') return Number(id) > Date.now() ? {pending:true} : {};

@@ -1,3 +1,4 @@
+const { usableVideo, shotRevision } = require('./videoAcceptance');
 const { randomUUID } = require('crypto');
 const path = require('path');
 const videoService = require('./videoService');
@@ -125,7 +126,8 @@ function createWorker(db, log, dependencies = {}) {
         for (const item of running) {
           const video = db.prepare('SELECT * FROM video_generations WHERE id=? AND deleted_at IS NULL').get(item.video_gen_id);
           if (video?.status === 'processing') continue;
-          const ok = video?.status === 'completed' && (video.local_path || videoClient.isPlausibleHttpVideoUrl(video.video_url));
+          const shot = db.prepare('SELECT * FROM storyboards WHERE id=? AND deleted_at IS NULL').get(item.storyboard_id);
+          const ok = shot && video?.status === 'completed' && video.shot_revision === shotRevision(db, shot) && (video.local_path || videoClient.isPlausibleHttpVideoUrl(video.video_url));
           db.prepare('UPDATE video_batch_items SET status=?,error=? WHERE id=?').run(ok ? 'completed' : 'failed', ok ? null : (video?.error_msg || '视频任务不存在或生成失败'), item.id);
         }
         const remaining = db.prepare("SELECT COUNT(*) AS n FROM video_batch_items WHERE batch_id=? AND status IN ('pending','running')").get(batch.id).n;
@@ -186,9 +188,8 @@ function createWorker(db, log, dependencies = {}) {
         const valid = db.prepare(`SELECT s.* FROM storyboards s JOIN episodes e ON e.id=s.episode_id JOIN video_batches b ON b.episode_id=e.id
           WHERE b.id=? AND s.id=? AND e.drama_id=b.drama_id AND s.deleted_at IS NULL AND e.deleted_at IS NULL`).get(item.batch_id, item.storyboard_id);
         if (!valid) throw new Error('分镜或分集已删除/移动');
-        const videos = db.prepare('SELECT * FROM video_generations WHERE storyboard_id=? AND drama_id=? AND deleted_at IS NULL ORDER BY id DESC').all(item.storyboard_id, item.drama_id);
-        const done = videos.find(v => v.status === 'completed' && (v.local_path || videoClient.isPlausibleHttpVideoUrl(v.video_url)));
-        const active = videos.find(v => v.status === 'processing');
+        const done = usableVideo(db, valid);
+        const active = db.prepare("SELECT id FROM video_generations WHERE storyboard_id=? AND status='processing' AND deleted_at IS NULL ORDER BY id DESC LIMIT 1").get(item.storyboard_id);
         if (done || active) {
           db.prepare('UPDATE video_batch_items SET status=?,video_gen_id=? WHERE id=?').run(done ? 'skipped' : 'running', (done || active).id, item.id);
           return;
@@ -198,7 +199,7 @@ function createWorker(db, log, dependencies = {}) {
         if (typeof slots === 'string') {
           try { slots = JSON.parse(slots); } catch (_) { slots = null; }
         }
-        const firstFramePolicy = slots?.first_frame_policy || valid.first_frame_policy;
+        const firstFramePolicy = payload.resolution_plan.first_frame_policy;
         const continuityType = slots?.continuity_type || valid.continuity_type;
         const isLongTakeContinuation = valid.long_take_group_id && (valid.long_take_role === 'continuation' || valid.long_take_role === 'tail' || (valid.long_take_sequence != null && valid.long_take_sequence > 1));
 
@@ -208,24 +209,15 @@ function createWorker(db, log, dependencies = {}) {
           && firstFramePolicy !== 'generate_new'
           && continuityType !== 'hard_cut'
           && !require('./wardrobeService').hasChange(db, item.storyboard_id)
-          && !payload.universal;
+          && payload.resolution_plan.mode === 'fl2va';
 
         if (shouldInheritTail) {
-          const prev = isLongTakeContinuation
-            ? db.prepare(`SELECT i.* FROM video_batch_items i JOIN storyboards s ON s.id=i.storyboard_id
-                WHERE i.batch_id=? AND s.long_take_group_id=? AND (COALESCE(s.long_take_sequence, 0) < COALESCE(?, 0) OR i.position < ?)
-                ORDER BY s.long_take_sequence DESC, i.position DESC LIMIT 1`).get(item.batch_id, valid.long_take_group_id, valid.long_take_sequence || 9999, item.position)
-            : db.prepare('SELECT * FROM video_batch_items WHERE batch_id=? AND position<? ORDER BY position DESC LIMIT 1').get(item.batch_id, item.position);
-
-          let previousShot = null;
-          if (prev && ['completed', 'skipped'].includes(prev.status)) {
-            previousShot = db.prepare('SELECT * FROM storyboards WHERE id=?').get(prev.storyboard_id);
-          } else if (isLongTakeContinuation) {
-            previousShot = db.prepare(`SELECT * FROM storyboards WHERE episode_id=? AND long_take_group_id=?
-              AND (COALESCE(long_take_sequence, 0) < COALESCE(?, 0) OR storyboard_number < ?) AND deleted_at IS NULL
-              ORDER BY long_take_sequence DESC, storyboard_number DESC LIMIT 1`).get(valid.episode_id, valid.long_take_group_id, valid.long_take_sequence || 9999, valid.storyboard_number);
+          const previousShot = db.prepare(`SELECT * FROM storyboards WHERE episode_id=? AND storyboard_number<?
+            AND deleted_at IS NULL ORDER BY storyboard_number DESC,id DESC LIMIT 1`).get(valid.episode_id, valid.storyboard_number);
+          const previousItem = previousShot && db.prepare('SELECT status FROM video_batch_items WHERE batch_id=? AND storyboard_id=?').get(item.batch_id, previousShot.id);
+          if (previousItem && !['skipped', 'completed'].includes(previousItem.status)) {
+            throw new Error(`依赖的分镜 #${previousShot.storyboard_number} 尚无本轮可采用的成片，选择或重新生成后重试`);
           }
-
           if (!previousShot) {
             if (firstFramePolicy === 'inherit_tail') {
               throw new Error(`分镜 #${valid.storyboard_number} 明确指定了 inherit_tail 尾帧连戏策略，但前序分镜不存在或尚未生成，禁止静默回退！`);
