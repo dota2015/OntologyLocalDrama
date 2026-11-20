@@ -119,7 +119,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
       .map((item) => [String(item.name).trim(), Number(item.id)]));
 
     shots.forEach((shot, idx) => {
-      const shotNum = shot.shot_number || (idx + 1);
+      const shotNum = shot.shot_number || shot.storyboard_number || (idx + 1);
       const prevShot = idx > 0 ? shots[idx - 1] : null;
 
       // 提取语义槽位
@@ -283,14 +283,14 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
       const isCompleteSilence = soundPlan.is_silent === true || shot.is_silent === true;
       const isAmbientOnly = lipSyncMode === 'silent_ambient';
       const isBgmOnly = lipSyncMode === 'bgm_only';
-      const isNoSpeech = isCompleteSilence || isAmbientOnly || isBgmOnly;
+      const isMixed = lipSyncMode === 'music_with_effects';
+      const isNoSpeech = isCompleteSilence || isAmbientOnly || isBgmOnly || isMixed;
       const hasDialogue = meaningfulSpeech(shot.dialogue);
       const hasNarration = meaningfulSpeech(shot.narration);
       const hasSpeechText = meaningfulSpeech(speechPlan.text) || meaningfulSpeech(videoSpeech.dialogue_content);
-      const bgmText = soundPlan.bgm_prompt || shot.bgm_prompt;
+      const bgmText = soundPlan.bgm_prompt;
       const hasBgm = !!(bgmText && String(bgmText).trim() && !/^(?:无|无BGM|禁BGM|none|n\/a)[。.!！\s]*$/iu.test(String(bgmText).trim()));
-      const hasSfx = (Array.isArray(soundPlan.sound_effects) && soundPlan.sound_effects.some(Boolean))
-        || meaningfulSpeech(shot.sound_effect);
+      const hasSfx = Array.isArray(soundPlan.sound_effects) && soundPlan.sound_effects.some(Boolean);
       if (isNoSpeech && (hasDialogue || hasNarration || hasSpeechText)) {
         violations.push({
           rule: 'INVARIANT_NONVERBAL_SHOT_SPEECH_CONFLICT',
@@ -325,12 +325,19 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
           });
         }
       }
+      if (isMixed && (!hasBgm || !hasSfx || isCompleteSilence)) {
+        violations.push({
+          rule: 'INVARIANT_MIXED_AUDIO_PLAN', shot_number: shotNum, severity: this.defaultSeverity,
+          message: `分镜 #${shotNum} 的 music_with_effects 需要同时声明配乐和音效，is_silent 必须为 false。`,
+          conflict_slots: ['semantic_slots.audio_lip_sync', 'semantic_slots.sound_plan'],
+        });
+      }
       if (isAmbientOnly && hasBgm) {
         violations.push({
           rule: 'INVARIANT_AMBIENT_ONLY_BGM_CONFLICT',
           shot_number: shotNum,
           severity: this.defaultSeverity,
-          message: `分镜 #${shotNum} 选择纯环境音效模式，但同时规划了 BGM；需要配乐时请改用 bgm_only 或明确的无语言混音方案。`,
+          message: `分镜 #${shotNum} 选择纯环境音效模式，但同时规划了 BGM；如需同时保留配乐与音效，请选 music_with_effects；仅需环境音则清空 sound_plan.bgm_prompt。`,
           conflict_slots: ['semantic_slots.audio_lip_sync', 'sound_plan.bgm_prompt', 'bgm_prompt'],
         });
       }
@@ -339,7 +346,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
           rule: 'INVARIANT_BGM_ONLY_SFX_CONFLICT',
           shot_number: shotNum,
           severity: this.defaultSeverity,
-          message: `分镜 #${shotNum} 选择纯配乐模式，但同时规划了环境音或动作音效。`,
+          message: `分镜 #${shotNum} 选择纯配乐模式，但同时规划了环境音或动作音效。如需保留两者，请选 music_with_effects；仅需配乐则清空 sound_plan.sound_effects。`,
           conflict_slots: ['semantic_slots.audio_lip_sync', 'sound_plan.sound_effects', 'sound_effect'],
         });
       }

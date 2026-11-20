@@ -251,6 +251,7 @@ const AUDIO_LIP_SYNC_MODES = Object.freeze({
   OFFSCREEN_VOICEOVER: 'offscreen_voiceover', // 画外音/画外说话（画内所有人双唇紧闭，严禁动嘴，无任何口型）
   NARRATION: 'narration',                     // 客观旁白解说（画面无声解说，全员双唇紧闭，严禁动嘴）
   SILENT_AMBIENT: 'silent_ambient',           // 纯环境音效（全员双唇紧闭，严禁动嘴，专注动作）
+  MUSIC_WITH_EFFECTS: 'music_with_effects',
   BGM_ONLY: 'bgm_only',                       // 纯电影配乐分镜（全员双唇紧闭，专供视频模型原生合成高质量背景音乐）
 });
 
@@ -961,6 +962,7 @@ const AUDIOVISUAL_DATA_DICTIONARY = {
       offscreen_voiceover: { label: '画外音/无线电通话', desc: '画内全员双唇紧闭，严禁张嘴说话，无口型' },
       narration: { label: '客观旁白解说', desc: '画面无声纯画外音，全员双唇紧闭，严禁动嘴' },
       silent_ambient: { label: '纯环境音效/动作', desc: '全员双唇紧闭，专注肢体动作' },
+      music_with_effects: { label: '配乐与现场音效', desc: '无对白，配乐与明确规划的音效并存' },
       bgm_only: { label: '纯电影配乐分镜', desc: '全员双唇紧闭，专供视频模型原生合成背景音乐' },
     },
   },

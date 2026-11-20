@@ -1878,7 +1878,7 @@ async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {})
       const compactNeighbours = [retryOptions.previousShot, retryOptions.nextShot]
         .filter(Boolean).map(item => compactExecutionShot(item));
       const compactCatalogs = compactExecutionCatalogs(retryOptions.catalogs || {}, candidateBase);
-      const rosterLockLine = `本镜参与者总集为 ${JSON.stringify(lockedParticipantIds)}，不得增减。初始主体 ${JSON.stringify(lockedVisibleIds)}，背景 ${JSON.stringify(lockedBackgroundIds)}，画外 ${JSON.stringify(lockedOffscreenIds)}。导演可调整参与方式。每段分别声明实际入画人物，特写中其他参与者可在画外发言；仅给当段入画者分配表演轨迹。一个动作可跨时间段持续，同机位保持连续。`;
+      const rosterLockLine = `本镜参与者总集为 ${JSON.stringify(lockedParticipantIds)}，不得增减。初始主体 ${JSON.stringify(lockedVisibleIds)}，背景 ${JSON.stringify(lockedBackgroundIds)}，画外 ${JSON.stringify(lockedOffscreenIds)}。导演可调整参与方式。无台词且同时需要配乐和现场音效时，选择 music_with_effects 并保留两者，画内人物不发声。每段分别声明实际入画人物，特写中其他参与者可在画外发言；仅给当段入画者分配表演轨迹。一个动作可跨时间段持续，同机位保持连续。`;
       const gateFeedbackText = errors.map((item) => {
         const msg = String(item?.message || item || '');
         const slots = Array.isArray(item?.conflict_slots) && item.conflict_slots.length

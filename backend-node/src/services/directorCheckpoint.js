@@ -156,4 +156,4 @@ function events(db, taskId, limit = 100) {
   ensureTable(db);
   return db.prepare('SELECT * FROM director_checkpoint_events WHERE task_id=? ORDER BY id DESC LIMIT ?').all(taskId, Number(limit) || 100);
 }
-module.exports = { read, open, summary, events, requireResume, fingerprint, assertCompatible, cleanOptions };
+module.exports = { rowVersions, read, open, summary, events, requireResume, fingerprint, assertCompatible, cleanOptions };

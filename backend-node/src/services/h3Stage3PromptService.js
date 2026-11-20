@@ -326,7 +326,7 @@ function buildDeterministicStage3Skeleton(spec) {
 
   const audioLines = audioBindings.map((ab) => `- ${ab.tag}: Audio reference for ${ab.speaker_name || ab.key || 'voice'} (${ab.kind})`);
 
-  const nonSpeakingModes = new Set(['offscreen_voiceover', 'narration', 'silent_ambient', 'bgm_only']);
+  const nonSpeakingModes = new Set(['offscreen_voiceover', 'narration', 'silent_ambient', 'bgm_only', 'music_with_effects']);
 
 
   const actorTags = new Map(groupSubjects(picBindings).filter(s => s.characterId).map(s => [s.characterId, s.tag]));

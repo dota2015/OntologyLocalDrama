@@ -572,12 +572,8 @@ function deriveStoryboardFieldsFromAi(sb, style, videoRatio, opts = {}) {
     }
   }
   const description = `【镜头类型】${shotType}\n【运镜】${movement}\n【动作】${action}\n【对话】${dialogue}\n【解说】${narration}\n【结果】${result}\n【情绪】${emotion}`;
-  // 背景音乐与音效设计：无对白镜头必须配上背景音乐描述，专供 H3 等视频模型原生生成高质量背景音乐
-  let bgmPrompt = (sb.bgm_prompt || '').toString().trim();
+  const bgmPrompt = (sb.bgm_prompt || '').toString().trim();
   const soundEffect = (sb.sound_effect || '').toString().trim();
-  if (!dialogue && (!bgmPrompt || bgmPrompt === '无' || /禁bgm|无背景音乐|no\s*bgm/i.test(bgmPrompt))) {
-    bgmPrompt = angleService.inferBgmPrompt(sb);
-  }
   const sbWithAngles = { ...sb, shot_type: shotType, movement, lighting_style: lightingStyle, depth_of_field: depthOfField, angle_h: angleH, angle_v: angleV, angle_s: angleS, bgm_prompt: bgmPrompt, sound_effect: soundEffect };
 
   // 首尾帧双关键帧槽位与视频语义槽位契约（消灭无槽位、正则匹配、尾帧形变与口型错乱）

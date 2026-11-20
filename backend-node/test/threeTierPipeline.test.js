@@ -91,6 +91,8 @@ describe('Three-Tier Architectural Evolution: Agent First, Ontology Gatekeeper, 
           shots_timeline: [{ character_trajectories: [{ character_id: 1, name: '红狼', mouth_state: 'closed' }] }],
         },
       };
+      // A stage-one display default cannot undo the Director's explicit empty music slot.
+      ambient.bgm_prompt = '旧初稿配乐';
       const ambientViolations = checkCrossSlotInvariants([ambient]);
       assert.equal(ambientViolations.some((v) => /NONVERBAL|AMBIENT_ONLY|SILENT_SHOT/.test(v.rule)), false, JSON.stringify(ambientViolations));
 
@@ -102,6 +104,10 @@ describe('Three-Tier Architectural Evolution: Agent First, Ontology Gatekeeper, 
       musicWithSfx.semantic_slots.audio_lip_sync = 'bgm_only';
       musicWithSfx.semantic_slots.sound_plan = { is_silent: false, sound_effects: ['脚步声'], bgm_prompt: '纯器乐鼓点' };
       assert.ok(checkCrossSlotInvariants([musicWithSfx]).some((v) => v.rule === 'INVARIANT_BGM_ONLY_SFX_CONFLICT'));
+      musicWithSfx.semantic_slots.audio_lip_sync = 'music_with_effects';
+      assert.deepEqual(checkCrossSlotInvariants([musicWithSfx]).filter(v => /AUDIO|BGM|SFX|NONVERBAL/.test(v.rule)), []);
+      musicWithSfx.dialogue = '出发。';
+      assert.ok(checkCrossSlotInvariants([musicWithSfx]).some(v => v.rule === 'INVARIANT_NONVERBAL_SHOT_SPEECH_CONFLICT'));
     });
 
     it('Rule 4: Rejects dual-role character conflicts (同一角色同时为主体与背景人物)', () => {
