@@ -1,3 +1,4 @@
+const { replaceStoryboardCast } = require('../services/storyboardCast');
 /**
  * 影视视听本体槽位装配增强服务 (Director Ontology Enrichment Service)
  * 践行两阶段分镜生成架构 (Two-Stage Storyboard Generation Architecture):
@@ -348,8 +349,6 @@ function publishExecutionContracts(db, episodeId, enrichedShots, checkpoint) {
     WHERE id = ? AND episode_id = ? AND deleted_at IS NULL
   `);
 
-  const insSbCharStmt = db.prepare('INSERT INTO storyboard_characters (storyboard_id, character_id, created_at) VALUES (?, ?, ?)');
-  const delSbCharStmt = db.prepare('DELETE FROM storyboard_characters WHERE storyboard_id = ?');
   const insSbPropStmt = db.prepare('INSERT INTO storyboard_props (storyboard_id, prop_id) VALUES (?, ?)');
   const delSbPropStmt = db.prepare('DELETE FROM storyboard_props WHERE storyboard_id = ?');
 
@@ -389,8 +388,7 @@ function publishExecutionContracts(db, episodeId, enrichedShots, checkpoint) {
       );
       if (!update.changes) throw new Error(`分镜 #${shot.storyboard_number} 已删除或移动，无法发布执行合同`);
 
-      delSbCharStmt.run(shot.id);
-      for (const cid of resolvedCharIds) insSbCharStmt.run(shot.id, cid, now);
+      replaceStoryboardCast(db, shot.id, resolvedCharIds);
       delSbPropStmt.run(shot.id);
       for (const pid of resolvedPropIds) insSbPropStmt.run(shot.id, pid);
     }

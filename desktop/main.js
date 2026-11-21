@@ -43,28 +43,19 @@ writeMainLog(`main.js loaded packaged=${app.isPackaged} exec=${process.execPath}
 })();
 
 const BACKEND_APP_PATH = path.join(__dirname, 'backend-app');
-const BACKEND_NODE_PATH = path.join(__dirname, '..', 'backend-node');
 const DEFAULT_PORT = 5679;
 
 let serverInstance = null;
 
-/** 开发模式用 backend-node（改代码即生效）；打包后用 backend-app */
 function getBackendModulePath() {
-  if (app.isPackaged) return BACKEND_APP_PATH;
-  // Electron 开发模式必须用 backend-app：require 会向上解析到 desktop/node_modules，
-  // 其中 better-sqlite3 已由 postinstall 的 electron-builder install-app-deps 对准当前 Electron ABI。
-  // 若直接用 backend-node，则会加载 backend-node/node_modules（多为本机 Node 编的 ABI，必炸）。
-  if (process.versions.electron && fs.existsSync(path.join(BACKEND_APP_PATH, 'src', 'app.js'))) {
-    return BACKEND_APP_PATH;
-  }
-  return fs.existsSync(BACKEND_NODE_PATH) ? BACKEND_NODE_PATH : BACKEND_APP_PATH;
+  return path.dirname(require.resolve('localminidrama-runtime/package.json'));
 }
 
 function getBackendCwd() {
   if (app.isPackaged) {
     return path.join(app.getPath('userData'), 'backend');
   }
-  return getBackendModulePath();
+  return BACKEND_APP_PATH;
 }
 
 function ensureBackendCwd(backendCwd) {

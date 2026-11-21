@@ -25,11 +25,11 @@ function makeRes() {
 
 const noopLog = { info() {}, warn() {}, error() {}, debug() {} };
 
-function callRoute(method, reqBody, params = {}) {
+async function callRoute(method, reqBody, params = {}) {
   const routes = sceneRoutes({ prepare: () => ({ get: () => ({ id: 3, reference_image_mode: 'quad_grid' }) }) }, noopLog, {});
   const handler = routes[method];
   const res = makeRes();
-  handler({ params, body: reqBody }, res);
+  await handler({ params, body: reqBody }, res);
   return res;
 }
 

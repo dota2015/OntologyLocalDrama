@@ -19,21 +19,7 @@
     "prepare-backend": "node scripts/copy-backend.js"
   },
   "dependencies": {
-    "@mastra/core": "^1.78.0",
-    "@mastra/libsql": "^1.26.2",
-    "@mastra/memory": "^1.38.0",
-    "@volcengine/openapi": "^1.36.1",
-    "adm-zip": "^0.5.16",
-    "better-sqlite3": "^13.0.3",
-    "cors": "^2.8.5",
-    "express": "^4.21.0",
-    "js-yaml": "^4.1.0",
-    "jsonrepair": "^3.13.3",
-    "jsonwebtoken": "^9.0.3",
-    "multer": "^1.4.5-lts.1",
-    "sharp": "^0.34.5",
-    "uuid": "^10.0.0",
-    "zod": "^4.6.7"
+    "localminidrama-runtime": "file:../backend-node"
   },
   "devDependencies": {
     "electron": "^44.0.0",
@@ -49,7 +35,6 @@
     "files": [
       "main.js",
       "package.json",
-      "backend-app/**/*",
       "node_modules/**/*"
     ],
     "asarUnpack": [
@@ -95,5 +80,8 @@
       "allowToChangeInstallationDirectory": true,
       "artifactName": "LocalMiniDrama Setup ${version}.${ext}"
     }
+  },
+  "overrides": {
+    "better-sqlite3": "^13.0.3"
   }
 }

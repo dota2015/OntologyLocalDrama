@@ -1,3 +1,4 @@
+const { storyboardCharacterIds } = require('./storyboardCast');
 // 与 Go application/services/frame_prompt_service.go 对齐：生成首帧/关键帧/尾帧/分镜板/动作序列提示词
 const loadConfig = require('../config').loadConfig;
 const promptI18n = require('./promptI18n');
@@ -172,74 +173,14 @@ function buildCharacterAnchorText(name, anchors, appearance) {
 
 function loadStoryboardCharacterNames(db, storyboardId) {
   const sid = Number(storyboardId);
-  let ids = [];
-  let usedExplicitCharactersColumn = false;
-
-  // 以 storyboards.characters（前端勾选）为权威；仅未配置时才回退 storyboard_characters
-  try {
-    const sbRow = db.prepare('SELECT characters FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(sid);
-    if (sbRow?.characters != null && String(sbRow.characters).trim() !== '') {
-      const parsed = JSON.parse(sbRow.characters);
-      if (Array.isArray(parsed)) {
-        usedExplicitCharactersColumn = true;
-        for (const item of parsed) {
-          if (typeof item === 'object' && item != null && item.id != null) {
-            ids.push(Number(item.id));
-          } else if (typeof item === 'number' || (typeof item === 'string' && /^\d+$/.test(item))) {
-            ids.push(Number(item));
-          }
-        }
-      }
-    }
-  } catch (_) {}
-
-  if (!usedExplicitCharactersColumn) {
-    const links = db.prepare('SELECT character_id FROM storyboard_characters WHERE storyboard_id = ?').all(sid);
-    if (links.length) {
-      ids = links.map((r) => r.character_id);
-    }
-  }
-
-  if (!ids.length) {
-    if (usedExplicitCharactersColumn) return [];
-    // 最后兜底：尝试按名称模糊匹配（某些老数据可能只存了名字）
-    try {
-      const sbRow = db.prepare('SELECT characters FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(sid);
-      if (sbRow?.characters) {
-        const raw = String(sbRow.characters);
-        // 尝试提取可能的名字（简单处理）
-        const nameMatches = raw.match(/[\u4e00-\u9fa5]{2,4}/g) || [];
-        if (nameMatches.length) {
-          const namePlaceholders = nameMatches.map(() => '?').join(',');
-          const nameRows = db.prepare(
-            `SELECT id, name, appearance, identity_anchors FROM characters 
-             WHERE name IN (${namePlaceholders}) AND deleted_at IS NULL 
-             AND drama_id = (SELECT drama_id FROM episodes WHERE id = (SELECT episode_id FROM storyboards WHERE id = ?))`
-          ).all(...nameMatches, sid);
-          if (nameRows.length) {
-            return nameRows.map((r) => {
-              let anchors = null;
-              if (r.identity_anchors) { try { anchors = JSON.parse(r.identity_anchors); } catch (_) {} }
-              return buildCharacterAnchorText(r.name, anchors, r.appearance);
-            });
-          }
-        }
-      }
-    } catch (_) {}
-    return [];
-  }
-
+  const shot = db.prepare('SELECT id, characters FROM storyboards WHERE id=? AND deleted_at IS NULL').get(sid);
+  const ids = storyboardCharacterIds(db, shot);
+  if (!ids.length) return [];
   const placeholders = ids.map(() => '?').join(',');
 
-  let rows = db.prepare(
+  const rows = db.prepare(
     `SELECT id, name, appearance, identity_anchors FROM characters WHERE id IN (${placeholders}) AND deleted_at IS NULL`
   ).all(...ids);
-
-  if (!rows || rows.length === 0) {
-    rows = db.prepare(
-      `SELECT id, name, appearance, identity_anchors FROM character_libraries WHERE id IN (${placeholders}) AND deleted_at IS NULL`
-    ).all(...ids);
-  }
 
   return rows.map((r) => {
     let anchors = null;

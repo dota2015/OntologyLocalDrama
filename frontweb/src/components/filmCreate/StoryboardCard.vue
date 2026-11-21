@@ -888,6 +888,7 @@
 </template>
 
 <script setup>
+import { storyboardCardKey } from './workbenchContext.js'
 import { computed, inject, ref } from 'vue'
 import {
   Delete,
@@ -915,7 +916,7 @@ const props = defineProps({
   storyboards: { type: Array, default: () => [] },
 })
 
-const ctx = inject('filmCreateContext', {})
+const ctx = inject(storyboardCardKey)
 const agentContext = useAgentContext()
 
 const cssAspectRatio = computed(() => {

@@ -230,6 +230,7 @@
 </template>
 
 <script setup>
+import { scriptWorkbenchKey, assetWorkbenchKey, finalMergeWorkbenchKey, storyboardWorkbenchKey } from '../components/filmCreate/workbenchContext.js'
 import { ref, computed, onMounted, onBeforeUnmount, watch, reactive, provide } from 'vue'
 import GenerationJobs from '@/components/GenerationJobs.vue'
 import { activeGenerationJob } from '@/api/generationJobs'
@@ -1044,9 +1045,8 @@ watch(
   }
 )
 
-// Provide context for StoryboardCard, ScriptWorkbench and child components
-provide('filmCreateContext', {
-  // 剧本工作台全局共享参数
+
+provide(scriptWorkbenchKey, {
   storyInput,
   storyStyle,
   storyType,
@@ -1078,6 +1078,61 @@ provide('filmCreateContext', {
   currentEpisodeId,
   saveProjectSettings,
   dramaId,
+  narrativeStyle,
+  projectAspectRatio,
+  storyboardIncludeNarration,
+  storyboardUseFirstLastFrame,
+  pollTask,
+  loadDrama,
+})
+
+provide(assetWorkbenchKey, {
+  scriptLanguage,
+  pipelineRunning,
+  referenceBatchRunning,
+  referenceSuggestionsRunning,
+  savingReferenceModeIds,
+  currentEpisodeId,
+  dramaId,
+  characters,
+  scenes,
+  props,
+  pollTask,
+  assetImageUrl,
+  openImagePreview,
+  hasAssetImage,
+  store,
+  loadDrama,
+  getSelectedStyle,
+  submitGenerationJob,
+  serverGenerationJobs,
+  generationJobsPanel,
+  storyboards,
+  onReferenceModeSaving,
+  onDubbingProfile,
+})
+
+provide(finalMergeWorkbenchKey, {
+  currentEpisodeId,
+  dramaId,
+  pollTask,
+  imageUrl,
+  genStore,
+  store,
+  loadDrama,
+  storyboards,
+})
+
+provide(storyboardWorkbenchKey, {
+  onLastFrameLayoutLockChange,
+  shotDurationMin,
+  shotDurationMax,
+  onStoryboardUseFirstLastFrameChange,
+  pipelineRunning,
+  scriptContent,
+  currentEpisodeId,
+  saveProjectSettings,
+  dramaId,
   characters,
   scenes,
   props,
@@ -1091,8 +1146,6 @@ provide('filmCreateContext', {
   lastFrameUseFirstLayoutLock,
   gridMode,
   videoClipDuration,
-  shotDurationMin,
-  shotDurationMax,
   sbImages,
   sbVideos,
   sbVideoErrors,
@@ -1128,12 +1181,6 @@ provide('filmCreateContext', {
   generatingSbLastImageIds,
   generatingSbVideoIds,
   generatingUniversalSegmentIds,
-  upscalingSbIds,
-  linkingFirstFrameIds,
-  linkingTailFrameIds,
-  ttsSbIds,
-  ttsSbNarrationIds,
-  usingPrevTailAsFirstIds,
   batchImageRunning,
   batchImageStopping,
   batchImageProgress,
@@ -1166,7 +1213,6 @@ provide('filmCreateContext', {
   getSelectedStylePromptZh,
   onStoryboardCharacterChange,
   onStoryboardPropChange,
-  getMovementLabel,
   getSbCharacterIds,
   setSbCharacterIds,
   onStoryboardSceneChange,
@@ -1208,12 +1254,9 @@ provide('filmCreateContext', {
   isSbVideoGenerating,
   sbMainVideoPlayerKey,
   isHttpVideoUrl,
-  recordHasPlayableVideoUrl,
   buildSbGenMeta,
   baseUrl,
   genStore,
-
-  // 全局/基础上下文（供 AssetWorkbench 等组件）
   store,
   loadDrama,
   getSelectedStyle,
@@ -1221,8 +1264,6 @@ provide('filmCreateContext', {
   serverGenerationJobs,
   generationJobsPanel,
   storyboards,
-  onReferenceModeSaving,
-  onDubbingProfile,
 })
 </script>
 

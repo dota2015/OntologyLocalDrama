@@ -85,7 +85,8 @@ describe('agent routes', () => {
       assert.match(skill, new RegExp(name));
     }
     assert.match(skill, /没有出视频、导入导出、道具、新建或删除整部剧的工具/);
-    const copy = fs.readFileSync(path.join(__dirname, '../../desktop/scripts/copy-backend.js'), 'utf8');
-    assert.match(copy, /'skills'/);
+    const backend = require('../package.json');
+    assert.ok(backend.files.includes('skills'));
+    assert.equal(require('../../desktop/package.json').dependencies['localminidrama-runtime'], 'file:../backend-node');
   });
 });

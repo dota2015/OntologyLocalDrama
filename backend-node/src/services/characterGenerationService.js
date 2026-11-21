@@ -117,12 +117,12 @@ async function processCharacterGeneration(db, cfg, log, taskID, req) {
       for (const choice of resolved) {
         let row = choice.existing;
         if (!row) {
-          const data = choice.library || choice.fresh;
+          const data = choice.library ? { ...choice.library, source_library_id: choice.library.id } : choice.fresh;
           // Deduplicate repeated mentions within this extraction too.
           row = current.resources.find(c => c.name.trim() === data.name.trim());
           if (!row) {
             const fields = ['name', 'role', 'description', 'personality', 'appearance', 'voice_style'];
-            if (choice.library) fields.push('image_url', 'local_path', 'identity_anchors', 'style_tokens', 'color_palette', 'four_view_image_url');
+            if (choice.library) fields.push('source_library_id', 'image_url', 'local_path', 'identity_anchors', 'style_tokens', 'color_palette', 'four_view_image_url');
             const now = new Date().toISOString();
             const info = db.prepare(`INSERT INTO characters (drama_id, ${fields.join(', ')}, sort_order, created_at, updated_at)
               VALUES (?, ${fields.map(() => '?').join(', ')}, 0, ?, ?)`)

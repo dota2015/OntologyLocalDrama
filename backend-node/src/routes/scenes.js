@@ -1,4 +1,4 @@
-const referenceModes = require('../services/referenceImageModeService');
+const { generateReferenceImage } = require('../services/sceneReferenceGeneration');
 const response = require('../response');
 const sceneService = require('../services/sceneService');
 const sceneLibraryService = require('../services/sceneLibraryService');
@@ -101,23 +101,14 @@ function routes(db, log, cfg) {
         const body = req.body || {};
         const sceneId = body.scene_id != null ? Number(body.scene_id) : null;
         if (sceneId == null) return response.badRequest(res, '缺少 scene_id');
-        const modelName = body.model || undefined;
-        const style = body.style || undefined;
-        const scene = sceneService.getSceneById(db, sceneId);
-        if (!scene) return response.notFound(res, '场景不存在');
-        let useQuadGrid;
-        try { useQuadGrid = referenceModes.generationMode(scene, body.use_quad_grid) === 'quad_grid'; }
-        catch (err) { return response.badRequest(res, err.message); }
-        const out = useQuadGrid
-          ? await sceneService.generateSceneFourViewImage(db, log, cfg, sceneId, modelName, style)
-          : await sceneService.generateSceneSingleImage(db, log, cfg, sceneId, modelName, style);
+        const out = await generateReferenceImage(db, log, cfg, sceneId, body);
         if (!out.ok) {
           if (out.error === 'scene not found') return response.notFound(res, '场景不存在');
           if (out.error === 'unauthorized') return response.notFound(res, '剧集不存在或无权限');
           return response.badRequest(res, out.error);
         }
         response.success(res, {
-          message: useQuadGrid ? '场景四视图生成任务已提交' : '场景单图生成任务已提交',
+          message: out.useQuadGrid ? '场景四视图生成任务已提交' : '场景单图生成任务已提交',
           image_generation: out.image_generation,
         });
       } catch (err) {

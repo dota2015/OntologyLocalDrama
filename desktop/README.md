@@ -81,7 +81,7 @@ npm run dist:cn
 | `npm run pack` | 构建前端 + 复制 + 打出未压缩目录（便于检查打包内容） |
 | `npm run dist` | 构建前端 + 复制 + 打出 Windows 安装包与便携 exe |
 | `npm run dist:cn` | 同上，使用国内镜像（Electron、electron-builder 二进制） |
-| `npm run prepare-backend` | 将 backend-node 复制到 backend-app（打包前置步骤） |
+| `npm run prepare-backend` | 刷新已安装的 localminidrama-runtime 后端包（打包前置步骤） |
 | `bash dist-mac.sh` | macOS 一键打包（完整版 + 纯净版 DMG，含国内镜像加速） |
 
 ---
@@ -130,5 +130,5 @@ AI 相关配置需在软件「AI 配置」弹窗中填写并保存（会写入�
 ## 依赖
 
 - Node.js >= 18
-- 本仓库中的 `backend-node`（打包时通过 `prepare-backend` 复制到 `backend-app`）
+- 本仓库中的 `backend-node`（桌面端通过本地 npm 依赖安装，打包前执行 `prepare-backend` 刷新源码）
 - 前端需先在 `frontweb` 目录执行 `npm run build`，再打包或开发运行

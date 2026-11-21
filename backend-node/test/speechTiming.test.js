@@ -231,7 +231,7 @@ function createTestDb() {
     );
     CREATE TABLE storyboard_characters (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      storyboard_id INTEGER, character_id INTEGER
+      storyboard_id INTEGER, character_id INTEGER, created_at TEXT
     );
     CREATE TABLE storyboard_props (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -15,7 +15,7 @@ function setup(t) {
   db.exec(`CREATE TABLE dramas (id INTEGER PRIMARY KEY, title TEXT, description TEXT, genre TEXT, style TEXT, metadata TEXT, deleted_at TEXT);
     CREATE TABLE episodes (id INTEGER PRIMARY KEY, drama_id INTEGER, script_content TEXT, deleted_at TEXT);
     CREATE TABLE episode_characters (episode_id INTEGER, character_id INTEGER, UNIQUE(episode_id, character_id));
-    CREATE TABLE characters (id INTEGER PRIMARY KEY AUTOINCREMENT, drama_id INTEGER, name TEXT, role TEXT,
+    CREATE TABLE characters (id INTEGER PRIMARY KEY AUTOINCREMENT, drama_id INTEGER, name TEXT, role TEXT, source_library_id INTEGER,
       description TEXT, personality TEXT, appearance TEXT, voice_style TEXT, sort_order INTEGER,
       image_url TEXT, local_path TEXT, identity_anchors TEXT, style_tokens TEXT, color_palette TEXT,
       four_view_image_url TEXT, polished_prompt TEXT, extra_images TEXT, ref_image TEXT,
@@ -115,6 +115,7 @@ for (const kind of ['character', 'prop']) {
     const rows = state.result[kind === 'character' ? 'characters' : 'props'];
     assert.equal(rows[0].id, kind === 'character' ? 5 : 10);
     assert.equal(rows[1].local_path, kind === 'character' ? 'mother.png' : 'tablet.png');
+    if (kind === 'character') assert.equal(rows[1].source_library_id, importedId);
     if (kind === 'character') assert.equal(rows[1].identity_anchors, '{"face":"mother"}');
     const count = db.prepare(`SELECT count(*) n FROM ${kind === 'character' ? 'characters' : 'props'}`).get().n;
     await run(db, kind);

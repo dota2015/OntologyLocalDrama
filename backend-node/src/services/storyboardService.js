@@ -1,61 +1,7 @@
 // 分镜：create, update, delete；帧提示词 get/save
-const { linkEpisodeCharacters } = require('./episodeCharacterLinks');
+const { linkEpisodeCharacters, shotCharacterIds } = require('./episodeCharacterLinks');
 
-/**
- * 将分镜勾选的角色（dramas.characters 表 id）同步到 storyboard_characters（角色库 id），
- * 便于帧提示词与图生参考图与 UI 一致；按角色名匹配本剧或全局角色库。
- */
-function parseDramaCharacterIds(charactersValue) {
-  if (charactersValue === undefined || charactersValue === null) return null;
-  if (Array.isArray(charactersValue)) {
-    return charactersValue
-      .map((x) => Number(typeof x === 'object' && x != null ? x.id : x))
-      .filter((n) => Number.isFinite(n));
-  }
-  if (typeof charactersValue === 'string') {
-    try {
-      const arr = JSON.parse(charactersValue);
-      if (!Array.isArray(arr)) return [];
-      return arr
-        .map((x) => Number(typeof x === 'object' && x != null ? x.id : x))
-        .filter((n) => Number.isFinite(n));
-    } catch (_) {
-      return [];
-    }
-  }
-  return [];
-}
-
-function syncStoryboardCharacterLinks(db, storyboardId, dramaCharacterIds) {
-  const sid = Number(storyboardId);
-  const ids = Array.isArray(dramaCharacterIds) ? dramaCharacterIds.map((n) => Number(n)).filter((n) => Number.isFinite(n)) : [];
-  if (ids.length > 20) throw new Error(`单镜关联角色数量 ${ids.length} 超过 20，禁止静默截断`);
-  db.prepare('DELETE FROM storyboard_characters WHERE storyboard_id = ?').run(sid);
-  if (ids.length === 0) return;
-  const sb = db.prepare(
-    `SELECT e.drama_id FROM storyboards s JOIN episodes e ON e.id = s.episode_id WHERE s.id = ? AND s.deleted_at IS NULL`
-  ).get(sid);
-  const dramaId = sb?.drama_id != null ? Number(sb.drama_id) : null;
-  const now = new Date().toISOString();
-  const ins = db.prepare('INSERT OR IGNORE INTO storyboard_characters (storyboard_id, character_id, created_at) VALUES (?, ?, ?)');
-  for (const cid of ids) {
-    const crow = db.prepare('SELECT name FROM characters WHERE id = ? AND deleted_at IS NULL').get(cid);
-    const name = (crow?.name || '').trim();
-    if (!name) continue;
-    let lib = null;
-    if (dramaId) {
-      lib = db.prepare(
-        'SELECT id FROM character_libraries WHERE deleted_at IS NULL AND drama_id = ? AND TRIM(name) = ? LIMIT 1'
-      ).get(dramaId, name);
-    }
-    if (!lib) {
-      lib = db.prepare(
-        'SELECT id FROM character_libraries WHERE deleted_at IS NULL AND drama_id IS NULL AND TRIM(name) = ? LIMIT 1'
-      ).get(name);
-    }
-    if (lib) ins.run(sid, lib.id, now);
-  }
-}
+const { replaceStoryboardCast } = require('./storyboardCast');
 
 function createStoryboard(db, log, req) {
   const now = new Date().toISOString();
@@ -65,33 +11,40 @@ function createStoryboard(db, log, req) {
   const lastVis = req.last_frame_visuals ? (typeof req.last_frame_visuals === 'object' ? JSON.stringify(req.last_frame_visuals) : req.last_frame_visuals) : null;
   const vidSlots = req.video_slots ? (typeof req.video_slots === 'object' ? JSON.stringify(req.video_slots) : req.video_slots) : null;
   const dialogueFraming = req.dialogue_framing ?? null;
-  const info = db.prepare(
-    `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, duration, dialogue, action, result, atmosphere, image_prompt, video_prompt, dialogue_framing, character_visuals, last_frame_visuals, video_slots, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
-  ).run(
-    episodeId,
-    req.scene_id ?? null,
-    num,
-    req.title ?? null,
-    req.description ?? null,
-    req.location ?? null,
-    req.time ?? null,
-    req.duration ?? 0,
-    req.dialogue ?? null,
-    req.action ?? null,
-    req.result ?? null,
-    req.atmosphere ?? null,
-    req.image_prompt ?? null,
-    null,
-    dialogueFraming,
-    charVis,
-    lastVis,
-    vidSlots,
-    now,
-    now
-  );
-  log.info('Storyboard created', { id: info.lastInsertRowid, episode_id: episodeId });
-  return getStoryboardById(db, info.lastInsertRowid);
+  const cast = shotCharacterIds({ characters: req.character_ids ?? req.characters });
+  const id = db.transaction(() => {
+    linkEpisodeCharacters(db, episodeId, [{ characters: cast }]);
+    const info = db.prepare(
+      `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, duration, dialogue, action, result, atmosphere, image_prompt, video_prompt, dialogue_framing, character_visuals, last_frame_visuals, video_slots, characters, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+    ).run(
+      episodeId,
+      req.scene_id ?? null,
+      num,
+      req.title ?? null,
+      req.description ?? null,
+      req.location ?? null,
+      req.time ?? null,
+      req.duration ?? 0,
+      req.dialogue ?? null,
+      req.action ?? null,
+      req.result ?? null,
+      req.atmosphere ?? null,
+      req.image_prompt ?? null,
+      null,
+      dialogueFraming,
+      charVis,
+      lastVis,
+      vidSlots,
+      JSON.stringify(cast),
+      now,
+      now
+    );
+    replaceStoryboardCast(db, info.lastInsertRowid, cast);
+    return info.lastInsertRowid;
+  })();
+  log.info('Storyboard created', { id, episode_id: episodeId });
+  return getStoryboardById(db, id);
 }
 
 function updateStoryboard(db, log, id, req) {
@@ -154,9 +107,8 @@ function updateStoryboard(db, log, id, req) {
   let parsedDramaCharIdsForSync = null;
   if (charactersValue !== undefined) {
     updates.push('characters = ?');
-    const jsonStr = Array.isArray(charactersValue) ? JSON.stringify(charactersValue) : (typeof charactersValue === 'string' ? charactersValue : '[]');
-    params.push(jsonStr);
-    parsedDramaCharIdsForSync = parseDramaCharacterIds(charactersValue) ?? [];
+    parsedDramaCharIdsForSync = shotCharacterIds({ characters: charactersValue });
+    params.push(JSON.stringify(parsedDramaCharIdsForSync));
   }
   for (const key of allowed) {
     if (key === 'characters') continue;
@@ -196,11 +148,7 @@ function updateStoryboard(db, log, id, req) {
     // 角色勾选变更：只同步 storyboard_characters，不删除 frame_prompts。
     // 用户手动保存的首/尾帧提示词应保留；图生时 framePromptSanitize 会按当前勾选剔除未出场角色名。
     if (parsedDramaCharIdsForSync !== null) {
-      try {
-        syncStoryboardCharacterLinks(db, id, parsedDramaCharIdsForSync);
-      } catch (e) {
-        log.warn('syncStoryboardCharacterLinks failed', { id, message: e.message });
-      }
+      replaceStoryboardCast(db, id, parsedDramaCharIdsForSync);
     }
     // 道具关联：写入 storyboard_props 表
     if (req.prop_ids !== undefined) {

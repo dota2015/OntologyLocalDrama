@@ -37,25 +37,7 @@ function mediaUrl(row) {
   if (row.local_path) return '/static/' + row.local_path.replace(/^\/?static\//,'').replace(/^\//,'');
   return row.image_url || '';
 }
-// Reuse existing route contracts in-process; no HTTP loopback, user URLs or credentials.
-async function invoke(handler,params={},body={}) {
-  let result, status=200, streamError;
-  const res = {status(code){status=code;return this;},json(value){result=value;return this;},setHeader(){},flushHeaders(){},
-    write(line){try {const item=JSON.parse(line);if(item.type==='error') streamError=item.message;if(item.type==='done') result={success:true,data:item};} catch (_) {} return true;},end(){}};
-  await handler({params,body,query:{}},res);
-  if (status >= 400 || result?.success === false || streamError) throw new Error(streamError || result?.error?.message || '后台操作失败');
-  return result?.data;
-}
 function createExecutor(db,cfg,log) {
-  const controllers = {
-    character:require('../routes/characters')(db,cfg,log),
-    scene:require('../routes/scenes')(db,log,cfg),
-    prop:require('../routes/prop')(db,log,cfg),
-    storyboards:require('../routes/storyboards')(db,log),
-    drama:require('../routes/drama')(db,cfg,log),
-    audio:require('../routes/audio')(db,log,cfg),
-    ontology:require('../routes/ontology')(db,log),
-  };
   function validShot(job,id) {
     const sb = db.prepare(`SELECT s.* FROM storyboards s JOIN episodes e ON s.episode_id=e.id
       WHERE s.id=? AND e.drama_id=? AND s.deleted_at IS NULL AND e.deleted_at IS NULL`).get(Number(id),job.drama_id);
@@ -121,19 +103,15 @@ function createExecutor(db,cfg,log) {
       if (payload.kind === 'storyboards') {
         if (!payload.force && shots(db,job).length) return {skipped:true};
         const sbOptions = options.storyboard || options;
-        if (controllers.ontology?.directorGenerate) {
-          await invokeAndAttach(controllers.ontology.directorGenerate, {episode_id:job.episode_id}, sbOptions, attach);
-        } else {
-          await invokeAndAttach(controllers.drama.generateStoryboard, {episode_id:job.episode_id}, sbOptions, attach);
-        }
+        const id = require('./directorTaskService').startDirectorTask(db, log, cfg, job.episode_id, { ...sbOptions, existingShotsOnly: false });
+        attach('task', id);
       } else {
         if (resources(db,job)[payload.kind].length) return {skipped:true};
         let id;
         if (payload.kind === 'character') id=require('./characterGenerationService').generateCharacters(db,cfg,log,{drama_id:job.drama_id,episode_id:job.episode_id,outline:options.outline || db.prepare('SELECT script_content FROM episodes WHERE id=?').get(job.episode_id)?.script_content});
         if (payload.kind === 'scene') id=require('./backgroundExtractionService').extractBackgroundsForEpisode(db,cfg,log,job.episode_id,undefined,options.style,options.language);
         if (payload.kind === 'prop') {
-          await invokeAndAttach(controllers.prop.extractProps,{episode_id:job.episode_id},{},attach);
-          return;
+          id = require('./propExtractionService').extractPropsForEpisode(db, log, job.episode_id, cfg);
         }
         attach('task',id);
       }
@@ -147,8 +125,17 @@ function createExecutor(db,cfg,log) {
       const active=db.prepare("SELECT id FROM async_tasks WHERE resource_id=? AND type=? AND status IN ('pending','processing') AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1").get(resourceId,payload.type==='prop'?'prop_image_generation':'image_generation');
       if(active){attach('task',active.id);return;}
       const body={style:options.style,use_quad_grid:row.reference_image_mode==='quad_grid'};
-      if(payload.type==='scene') body.scene_id=row.id;
-      await invokeAndAttach(controllers[payload.type].generateImage,{id:row.id,scene_id:row.id},body,attach);
+      if (payload.type === 'prop') {
+        const id = require('./propImageGenerationService').generatePropImage(db, log, row.id, body);
+        if (!id) throw new Error('道具生图任务未创建');
+        attach('task', id);
+      } else {
+        const result = payload.type === 'scene'
+          ? await require('./sceneReferenceGeneration').generateReferenceImage(db, log, cfg, row.id, body)
+          : await require('./characterLibraryService').generateCharacterFourViewImage(db, log, cfg, row.id, undefined, body.style);
+        if (!result.ok || !result.image_generation?.task_id) throw new Error(result.error || '参考图任务未创建');
+        attach('task', result.image_generation.task_id);
+      }
       return;
     }
     if (item.action === 'reference_barrier') {
@@ -189,7 +176,7 @@ function createExecutor(db,cfg,log) {
     }
     if (item.action === 'polish') {
       const sb=validShot(job,payload.storyboard_id);
-      await invoke(controllers.storyboards.polishUniversalSegmentStream,{id:sb.id},{draft_universal_segment_text:sb.universal_segment_text,duration:sb.duration,force_without_reference_images:true});
+      await require('./universalSegmentPolishService').polishUniversalSegment(db, log, sb.id, {draft_universal_segment_text:sb.universal_segment_text,duration:sb.duration,force_without_reference_images:true});
       return;
     }
     if (item.action === 'expand_videos') {
@@ -213,12 +200,19 @@ function createExecutor(db,cfg,log) {
       if(shots(db,job,options).some(sb=>!videoDone(sb))) throw new Error('仍有分镜缺少视频，未进行不完整合成');
       return;
     }
-    if (item.action === 'merge') {await invokeAndAttach(controllers.drama.finalizeEpisode,{episode_id:job.episode_id},options.merge || {},attach);return;}
+    if (item.action === 'merge') {
+      const result = require('./dramaService').finalizeEpisode(db, log, job.episode_id, cfg?.storage?.base_url || '', options.merge || {});
+      if (!result?.task_id) throw new Error(result?.message || '合成任务未创建');
+      attach('task', result.task_id);
+      return;
+    }
     if (item.action === 'audio') {
       const sb=validShot(job,payload.storyboard_id);
       if (!require('./speechExtractionService').meaningful(sb.dialogue)) return {skipped:true};
       // Use the established role-aware dubbing pipeline instead of voicing a raw speaker label.
-      await invokeAndAttach(controllers.audio.dubbingStart,{drama_id:job.drama_id},{episode_id:sb.episode_id,storyboard_ids:[sb.id],tts_kind:'dialogue'},attach);
+      const root = require('path').resolve(cfg?.storage?.local_path || './data/storage');
+      const task = require('./dialogueDubbingService').startBatch(db, log, job.drama_id, { episode_id:sb.episode_id, storyboard_ids:[sb.id], tts_kind:'dialogue' }, root);
+      attach('task', task.id);
       return;
     }
     throw new Error('未知后台步骤：'+item.action);
@@ -289,10 +283,6 @@ function createExecutor(db,cfg,log) {
       reference_image_urls:refs,universal,h3_mode:plan.mode,resolution_plan:plan,
       aspect_ratio:options.aspect_ratio,style:options.style,resolution:options.resolution,duration:sb.duration};
   }
-  async function invokeAndAttach(handler,params,body,attach) {
-    const result=await invoke(handler,params,body);
-    attach('task',result?.task_id || result?.image_generation?.task_id || result?.id);
-  }
   return {execute,observe};
 }
-module.exports={createExecutor,frame,framePrompt,invoke};
+module.exports={createExecutor,frame,framePrompt};

@@ -319,6 +319,7 @@
 </template>
 
 <script setup>
+import { scriptWorkbenchKey } from './workbenchContext.js'
 import { ref, computed, watch, inject } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -334,7 +335,7 @@ import NarrativeStyleSettings from '@/components/NarrativeStyleSettings.vue'
 const store = useFilmStore()
 const router = useRouter()
 const route = useRoute()
-const ctx = inject('filmCreateContext', {})
+const ctx = inject(scriptWorkbenchKey)
 
 // 剧本工作台内部 UI 模式
 const scriptWorkbenchMode = ref('create')

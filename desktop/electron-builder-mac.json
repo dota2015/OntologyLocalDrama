@@ -7,12 +7,10 @@
   "files": [
     "main.js",
     "package.json",
-    "backend-app/**/*",
     "node_modules/**/*"
   ],
   "asarUnpack": [
-    "node_modules/better-sqlite3/**",
-    "backend-app/tools/**"
+    "node_modules/better-sqlite3/**"
   ],
   "extraResources": [
     {

@@ -40,7 +40,11 @@ function runMigrations(database) {
     return;
   }
   const files = fs.readdirSync(migrationsDir).filter((f) => f.endsWith('.sql')).sort();
-  for (const file of files) {
+  database.exec('CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY)');
+  const applied = database.prepare('SELECT 1 FROM schema_migrations WHERE name=?');
+  const record = database.prepare('INSERT INTO schema_migrations(name) VALUES(?)');
+  const migrate = database.transaction(file => {
+    if (applied.get(file)) return;
     const fullPath = path.join(migrationsDir, file);
     const sql = fs.readFileSync(fullPath, 'utf8');
     const statements = sql
@@ -52,7 +56,9 @@ function runMigrations(database) {
     } else {
       statements.forEach((stmt, i) => runOne(database, stmt + ';', file, i));
     }
-  }
+    record.run(file);
+  });
+  for (const file of files) migrate.immediate(file);
 }
 
 /**
@@ -209,6 +215,7 @@ function ensureAllColumns(database) {
 
   // --- characters ---
   ensureColumns(database, 'characters', [
+    { name: 'source_library_id', type: 'INTEGER' },
     { name: 'drama_id',          type: 'INTEGER DEFAULT 0' },
     { name: 'name',              type: 'TEXT NOT NULL DEFAULT \'\'' },
     { name: 'role',              type: 'TEXT' },
@@ -573,7 +580,7 @@ function ensureAllColumns(database) {
     { name: 'updated_at',     type: 'TEXT NOT NULL DEFAULT \'\'' },
   ]);
 
-  // --- storyboard_characters（分镜与角色库的关联表） ---
+  // --- storyboard_characters（分镜与本剧人物的关联表） ---
   try {
     database.exec(`CREATE TABLE IF NOT EXISTS storyboard_characters (
       id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -597,181 +604,7 @@ function ensureAllColumns(database) {
 function runMigrationsAndEnsure(database) {
   runMigrations(database);
   ensureAllColumns(database);
-  try {
-    const missing = database.prepare(
-      `SELECT id FROM storyboards WHERE deleted_at IS NULL AND (image_prompt IS NULL OR image_prompt = '' OR video_prompt IS NULL OR video_prompt = '') LIMIT 500`
-    ).all();
-    if (missing.length > 0) {
-      console.log(`[migrate] 发现 ${missing.length} 条分镜缺少提示词，自动补齐生图/视频提示词...`);
-      const { rebuildPromptsForStoryboard } = require('../services/episodeStoryboardService');
-      for (const m of missing) {
-        try { rebuildPromptsForStoryboard(database, console, m.id); } catch (_) {}
-      }
-      console.log('[migrate] 缺失提示词自动补齐完成。');
-    }
-  } catch (_) {}
-
-  // 修复历史版本中 episodes.video_url 缺少 /static/ 前缀导致前端播放器加载为 HTML 404/200 的问题
-  try {
-    database.prepare(`
-      UPDATE episodes
-      SET video_url = '/static/' || LTRIM(video_url, '/')
-      WHERE video_url IS NOT NULL
-        AND video_url != ''
-        AND video_url NOT LIKE '/static/%'
-        AND video_url NOT LIKE 'http%'
-    `).run();
-  } catch (_) {}
-
-  // 修复存量分镜中 characters 存有中文人名字符串或缺少关联表数据的问题，补齐 storyboard_characters 与 storyboard_props
-  repairStoryboardEntityAssociations(database);
-}
-
-function repairStoryboardEntityAssociations(database) {
-  try {
-    const sbs = database.prepare(`
-      SELECT s.id, s.episode_id, s.title, s.action, s.dialogue, s.narration, s.description,
-             s.characters, s.semantic_slots, s.character_visuals, e.drama_id
-      FROM storyboards s
-      LEFT JOIN episodes e ON e.id = s.episode_id
-      WHERE s.deleted_at IS NULL
-    `).all();
-
-    const charMapByDrama = new Map();
-    const getDramaCharMap = (dramaId) => {
-      if (!dramaId) return new Map();
-      if (!charMapByDrama.has(dramaId)) {
-        const rows = database.prepare('SELECT id, name FROM characters WHERE drama_id = ? AND deleted_at IS NULL').all(dramaId);
-        charMapByDrama.set(dramaId, new Map(rows.map((r) => [r.name.trim(), Number(r.id)])));
-      }
-      return charMapByDrama.get(dramaId);
-    };
-
-    const propListByDrama = new Map();
-    const getDramaPropList = (dramaId) => {
-      if (!dramaId) return [];
-      if (!propListByDrama.has(dramaId)) {
-        try {
-          const rows = database.prepare('SELECT id, drama_id, episode_id, name FROM props WHERE drama_id = ? AND deleted_at IS NULL').all(dramaId);
-          propListByDrama.set(dramaId, rows);
-        } catch (_) {
-          propListByDrama.set(dramaId, []);
-        }
-      }
-      return propListByDrama.get(dramaId);
-    };
-
-    const updateCharStmt = database.prepare('UPDATE storyboards SET characters = ? WHERE id = ?');
-    const updateSemanticStmt = database.prepare('UPDATE storyboards SET semantic_slots = ? WHERE id = ?');
-    const insSbCharStmt = database.prepare('INSERT OR IGNORE INTO storyboard_characters (storyboard_id, character_id, created_at) VALUES (?, ?, ?)');
-    const insSbPropStmt = database.prepare('INSERT OR IGNORE INTO storyboard_props (storyboard_id, prop_id) VALUES (?, ?)');
-    const now = new Date().toISOString();
-
-    for (const sb of sbs) {
-      // 1. 角色解析
-      let charIds = [];
-      let parsedChars = null;
-      if (sb.characters) {
-        try { parsedChars = typeof sb.characters === 'string' ? JSON.parse(sb.characters) : sb.characters; } catch (_) {}
-      }
-      if (Array.isArray(parsedChars)) {
-        charIds = parsedChars
-          .map((c) => (typeof c === 'object' && c != null && c.id != null ? Number(c.id) : Number(c)))
-          .filter(Number.isFinite);
-      }
-      if (!charIds.length && sb.semantic_slots) {
-        try {
-          const sem = typeof sb.semantic_slots === 'string' ? JSON.parse(sb.semantic_slots) : sb.semantic_slots;
-          if (Array.isArray(sem?.visible_characters)) {
-            charIds = sem.visible_characters.map((c) => Number(c.id)).filter(Number.isFinite);
-          }
-        } catch (_) {}
-      }
-      if (!charIds.length && sb.character_visuals) {
-        try {
-          const vis = typeof sb.character_visuals === 'string' ? JSON.parse(sb.character_visuals) : sb.character_visuals;
-          if (Array.isArray(vis)) {
-            charIds = vis.map((c) => Number(c.character_id)).filter(Number.isFinite);
-          }
-        } catch (_) {}
-      }
-      if (!charIds.length && Array.isArray(parsedChars) && parsedChars.length > 0 && sb.drama_id) {
-        const nameMap = getDramaCharMap(sb.drama_id);
-        charIds = parsedChars.map((n) => (typeof n === 'string' ? nameMap.get(n.trim()) : null)).filter(Number.isFinite);
-      }
-
-      charIds = Array.from(new Set(charIds));
-      if (charIds.length > 0) {
-        const newCharsJson = JSON.stringify(charIds);
-        if (sb.characters !== newCharsJson) {
-          updateCharStmt.run(newCharsJson, sb.id);
-        }
-        for (const cid of charIds) {
-          insSbCharStmt.run(sb.id, cid, now);
-        }
-      }
-
-      // 2. 道具解析
-      let propIds = [];
-      let semObj = null;
-      if (sb.semantic_slots) {
-        try {
-          semObj = typeof sb.semantic_slots === 'string' ? JSON.parse(sb.semantic_slots) : sb.semantic_slots;
-          if (Array.isArray(semObj?.required_references)) {
-            propIds = semObj.required_references
-              .filter((ref) => ref.type === 'prop')
-              .map((ref) => Number(ref.id || ref.prop_id))
-              .filter(Number.isFinite);
-          }
-        } catch (_) {}
-      }
-
-      // 如果槽位中没有道具，且分镜存在剧情描述，尝试根据剧目道具目录做语义对齐回填
-      if (!propIds.length && sb.drama_id) {
-        const dramaProps = getDramaPropList(sb.drama_id);
-        const text = [sb.title, sb.action, sb.dialogue, sb.narration, sb.description].filter(Boolean).join(' ');
-        if (text && dramaProps.length > 0) {
-          for (const p of dramaProps) {
-            if (p.episode_id != null && Number(p.episode_id) !== Number(sb.episode_id)) {
-              continue;
-            }
-            const name = (p.name || '').trim();
-            if (!name) continue;
-            const coreWords = [name];
-            const stripped = name.replace(/(?:界面|装置|用品|设备|本|试卷|册|清单)$/, '');
-            if (stripped.length >= 2) coreWords.push(stripped);
-            if (name.includes('简报')) coreWords.push('简报');
-            if (name.includes('试卷') || name.includes('测验')) coreWords.push('试卷', '小测验');
-            if (name.includes('错题')) coreWords.push('错题本', '错题整理本');
-            if (name.includes('权限') || name.includes('终端')) coreWords.push('权限', '权限终端');
-
-            if (coreWords.some((w) => text.includes(w))) {
-              propIds.push(Number(p.id));
-              if (semObj && Array.isArray(semObj.required_references)) {
-                if (!semObj.required_references.some((r) => r.type === 'prop' && Number(r.id || r.prop_id) === Number(p.id))) {
-                  semObj.required_references.push({ type: 'prop', id: Number(p.id), name: p.name });
-                }
-              }
-            }
-          }
-        }
-      }
-
-      propIds = Array.from(new Set(propIds));
-      if (propIds.length > 0) {
-        for (const pid of propIds) {
-          insSbPropStmt.run(sb.id, pid);
-        }
-        if (semObj) {
-          try {
-            updateSemanticStmt.run(JSON.stringify(semObj), sb.id);
-          } catch (_) {}
-        }
-      }
-    }
-  } catch (err) {
-    console.warn('[migrate] repairStoryboardEntityAssociations warning:', err.message);
-  }
+  require('./migrateStoryboardCast')(database);
 }
 
 function main() {

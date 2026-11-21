@@ -90,6 +90,7 @@
 </template>
 
 <script setup>
+import { finalMergeWorkbenchKey } from './workbenchContext.js'
 import { ref, computed, inject } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage } from 'element-plus'
@@ -101,7 +102,7 @@ import BackgroundMusicSettings from '@/components/BackgroundMusicSettings.vue'
 
 const emit = defineEmits(['openAiConfig'])
 
-const ctx = inject('filmCreateContext', {})
+const ctx = inject(finalMergeWorkbenchKey)
 
 const store = ctx.store || useFilmStore()
 const genStore = ctx.genStore || useGenerationTaskStore()

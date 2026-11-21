@@ -1,3 +1,5 @@
+const { storyboardCharacterIds } = require('./storyboardCast');
+
 /**
  * H3 Ref2VA 多图参考用户消息构建：供「生成」与「润色」共用。
  * @param {import('better-sqlite3').Database} db
@@ -95,60 +97,10 @@ function buildUniversalSegmentUserPromptBundle(db, sbId, reqBody, opts = {}) {
     } catch (_) {}
   }
 
-  const charOrderEntries = [];
-  const charKeySeen = new Set();
-  const pushCharEntry = (key, nameHint) => {
-    if (!key || charKeySeen.has(key)) return;
-    charKeySeen.add(key);
-    charOrderEntries.push({
-      key,
-      nameHint: nameHint != null && String(nameHint).trim() ? String(nameHint).trim() : '',
-    });
-  };
-  /** 与前端 collectSbOmniReferenceAbsoluteUrls / 视频 API 参考图顺序一致：仅以分镜 characters JSON 的本剧角色顺序为准，避免再追加 storyboard_characters 导致槽位与界面 @图片N 错位。 */
-  let charOrderFromDramaJson = false;
-  try {
-    if (sb.characters) {
-      const parsed = JSON.parse(sb.characters);
-      if (Array.isArray(parsed)) {
-        for (const item of parsed) {
-          const cid = typeof item === 'object' && item != null ? item.id : item;
-          const idNum = Number(cid);
-          if (!Number.isFinite(idNum)) continue;
-          const nm =
-            typeof item === 'object' && item != null && item.name != null ? String(item.name).trim() : '';
-          pushCharEntry(`drama:${idNum}`, nm);
-        }
-        if (charOrderEntries.length > 0) charOrderFromDramaJson = true;
-      }
-    }
-    if (!charOrderFromDramaJson) {
-      const libLinks = db
-        .prepare('SELECT character_id FROM storyboard_characters WHERE storyboard_id = ? ORDER BY id ASC')
-        .all(sbId);
-      for (const link of libLinks) {
-        const lid = Number(link.character_id);
-        if (!Number.isFinite(lid)) continue;
-        pushCharEntry(`lib:${lid}`, '');
-      }
-    }
-  } catch (_) {}
-
-  const charNamesOrdered = [];
-  const nameSeen = new Set();
-  for (const ent of charOrderEntries) {
-    let row = null;
-    if (ent.key.startsWith('drama:')) {
-      row = db.prepare('SELECT name FROM characters WHERE id = ? AND deleted_at IS NULL').get(Number(ent.key.slice(6)));
-    } else if (ent.key.startsWith('lib:')) {
-      row = db.prepare('SELECT name FROM character_libraries WHERE id = ? AND deleted_at IS NULL').get(Number(ent.key.slice(4)));
-    }
-    const nm = (row?.name || ent.nameHint || '').trim();
-    if (nm && !nameSeen.has(nm)) {
-      nameSeen.add(nm);
-      charNamesOrdered.push(nm);
-    }
-  }
+  const ids = storyboardCharacterIds(db, sb);
+  const lookup = db.prepare('SELECT name, local_path, image_url FROM characters WHERE id=? AND drama_id=? AND deleted_at IS NULL');
+  const characters = ids.map(id => lookup.get(id, dramaId)).filter(Boolean);
+  const charNamesOrdered = characters.map(row => row.name);
   const charNames = charNamesOrdered.join(', ');
 
   let propRows = [];
@@ -210,20 +162,8 @@ function buildUniversalSegmentUserPromptBundle(db, sbId, reqBody, opts = {}) {
   if (sceneRow && hasMediaRef(sceneRow)) {
     pushSlot('场景', String(sceneRow.location || '').trim() || '场景环境');
   }
-  for (const ent of charOrderEntries) {
-    let row = null;
-    if (ent.key.startsWith('drama:')) {
-      row = db
-        .prepare('SELECT name, local_path, image_url FROM characters WHERE id = ? AND deleted_at IS NULL')
-        .get(Number(ent.key.slice(6)));
-    } else if (ent.key.startsWith('lib:')) {
-      row = db
-        .prepare('SELECT name, local_path, image_url FROM character_libraries WHERE id = ? AND deleted_at IS NULL')
-        .get(Number(ent.key.slice(4)));
-    }
-    if (!hasMediaRef(row)) continue;
-    const cn = String(row.name || ent.nameHint || '角色').trim();
-    pushSlot('角色', cn);
+  for (const row of characters) {
+    if (hasMediaRef(row)) pushSlot('角色', row.name || '角色');
   }
   for (const pr of propRows) {
     if (!hasMediaRef(pr)) continue;

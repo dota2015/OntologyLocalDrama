@@ -1,0 +1,5 @@
+export const scriptWorkbenchKey = Symbol('ScriptWorkbench')
+export const assetWorkbenchKey = Symbol('AssetWorkbench')
+export const finalMergeWorkbenchKey = Symbol('FinalMergeWorkbench')
+export const storyboardWorkbenchKey = Symbol('StoryboardWorkbench')
+export const storyboardCardKey = Symbol('StoryboardCard')

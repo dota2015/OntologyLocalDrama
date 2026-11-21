@@ -1263,6 +1263,7 @@
 </template>
 
 <script setup>
+import { assetWorkbenchKey } from './workbenchContext.js'
 import { ref, computed, reactive, inject } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -1299,7 +1300,7 @@ import { useCharacters } from '@/composables/filmCreate/useCharacters'
 import { useProps as usePropsComposable } from '@/composables/filmCreate/useProps'
 import { useScenes } from '@/composables/filmCreate/useScenes'
 
-const ctx = inject('filmCreateContext', {})
+const ctx = inject(assetWorkbenchKey)
 
 // 基础项目与集上下文
 const store = ctx.store || useFilmStore()

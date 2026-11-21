@@ -225,7 +225,8 @@ function applyLibraryItemToCharacter(db, log, characterId, libraryItemId) {
     local_path: item.local_path || null,
   });
   const now = new Date().toISOString();
-  db.prepare('UPDATE characters SET image_url = ?, local_path = ?, updated_at = ? WHERE id = ?').run(
+  db.prepare('UPDATE characters SET source_library_id = ?, image_url = ?, local_path = ?, updated_at = ? WHERE id = ?').run(
+    Number(libraryItemId),
     item.image_url || null,
     item.local_path || null,
     now,

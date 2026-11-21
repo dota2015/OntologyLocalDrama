@@ -3,7 +3,7 @@ const { normalizeDurationRange, planShotDuration, rangeTimingInstructions } = re
 const taskService = require('./taskService');
 const aiClient = require('./aiClient');
 const promptI18n = require('./promptI18n');
-const { syncStoryboardCharacters } = require('./imageService');
+const { replaceStoryboardCast } = require('./storyboardCast');
 const safeJson = require('../utils/safeJson');
 const { safeParseAIJSON, extractJsonCandidate, repairTruncatedJsonArray, extractFirstArray } = safeJson;
 const loadConfig = require('../config').loadConfig;
@@ -901,13 +901,7 @@ function updateStoryboardRowFromDerived(db, existingId, episodeIdNum, d, sb, now
   persistStoryboardExecutionContract(db, existingId, sb);
   require('./wardrobeService').recordAiChange(db, episodeIdNum, existingId, sb);
   require('./speechDeliveryService').recordAiPlan(db, episodeIdNum, existingId, sb);
-  try {
-    db.prepare('DELETE FROM storyboard_characters WHERE storyboard_id = ?').run(existingId);
-    if (d.charIds && d.charIds.length > 0) {
-      const insChar = db.prepare('INSERT OR IGNORE INTO storyboard_characters (storyboard_id, character_id, created_at) VALUES (?, ?, ?)');
-      for (const cid of d.charIds) insChar.run(existingId, cid, now);
-    }
-  } catch (_) {}
+  replaceStoryboardCast(db, existingId, d.charIds || []);
   try {
     db.prepare('DELETE FROM storyboard_props WHERE storyboard_id = ?').run(existingId);
     if (d.propIds.length > 0) {
@@ -925,66 +919,63 @@ function insertOneStoryboard(db, episodeIdNum, sb, style, videoRatio, now, deriv
   const d = deriveStoryboardFieldsFromAi(sb, style, videoRatio, deriveOpts);
   const shotNumber = d.shotNumber;
   try {
-    let newId;
-    try {
-      const info = db.prepare(
-        `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, duration, dialogue, narration, action, result, atmosphere, image_prompt, video_prompt, characters, background_characters, character_visuals, last_frame_visuals, video_slots, shot_type, angle, angle_h, angle_v, angle_s, dialogue_framing, movement, lighting_style, depth_of_field, bgm_prompt, sound_effect, segment_index, segment_title, creation_mode, universal_segment_text, layout_description, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
-      ).run(
-        episodeIdNum, d.sceneId, shotNumber, d.title || null, d.description,
-        sb.location ?? null, sb.time ?? null, sb.duration ?? 5,
-        d.dialogue || null, d.narration || null, d.action || null, d.result || null, sb.atmosphere ?? null,
-        d.imagePrompt, d.videoPrompt, d.charactersJson,
-        d.backgroundCharactersJson,
-        d.characterVisuals ? JSON.stringify(d.characterVisuals) : null,
-        d.lastFrameVisuals ? JSON.stringify(d.lastFrameVisuals) : null,
-        d.videoSlots ? JSON.stringify(d.videoSlots) : null,
-        d.shotType || null, d.angle, d.angleH, d.angleV, d.angleS,
-        d.dialogueFraming || null,
-        d.movement || null, d.lightingStyle, d.depthOfField, d.bgmPrompt || null, d.soundEffect || null, d.segmentIndex, d.segmentTitle,
-        d.creationMode || 'classic',
-        d.universalSegmentText != null ? d.universalSegmentText : null,
-        d.layoutDescription,
-        now, now
-      );
-      newId = info.lastInsertRowid;
-    } catch (colErr) {
-      if ((colErr.message || '').includes('character_visuals') || (colErr.message || '').includes('layout_description') || (colErr.message || '').includes('bgm_prompt') || (colErr.message || '').includes('background_characters')) {
+    return db.transaction(() => {
+      let newId;
+      try {
         const info = db.prepare(
-          `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, duration, dialogue, narration, action, result, atmosphere, image_prompt, video_prompt, characters, shot_type, angle, angle_h, angle_v, angle_s, movement, lighting_style, depth_of_field, segment_index, segment_title, creation_mode, universal_segment_text, status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+          `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, duration, dialogue, narration, action, result, atmosphere, image_prompt, video_prompt, characters, background_characters, character_visuals, last_frame_visuals, video_slots, shot_type, angle, angle_h, angle_v, angle_s, dialogue_framing, movement, lighting_style, depth_of_field, bgm_prompt, sound_effect, segment_index, segment_title, creation_mode, universal_segment_text, layout_description, status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
         ).run(
           episodeIdNum, d.sceneId, shotNumber, d.title || null, d.description,
           sb.location ?? null, sb.time ?? null, sb.duration ?? 5,
           d.dialogue || null, d.narration || null, d.action || null, d.result || null, sb.atmosphere ?? null,
           d.imagePrompt, d.videoPrompt, d.charactersJson,
+          d.backgroundCharactersJson,
+          d.characterVisuals ? JSON.stringify(d.characterVisuals) : null,
+          d.lastFrameVisuals ? JSON.stringify(d.lastFrameVisuals) : null,
+          d.videoSlots ? JSON.stringify(d.videoSlots) : null,
           d.shotType || null, d.angle, d.angleH, d.angleV, d.angleS,
-          d.movement || null, d.lightingStyle, d.depthOfField, d.segmentIndex, d.segmentTitle,
+          d.dialogueFraming || null,
+          d.movement || null, d.lightingStyle, d.depthOfField, d.bgmPrompt || null, d.soundEffect || null, d.segmentIndex, d.segmentTitle,
           d.creationMode || 'classic',
           d.universalSegmentText != null ? d.universalSegmentText : null,
+          d.layoutDescription,
           now, now
         );
         newId = info.lastInsertRowid;
-      } else {
-        throw colErr;
+      } catch (colErr) {
+        if ((colErr.message || '').includes('character_visuals') || (colErr.message || '').includes('layout_description') || (colErr.message || '').includes('bgm_prompt') || (colErr.message || '').includes('background_characters')) {
+          const info = db.prepare(
+            `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, duration, dialogue, narration, action, result, atmosphere, image_prompt, video_prompt, characters, shot_type, angle, angle_h, angle_v, angle_s, movement, lighting_style, depth_of_field, segment_index, segment_title, creation_mode, universal_segment_text, status, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+          ).run(
+            episodeIdNum, d.sceneId, shotNumber, d.title || null, d.description,
+            sb.location ?? null, sb.time ?? null, sb.duration ?? 5,
+            d.dialogue || null, d.narration || null, d.action || null, d.result || null, sb.atmosphere ?? null,
+            d.imagePrompt, d.videoPrompt, d.charactersJson,
+            d.shotType || null, d.angle, d.angleH, d.angleV, d.angleS,
+            d.movement || null, d.lightingStyle, d.depthOfField, d.segmentIndex, d.segmentTitle,
+            d.creationMode || 'classic',
+            d.universalSegmentText != null ? d.universalSegmentText : null,
+            now, now
+          );
+          newId = info.lastInsertRowid;
+        } else {
+          throw colErr;
+        }
       }
-    }
-    persistStoryboardExecutionContract(db, newId, sb);
-    require('./wardrobeService').recordAiChange(db, episodeIdNum, newId, sb);
-    require('./speechDeliveryService').recordAiPlan(db, episodeIdNum, newId, sb);
-    if (d.charIds && d.charIds.length > 0) {
-      try {
-        const insChar = db.prepare('INSERT OR IGNORE INTO storyboard_characters (storyboard_id, character_id, created_at) VALUES (?, ?, ?)');
-        for (const cid of d.charIds) insChar.run(newId, cid, now);
-      } catch (_) {}
-    }
-    if (d.propIds.length > 0) {
-      try {
-        const insProp = db.prepare('INSERT OR IGNORE INTO storyboard_props (storyboard_id, prop_id) VALUES (?, ?)');
-        for (const pid of d.propIds) insProp.run(newId, pid);
-      } catch (_) {}
-    }
-    return newId;
+      persistStoryboardExecutionContract(db, newId, sb);
+      require('./wardrobeService').recordAiChange(db, episodeIdNum, newId, sb);
+      require('./speechDeliveryService').recordAiPlan(db, episodeIdNum, newId, sb);
+      replaceStoryboardCast(db, newId, d.charIds || []);
+      if (d.propIds.length > 0) {
+        try {
+          const insProp = db.prepare('INSERT OR IGNORE INTO storyboard_props (storyboard_id, prop_id) VALUES (?, ?)');
+          for (const pid of d.propIds) insProp.run(newId, pid);
+        } catch (_) {}
+      }
+      return newId;
+    })();
   } catch (_) {
     return null;
   }
@@ -1179,12 +1170,7 @@ function saveStoryboards(db, log, episodeId, storyboards, cfg, styleOverride, sk
     persistStoryboardExecutionContract(db, id, sb);
     require('./wardrobeService').recordAiChange(db, episodeIdNum, id, sb);
     require('./speechDeliveryService').recordAiPlan(db, episodeIdNum, id, sb);
-    if (d.charIds && d.charIds.length > 0) {
-      try {
-        const insChar = db.prepare('INSERT OR IGNORE INTO storyboard_characters (storyboard_id, character_id, created_at) VALUES (?, ?, ?)');
-        for (const cid of d.charIds) insChar.run(id, cid, now);
-      } catch (_) {}
-    }
+    replaceStoryboardCast(db, id, d.charIds || []);
     if (d.propIds.length > 0) {
       try {
         const insProp = db.prepare('INSERT OR IGNORE INTO storyboard_props (storyboard_id, prop_id) VALUES (?, ?)');
@@ -1651,22 +1637,6 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
       return rows;
     })();
 
-    // 导演两阶段路径的人物清单是 Agent 的规划合同；不能再用文本扫描静默追加
-    // 角色，否则阶段一门禁通过后又会把台词中提到的第三人写回 characters，
-    // 直到阶段二才暴露为 H3 人数冲突。旧的非导演生成入口仍保留历史补全行为。
-    if (!pipelineOptions?.chainEnrichment) {
-      taskService.updateTaskStatus(db, taskId, 'processing', 75, '正在校验分镜角色关联...');
-      let totalCharAdded = 0;
-      for (const sb of saved) {
-        if (!sb?.id) continue;
-        const { added } = syncStoryboardCharacters(db, log, sb.id);
-        totalCharAdded += added.length;
-      }
-      if (totalCharAdded > 0) {
-        log.info('[分镜] 角色补全完成', { episode_id: episodeId, total_added: totalCharAdded });
-      }
-    }
-
     taskService.updateTaskStatus(db, taskId, 'processing', 90, '正在更新剧集时长...');
 
     const durationMinutes = Math.ceil((totalDuration + 59) / 60);
@@ -2107,15 +2077,6 @@ function loadCharacterAppearanceRows(db, ids) {
   } catch (_) {
     rows = [];
   }
-  if (rows.length === 0) {
-    try {
-      rows = db.prepare(
-        `SELECT id, name, description AS appearance FROM character_libraries WHERE id IN (${placeholders}) AND deleted_at IS NULL`
-      ).all(...uniq);
-    } catch (_) {
-      rows = [];
-    }
-  }
   return rows;
 }
 
@@ -2233,14 +2194,8 @@ function rebuildPromptsForEpisode(db, log, episodeId) {
 function copyStoryboardAssetLinks(db, fromSbId, toSbId) {
   const from = Number(fromSbId);
   const to = Number(toSbId);
-  const now = new Date().toISOString();
-  try {
-    const chars = db.prepare('SELECT character_id FROM storyboard_characters WHERE storyboard_id = ?').all(from);
-    const insC = db.prepare(
-      'INSERT OR IGNORE INTO storyboard_characters (storyboard_id, character_id, created_at) VALUES (?, ?, ?)'
-    );
-    for (const c of chars) insC.run(to, c.character_id, now);
-  } catch (_) {}
+  const cast = db.prepare('SELECT character_id FROM storyboard_characters WHERE storyboard_id=? ORDER BY id').pluck().all(from);
+  replaceStoryboardCast(db, to, cast);
   try {
     const props = db.prepare('SELECT prop_id FROM storyboard_props WHERE storyboard_id = ?').all(from);
     const insP = db.prepare('INSERT OR IGNORE INTO storyboard_props (storyboard_id, prop_id) VALUES (?, ?)');

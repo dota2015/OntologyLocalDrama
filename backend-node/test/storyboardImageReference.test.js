@@ -28,7 +28,7 @@ function makeDb(t) {
   return db;
 }
 
-test('Step 2.3 filters out unmentioned characters from multi-character storyboard and injects exact person count rule', async (t) => {
+test('explicit cast controls references and count even when the action mentions only one character', async (t) => {
   const db = makeDb(t);
 
   // Drama & Episode
@@ -63,13 +63,13 @@ test('Step 2.3 filters out unmentioned characters from multi-character storyboar
   assert.equal(genRow.error_msg, null, 'no error in row: ' + genRow.error_msg);
 
   assert.ok(capturedOpts, 'callImageApi was called');
-  // Character 20 (丽霞) was not in prompt/action/dialogue, so Step 2.3 should have filtered her out!
+  // Regression sample: the second declared person is present without speaking.
   assert.ok(capturedOpts.reference_image_urls.includes('char_10.png'), 'includes 奕辰 reference');
-  assert.ok(!capturedOpts.reference_image_urls.includes('char_20.png'), '丽霞 reference was filtered out');
+  assert.ok(capturedOpts.reference_image_urls.includes('char_20.png'));
 
   // Exact character count rule was injected
-  assert.match(capturedOpts.prompt, /出场人数铁律.*严格且仅有 1 人.*奕辰/);
-  assert.match(capturedOpts.prompt, /The frame contains exactly 1 person: 奕辰/);
+  assert.match(capturedOpts.prompt, /出场人数铁律.*严格为 2 人.*奕辰.*丽霞/);
+  assert.match(capturedOpts.prompt, /The frame contains exactly 2 people: 奕辰, 丽霞/);
   assert.doesNotMatch(capturedOpts.prompt, /<image\d+>/i, 'business prompt must not inject pipeline visual tokens');
   assert.doesNotMatch(capturedOpts.prompt, /ZERO\s+clones|clone|克隆分身/i, 'positive prompt must not contain anti-clone concepts');
 
