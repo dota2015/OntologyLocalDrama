@@ -6,7 +6,12 @@ module.exports = function migrateStoryboardCast(db) {
     const name = 'storyboard-project-character-ids-v1';
     if (db.prepare('SELECT 1 FROM data_migrations WHERE name=?').get(name)) return;
     db.exec('DELETE FROM storyboard_characters WHERE NOT EXISTS (SELECT 1 FROM storyboards s WHERE s.id=storyboard_id)');
-    const rows = db.prepare('SELECT id,characters,semantic_slots FROM storyboards').all();
+    // Archived shots can contain names from the original schema. Preserve their
+    // stored IDs and first link, without resolving any name to a current actor.
+    db.exec(`DELETE FROM storyboard_characters
+      WHERE storyboard_id IN (SELECT id FROM storyboards WHERE deleted_at IS NOT NULL)
+        AND id NOT IN (SELECT min(id) FROM storyboard_characters GROUP BY storyboard_id,character_id)`);
+    const rows = db.prepare('SELECT id,characters,semantic_slots FROM storyboards WHERE deleted_at IS NULL').all();
     const hasLink = db.prepare('SELECT 1 FROM storyboard_characters WHERE storyboard_id=?');
     const remove = db.prepare('DELETE FROM storyboard_characters WHERE storyboard_id=?');
     const insert = db.prepare('INSERT INTO storyboard_characters(storyboard_id,character_id) VALUES(?,?)');

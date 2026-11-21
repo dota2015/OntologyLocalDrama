@@ -23,13 +23,16 @@ test('startup rebuilds cast links once and preserves explicit decisions, includi
     DELETE FROM data_migrations;
     INSERT INTO storyboards(id,episode_id,storyboard_number,characters,semantic_slots,action)
     VALUES(5,1,1,'[8]','{"visible_characters":[8],"required_references":[]}', '茶杯没带来');
+    INSERT INTO storyboards(id,episode_id,storyboard_number,characters,deleted_at)
+    VALUES(6,1,2,'["归档角色"]','2026-01-01');
+    INSERT INTO storyboard_characters(storyboard_id,character_id) VALUES(6,9),(6,9);
     INSERT INTO props(id,drama_id,name) VALUES(1,1,'茶杯');
     INSERT INTO storyboard_characters(storyboard_id,character_id) VALUES(5,8),(5,8),(5,9),(1000,8);`);
   const before = db.prepare('SELECT * FROM storyboards WHERE id=5').get();
   runMigrationsAndEnsure(db);
   const links = () => db.prepare('SELECT * FROM storyboard_characters').all();
   const first = links();
-  assert.deepEqual(first.map(l => [l.storyboard_id, l.character_id]), [[5,8]]);
+  assert.deepEqual(first.map(l => [l.storyboard_id, l.character_id]), [[6,9],[5,8]]);
   assert.deepEqual(loadStoryboardCharacterNames(db, 5), ['本剧人物']);
   runMigrationsAndEnsure(db);
   assert.deepEqual(links(), first);
