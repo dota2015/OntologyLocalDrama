@@ -105,7 +105,7 @@ async function enrichEpisodeOntologySlots(db, log, cfg, episodeId, options = {})
     const planned = await ensureDirectorExecutionSlots(db, log, shot, {
       maxAttempts,
       forceAgent: true,
-      onProgress: (message) => onProgress(15 + Math.floor(((i + 1) / rows.length) * 55), `正在由导演 Agent 规划第 ${i + 1}/${rows.length} 镜：${message}`),
+      onProgress: (_pct, message) => onProgress(15 + Math.floor(((i + 1) / rows.length) * 55), `正在由导演 Agent 规划第 ${i + 1}/${rows.length} 镜：${message}`),
       episodeScript: pkg.episode?.script_content || '',
       catalogs: pkg.catalogs,
       allShots: normalizedShots.map(item => enrichedByNumber.get(shotNumberOf(item)) || item),
@@ -171,7 +171,7 @@ async function enrichEpisodeOntologySlots(db, log, cfg, episodeId, options = {})
         previousShot: enrichedShots[index - 1] || null,
         nextShot: enrichedShots[index + 1] || null,
         checkpoint: options.checkpoint,
-        onProgress: (message) => onProgress(75 + Math.floor((round / repairRounds) * 10), `导演 Agent 修复第 ${shotNumber} 镜：${message}`),
+        onProgress: (_pct, message) => onProgress(75 + Math.floor((round / repairRounds) * 10), `导演 Agent 修复第 ${shotNumber} 镜：${message}`),
       });
       checkpointState.enrichedShots = enrichedShots;
       checkpointState.currentShot = shotNumber;

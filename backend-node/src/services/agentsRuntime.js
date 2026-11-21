@@ -516,8 +516,18 @@ function directorExecutionSlotsOutputType(duration = 5, options = {}) {
   delete audioPlan.properties.dialogue_content;
   speechPlan.required = speechPlan.required.filter(key => key !== 'text');
   audioPlan.required = audioPlan.required.filter(key => key !== 'dialogue_content');
-  semantic.required = [...semantic.required, 'source_script_excerpt'];
-  semantic.properties.source_script_excerpt = { type: 'string', maxLength: 2000 };
+  const segmentAudio = timeline.properties.shots_timeline.items.properties.audio_lip_sync;
+  delete segmentAudio.properties.dialogue_content;
+  segmentAudio.required = segmentAudio.required.filter(key => key !== 'dialogue_content');
+  segmentAudio.additionalProperties = false;
+  segmentAudio.properties.speech_end = {
+    anyOf: [{ type: 'integer', minimum: 1 }, { type: 'null' }],
+    description: '仅多个发声段中的非末段选择原文末字编号。最后发声段与无语言段留空。',
+  };
+  if (!options.hasSourceExcerpt) {
+    semantic.required = [...semantic.required, 'source_script_excerpt'];
+    semantic.properties.source_script_excerpt = { type: 'string', maxLength: 2000 };
+  }
   semantic.properties.shot_duration = { const: seconds };
   semantic.properties.execution_backend = { const: expectedBackend };
   semantic.properties.continuum_plan = seconds >= CONTINUUM_MIN_SECONDS

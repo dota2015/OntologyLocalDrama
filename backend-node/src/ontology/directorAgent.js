@@ -10,6 +10,8 @@
 const { compileDramaSemanticPackage } = require('./semanticPackage');
 const { validateAllInvariants, SpeechTimingRule, planningFeasibilityViolations } = require('./invariants');
 const actionAtoms = require('./actionAtoms');
+const timelineSpeech = require('./timelineSpeech');
+const { isDeepStrictEqual } = require('node:util');
 const { PERFORMANCE_CONTRACT } = actionAtoms;
 const { validateVideoSlots, formatH3Timestamp, SEALED_MOUTH_STATES } = require('./videoSlots');
 const { CONTINUUM_MIN_SECONDS } = require('../services/continuumPlan');
@@ -452,7 +454,7 @@ function timelineDurationPlanContract(duration) {
 // Stage-two prompts must describe the current shot, not replay the entire
 // episode database. Keep only immutable story facts and the execution fields
 // that are relevant to the current repair.
-function compactExecutionShot(shot, options = {}) {
+function compactExecutionShot(shot) {
   const value = shot && typeof shot === 'object' ? shot : {};
   const semantic = value.semantic_slots && typeof value.semantic_slots === 'object'
     ? value.semantic_slots : {};
@@ -498,11 +500,6 @@ function compactExecutionShot(shot, options = {}) {
       source_script_excerpt: semantic.source_script_excerpt || '',
     },
   };
-  if (options.includeExecution) {
-    result.character_visuals = Array.isArray(value.character_visuals) ? value.character_visuals : [];
-    result.last_frame_visuals = Array.isArray(value.last_frame_visuals) ? value.last_frame_visuals : [];
-    result.video_slots = value.video_slots || {};
-  }
   return result;
 }
 
@@ -1736,6 +1733,47 @@ function executionRepairFields(errors) {
   return fields.size ? [...fields] : executionFields;
 }
 
+function assignExecutionSpeech(shot) {
+  const segments = shot.video_slots?.shots_timeline;
+  if (!Array.isArray(segments) || !segments.length) return null;
+  const text = shot.semantic_slots?.speech_plan?.text ?? shot.video_slots?.audio_lip_sync?.dialogue_content ?? '';
+  const result = timelineSpeech.resolveTimelineSpeech(segments, text);
+  if (result.error) return result.error;
+  shot.video_slots = { ...shot.video_slots, shots_timeline: result.segments };
+  return null;
+}
+
+// A speech boundary repair changes only where already planned beats divide
+// the source. Any conflict involving voice mode, cast or timing needs the
+// ordinary execution planner, which can change those creative decisions.
+async function repairSpeechEnds(db, log, shot, errors) {
+  const segments = shot.video_slots.shots_timeline;
+  const text = shot.semantic_slots?.speech_plan?.text ?? shot.video_slots.audio_lip_sync?.dialogue_content ?? '';
+  const count = Array.from(text).length;
+  const voiced = segments.filter(s => timelineSpeech.voiceModes.has(s?.audio_lip_sync?.mode));
+  const result = await agentsRuntime.runAgent(db, log, {
+    name: 'director-speech-boundaries',
+    instructions: '按镜内动作决定每个发声段读到哪一字。按发声段顺序返回末字编号（从1开始，严格递增，最后一个等于全文长度）。',
+    input: JSON.stringify({
+      source: timelineSpeech.sourceGuide(text),
+      beats: voiced.map(s => ({ duration: s.duration, action: s.action, result: s.result, window: s.speech_action_alignment?.speech_window })),
+      feedback: errors.map(e => e.message),
+    }),
+    outputType: { type: 'json_schema', name: 'director_speech_boundaries', strict: false,
+      schema: { type: 'object', additionalProperties: false, required: ['ends'], properties: {
+        ends: { type: 'array', minItems: voiced.length, maxItems: voiced.length, items: { type: 'integer', minimum: 1, maximum: count } },
+      } } },
+    thinking: 'disabled',
+  });
+  if (!Array.isArray(result?.ends) || result.ends.length !== voiced.length) throw new Error('发声段边界数与发声段数不一致');
+  let voiceIndex = 0;
+  const shots_timeline = segments.map(s => {
+    const { dialogue_content, speech_end, ...plan } = s.audio_lip_sync;
+    return { ...s, audio_lip_sync: { ...plan, speech_end: timelineSpeech.voiceModes.has(plan.mode) ? result.ends[voiceIndex++] : null } };
+  });
+  return { repairs: [{ shot_number: shot.shot_number ?? shot.storyboard_number, patch: { video_slots: { shots_timeline } } }] };
+}
+
 async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {}) {
   const retry = directorRetryContext(retryOptions);
   const shot = projectCanonicalShotContract(rawShot);
@@ -1780,6 +1818,7 @@ async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {})
     return typeof value[field] !== 'string';
   });
   const continuityErrors = (value) => continuityMissing(value).map((field) => ({ conflict_slots: [`semantic_slots.continuity_from_previous.${field}`], message: `缺少 Agent 规划的 semantic_slots.continuity_from_previous.${field}` }));
+  const existingSpeechError = assignExecutionSpeech(shot);
   let errors = [
     ...(requireSemantic ? semanticRequired.filter(([, valid]) => !valid).map(([field]) => ({ conflict_slots: [`semantic_slots.${field}`], message: `缺少 Agent 规划的 semantic_slots.${field}` })) : []),
     ...(requireSemantic ? continuityErrors(semantic.continuity_from_previous) : []),
@@ -1788,10 +1827,11 @@ async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {})
       ? shortDramaTimelineViolations(shot, shot.video_slots.shots_timeline)
       : [{ conflict_slots: ['video_slots'], message: '缺少 video_slots，必须与人物定格和动作时间轴一起规划' }]),
   ];
+  if (existingSpeechError) errors.push(existingSpeechError);
   if (shot.video_slots && Math.abs(Number(shot.video_slots?.timing?.duration || 0) - duration) > 0.1) {
     errors.push({ conflict_slots: ['video_slots.timing.duration'], message: `video_slots.timing.duration 必须等于权威时长 ${duration} 秒` });
   }
-  if (retryOptions.forceAgent) errors.push({ message: '按阶段二合同要求重新由导演 Agent 完整规划 semantic_slots、character_visuals、last_frame_visuals 和 video_slots' });
+  if (retryOptions.forceAgent && !retryOptions.invariantViolations?.length) errors.push({ message: '按阶段二合同要求重新由导演 Agent 完整规划 semantic_slots、character_visuals、last_frame_visuals 和 video_slots' });
   if (Array.isArray(retryOptions.invariantViolations) && retryOptions.invariantViolations.length) {
     errors.push(...retryOptions.invariantViolations.map((item) => (
       item && typeof item === 'object' ? item : { message: String(item) }
@@ -1845,16 +1885,25 @@ async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {})
     || Array.isArray(shot.characters);
   let lastFatalError = null;
   let hasValidAgentOutput = false;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  let previousRepair = null;
+  const replay = resumed && errors.length > 0 && errors.every(e => e.rule === timelineSpeech.rule);
+  for (let attempt = replay ? 0 : 1; attempt <= maxAttempts; attempt++) {
     try {
       // Each retry must see the latest candidate. Sending the original shot
       // made the loop forget every previous repair and repeat the same omission.
       const candidateBase = currentShot;
-      const patchMode = resumed || attempt > 1;
+      const patchMode = resumed || attempt > 1 || Boolean(retryOptions.invariantViolations?.length && currentShot.video_slots);
       const patchFields = executionRepairFields(errors);
-      const compactCandidate = compactExecutionShot(candidateBase, { includeExecution: patchMode });
-      const compactNeighbours = [retryOptions.previousShot, retryOptions.nextShot]
-        .filter(Boolean).map(item => compactExecutionShot(item));
+      const facts = compactExecutionShot(candidateBase);
+      const expectedSpeech = shot.semantic_slots?.speech_plan?.text ?? shotSpeechTurns(shot).map(turn => turn.text).join('');
+      const speechGuide = expectedSpeech ? timelineSpeech.sourceGuide(expectedSpeech) : '本镜无台词';
+      const compactCandidate = patchMode ? Object.fromEntries(patchFields.map(key => [key, candidateBase[key]])) : null;
+      const compactNeighbours = [retryOptions.previousShot, retryOptions.nextShot].filter(Boolean).map(item => ({
+        shot_number: item.storyboard_number ?? item.shot_number, scene_id: item.scene_id,
+        characters: item.characters, action: item.action, result: item.result,
+        start_framing: item.start_framing, end_framing: item.end_framing,
+        transition_to_next: item.transition_to_next, continuity: item.semantic_slots?.continuity_from_previous,
+      }));
       const compactCatalogs = compactExecutionCatalogs(retryOptions.catalogs || {}, candidateBase);
       const rosterLockLine = `本镜参与者总集为 ${JSON.stringify(lockedParticipantIds)}，不得增减。初始主体 ${JSON.stringify(lockedVisibleIds)}，背景 ${JSON.stringify(lockedBackgroundIds)}，画外 ${JSON.stringify(lockedOffscreenIds)}。导演可调整参与方式。无台词且同时需要配乐和现场音效时，选择 music_with_effects 并保留两者，画内人物不发声。每段分别声明实际入画人物，特写中其他参与者可在画外发言；仅给当段入画者分配表演轨迹。一个动作可跨时间段持续，同机位保持连续。`;
       const gateFeedbackText = errors.map((item) => {
@@ -1866,7 +1915,7 @@ async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {})
       }).join('；');
       const requestInput = patchMode
         ? `${rosterLockLine}
-【权威镜头事实】${JSON.stringify(compactExecutionShot(candidateBase))}
+【权威镜头事实】${JSON.stringify(facts)}
 【当前已有执行槽位】${JSON.stringify(compactCandidate)}
 【允许修复字段】${JSON.stringify([...patchFields])}
 【相邻镜头连续性摘要】${JSON.stringify(compactNeighbours)}
@@ -1874,7 +1923,7 @@ async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {})
 【门禁反馈】${gateFeedbackText}
 只返回 {"repairs":[{"shot_number":${Number(shotNumber) || 0},"patch":{...}}]}。patch 只能包含允许修复字段；character_visuals 和 video_slots.shots_timeline 必须返回该字段的完整新值，其他字段保持不变。`
         : `${rosterLockLine}
-【权威镜头事实】${JSON.stringify(compactExecutionShot(candidateBase))}
+【权威镜头事实】${JSON.stringify(facts)}
 【相邻镜头连续性摘要】${JSON.stringify(compactNeighbours)}
 【本体资产白名单】${JSON.stringify(compactCatalogs)}
 【门禁反馈】${gateFeedbackText}
@@ -1884,20 +1933,29 @@ async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {})
         ? `当前镜头时长为 ${duration} 秒（≥${CONTINUUM_MIN_SECONDS}秒），semantic_slots.execution_backend 必须固定填 'h3_continuum'，且 continuum_plan.total_duration 等于 ${duration}`
         : `当前镜头时长为 ${duration} 秒（4～8秒普通 H3），semantic_slots.execution_backend 必须固定填 'h3_single'，且 semantic_slots.continuum_plan 必须固定填 null`;
       const requiredReferencesContract = 'semantic_slots.required_references 必须从【本体资产白名单】与本镜权威资产按顺序填写 1～9 项，严禁留空 []：第 1 项为当前 scene_id 对应场景（{ type:"scene", id, name }），随后依次填入全部画内主体 visible_characters、background_characters（{ type:"character", id, character_id:id, name }）与本镜实际入画道具 props（{ type:"prop", id, name }），严禁列入 offscreen_characters。';
-      const planned = await agentsRuntime.runAgent(db, log, {
-        name: 'director-execution-slots-planner',
-        instructions: patchMode
-          ? `你是短剧导演执行合同的局部修复节点。只修复门禁反馈列出的字段，禁止改写人物清单、场景、对白、旁白、总时长和其他已通过字段。h3_mode 固定 ref2va 时，semantic_slots.first_frame_policy 与 semantic_slots.last_frame_policy 必须固定填 'none'。${requiredReferencesContract}${executionBackendContract}。当镜头已有角色对白（dialogue 非空且 narration 为空）时，speech_plan.is_narration 必须为 false，严禁把角色台词标为旁白。character_visuals 只覆盖第一段入画人物且每人有实际定格、多人不得占用完全相同的 screen_position；video_slots.shots_timeline 必须让每位画内角色在该段有与事件同步的动作或反应。凡存在对白的 timeline 段，speech_action_alignment.mode 固定填 'concurrent'（禁止填 sync/deliberate_pause/none），按本段台词与 speaker_in_frame 分配口型：仅本段画内发言者填 speaker_synced，听者及无发言段填 closed 或 offscreen_sealed；首帧只描述开场瞬间。当【本体资产白名单】的 props 为空或不含目标物体时，动作 target_type 禁止填 'prop'（无有效 target_id 必被门禁拒绝），改用 'event' 或 'scene' 并填写 target_label。只返回指定 repairs JSON，不要解释。`
-          : `你是短剧导演执行合同节点。根据紧凑的当前镜头事实，一次输出完整 semantic_slots、character_visuals、last_frame_visuals 和 video_slots。禁止改写人物清单、场景、对白、旁白和总时长。semantic_slots.continuity_from_previous 必须完整；h3_mode 固定 ref2va，first_frame_policy 与 last_frame_policy 必须固定填 'none'；${requiredReferencesContract}${executionBackendContract}；当镜头已有角色对白（dialogue 非空且 narration 为空）时，speech_plan.is_narration 必须为 false，严禁把角色台词标为旁白。performance_contract 固定 ${PERFORMANCE_CONTRACT}；character_visuals 只覆盖第一段入画人物，多人同框时 的 screen_position 必须互相错开。动作与对白必须同步，所有画内人物都要有本段可执行动作或反应；有对白段 speech_action_alignment.mode 固定填 'concurrent'，按本段台词与 speaker_in_frame 分配口型：仅本段画内发言者填 speaker_synced，听者及无发言段填 closed 或 offscreen_sealed；首帧只描述开场瞬间。当【本体资产白名单】的 props 为空或不含目标物体时，动作 target_type 禁止填 'prop'（无有效 target_id 必被门禁拒绝），改用 'event' 或 'scene' 并填写 target_label。用可见的行为和结果表现剧情，画面元素遵循剧本与所选风格。${durationPlanContract}。只返回指定 JSON，不要解释。`,
-        input: requestInput,
-        outputType: patchMode
-          ? agentsRuntime.directorExecutionRepairOutputType(shotNumber, patchFields)
-          : agentsRuntime.directorExecutionSlotsOutputType(duration, { lastFramePolicy, allowTailVisuals }),
-        thinking: 'enabled',
-        maxTokens: 24576,
-        temperature: 0.2,
-      });
-      hasValidAgentOutput = true;
+      const boundaryErrors = errors.filter(e => e.rule === timelineSpeech.rule &&
+        e.conflict_slots?.some(path => path.endsWith('.speech_end')));
+      let planned;
+      if (attempt === 0) {
+        planned = { repairs: [{ shot_number: shotNumber, patch: {} }] };
+      } else if (patchMode && boundaryErrors.length && expectedSpeech && candidateBase.video_slots?.shots_timeline?.some(s => timelineSpeech.voiceModes.has(s?.audio_lip_sync?.mode))) {
+        planned = await repairSpeechEnds(db, log, candidateBase, boundaryErrors);
+      } else {
+        planned = await agentsRuntime.runAgent(db, log, {
+          name: 'director-execution-slots-planner',
+          instructions: patchMode
+            ? `你是短剧导演执行合同的局部修复节点。只修复门禁反馈列出的字段，禁止改写人物清单、场景、对白、旁白、总时长和其他已通过字段。h3_mode 固定 ref2va 时，semantic_slots.first_frame_policy 与 semantic_slots.last_frame_policy 必须固定填 'none'。${requiredReferencesContract}${executionBackendContract}。当镜头已有角色对白（dialogue 非空且 narration 为空）时，speech_plan.is_narration 必须为 false，严禁把角色台词标为旁白。character_visuals 只覆盖第一段入画人物且每人有实际定格、多人不得占用完全相同的 screen_position；video_slots.shots_timeline 必须让每位画内角色在该段有与事件同步的动作或反应。凡存在对白的 timeline 段，speech_action_alignment.mode 固定填 'concurrent'（禁止填 sync/deliberate_pause/none），按本段台词与 speaker_in_frame 分配口型：仅本段画内发言者填 speaker_synced，听者及无发言段填 closed 或 offscreen_sealed；首帧只描述开场瞬间。当【本体资产白名单】的 props 为空或不含目标物体时，动作 target_type 禁止填 'prop'（无有效 target_id 必被门禁拒绝），改用 'event' 或 'scene' 并填写 target_label。只返回指定 repairs JSON，不要解释。`
+            : `你是短剧导演执行合同节点。根据紧凑的当前镜头事实，一次输出完整 semantic_slots、character_visuals、last_frame_visuals 和 video_slots。禁止改写人物清单、场景、对白、旁白和总时长。semantic_slots.continuity_from_previous 必须完整；h3_mode 固定 ref2va，first_frame_policy 与 last_frame_policy 必须固定填 'none'；${requiredReferencesContract}${executionBackendContract}；当镜头已有角色对白（dialogue 非空且 narration 为空）时，speech_plan.is_narration 必须为 false，严禁把角色台词标为旁白。performance_contract 固定 ${PERFORMANCE_CONTRACT}；character_visuals 只覆盖第一段入画人物，多人同框时 的 screen_position 必须互相错开。动作与对白必须同步，所有画内人物都要有本段可执行动作或反应；有对白段 speech_action_alignment.mode 固定填 'concurrent'，按本段台词与 speaker_in_frame 分配口型：仅本段画内发言者填 speaker_synced，听者及无发言段填 closed 或 offscreen_sealed；首帧只描述开场瞬间。当【本体资产白名单】的 props 为空或不含目标物体时，动作 target_type 禁止填 'prop'（无有效 target_id 必被门禁拒绝），改用 'event' 或 'scene' 并填写 target_label。用可见的行为和结果表现剧情，画面元素遵循剧本与所选风格。${durationPlanContract}。只返回指定 JSON，不要解释。`,
+          input: requestInput + '\n台词从权威原文引用，无需抄写。发声用画内对白、画外音或旁白模式；同句跨多个发声段，仅前面的发声段填 audio_lip_sync.speech_end（末字编号），最后发声段自动取到句末。原文编号：' + speechGuide,
+          outputType: patchMode
+            ? agentsRuntime.directorExecutionRepairOutputType(shotNumber, patchFields)
+            : agentsRuntime.directorExecutionSlotsOutputType(duration, { lastFramePolicy, allowTailVisuals, hasSourceExcerpt: typeof semantic.source_script_excerpt === 'string' }),
+          thinking: 'enabled',
+          maxTokens: 24576,
+          temperature: 0.2,
+        });
+      }
+      if (attempt > 0) hasValidAgentOutput = true;
       const plannedPatch = patchMode ? (planned?.repairs?.[0]?.patch || {}) : planned;
       if (patchMode && Object.keys(plannedPatch).some(key => !patchFields.includes(key))) {
         throw new Error('Agent 返回了本轮修复范围之外的字段');
@@ -1931,7 +1989,11 @@ async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {})
         last_frame_visuals: plannedPatch?.last_frame_visuals ?? (patchMode ? candidateBase.last_frame_visuals : undefined),
         video_slots: plannedVideoSlots ?? (patchMode ? candidateBase.video_slots : plannedPatch?.video_slots),
       };
+      if (currentShot.semantic_slots && currentShot.semantic_slots.source_script_excerpt === undefined && typeof semantic.source_script_excerpt === 'string') {
+        currentShot.semantic_slots.source_script_excerpt = semantic.source_script_excerpt;
+      }
       currentShot = projectCanonicalShotContract(currentShot);
+      const speechError = assignExecutionSpeech(currentShot);
       const plannedSemantic = currentShot.semantic_slots && typeof currentShot.semantic_slots === 'object'
         ? currentShot.semantic_slots
         : {};
@@ -1952,18 +2014,7 @@ async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {})
         ...visualSlotViolations(currentShot, currentShot.character_visuals, currentShot.last_frame_visuals),
         ...shortDramaTimelineViolations(currentShot, currentShot.video_slots?.shots_timeline),
       ];
-      const segments = currentShot.video_slots?.shots_timeline;
-      if (Array.isArray(segments) && segments.length) {
-        const fragments = segments.map(seg => seg.audio_lip_sync?.dialogue_content || '');
-        const expected = plannedSemantic.speech_plan?.text || '';
-        if (fragments.join('') !== expected) {
-          errors.push({
-            rule: 'INVARIANT_TIMELINE_SPEECH_COVERAGE',
-            conflict_slots: ['video_slots.shots_timeline'],
-            message: `各段 dialogue_content 按顺序拼接必须等于本镜原文 ${JSON.stringify(expected)}。请只填写该段说出的原文片段，保留标点；无发声段填空。`,
-          });
-        }
-      }
+      if (speechError) errors.push(speechError);
       // Stage one owns the story structure. Under participant conservation,
       // stage two may adjust character distribution between visible, background,
       // and offscreen (e.g. resolving close dialogue background conflict, or
@@ -2021,20 +2072,29 @@ async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {})
         stage: 'stage2',
         shot_number: Number(shotNumber) || null,
         round: attempt,
-        type: 'agent_response',
-        payload: { errors, output: planned },
+        type: attempt === 0 ? 'checkpoint_revalidated' : 'agent_response',
+        payload: { errors, ...(attempt === 0 ? {} : { output: planned }) },
       });
       retryOptions.checkpoint?.save?.();
       if (errors.length === 0) {
         // Report successful completion as well as retries.  Without this
         // callback the two-stage runner leaves the task row showing the last
         // shot that started, even while later shots are already running.
-        retry.onProgress(`分镜 #${shotNumber} 执行合同已通过`);
+        retry.onProgress(retry.progress, `分镜 #${shotNumber} 执行合同已通过`);
         return currentShot;
       }
 
+      if (attempt === 0) continue;
+      if (patchMode && isDeepStrictEqual(previousRepair, { plannedPatch, errors })) {
+        const e = new Error(`分镜 #${shotNumber} 连续返回相同补丁和违规，已保留断点：${errors.map(item => item.message).join('；')}`);
+        e.code = 'DIRECTOR_UNCHANGED_REPAIR';
+        e.violations = errors;
+        throw e;
+      }
+      previousRepair = patchMode ? structuredClone({ plannedPatch, errors }) : null;
       reportDirectorLayerRetry(retry, `分镜 #${shotNumber} 视听执行合同`, attempt, errors.map(item => item.message).join('；'));
     } catch (error) {
+      if (error.code === 'DIRECTOR_UNCHANGED_REPAIR') throw error;
       // Schema/protocol failures happen before the model can produce a
       // candidate. Retrying the identical invalid request only burns the
       // entire retry budget and hides the actual deployment bug.

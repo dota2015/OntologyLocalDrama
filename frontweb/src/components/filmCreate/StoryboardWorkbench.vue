@@ -112,7 +112,7 @@
         <div v-if="directorRunForDisplay.status === 'failed' && latestDirectorRun.checkpoint?.available" class="director-run-audit__checkpoint">
           <div>
             <strong>已保存断点</strong>
-            <span>基础分镜 {{ latestDirectorRun.checkpoint.base_shots || 0 }} 镜 · 已完成执行合同 {{ latestDirectorRun.checkpoint.completed_shots }} 镜</span>
+            <span>基础分镜 {{ latestDirectorRun.checkpoint.base_shots || 0 }} 镜 · 已完成执行合同 {{ latestDirectorRun.checkpoint.completed_shots }} 镜<template v-if="latestDirectorRun.checkpoint.pending_shot"> · 第 {{ latestDirectorRun.checkpoint.pending_shot }} 镜待修复</template></span>
             <small>继续任务会沿用原规划；需要改变镜头数量或节奏，请重新生成。</small>
           </div>
           <el-button type="primary" size="small" :disabled="isAnyDirectorGenerating" :loading="directorGenerating" @click="onDirectorAgentGenerate(latestDirectorRun.id)">继续失败任务</el-button>

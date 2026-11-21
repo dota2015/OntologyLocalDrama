@@ -152,6 +152,8 @@ function summary(db, taskId) {
     json_array_length(state_json,'$.stage1Storyboards') AS base_shots,
     json_extract(state_json,'$.resumed_from') AS resumed_from,
     json_extract(state_json,'$.currentShot') AS current_shot,
+    coalesce(json_extract(state_json,'$.pendingRepair.candidate.storyboard_number'),
+             json_extract(state_json,'$.pendingRepair.candidate.shot_number')) AS pending_shot,
     json_extract(state_json,'$.reflectionRound') AS reflection_round,
     json_extract(state_json,'$.stage1Complete') AS stage1_complete FROM director_checkpoints WHERE task_id=?`).get(taskId);
   if (!s) return null;
