@@ -203,35 +203,6 @@ function createExecutor(db,cfg,log) {
       const active=db.prepare("SELECT * FROM video_generations WHERE storyboard_id=? AND status='processing' AND deleted_at IS NULL ORDER BY id DESC LIMIT 1").get(sb.id);
       if(active?.task_id){attach('task',active.task_id);return;}
       const requested=videoPayload(job,options,sb);
-      const vc=require('./videoClient');
-      let semanticSlots=sb.semantic_slots;
-      if(typeof semanticSlots==='string'){try{semanticSlots=JSON.parse(semanticSlots)}catch(_){semanticSlots=null}}
-      const firstFramePolicy=semanticSlots?.first_frame_policy;
-      const continuityType=semanticSlots?.continuity_type;
-      const isLongTakeContinuation = sb.long_take_group_id && (sb.long_take_role === 'continuation' || sb.long_take_role === 'tail' || (sb.long_take_sequence != null && sb.long_take_sequence > 1));
-      const hasSemanticContinuity=!!(firstFramePolicy || continuityType);
-      const legacyContinuity=!hasSemanticContinuity && options.continuity;
-      const shouldInheritTail=(firstFramePolicy==='inherit_tail' || continuityType==='long_take_continuation' || isLongTakeContinuation || legacyContinuity)
-        && firstFramePolicy!=='generate_new' && continuityType!=='hard_cut';
-      if(shouldInheritTail && !requested.universal && !require('./wardrobeService').hasChange(db,sb.id)) {
-        const previous = isLongTakeContinuation
-          ? db.prepare('SELECT * FROM storyboards WHERE episode_id=? AND long_take_group_id=? AND (long_take_sequence < ? OR storyboard_number < ?) AND deleted_at IS NULL ORDER BY long_take_sequence DESC, storyboard_number DESC LIMIT 1').get(sb.episode_id, sb.long_take_group_id, sb.long_take_sequence || 9999, sb.storyboard_number)
-          : db.prepare('SELECT * FROM storyboards WHERE episode_id=? AND storyboard_number<? AND deleted_at IS NULL ORDER BY storyboard_number DESC,id DESC LIMIT 1').get(sb.episode_id,sb.storyboard_number);
-        if(previous && videoDone(previous)) {
-          const tail=await require('./h3NativeService').tailFrame(db,job.drama_id,previous,require('path').resolve(cfg.storage?.local_path || './data/storage'));
-          const base=String(cfg.storage?.base_url || '').replace(/\/$/,'');
-          const url=base+(base.endsWith('/static')?'/':'/static/')+tail;
-          requested.image_url=requested.first_frame_url=url;
-          requested.reference_image_urls=[url,requested.last_frame_url].filter(Boolean);
-          try {
-            db.prepare(`INSERT INTO image_generations (drama_id, storyboard_id, image_url, local_path, frame_type, prompt, status, created_at, updated_at)
-              VALUES (?, ?, ?, ?, 'inherited_tail_frame', ?, 'completed', ?, ?)`).run(job.drama_id, sb.id, url, tail, `[长镜头接力首帧] 承接分镜 #${previous.storyboard_number} 尾帧`, new Date().toISOString(), new Date().toISOString());
-          } catch (_) {}
-        } else if(firstFramePolicy==='inherit_tail' || continuityType==='long_take_continuation' || isLongTakeContinuation) {
-          throw new Error(`分镜 #${sb.storyboard_number} 要求继承上一镜尾帧，但前序视频尚未完成，禁止静默回退`);
-        }
-      }
-      // Stop may arrive during ffmpeg. No new model submission after it was acknowledged.
       if(db.prepare('SELECT status FROM generation_jobs WHERE id=?').get(job.id)?.status==='stopping') return {skipped:true};
       let record;
       db.transaction(()=>{record=require('./videoSubmissionService').submitVideo(db,log,requested);attach('task',record.task_id);})();
@@ -314,7 +285,7 @@ function createExecutor(db,cfg,log) {
       if(!String(speech.text || sb.dialogue || sb.narration || '').trim()) throw new Error(`分镜#${sb.storyboard_number}的 Ref2VA 计划缺少图片或声音参考，未提交视频`);
     }
     return {drama_id:job.drama_id,storyboard_id:sb.id,model:selected.model || undefined,
-      image_url:universal?refs[0]:first,first_frame_url:universal?undefined:first,last_frame_url:universal?undefined:last || undefined,
+      image_url:plan.requires_first_frame?first:refs[0],first_frame_url:first || undefined,last_frame_url:last || undefined,
       reference_image_urls:refs,universal,h3_mode:plan.mode,resolution_plan:plan,
       aspect_ratio:options.aspect_ratio,style:options.style,resolution:options.resolution,duration:sb.duration};
   }

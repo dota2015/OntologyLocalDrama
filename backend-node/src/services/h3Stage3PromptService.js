@@ -660,19 +660,9 @@ End on the expected_visible_end_state when provided.
 
 function persistCompiledPrompt(db, shotId, prompt, fingerprint, manual = false) {
   if (!db || !shotId) return;
-  {
-    const cols = new Set(db.prepare('PRAGMA table_info(storyboards)').all().map((c) => c.name));
-    const sets = [];
-    const params = [];
-    if (cols.has('h3_prompt_snapshot')) { sets.push('h3_prompt_snapshot = ?'); params.push(prompt); }
-    if (cols.has('h3_prompt_fingerprint')) { sets.push('h3_prompt_fingerprint = ?'); params.push(fingerprint); }
-    if (cols.has('h3_prompt_manual')) { sets.push('h3_prompt_manual = ?'); params.push(manual ? 1 : 0); }
-    if (cols.has('h3_contract_status')) { sets.push('h3_contract_status = ?'); params.push('prepared'); }
-    if (!sets.length) return;
-    sets.push('updated_at = ?');
-    params.push(new Date().toISOString(), Number(shotId));
-    db.prepare(`UPDATE storyboards SET ${sets.join(', ')} WHERE id = ?`).run(...params);
-  }
+  db.prepare(`UPDATE storyboards SET h3_prompt_snapshot=?, h3_prompt_fingerprint=?,
+    h3_prompt_manual=?, h3_contract_status='prepared', updated_at=? WHERE id=?`)
+    .run(prompt, fingerprint, manual ? 1 : 0, new Date().toISOString(), Number(shotId));
 }
 
 // Store component digests so a manual draft can identify which input needs review.

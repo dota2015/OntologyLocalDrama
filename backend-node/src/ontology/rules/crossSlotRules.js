@@ -171,7 +171,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
             shot_number: shotNum,
             severity: this.defaultSeverity,
             message: `分镜 #${shotNum} 顶层 background_characters 与 semantic_slots.background_characters 不一致。`,
-            conflict_slots: ['background_characters', 'semantic_slots.background_characters'],
+            conflict_slots: ['semantic_slots.background_characters', 'semantic_slots.background_characters'],
           });
         }
         if (shot.character_visuals != null && shot.character_visuals !== '') {
@@ -247,7 +247,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
             shot_number: shotNum,
             severity: this.defaultSeverity,
             message: `分镜 #${shotNum} 标记为画外音/画外说话，但口型模式配置为画内说话 (in_frame_dialogue)，画外说话严禁画内动嘴！`,
-            conflict_slots: ['speech_plan.is_offscreen', 'audio_lip_sync'],
+            conflict_slots: ['semantic_slots.speech_plan.is_offscreen', 'semantic_slots.audio_lip_sync'],
           });
         }
         const unsealedOffscreen = videoTrajectories(videoSlots).find(
@@ -259,7 +259,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
             shot_number: shotNum,
             severity: this.defaultSeverity,
             message: `分镜 #${shotNum} 标记为画外音/画外说话，但画内角色「${unsealedOffscreen.name || unsealedOffscreen.character_id || '未命名'}」mouth_state 不是 closed/offscreen_sealed！`,
-            conflict_slots: ['speech_plan.is_offscreen', 'video_slots.shots_timeline.character_trajectories.mouth_state'],
+            conflict_slots: ['semantic_slots.speech_plan.is_offscreen', 'video_slots.shots_timeline.character_trajectories.mouth_state'],
           });
         }
       }
@@ -273,7 +273,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
             shot_number: shotNum,
             severity: this.defaultSeverity,
             message: `分镜 #${shotNum} 台词为旁白解说 (narration)，但被配置为画内说话人或赋予了特定角色 ID (${speechPlan.speaker_id})，旁白属于客观无源声音，严禁绑定画内角色张嘴！`,
-            conflict_slots: ['speech_plan.is_narration', 'audio_lip_sync'],
+            conflict_slots: ['semantic_slots.speech_plan', 'semantic_slots.audio_lip_sync'],
           });
         }
       }
@@ -321,7 +321,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
             shot_number: shotNum,
             severity: this.defaultSeverity,
             message: `分镜 #${shotNum} 声明为完全静音，但仍包含配乐、环境音或动作音效。`,
-            conflict_slots: ['sound_plan.is_silent', 'sound_plan.sound_effects', 'bgm_prompt'],
+            conflict_slots: ['semantic_slots.sound_plan.is_silent', 'semantic_slots.sound_plan.sound_effects', 'bgm_prompt'],
           });
         }
       }
@@ -338,7 +338,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
           shot_number: shotNum,
           severity: this.defaultSeverity,
           message: `分镜 #${shotNum} 选择纯环境音效模式，但同时规划了 BGM；如需同时保留配乐与音效，请选 music_with_effects；仅需环境音则清空 sound_plan.bgm_prompt。`,
-          conflict_slots: ['semantic_slots.audio_lip_sync', 'sound_plan.bgm_prompt', 'bgm_prompt'],
+          conflict_slots: ['semantic_slots.audio_lip_sync', 'semantic_slots.sound_plan.bgm_prompt', 'bgm_prompt'],
         });
       }
       if (isBgmOnly && hasSfx) {
@@ -347,7 +347,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
           shot_number: shotNum,
           severity: this.defaultSeverity,
           message: `分镜 #${shotNum} 选择纯配乐模式，但同时规划了环境音或动作音效。如需保留两者，请选 music_with_effects；仅需配乐则清空 sound_plan.sound_effects。`,
-          conflict_slots: ['semantic_slots.audio_lip_sync', 'sound_plan.sound_effects', 'sound_effect'],
+          conflict_slots: ['semantic_slots.audio_lip_sync', 'semantic_slots.sound_plan.sound_effects', 'sound_effect'],
         });
       }
 
@@ -361,7 +361,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
           shot_number: shotNum,
           severity: this.defaultSeverity,
           message: `分镜 #${shotNum} 角色 ID [${dualRoles.join(', ')}] 同时出现在可见主角与背景人物中，角色定位不可兼并！`,
-          conflict_slots: ['visible_characters', 'background_characters'],
+          conflict_slots: ['semantic_slots.visible_characters', 'semantic_slots.background_characters'],
         });
       }
 
@@ -378,7 +378,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
               shot_number: shotNum,
               severity: this.defaultSeverity,
               message: `分镜 #${shotNum} 声明面部清晰正脸识别 (clear_frontal)，但结构化朝向枚举为 ${facing || headPose}，导致人脸锁定失效！`,
-              conflict_slots: ['identity_visibility', 'facing', 'head_pose'],
+              conflict_slots: ['semantic_slots.identity_visibility', 'character_visuals.facing', 'character_visuals.head_pose'],
             });
             break;
           }
@@ -398,7 +398,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
               shot_number: shotNum,
               severity: this.defaultSeverity,
               message: `分镜 #${shotNum} 同一角色 ID:${cid} 在单镜中被赋予了多套不同服装（${charWardrobeMap.get(cid)} vs ${wid}），单镜服装必须统一！`,
-              conflict_slots: ['wardrobe_id'],
+              conflict_slots: ['semantic_slots.wardrobe_id'],
             });
           } else {
             charWardrobeMap.set(cid, wid);
@@ -416,7 +416,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
               shot_number: shotNum,
               severity: this.defaultSeverity,
               message: `分镜 #${shotNum} 同一角色 ID:${cid} 在必要参考中配置了多套服装卡（${costumeCharMap.get(cid)} vs ${cost.name || cost.id}），单镜服装必须保持唯一！`,
-              conflict_slots: ['required_references'],
+              conflict_slots: ['semantic_slots.required_references'],
             });
             break;
           }
@@ -434,7 +434,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
             shot_number: shotNum,
             severity: this.defaultSeverity,
             message: `分镜 #${shotNum} 采用继承上一镜尾帧连戏，但与分镜 #${prevShot.shot_number || idx} 不在同一场景（Scene:${shot.scene_id} vs Scene:${prevShot.scene_id}），换场景严禁直接承接尾帧！`,
-            conflict_slots: ['first_frame_policy', 'scene_id'],
+            conflict_slots: ['semantic_slots.first_frame_policy', 'scene_id'],
           });
         }
         if (shot.time && prevShot.time && String(shot.time).trim() !== String(prevShot.time).trim()) {
@@ -443,7 +443,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
             shot_number: shotNum,
             severity: this.defaultSeverity,
             message: `分镜 #${shotNum} 继承上一镜尾帧连戏，但时间跨度发生跳跃（${prevShot.time} -> ${shot.time}），时间线中断不可直接续接尾帧！`,
-            conflict_slots: ['first_frame_policy', 'time'],
+            conflict_slots: ['semantic_slots.first_frame_policy', 'time'],
           });
         }
         if ((!shot.scene_id || !prevShot.scene_id)
@@ -454,7 +454,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
             shot_number: shotNum,
             severity: this.defaultSeverity,
             message: `分镜 #${shotNum} 继承上一镜尾帧，但地点发生变化（${shot.location} -> ${prevShot.location}），换场景必须改为 Ref2VA 重新起镜！`,
-            conflict_slots: ['first_frame_policy', 'location'],
+            conflict_slots: ['semantic_slots.first_frame_policy', 'location'],
           });
         }
       }
@@ -466,7 +466,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
           shot_number: shotNum,
           severity: this.defaultSeverity,
           message: `分镜 #${shotNum} 规划了 ${requiredRefs.length} 张必要参考素材，超出 MiniMax-H3 单镜 9 张物理上限！后端禁止静默截断，请 Agent 拆镜或精简次要参考！`,
-          conflict_slots: ['required_references'],
+          conflict_slots: ['semantic_slots.required_references'],
         });
       }
       const audioRefs = speechPlan.audio_references || shot.h3_audio_references || [];
@@ -476,7 +476,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
           shot_number: shotNum,
           severity: this.defaultSeverity,
           message: `分镜 #${shotNum} 关联了 ${audioRefs.length} 个音色参考，超出 H3 单镜最多 3 个声音上限，必须拆镜！`,
-          conflict_slots: ['speech_plan.audio_references'],
+          conflict_slots: ['semantic_slots.speech_plan.audio_references'],
         });
       }
       const visibleCount = visibleIds.length;
@@ -491,7 +491,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
           message: isCrowdReaction
             ? `分镜 #${shotNum} 为围观吃瓜镜头，画内具名焦点角色仍须 ≤ 2 人（作为领头震惊代表），其余围观群众严禁填入 visible_characters 挂人脸参考图（会导致模型克隆人崩溃），必须改写为 background_characters 无ID群像或环境氛围描述（environment_vfx）！`
             : `分镜 #${shotNum} 画内身份角色超过 2 人（当前 ${visibleCount} 人），必须拆镜为正反打或特写；路人/群众请改写为环境事件！`,
-          conflict_slots: ['visible_characters'],
+          conflict_slots: ['semantic_slots.visible_characters'],
         });
       }
 
@@ -509,7 +509,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
             shot_number: shotNum,
             severity: this.defaultSeverity,
             message: `分镜 #${shotNum} 提示词引用了 <Picture ${picIndex}>，但可用参考输入仅有 ${refCount} 项，输入悬空缺失！`,
-            conflict_slots: ['required_references', 'video_prompt'],
+            conflict_slots: ['semantic_slots.required_references', 'video_prompt'],
           });
         }
       }
@@ -555,7 +555,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
             shot_number: shotNum,
             severity: this.defaultSeverity,
             message: `分镜 #${shotNum} 设定为纯血首帧绑定模式 (FL2VA)，但混入了图片或音频参考；请由 Agent 改用 Ref2VA，或明确由首帧独立承载全部视觉信息！`,
-            conflict_slots: ['h3_mode', 'required_references', 'speech_plan.audio_references'],
+            conflict_slots: ['semantic_slots.h3_mode', 'semantic_slots.required_references', 'semantic_slots.speech_plan.audio_references'],
           });
         }
         if (!['generate_new', 'inherit_tail', 'layout_lock'].includes(firstFramePolicy)) {
@@ -564,7 +564,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
             shot_number: shotNum,
             severity: this.defaultSeverity,
             message: `分镜 #${shotNum} 规划为 FL2VA，但未规划有效首帧；FL2VA 必须使用 generate_new、inherit_tail 或 layout_lock！`,
-            conflict_slots: ['h3_mode', 'first_frame_policy'],
+            conflict_slots: ['semantic_slots.h3_mode', 'semantic_slots.first_frame_policy'],
           });
         }
       } else if (h3Mode === 'ref2va') {
@@ -574,7 +574,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
             shot_number: shotNum,
             severity: this.defaultSeverity,
             message: `分镜 #${shotNum} 规划为 Ref2VA，本项目为节省资源不使用 AddGuide 首帧，first_frame_policy 必须为 none！`,
-            conflict_slots: ['h3_mode', 'first_frame_policy'],
+            conflict_slots: ['semantic_slots.h3_mode', 'semantic_slots.first_frame_policy'],
           });
         }
         if ((slots.last_frame_policy || shot.last_frame_policy || '') !== 'none') {
@@ -583,7 +583,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
             shot_number: shotNum,
             severity: this.defaultSeverity,
             message: `分镜 #${shotNum} 规划为 Ref2VA，首尾参考帧都应省略；需要精确结尾状态时请由 Agent 将整套方案改为 FL2VA！`,
-            conflict_slots: ['h3_mode', 'last_frame_policy'],
+            conflict_slots: ['semantic_slots.h3_mode', 'semantic_slots.last_frame_policy'],
           });
         }
         if (requiredRefs.length === 0 && (!Array.isArray(audioRefs) || audioRefs.length === 0)) {
@@ -592,7 +592,7 @@ class CrossSlotInvariantsRule extends BaseInvariantRule {
             shot_number: shotNum,
             severity: this.defaultSeverity,
             message: `分镜 #${shotNum} 规划为 Ref2VA，但 required_references 与 speech_plan.audio_references 均为空；必须至少声明一项场景、画内角色、道具或音频参考合同！`,
-            conflict_slots: ['h3_mode', 'semantic_slots.required_references', 'speech_plan.audio_references'],
+            conflict_slots: ['semantic_slots.h3_mode', 'semantic_slots.required_references', 'semantic_slots.speech_plan.audio_references'],
           });
         }
       } else {

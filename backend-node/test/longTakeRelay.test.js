@@ -5,7 +5,7 @@ const migrate = require('../src/db/migrate');
 const generationJobActions = require('../src/services/generationJobActions');
 const videoBatchService = require('../src/services/videoBatchService');
 const ai = require('../src/services/aiConfigService');
-const h3NativeService = require('../src/services/h3NativeService');
+const { previousStoryboard } = require('../src/services/h3ModeResolver');
 const log = { info() {}, warn() {}, error() {} };
 
 function agentPlan(firstFramePolicy) {
@@ -72,11 +72,10 @@ test('video batch serializes long take group and prepares predecessor tail frame
   const videos = require('../src/services/videoService');
   t.mock.method(videos, 'processVideoGeneration', async () => {});
 
-  let extractedTails = [];
-  t.mock.method(h3NativeService, 'tailFrame', async (d, dramaId, prevShot) => {
-    extractedTails.push(prevShot.id);
-    return `images/h3-inputs/tail-shot-${prevShot.id}.png`;
-  });
+  // This immediately preceding shot is outside the continuation group.
+  db.exec('UPDATE storyboards SET storyboard_number=13 WHERE id=103; UPDATE storyboards SET storyboard_number=14 WHERE id=104; UPDATE storyboards SET storyboard_number=12 WHERE id=101');
+  const relay = db.prepare('SELECT * FROM storyboards WHERE id=103').get();
+  assert.equal(previousStoryboard(db, relay).id, 102);
 
   const body = {
     drama_id: 1,
@@ -112,15 +111,34 @@ test('video batch serializes long take group and prepares predecessor tail frame
   await worker.tick();
   items = db.prepare('SELECT storyboard_id, status, payload FROM video_batch_items WHERE batch_id = ? ORDER BY position').all(batch.id);
   assert.equal(items[1].status, 'running', 'Shot 103 is now running after 102 completed');
-  assert.deepEqual(extractedTails, [102], 'tailFrame was extracted from shot 102');
+  const plan = JSON.parse(items[1].payload).resolution_plan;
+  assert.equal(plan.first_frame_policy, 'inherit_tail');
+  assert.equal(db.prepare("SELECT count(*) AS n FROM image_generations WHERE storyboard_id=103").get().n, 0);
+});
 
-  const payload103 = JSON.parse(items[1].payload);
-  assert.ok(payload103.first_frame_url.includes('tail-shot-102.png'), 'Shot 103 received tail frame of 102 as its first frame');
-
-  // Tail inheritance is an execution artifact and must not overwrite Agent-owned storyboard media.
-  const sb103 = db.prepare('SELECT image_url, local_path FROM storyboards WHERE id = 103').get();
-  assert.equal(sb103.image_url, null);
-  assert.equal(sb103.local_path, null);
-  const inherited = db.prepare("SELECT local_path FROM image_generations WHERE storyboard_id = 103 AND frame_type = 'inherited_tail_frame'").get();
-  assert.ok(inherited.local_path.includes('tail-shot-102.png'), 'Inherited tail was recorded as an execution artifact');
+test('batch and canvas pass the same manual inheritance policy to H3 for a universal shot', async t => {
+  const db = setupDb(t);
+  const config = { is_active:true, is_default:true, provider:'minimax_h3', api_protocol:'minimax_h3', model:['minimax_h3'] };
+  t.mock.method(ai, 'listConfigs', () => [config]);
+  db.prepare("UPDATE storyboards SET creation_mode='universal',semantic_slots=? WHERE id=103").run(agentPlan('generate_new'));
+  db.prepare('UPDATE dramas SET metadata=? WHERE id=1').run(JSON.stringify({
+    h3_shots: { 103: { engine_mode: 'fl2va', first_frame_policy: 'inherit_tail' } },
+  }));
+  const job = {id:'manual-policy', drama_id:1, episode_id:10};
+  const calls = [];
+  t.mock.method(require('../src/services/videoService'), 'processVideoGeneration', async (_db, _log, id) => calls.push(id));
+  await generationJobActions.createExecutor(db, {}, log, {}).execute(job, { action:'video' }, {}, {storyboard_id:103}, () => {});
+  await new Promise(setImmediate);
+  db.prepare("UPDATE video_generations SET status='failed' WHERE id=?").run(calls[0]);
+  videoBatchService.createBatch(db, log, 10, {drama_id:1, shots:[{storyboard_id:103,universal:true}]});
+  await videoBatchService.createWorker(db, log).tick();
+  await new Promise(setImmediate);
+  assert.equal(calls.length, 2);
+  for (const id of calls) {
+    const row = db.prepare('SELECT resolution_plan FROM video_generations WHERE id=?').get(id);
+    const plan = JSON.parse(row.resolution_plan);
+    assert.equal(plan.mode, 'fl2va');
+    assert.equal(plan.first_frame_policy, 'inherit_tail');
+    assert.equal(plan.agent_first_frame_policy, 'generate_new');
+  }
 });

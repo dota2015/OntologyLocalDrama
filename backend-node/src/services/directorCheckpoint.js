@@ -1,9 +1,11 @@
 const crypto = require('node:crypto');
-const fs = require('node:fs');
-const path = require('node:path');
 const { compileDramaSemanticPackage } = require('../ontology/semanticPackage');
 
-const VERSION = 3;
+const VERSION = 4;
+// Bump the corresponding contract when planning inputs, prompts or acceptance
+// rules change. Formatting and unrelated files must not invalidate a checkpoint.
+const STAGE_ONE_CONTRACT = 1;
+const STAGE_TWO_CONTRACT = 1;
 const hash = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 function ensureTable(db) {
   db.exec(`CREATE TABLE IF NOT EXISTS director_checkpoints (
@@ -43,14 +45,11 @@ function fingerprint(db, episodeId, cfg) {
   };
   const configs = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='ai_service_configs'").get()
     ? db.prepare("SELECT * FROM ai_service_configs WHERE service_type IN ('text','tts') AND deleted_at IS NULL AND is_active=1 ORDER BY id").all().map(({ api_key, created_at, updated_at, ...r }) => r) : [];
-  const codeFiles = fs.readdirSync(path.join(__dirname, '../ontology'), { recursive: true })
-    .filter(f => f.endsWith('.js')).sort().map(f => fs.readFileSync(path.join(__dirname, '../ontology', f), 'utf8'));
-  for (const name of ['agentsRuntime.js', 'narrativeStyleService.js', 'promptI18n.js']) codeFiles.push(fs.readFileSync(path.join(__dirname, name), 'utf8'));
   return {
     script: hash({ ...pkg.episode, duration_target: undefined }),
     assets: hash(pkg.catalogs), settings: hash({ drama: pkg.drama, planning, configs }),
     published: hash(rowVersions(publishedRows(db, episodeId))),
-    rules: hash(codeFiles),
+    stage1Contract: STAGE_ONE_CONTRACT, stage2Contract: STAGE_TWO_CONTRACT,
   };
 }
 function publishedRows(db, episodeId) {
@@ -58,15 +57,23 @@ function publishedRows(db, episodeId) {
 }
 
 function rowVersions(rows) {
-  return rows.map(row => {
-    const { updated_at, video_url, selected_video_id, h3_quality_audit, h3_prompt_snapshot,
-      h3_prompt_fingerprint, h3_prompt_manual, h3_contract_status, h3_generation_plan, status, ...directorInputs } = row;
-    return { id: row.id, number: row.storyboard_number, hash: hash(directorInputs) };
-  });
+  const fields = [
+    'title', 'description', 'action', 'result', 'dialogue', 'narration', 'duration',
+    'scene_id', 'location', 'time', 'characters', 'background_characters', 'props',
+    'wardrobe_id', 'atmosphere', 'emotion', 'shot_type', 'angle', 'angle_h', 'angle_v',
+    'angle_s', 'movement', 'lighting_style', 'depth_of_field', 'sound_effect', 'bgm_prompt',
+    'dialogue_framing', 'start_framing', 'end_framing', 'layout_description', 'transition_to_next',
+    'long_take_group_id', 'long_take_role', 'long_take_sequence', 'continuity_snapshot',
+    'creation_mode', 'universal_segment_text', 'semantic_slots', 'video_slots', 'character_visuals',
+    'last_frame_visuals', 'image_prompt',
+  ];
+  return rows.map(row => ({
+    id: row.id, number: row.storyboard_number, hash: hash(fields.map(field => row[field] ?? null)),
+  }));
 }
 
 function assertCompatible(saved, current, state, db, episodeId, resume = false) {
-  const labels = { script: '剧本', assets: '角色/场景/道具', settings: '生成配置', published: '已发布分镜', rules: '导演规则或提示词版本' };
+  const labels = { script: '剧本', assets: '角色/场景/道具', settings: '生成配置', published: '已发布分镜', stage1Contract: '阶段一规划版本', stage2Contract: '阶段二执行合同版本' };
   const changed = Object.keys(current).filter(k => saved[k] !== current[k]);
   if (state?.rowVersions && db) {
     const rows = publishedRows(db, episodeId);

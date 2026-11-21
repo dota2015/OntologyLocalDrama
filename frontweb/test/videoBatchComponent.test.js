@@ -1,14 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
-import { parse, compileScript } from '@vue/compiler-sfc'
-import { orderedVideoShots } from '../src/utils/h3VideoBatch.js'
-
-const {descriptor}=parse(fs.readFileSync(new URL('../src/components/filmCreate/StoryboardWorkbench.vue',import.meta.url),'utf8'))
-const script=compileScript(descriptor,{id:'durable-video-batch-regression'})
-const names=['startBatchVideoGeneration','applyVideoBatchStatus','stopBatchVideoGeneration']
-const functions=script.scriptSetupAst.filter(n=>n.type==='FunctionDeclaration'&&names.includes(n.id.name))
-  .map(n=>descriptor.scriptSetup.content.slice(n.start,n.end)).join('\n')
+import { createStoryboardVideoBatch, buildBatchVideoShot } from '../src/utils/storyboardVideoBatch.js'
 
 function setup() {
   const ref=value=>({value})
@@ -16,7 +8,7 @@ function setup() {
   const bindings={
     currentEpisodeId:ref(7),dramaId:ref(3),batchVideoRunning:ref(false),pipelineRunning:ref(false),
     batchVideoSubmitting:ref(false),batchVideoStopping:ref(false),batchVideoErrors:ref([]),batchVideoProgress:ref({}),serverVideoBatch:ref(null),
-    loadStoryboardMedia:async()=>{},orderedVideoShots,store:{storyboards:[{id:9,storyboard_number:9},{id:7,storyboard_number:7},{id:8,storyboard_number:8}]},
+    loadStoryboardMedia:async()=>{},store:{storyboards:[{id:9,storyboard_number:9},{id:7,storyboard_number:7},{id:8,storyboard_number:8}]},
     sbVideos:ref({7:[{status:'completed',local_path:'completed.mp4'}]}),recordHasPlayableVideoUrl:v=>!!v.local_path,
     isSbUniversalMode:()=>false,getSbFirstFrameUrl:sb=>`/first-${sb.id}.png`,collectSbOmniReferenceAbsoluteUrls:()=>[],sbCanSubmitVideo:()=>true,
     sbVideoFirstLastUrls:sb=>({first:`/first-${sb.id}.png`,last:`/tail-${sb.id}.png`}),selectedShotModel:()=>'minimax_h3',
@@ -28,7 +20,10 @@ function setup() {
       stopBatch:async(episodeId,batchId)=>{requests.push({stop:true,episodeId,batchId});return {id:batchId,episode_id:episodeId,status:'stopping',items:[]}},
     },ElMessage:{info(){},success(){},error(){}},
   }
-  const handlers=new Function(...Object.keys(bindings),functions+'\nreturn {startBatchVideoGeneration,stopBatchVideoGeneration};')(...Object.values(bindings))
+  const handlers = createStoryboardVideoBatch({
+    ...bindings, getStoryboards: () => bindings.store.storyboards,
+    canSubmit: bindings.sbCanSubmitVideo, buildShot: sb => buildBatchVideoShot(sb, bindings),
+  })
   return {handlers,bindings,requests}
 }
 

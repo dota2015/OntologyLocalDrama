@@ -1,4 +1,4 @@
-const { referenceCharacterId, groupSubjects, resolveRequiredReference, localFile, canonicalSource, imageSource } = require('./h3ReferenceBindings');
+const { referenceCharacterId, groupSubjects, resolveRequiredReference, localFile, canonicalSource, imageSource, sourceVersion } = require('./h3ReferenceBindings');
 const { MAX_VISIBLE_CHARACTERS, MAX_REFERENCE_IMAGES } = require('./h3Limits');
 const fs = require('fs');
 const path = require('path');
@@ -18,6 +18,7 @@ const MODES = ['auto', 'off', 'previous_tail'];
 const H3_STEPS = 23;
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 function parse(value, fallback) { try { return typeof value === 'string' ? JSON.parse(value) : value ?? fallback; } catch { return fallback; } }
+const { previousStoryboard } = require('./h3ModeResolver');
 const { shotInputSnapshot, usableVideo } = require('./videoAcceptance');
 function h3SettingsSnapshot(loaded) {
   return {
@@ -48,7 +49,7 @@ function load(db, dramaId, shotId) {
   const metadata = layout.parseMetadata(project.metadata);
   const shotMeta = metadata.h3_shots?.[shot.id] || {};
   const continuity = shotMeta.continuity || metadata.h3_default_continuity || 'off';
-  const engine_mode = shotMeta.engine_mode || metadata.h3_default_engine_mode || 'ref2va';
+  const engine_mode = shotMeta.engine_mode || metadata.h3_default_engine_mode || 'auto';
   const first_frame_policy = shotMeta.first_frame_policy || null;
   const last_frame_policy = shotMeta.last_frame_policy || null;
   return { project, shot, continuity, engine_mode, first_frame_policy, last_frame_policy };
@@ -57,11 +58,6 @@ function sameScene(a, b) {
   if (!a || !b) return false;
   if (a.scene_id && b.scene_id) return Number(a.scene_id) === Number(b.scene_id);
   return !!a.location?.trim() && a.location.trim() === b.location?.trim();
-}
-function previous(db, shot) {
-  return db.prepare(`SELECT * FROM storyboards WHERE episode_id=? AND deleted_at IS NULL
-    AND (storyboard_number<? OR (storyboard_number=? AND id<?)) ORDER BY storyboard_number DESC,id DESC LIMIT 1`)
-    .get(shot.episode_id, shot.storyboard_number, shot.storyboard_number, shot.id);
 }
 function selectedVideo(db, dramaId, shot) {
   if (!shot) return null;
@@ -140,7 +136,7 @@ function nativeCanvas(ratio) {
 }
 function getSettings(db, dramaId, shotId) {
   const { shot, continuity, engine_mode, first_frame_policy, last_frame_policy } = load(db, dramaId, shotId);
-  const prev = previous(db, shot);
+  const prev = previousStoryboard(db, shot);
   const video = selectedVideo(db, dramaId, prev);
   const { resolveH3Mode, deriveManualRef2vaReferences } = require('./h3ModeResolver');
   const generationPlan = resolveH3Mode(shot, {
@@ -289,7 +285,7 @@ function saveSettings(db, dramaId, shotId, body) {
     if (body.continuity === 'previous_tail') firstChoice = 'inherit_tail';
     else if (body.continuity === 'off') firstChoice = 'agent';
     else {
-      const prev = previous(db, loaded.shot);
+      const prev = previousStoryboard(db, loaded.shot);
       firstChoice = prev && sameScene(loaded.shot, prev) ? 'inherit_tail' : 'agent';
     }
   }
@@ -395,8 +391,8 @@ async function prepare(db, log, opts) {
   });
   const executionPlan = resolveH3Mode(initial.shot, {
     manualModeOverride: requestedEngineMode === 'auto' ? null : requestedEngineMode,
-    manualFirstFramePolicy: initial.first_frame_policy,
-    manualLastFramePolicy: initial.last_frame_policy,
+    manualFirstFramePolicy: opts.first_frame_policy || initial.first_frame_policy,
+    manualLastFramePolicy: opts.last_frame_policy || initial.last_frame_policy,
     manualReferences: requestedEngineMode === 'ref2va'
       ? (explicitManualReferences.length
         ? explicitManualReferences
@@ -413,7 +409,7 @@ async function prepare(db, log, opts) {
   speech.references = (speech.references || []).filter(ref => ref.kind !== 'soundtrack');
   delete speech.soundtrack;
 
-  const prev = previous(db, initial.shot);
+  const prev = previousStoryboard(db, initial.shot);
   const wardrobeChanged = !!clothing.change || clothing.continuity_reset;
   if (wardrobeChanged && executionPlan.first_frame_policy === 'inherit_tail') throw new Error('本镜已设置换装或时间线变化，不能继承上一镜尾帧，请让导演 Agent 重新规划或人工选择新首帧');
   const agentInheritTail = executionPlan.first_frame_policy === 'inherit_tail';
@@ -435,6 +431,9 @@ async function prepare(db, log, opts) {
 
   if (usePrevious) {
     if (!prev) throw new Error('当前是本集第一镜，无法使用上一镜尾帧');
+    if ((initial.shot.scene_id || prev.scene_id || initial.shot.location || prev.location) && !sameScene(initial.shot, prev)) {
+      throw new Error('要求继承尾帧的前序分镜属于不同场景，请重新确认首帧策略');
+    }
     const currentFirst = first;
     first = await tailFrame(db, dramaId, prev, root);
     if (currentFirst && currentFirst !== first) add(currentFirst, 'shot_context');
@@ -508,7 +507,7 @@ async function prepare(db, log, opts) {
 
   const fingerprintParts = () => {
     const current = load(db, dramaId, shotId);
-    const p = previous(db, current.shot);
+    const p = previousStoryboard(db, current.shot);
     const assets = refs.map(r => ({ ...r, version: sourceVersion(root, r.source) }));
     const currentClothing = wardrobe.getShot(db,shotId);
     const usesPrev = usePrevious && !currentClothing.change && !currentClothing.continuity_reset;
@@ -609,22 +608,21 @@ async function prepare(db, log, opts) {
     continuum_plan: execution.continuum_plan,
   };
   if (compiled.source === 'manual_locked' || compiled.source === 'cache_hit') {
-    try {
-      db.prepare('UPDATE storyboards SET h3_contract_status=?, updated_at=? WHERE id=?')
-        .run('prepared', new Date().toISOString(), Number(shotId));
-    } catch (_) {}
+    db.prepare('UPDATE storyboards SET h3_contract_status=?, updated_at=? WHERE id=?')
+      .run('prepared', new Date().toISOString(), Number(shotId));
   }
   fs.mkdirSync(path.dirname(destination), { recursive: true });
   fs.writeFileSync(destination, JSON.stringify({ prompt, fingerprint: compiled.fingerprint, prompt_source: compiled.source, references: refs, previous_storyboard_id: usePrevious ? prev.id : null,
     width, height, steps: H3_STEPS, duration: opts.duration, speech_delivery: delivery, voices: speech.references.map(({ url, ...r }) => r) }, null, 2));
+  if (usePrevious) {
+    const now = new Date().toISOString();
+    db.prepare(`INSERT INTO image_generations (drama_id, storyboard_id, local_path, frame_type, prompt, status, created_at, updated_at)
+      SELECT ?, ?, ?, 'inherited_tail_frame', ?, 'completed', ?, ?
+      WHERE NOT EXISTS (SELECT 1 FROM image_generations WHERE storyboard_id=? AND local_path=? AND frame_type='inherited_tail_frame' AND deleted_at IS NULL)`)
+      .run(dramaId, shotId, first, `承接分镜 #${prev.storyboard_number} 尾帧`, now, now, shotId, first);
+  }
   log.info('[H3] Native reference inputs prepared', { storyboard_id: shotId, mode: isFl2va ? 'fl2va' : 'ref2va', prompt_source: compiled.source, pictures: images.length, voices: audioReferences.length, previous_storyboard_id: usePrevious ? prev.id : null, width, height, prompt_record: relative });
   return result;
-}
-
-function sourceVersion(root, source) {
-  if (/^(https?:|data:)/i.test(source)) return hash(source);
-  const stat = fs.statSync(localFile(root, source));
-  return [stat.size, stat.mtimeMs];
 }
 
 module.exports = {

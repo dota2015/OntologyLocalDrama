@@ -551,9 +551,10 @@ function directorExecutionSlotsOutputType(duration = 5, options = {}) {
 
 // Retry output for stage-two execution contracts. The first pass creates the
 // complete contract; later passes return only a patch over the last candidate.
-function directorExecutionRepairOutputType(shotNumber) {
+function directorExecutionRepairOutputType(shotNumber, fields) {
   const partialObject = { type: 'object', additionalProperties: true };
   const visualArray = { type: 'array', maxItems: 2, items: structuredVisualSchema() };
+  const properties = { semantic_slots: partialObject, character_visuals: visualArray, last_frame_visuals: visualArray, video_slots: partialObject };
   return {
     type: 'json_schema',
     name: 'director_execution_slot_repair',
@@ -571,12 +572,7 @@ function directorExecutionRepairOutputType(shotNumber) {
               shot_number: { const: Number(shotNumber) },
               patch: {
                 type: 'object', additionalProperties: false,
-                properties: {
-                  semantic_slots: partialObject,
-                  character_visuals: visualArray,
-                  last_frame_visuals: visualArray,
-                  video_slots: partialObject,
-                },
+                properties: fields ? Object.fromEntries(fields.map(key => [key, properties[key]])) : properties,
               },
             },
           },

@@ -191,141 +191,7 @@ async function enrichEpisodeOntologySlots(db, log, cfg, episodeId, options = {})
 
   onProgress(85, '门禁审查与对齐完成，正在持久化写入数据库...');
 
-  // 持久化更新回 storyboards 表
-  // Test databases and older installations may not have the new contract
-  // columns yet; add only these additive columns at the boundary.
-  const existingColumns = new Set(db.prepare('PRAGMA table_info(storyboards)').all().map((item) => item.name));
-  for (const column of [
-    ['h3_contract_json', 'TEXT'], ['h3_contract_version', 'TEXT'],
-    ['h3_contract_status', 'TEXT'], ['h3_prompt_snapshot', 'TEXT'],
-    ['h3_prompt_fingerprint', 'TEXT'], ['h3_prompt_manual', 'INTEGER DEFAULT 0'],
-    ['h3_quality_audit', 'TEXT'],
-  ]) {
-    if (!existingColumns.has(column[0])) {
-      try { db.prepare(`ALTER TABLE storyboards ADD COLUMN ${column[0]} ${column[1]}`).run(); } catch (_) {}
-    }
-  }
-  const updateStmt = db.prepare(`
-    UPDATE storyboards SET
-      characters = ?,
-      background_characters = ?,
-      duration = ?,
-      dialogue_framing = ?,
-      dialogue = ?,
-      narration = ?,
-      bgm_prompt = ?,
-      sound_effect = ?,
-      character_visuals = ?,
-      last_frame_visuals = ?,
-      video_slots = ?,
-      semantic_slots = ?,
-      start_framing = ?,
-      end_framing = ?,
-      transition_to_next = ?,
-      layout_description = ?,
-      action = ?,
-      result = ?,
-      image_prompt = ?,
-      h3_contract_json = ?,
-      h3_contract_version = ?,
-      h3_contract_status = ?,
-      h3_prompt_snapshot = CASE WHEN h3_prompt_manual = 1 THEN h3_prompt_snapshot END,
-      h3_prompt_fingerprint = CASE WHEN h3_prompt_manual = 1 THEN h3_prompt_fingerprint END,
-      updated_at = ?
-    WHERE id = ?
-  `);
-
-  let insSbCharStmt = null;
-  let delSbCharStmt = null;
-  let insSbPropStmt = null;
-  let delSbPropStmt = null;
-  try {
-    insSbCharStmt = db.prepare('INSERT OR IGNORE INTO storyboard_characters (storyboard_id, character_id, created_at) VALUES (?, ?, ?)');
-    delSbCharStmt = db.prepare('DELETE FROM storyboard_characters WHERE storyboard_id = ?');
-  } catch (_) {}
-  try {
-    insSbPropStmt = db.prepare('INSERT OR IGNORE INTO storyboard_props (storyboard_id, prop_id) VALUES (?, ?)');
-    delSbPropStmt = db.prepare('DELETE FROM storyboard_props WHERE storyboard_id = ?');
-  } catch (_) {}
-
-  const now = new Date().toISOString();
-  db.transaction(() => {
-    options.checkpoint?.assertCurrent?.();
-    for (const shot of enrichedShots) {
-      let resolvedCharIds = [];
-      if (Array.isArray(shot.semantic_slots?.visible_characters) && shot.semantic_slots.visible_characters.length > 0) {
-        resolvedCharIds = shot.semantic_slots.visible_characters.map((c) => Number(c.id)).filter(Number.isFinite);
-      } else if (Array.isArray(shot.character_visuals) && shot.character_visuals.length > 0) {
-        resolvedCharIds = shot.character_visuals.map((c) => Number(c.character_id)).filter(Number.isFinite);
-      } else if (shot.characters) {
-        const parsed = typeof shot.characters === 'string' ? JSON.parse(shot.characters) : shot.characters;
-        resolvedCharIds = (Array.isArray(parsed) ? parsed : [parsed])
-          .map((c) => Number(typeof c === 'object' && c != null ? c.id : c))
-          .filter(Number.isFinite);
-      }
-      resolvedCharIds = Array.from(new Set(resolvedCharIds));
-      shot.characters = resolvedCharIds;
-
-      let resolvedPropIds = [];
-      if (Array.isArray(shot.semantic_slots?.required_references)) {
-        resolvedPropIds = shot.semantic_slots.required_references
-          .filter((ref) => ref.type === 'prop')
-          .map((ref) => Number(ref.id || ref.prop_id))
-          .filter(Number.isFinite);
-      } else if (Array.isArray(shot.props)) {
-        resolvedPropIds = shot.props.map((p) => Number(typeof p === 'object' && p != null ? p.id : p)).filter(Number.isFinite);
-      }
-      resolvedPropIds = Array.from(new Set(resolvedPropIds));
-
-      updateStmt.run(
-        JSON.stringify(resolvedCharIds),
-        shot.background_characters ? (typeof shot.background_characters === 'string' ? shot.background_characters : JSON.stringify(shot.background_characters)) : null,
-        shot.duration,
-        shot.dialogue_framing || null,
-        shot.dialogue ?? null,
-        shot.narration ?? null,
-        shot.semantic_slots.sound_plan.bgm_prompt || null,
-        shot.semantic_slots.sound_plan.sound_effects.join('、') || null,
-        shot.character_visuals ? JSON.stringify(shot.character_visuals) : null,
-        shot.last_frame_visuals ? JSON.stringify(shot.last_frame_visuals) : null,
-        shot.video_slots ? JSON.stringify(shot.video_slots) : null,
-        shot.semantic_slots ? JSON.stringify(shot.semantic_slots) : null,
-        shot.start_framing || null,
-        shot.end_framing || null,
-        shot.transition_to_next || null,
-        shot.layout_description || null,
-        shot.action || null,
-        shot.result || null,
-        shot.image_prompt || null,
-        JSON.stringify(buildH3Contract(shot)),
-        H3_CONTRACT_VERSION,
-        'audited',
-        now,
-        shot.id
-      );
-
-      // 同步 storyboard_characters 关联表
-      if (delSbCharStmt && insSbCharStmt) {
-        try {
-          delSbCharStmt.run(shot.id);
-          for (const cid of resolvedCharIds) {
-            insSbCharStmt.run(shot.id, cid, now);
-          }
-        } catch (_) {}
-      }
-
-      // 同步 storyboard_props 关联表
-      if (resolvedPropIds.length > 0 && delSbPropStmt && insSbPropStmt) {
-        try {
-          delSbPropStmt.run(shot.id);
-          for (const pid of resolvedPropIds) {
-            insSbPropStmt.run(shot.id, pid);
-          }
-        } catch (_) {}
-      }
-    }
-    options.checkpoint?.capturePublished?.();
-  })();
+  publishExecutionContracts(db, epId, enrichedShots, options.checkpoint);
 
   log.info('[本体丰富] 阶段二完成并落库', {
     episode_id: epId,
@@ -377,30 +243,6 @@ async function runTwoStageDirectorPipeline(db, log, cfg, episodeId, options = {}
   }
   saveProgress('stage1', '载入基础分镜');
   onProgress(5, checkpointState.stage1Complete ? '已载入基础分镜，准备继续视听规划' : '【阶段 1/2】正在解析剧本并生成基础分镜...');
-
-  // 确保 storyboards 表具备本体列
-  try {
-    const cols = db.prepare('PRAGMA table_info(storyboards)').all().map((c) => c.name);
-    const requiredCols = [
-      'dialogue_framing',
-      'character_visuals',
-      'last_frame_visuals',
-      'video_slots',
-      'long_take_group_id',
-      'long_take_role',
-      'long_take_sequence',
-      'start_framing',
-      'end_framing',
-      'transition_to_next',
-      'background_characters',
-      'semantic_slots',
-    ];
-    for (const col of requiredCols) {
-      if (!cols.includes(col)) {
-        db.prepare(`ALTER TABLE storyboards ADD COLUMN ${col} TEXT`).run();
-      }
-    }
-  } catch (_) {}
 
   // 1. 阶段一：快速全集基础分镜生成
   const { runStageOneBaseGeneration } = require('../services/episodeStoryboardService');
@@ -474,7 +316,90 @@ async function runTwoStageDirectorPipeline(db, log, cfg, episodeId, options = {}
   };
 }
 
+function publishExecutionContracts(db, episodeId, enrichedShots, checkpoint) {
+  // 持久化更新回 storyboards 表
+  const updateStmt = db.prepare(`
+    UPDATE storyboards SET
+      characters = ?,
+      background_characters = ?,
+      duration = ?,
+      dialogue_framing = ?,
+      dialogue = ?,
+      narration = ?,
+      bgm_prompt = ?,
+      sound_effect = ?,
+      character_visuals = ?,
+      last_frame_visuals = ?,
+      video_slots = ?,
+      semantic_slots = ?,
+      start_framing = ?,
+      end_framing = ?,
+      transition_to_next = ?,
+      layout_description = ?,
+      action = ?,
+      result = ?,
+      image_prompt = ?,
+      h3_contract_json = ?,
+      h3_contract_version = ?,
+      h3_contract_status = ?,
+      h3_prompt_snapshot = CASE WHEN h3_prompt_manual = 1 THEN h3_prompt_snapshot END,
+      h3_prompt_fingerprint = CASE WHEN h3_prompt_manual = 1 THEN h3_prompt_fingerprint END,
+      updated_at = ?
+    WHERE id = ? AND episode_id = ? AND deleted_at IS NULL
+  `);
+
+  const insSbCharStmt = db.prepare('INSERT INTO storyboard_characters (storyboard_id, character_id, created_at) VALUES (?, ?, ?)');
+  const delSbCharStmt = db.prepare('DELETE FROM storyboard_characters WHERE storyboard_id = ?');
+  const insSbPropStmt = db.prepare('INSERT INTO storyboard_props (storyboard_id, prop_id) VALUES (?, ?)');
+  const delSbPropStmt = db.prepare('DELETE FROM storyboard_props WHERE storyboard_id = ?');
+
+  const now = new Date().toISOString();
+  db.transaction(() => {
+    checkpoint?.assertCurrent?.();
+    for (const shot of enrichedShots) {
+      const resolvedCharIds = [...new Set(shot.semantic_slots.visible_characters.map(c => Number(c?.id ?? c?.character_id ?? c)))];
+      const resolvedPropIds = [...new Set(shot.semantic_slots.required_references
+        .filter(ref => ref.type === 'prop').map(ref => Number(ref.id ?? ref.prop_id)))];
+
+      const update = updateStmt.run(
+        JSON.stringify(resolvedCharIds),
+        shot.background_characters ? (typeof shot.background_characters === 'string' ? shot.background_characters : JSON.stringify(shot.background_characters)) : null,
+        shot.duration,
+        shot.dialogue_framing || null,
+        shot.dialogue ?? null,
+        shot.narration ?? null,
+        shot.semantic_slots.sound_plan.bgm_prompt || null,
+        shot.semantic_slots.sound_plan.sound_effects.join('、') || null,
+        shot.character_visuals ? JSON.stringify(shot.character_visuals) : null,
+        shot.last_frame_visuals ? JSON.stringify(shot.last_frame_visuals) : null,
+        shot.video_slots ? JSON.stringify(shot.video_slots) : null,
+        shot.semantic_slots ? JSON.stringify(shot.semantic_slots) : null,
+        shot.start_framing || null,
+        shot.end_framing || null,
+        shot.transition_to_next || null,
+        shot.layout_description || null,
+        shot.action || null,
+        shot.result || null,
+        shot.image_prompt || null,
+        JSON.stringify(buildH3Contract({ ...shot, characters: resolvedCharIds })),
+        H3_CONTRACT_VERSION,
+        'audited',
+        now,
+        shot.id, episodeId
+      );
+      if (!update.changes) throw new Error(`分镜 #${shot.storyboard_number} 已删除或移动，无法发布执行合同`);
+
+      delSbCharStmt.run(shot.id);
+      for (const cid of resolvedCharIds) insSbCharStmt.run(shot.id, cid, now);
+      delSbPropStmt.run(shot.id);
+      for (const pid of resolvedPropIds) insSbPropStmt.run(shot.id, pid);
+    }
+    checkpoint?.capturePublished?.();
+  })();
+}
+
 module.exports = {
+  publishExecutionContracts,
   normalizeStoryboardForAgent,
   enrichEpisodeOntologySlots,
   runTwoStageDirectorPipeline,

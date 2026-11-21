@@ -48,7 +48,7 @@ function canonicalSource(root, source) {
 }
 function imageSource(entity) { return entity?.local_path || entity?.ref_image || entity?.image_url || ''; }
 
-function resolveRequiredReference(db, dramaId, shot, ref, root) {
+function referenceSource(db, dramaId, shot, ref, root) {
   const explicit = ref?.url || ref?.image_url || ref?.local_path || '';
   if (explicit) return canonicalSource(root, explicit);
   const type = ref?.type || 'character';
@@ -63,21 +63,26 @@ function resolveRequiredReference(db, dramaId, shot, ref, root) {
   } else if (['costume', 'wardrobe', 'character_outfit'].includes(type)) {
     const characterId = Number(ref?.character_id ?? ref?.id);
     const state = wardrobe.getShot(db, shot.id).characters.find(c => Number(c.id) === characterId);
-    if (!state) throw new Error(`H3 必要服装参考对应的人物不存在（角色 ID:${characterId || '空'}）`);
+    if (!state) return '';
     if (ref?.stage_id && state.stage_id !== ref.stage_id) {
       const stage = state.stages?.find(s => s.id === ref.stage_id);
-      if (!stage) throw new Error(`H3 必要服装参考阶段不存在（角色 ID:${characterId}，阶段:${ref.stage_id}）`);
-      const source = canonicalSource(root, stage.reference_image || '');
-      if (!source) throw new Error(`H3 必要服装参考「${ref.name || stage.name}」尚未生成或上传图片`);
-      return source;
+      return canonicalSource(root, stage?.reference_image || '');
     }
-    const source = canonicalSource(root, state.reference_image || '');
-    if (!source) throw new Error(`H3 必要服装参考「${ref.name || state.stage_name || characterId}」尚未生成或上传图片`);
-    return source;
+    return canonicalSource(root, state.reference_image || '');
   }
-  if (!entity) throw new Error(`H3 必要参考素材不存在或不属于当前项目（${type}:${ref?.id ?? '空'}）`);
-  const source = canonicalSource(root, imageSource(entity));
-  if (!source) throw new Error(`H3 必要参考素材「${ref?.name || entity.name || `${type}:${id}`}」尚未生成或上传图片`);
+  return canonicalSource(root, imageSource(entity));
+}
+
+function resolveRequiredReference(db, dramaId, shot, ref, root) {
+  const source = referenceSource(db, dramaId, shot, ref, root);
+  if (!source) throw new Error(`H3 必要参考素材「${ref?.name || ref?.type || '素材'} #${ref?.id ?? ref?.character_id ?? '空'}」尚未生成或上传图片，或不属于当前项目`);
   return source;
 }
-module.exports = { referenceCharacterId, groupSubjects, resolveRequiredReference, localFile, canonicalSource, imageSource };
+function sourceVersion(root, source) {
+  if (!source) return null;
+  if (/^(https?:|data:)/i.test(source)) return require('node:crypto').createHash('sha256').update(source).digest('hex');
+  const stat = fs.statSync(localFile(root, source));
+  return [stat.size, stat.mtimeMs];
+}
+
+module.exports = { sourceVersion, referenceSource, referenceCharacterId, groupSubjects, resolveRequiredReference, localFile, canonicalSource, imageSource };

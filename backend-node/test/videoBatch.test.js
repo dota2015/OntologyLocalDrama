@@ -228,22 +228,14 @@ test('Agent-planned H3 continuity prepares the previous completed tail and retai
   body.continuity=true;
   body.shots=body.shots.filter(s=>s.storyboard_id!==82);
   batches.createBatch(db,log,7,body);
-  t.mock.method(require('../src/config'),'loadConfig',()=>({storage:{local_path:'/tmp/no-actual-files',base_url:'http://app/static'}}));
-  let tailCalls=0;
-  t.mock.method(require('../src/services/h3NativeService'),'tailFrame',async(_db,dramaId,previous)=>{
-    tailCalls++; assert.equal(dramaId,1); assert.equal(previous.id,80);
-    assert.equal(db.prepare('SELECT status FROM video_batch_items WHERE storyboard_id=80').get().status,'completed');
-    return 'projects/test/tail.png';
-  });
   const calls=[];
   const worker=batches.createWorker(db,log,{process:async(_db,_log,id)=>calls.push(id)});
   await worker.tick(); await flush();
-  await worker.tick(); assert.equal(tailCalls,0);
+  await worker.tick(); assert.equal(calls.length, 1);
   finish(db,calls[0]); await worker.tick(); await flush();
   const video=db.prepare('SELECT * FROM video_generations WHERE id=?').get(calls[1]);
-  assert.equal(tailCalls,1); assert.equal(video.first_frame_url,'http://app/static/projects/test/tail.png');
+  assert.equal(JSON.parse(video.resolution_plan).first_frame_policy, 'inherit_tail');
   assert.equal(video.last_frame_url,'http://example/last.png');
-  assert.deepEqual(JSON.parse(video.reference_image_urls),['http://app/static/projects/test/tail.png','http://example/last.png']);
 });
 test('an H3 shot with a new outfit retains its own opening frame instead of the previous old outfit', async t => {
   const {db,body}=setup(t);
@@ -353,4 +345,32 @@ test('a generated mismatch remains playable in history without replacing the cho
   assert.ok(fs.existsSync(path.join(directory, candidate.local_path)));
   assert.equal(db.prepare('SELECT selected_video_id FROM storyboards WHERE id=80').get().selected_video_id, current.id);
   assert.equal(JSON.parse(tasks.getTask(db, next.task_id).result).status, 'needs_review');
+});
+
+test('missing FL2VA opening frame fails preflight for omitted, empty and universal editor inputs', t => {
+  const { db } = setup(t);
+  for (const extra of [{}, { first_frame_url: '' }, { universal: true, image_url: 'https://example.test/character-card' }]) {
+    assert.throws(() => batches.createBatch(db, log, 7, {
+      drama_id: 1, shots: [{ storyboard_id: 80, ...extra }],
+    }), /缺少首帧图片/);
+  }
+  assert.equal(db.prepare('SELECT count(*) FROM video_batches').pluck().get(), 0);
+});
+
+test('changing the bound character card invalidates reuse, changing an unrelated card preserves it', t => {
+  const { db, body } = setup(t);
+  const { usableVideo } = require('../src/services/videoAcceptance');
+  db.exec(`INSERT INTO characters(id,drama_id,name,local_path) VALUES(1,1,'甲','card-a.png'),(2,1,'乙','card-b.png')`);
+  const plan = {
+    ...JSON.parse(fl2vaAgentPlan()), h3_mode: 'ref2va', first_frame_policy: 'none',
+    last_frame_policy: 'none', required_references: [{ type: 'character', id: 1 }],
+  };
+  db.prepare('UPDATE storyboards SET semantic_slots=? WHERE id=80').run(JSON.stringify(plan));
+  const shot = db.prepare('SELECT * FROM storyboards WHERE id=80').get();
+  const video = submissions.submitVideo(db, log, { ...body.shots[1], drama_id: 1 });
+  finish(db, video.id);
+  db.exec("UPDATE characters SET local_path='other.png' WHERE id=2");
+  assert.equal(usableVideo(db, shot).id, video.id);
+  db.exec("UPDATE characters SET local_path='new.png' WHERE id=1");
+  assert.equal(usableVideo(db, shot), undefined);
 });

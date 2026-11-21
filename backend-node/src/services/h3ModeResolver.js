@@ -257,6 +257,18 @@ function frameSlotsForPlan(plan) {
   return slots;
 }
 
+function previousStoryboard(db, shot) {
+  if (shot.long_take_group_id && (shot.long_take_role === 'continuation' || shot.long_take_role === 'tail' || Number(shot.long_take_sequence) > 1)) {
+    return db.prepare(`SELECT * FROM storyboards WHERE episode_id=? AND long_take_group_id=?
+      AND deleted_at IS NULL AND storyboard_number<? AND (? IS NULL OR long_take_sequence<?)
+      ORDER BY long_take_sequence DESC, storyboard_number DESC, id DESC LIMIT 1`)
+      .get(shot.episode_id, shot.long_take_group_id, shot.storyboard_number, shot.long_take_sequence ?? null, shot.long_take_sequence ?? null);
+  }
+  return db.prepare(`SELECT * FROM storyboards WHERE episode_id=? AND deleted_at IS NULL
+    AND (storyboard_number<? OR (storyboard_number=? AND id<?)) ORDER BY storyboard_number DESC,id DESC LIMIT 1`)
+    .get(shot.episode_id, shot.storyboard_number, shot.storyboard_number, shot.id);
+}
+
 function storedManualMode(db, dramaId, storyboardId) {
   return storedManualPlan(db, dramaId, storyboardId).mode;
 }
@@ -267,15 +279,16 @@ function storedManualPlan(db, dramaId, storyboardId) {
     const row = db.prepare('SELECT metadata FROM dramas WHERE id=? AND deleted_at IS NULL').get(Number(dramaId));
     const metadata = row?.metadata ? JSON.parse(row.metadata) : {};
     const saved = metadata?.h3_shots?.[storyboardId] || {};
+    const mode = saved.engine_mode || metadata.h3_default_engine_mode;
     return {
-      mode: H3_MODES.has(saved.engine_mode) ? saved.engine_mode : null,
+      mode: H3_MODES.has(mode) ? mode : null,
       first_frame_policy: FIRST_FRAME_POLICIES.has(saved.first_frame_policy) ? saved.first_frame_policy : null,
       last_frame_policy: LAST_FRAME_POLICIES.has(saved.last_frame_policy) ? saved.last_frame_policy : null,
     };
   } catch (_) { return { mode: null, first_frame_policy: null, last_frame_policy: null }; }
 }
 
-function resolveH3SubmissionPlan(db, dramaId, shot, requested = {}) {
+function resolveH3SubmissionPlan(db, dramaId, shot, requested = {}, { throwOnViolation = true } = {}) {
   const stored = storedManualPlan(db, dramaId, shot?.id);
   const explicit = H3_MODES.has(requested.h3_mode) ? requested.h3_mode : null;
   const manualMode = explicit || stored.mode;
@@ -289,11 +302,12 @@ function resolveH3SubmissionPlan(db, dramaId, shot, requested = {}) {
     manualReferences: manualMode === 'ref2va'
       ? (explicitReferences.length ? explicitReferences : deriveManualRef2vaReferences(db, dramaId, shot))
       : [],
-    throwOnViolation: true,
+    throwOnViolation,
   });
 }
 
 module.exports = {
+  previousStoryboard,
   resolveH3Mode,
   frameSlotsForPlan,
   storedManualMode,

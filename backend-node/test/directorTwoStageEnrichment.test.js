@@ -644,3 +644,43 @@ test('directorTwoStageEnrichment: stage-two gate rejects empty required_referenc
     agentsRuntime.runAgent = originalRunAgent;
   }
 });
+
+test('execution repair schema and scope depend only on structured conflict paths', () => {
+  const { executionRepairFields } = require('../src/ontology/directorAgent');
+  const conflict_slots = ['character_visuals[0].facing', 'video_slots.shots_timeline[0]'];
+  const fields = executionRepairFields([{ conflict_slots, message: '对白' }]);
+  assert.deepEqual(fields, ['character_visuals', 'video_slots']);
+  assert.deepEqual(executionRepairFields([{ conflict_slots, message: '调整语义' }]), fields);
+  const schema = agentsRuntime.directorExecutionRepairOutputType(1, fields).schema;
+  assert.deepEqual(Object.keys(schema.properties.repairs.items.properties.patch.properties), fields);
+  assert.equal(executionRepairFields([{ message: 'character_visuals' }]).length, 4);
+});
+
+test('publishing a cleared roster removes old links and an insert failure rolls back the episode', t => {
+  const Database = require('better-sqlite3');
+  const { publishExecutionContracts } = require('../src/ontology/directorEnrichmentService');
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  t.mock.method(console, 'log', () => {});
+  require('../src/db/migrate').runMigrationsAndEnsure(db);
+  db.exec(`INSERT INTO dramas(id,title) VALUES(1,'测试');
+    INSERT INTO episodes(id,drama_id,episode_number) VALUES(7,1,1);
+    INSERT INTO storyboards(id,episode_id,storyboard_number) VALUES(1,7,1),(2,7,2);
+    INSERT INTO storyboard_props VALUES(1,10),(2,20);
+    INSERT INTO storyboard_characters(storyboard_id,character_id) VALUES(1,100);
+    CREATE TRIGGER fail_second BEFORE INSERT ON storyboard_props WHEN NEW.prop_id=99
+      BEGIN SELECT RAISE(ABORT,'模拟关联写入失败'); END`);
+  const shot = id => ({
+    id, storyboard_number: id, duration: 5, action: '更新动作',
+    semantic_slots: { visible_characters: [], required_references: [], sound_plan: { sound_effects: [] } },
+  });
+  const second = shot(2);
+  second.semantic_slots.required_references = [{ type: 'prop', id: 99 }];
+  assert.throws(() => publishExecutionContracts(db, 7, [shot(1), second]), /模拟关联写入失败/);
+  assert.equal(db.prepare('SELECT action FROM storyboards WHERE id=1').get().action, null);
+  assert.deepEqual(db.prepare('SELECT prop_id FROM storyboard_props ORDER BY prop_id').pluck().all(), [10, 20]);
+  assert.equal(db.prepare('SELECT character_id FROM storyboard_characters').pluck().get(), 100);
+  publishExecutionContracts(db, 7, [shot(1)]);
+  assert.equal(db.prepare('SELECT COUNT(*) FROM storyboard_characters').pluck().get(), 0);
+  assert.deepEqual(db.prepare('SELECT prop_id FROM storyboard_props').pluck().all(), [20]);
+});

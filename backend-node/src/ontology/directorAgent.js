@@ -1719,6 +1719,23 @@ function visualSlotViolations(shot, characterVisuals, lastFrameVisuals) {
 
 // Generate framing and the execution timeline together. They are two views of
 // the same performance and should not be planned by independent agents.
+const executionFields = ['semantic_slots', 'character_visuals', 'last_frame_visuals', 'video_slots'];
+
+// Gate paths are authoritative. An unspecified repair scope grants the entire
+// execution contract, so adding a rule cannot silently lock out its own fix.
+function executionRepairFields(errors) {
+  const fields = new Set();
+  for (const error of errors) {
+    if (!error?.conflict_slots?.length) return executionFields;
+    for (const path of error.conflict_slots) {
+      const root = String(path).split(/[.\[]/, 1)[0];
+      if (!executionFields.includes(root)) return executionFields;
+      fields.add(root);
+    }
+  }
+  return fields.size ? [...fields] : executionFields;
+}
+
 async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {}) {
   const retry = directorRetryContext(retryOptions);
   const shot = projectCanonicalShotContract(rawShot);
@@ -1762,17 +1779,17 @@ async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {})
     if (field === 'requires_previous_tail') return typeof value[field] !== 'boolean';
     return typeof value[field] !== 'string';
   });
-  const continuityErrors = (value) => continuityMissing(value).map((field) => ({ message: `缺少 Agent 规划的 semantic_slots.continuity_from_previous.${field}` }));
+  const continuityErrors = (value) => continuityMissing(value).map((field) => ({ conflict_slots: [`semantic_slots.continuity_from_previous.${field}`], message: `缺少 Agent 规划的 semantic_slots.continuity_from_previous.${field}` }));
   let errors = [
-    ...(requireSemantic ? semanticRequired.filter(([, valid]) => !valid).map(([field]) => ({ message: `缺少 Agent 规划的 semantic_slots.${field}` })) : []),
+    ...(requireSemantic ? semanticRequired.filter(([, valid]) => !valid).map(([field]) => ({ conflict_slots: [`semantic_slots.${field}`], message: `缺少 Agent 规划的 semantic_slots.${field}` })) : []),
     ...(requireSemantic ? continuityErrors(semantic.continuity_from_previous) : []),
     ...visualSlotViolations(shot, shot.character_visuals, shot.last_frame_visuals),
     ...(shot.video_slots && typeof shot.video_slots === 'object'
       ? shortDramaTimelineViolations(shot, shot.video_slots.shots_timeline)
-      : [{ message: '缺少 video_slots，必须与人物定格和动作时间轴一起规划' }]),
+      : [{ conflict_slots: ['video_slots'], message: '缺少 video_slots，必须与人物定格和动作时间轴一起规划' }]),
   ];
   if (shot.video_slots && Math.abs(Number(shot.video_slots?.timing?.duration || 0) - duration) > 0.1) {
-    errors.push({ message: `video_slots.timing.duration 必须等于权威时长 ${duration} 秒` });
+    errors.push({ conflict_slots: ['video_slots.timing.duration'], message: `video_slots.timing.duration 必须等于权威时长 ${duration} 秒` });
   }
   if (retryOptions.forceAgent) errors.push({ message: '按阶段二合同要求重新由导演 Agent 完整规划 semantic_slots、character_visuals、last_frame_visuals 和 video_slots' });
   if (Array.isArray(retryOptions.invariantViolations) && retryOptions.invariantViolations.length) {
@@ -1834,46 +1851,7 @@ async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {})
       // made the loop forget every previous repair and repeat the same omission.
       const candidateBase = currentShot;
       const patchMode = resumed || attempt > 1;
-      const patchFields = new Set();
-      let hasUnclassifiedViolation = false;
-      const classifySlot = (slot, targetSet) => {
-        const s = String(slot || '');
-        if (!s) return;
-        if (s.startsWith('character_visuals')) targetSet.add('character_visuals');
-        else if (s.startsWith('last_frame_visuals')) targetSet.add('last_frame_visuals');
-        else if (s.startsWith('semantic_slots') || /^(?:characters|background_characters|offscreen_characters|visible_characters|scene_id|props|required_references|h3_mode|first_frame_policy|last_frame_policy|identity_visibility|dialogue_framing|wardrobe_id|speech_plan|sound_plan|continuity_|execution_backend|continuum_plan)/.test(s)) targetSet.add('semantic_slots');
-        else if (s.startsWith('video_slots') || /^(?:shots_timeline|audio_lip_sync|speech_action_alignment|timing|trajectories|video_prompt)/.test(s)) {
-          targetSet.add('video_slots');
-          if (s === 'audio_lip_sync') targetSet.add('semantic_slots');
-        }
-      };
-      const classifyRule = (rule, targetSet) => {
-        const r = String(rule || '');
-        if (!r) return;
-        if (/CHARACTER_VISUAL|FACING|GAZE|POSTURE|FRAME_VISUAL|DUPLICATE_POSITION|VISUAL_ENUM/.test(r)) targetSet.add('character_visuals');
-        if (/LAST_FRAME|TAIL/.test(r)) targetSet.add('last_frame_visuals');
-        if (/CHARACTER|OFFSCREEN|SPEAKER_NOT_DECLARED|OFFSCREEN_SPEAKER_LIP_SYNC|CONTINUITY|REQUIRED_REF|UNKNOWN_.*REFERENCE|SCENE_REFERENCE_REQUIRED|CHARACTER_REFERENCE_MISSING|IMAGE_TAG_DANGLING|EYELINE|REF2VA_|FL2VA_|NARRATION_SPEAKER|FRAMING_CHARACTER|CLOSE_DIALOGUE_BACKGROUND|DUAL_ROLE|IDENTITY_VISIBILITY|CONTINUUM_|SINGLE_BACKEND|EXECUTION_BACKEND/.test(r)) targetSet.add('semantic_slots');
-        if (/TIMELINE|TRAJECTORY|LISTENER|ACTION_|SPEAKER_|SHORT_DRAMA_|VIDEO|SPEECH_ACTION|PACING|SPEECH_SLOT|NONVERBAL_|EXECUTION_BACKEND/.test(r)) targetSet.add('video_slots');
-        if (/NARRATION_SPEAKER|SPEECH_SLOT|SPEAKER_SLOT|NONVERBAL_SHOT_SPEECH/.test(r)) targetSet.add('semantic_slots');
-      };
-      for (const item of errors) {
-        const matchedForItem = new Set();
-        if (Array.isArray(item?.conflict_slots)) {
-          item.conflict_slots.forEach(slot => classifySlot(slot, matchedForItem));
-        }
-        if (item?.rule) classifyRule(item.rule, matchedForItem);
-        const message = String(item?.message || item || '');
-        if (/character_visuals/.test(message)) matchedForItem.add('character_visuals');
-        if (/last_frame_visuals/.test(message)) matchedForItem.add('last_frame_visuals');
-        if (/semantic_slots|continuity|source_script_excerpt|h3_mode|人物清单|offscreen|画外参与/.test(message)) matchedForItem.add('semantic_slots');
-        if (/video_slots|时间轴|时间线|动作|轨迹|听者|target_id|shots_timeline|visible_characters|未入画|speaker_synced|mouth_state|角色 ID .*第 .*段|trajectory|audio_lip_sync|对白/.test(message)) matchedForItem.add('video_slots');
-        matchedForItem.forEach(field => patchFields.add(field));
-        // A partial match must never narrow the Agent out of the field it
-        // actually needs: any violation this classifier cannot place widens
-        // the whole round to full repair permission instead of deadlocking.
-        if (!matchedForItem.size) hasUnclassifiedViolation = true;
-      }
-      if (!patchFields.size || hasUnclassifiedViolation) ['semantic_slots', 'character_visuals', 'last_frame_visuals', 'video_slots'].forEach(field => patchFields.add(field));
+      const patchFields = executionRepairFields(errors);
       const compactCandidate = compactExecutionShot(candidateBase, { includeExecution: patchMode });
       const compactNeighbours = [retryOptions.previousShot, retryOptions.nextShot]
         .filter(Boolean).map(item => compactExecutionShot(item));
@@ -1913,7 +1891,7 @@ async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {})
           : `你是短剧导演执行合同节点。根据紧凑的当前镜头事实，一次输出完整 semantic_slots、character_visuals、last_frame_visuals 和 video_slots。禁止改写人物清单、场景、对白、旁白和总时长。semantic_slots.continuity_from_previous 必须完整；h3_mode 固定 ref2va，first_frame_policy 与 last_frame_policy 必须固定填 'none'；${requiredReferencesContract}${executionBackendContract}；当镜头已有角色对白（dialogue 非空且 narration 为空）时，speech_plan.is_narration 必须为 false，严禁把角色台词标为旁白。performance_contract 固定 ${PERFORMANCE_CONTRACT}；character_visuals 只覆盖第一段入画人物，多人同框时 的 screen_position 必须互相错开。动作与对白必须同步，所有画内人物都要有本段可执行动作或反应；有对白段 speech_action_alignment.mode 固定填 'concurrent'，按本段台词与 speaker_in_frame 分配口型：仅本段画内发言者填 speaker_synced，听者及无发言段填 closed 或 offscreen_sealed；首帧只描述开场瞬间。当【本体资产白名单】的 props 为空或不含目标物体时，动作 target_type 禁止填 'prop'（无有效 target_id 必被门禁拒绝），改用 'event' 或 'scene' 并填写 target_label。用可见的行为和结果表现剧情，画面元素遵循剧本与所选风格。${durationPlanContract}。只返回指定 JSON，不要解释。`,
         input: requestInput,
         outputType: patchMode
-          ? agentsRuntime.directorExecutionRepairOutputType(shotNumber)
+          ? agentsRuntime.directorExecutionRepairOutputType(shotNumber, patchFields)
           : agentsRuntime.directorExecutionSlotsOutputType(duration, { lastFramePolicy, allowTailVisuals }),
         thinking: 'enabled',
         maxTokens: 24576,
@@ -1921,6 +1899,9 @@ async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {})
       });
       hasValidAgentOutput = true;
       const plannedPatch = patchMode ? (planned?.repairs?.[0]?.patch || {}) : planned;
+      if (patchMode && Object.keys(plannedPatch).some(key => !patchFields.includes(key))) {
+        throw new Error('Agent 返回了本轮修复范围之外的字段');
+      }
       const plannedVideoSlots = plannedPatch?.video_slots ? {
         ...(patchMode ? (candidateBase.video_slots || {}) : {}),
         ...plannedPatch.video_slots,
@@ -1966,7 +1947,7 @@ async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {})
           ['source_script_excerpt', typeof plannedSemantic.source_script_excerpt === 'string'],
           ['shot_duration', Number.isFinite(Number(plannedSemantic.shot_duration))],
           ['continuity_from_previous', plannedSemantic.continuity_from_previous && typeof plannedSemantic.continuity_from_previous === 'object'],
-        ].filter(([, valid]) => !valid).map(([field]) => ({ message: `Agent 未输出 semantic_slots.${field}` })) : []),
+        ].filter(([, valid]) => !valid).map(([field]) => ({ conflict_slots: [`semantic_slots.${field}`], message: `Agent 未输出 semantic_slots.${field}` })) : []),
         ...(requireSemantic ? continuityErrors(plannedSemantic.continuity_from_previous) : []),
         ...visualSlotViolations(currentShot, currentShot.character_visuals, currentShot.last_frame_visuals),
         ...shortDramaTimelineViolations(currentShot, currentShot.video_slots?.shots_timeline),
@@ -2003,7 +1984,7 @@ async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {})
         if (missing.length || invented.length) {
           errors.push({
             rule: 'INVARIANT_PARTICIPANT_ROSTER_CHANGED',
-            conflict_slots: ['visible_characters', 'background_characters', 'offscreen_characters'],
+            conflict_slots: ['semantic_slots.visible_characters', 'semantic_slots.background_characters', 'semantic_slots.offscreen_characters'],
             message: `本镜参与者必须与阶段一一致，缺少 ID ${JSON.stringify(missing)}，新增 ID ${JSON.stringify(invented)}。请在画内或画外清单中保留参与者，并按每段实际入画人物规划轨迹。`,
           });
         }
@@ -2029,7 +2010,7 @@ async function ensureDirectorExecutionSlots(db, log, rawShot, retryOptions = {})
         errors.push({ message: 'semantic_slots.source_script_excerpt 必须保持阶段一/原剧本覆盖证据不变，不能由执行槽位 Agent 改写' });
       }
       if (Math.abs(Number(currentShot.video_slots?.timing?.duration || 0) - duration) > 0.1) {
-        errors.push({ message: `video_slots.timing.duration 必须等于权威时长 ${duration} 秒` });
+        errors.push({ conflict_slots: ['video_slots.timing.duration'], message: `video_slots.timing.duration 必须等于权威时长 ${duration} 秒` });
       }
       if (checkpoint?.state) {
         checkpoint.state.currentShot = Number(shotNumber);
@@ -2687,6 +2668,7 @@ function reconcileObsoleteDramaAssets(db, log, dramaId) {
 }
 
 module.exports = {
+  executionRepairFields,
   auditDirectorDraft,
   runFullDramaDirectorAgent,
   refineSingleStoryboard,

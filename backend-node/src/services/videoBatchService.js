@@ -1,6 +1,6 @@
 const { usableVideo, shotRevision } = require('./videoAcceptance');
 const { randomUUID } = require('crypto');
-const path = require('path');
+const { previousStoryboard, resolveH3SubmissionPlan } = require('./h3ModeResolver');
 const videoService = require('./videoService');
 const submission = require('./videoSubmissionService');
 const { resolveStoryboardModel } = require('./storyboardVideoModelService');
@@ -43,17 +43,12 @@ function createBatch(db, log, episodeId, body) {
     if (timing.error) throw new Error(timing.error);
 
     // 编译 Agent 完整 H3 方案并叠加人工覆盖；执行层不再按素材反向猜模式。
-    const { resolveH3SubmissionPlan } = require('./h3ModeResolver');
     const plan = resolveH3SubmissionPlan(db, episode.drama_id, shot, input);
-    requested.h3_mode = plan.mode;
     requested.resolution_plan = plan;
 
-    const isContinuation = shot.long_take_role === 'continuation' || shot.long_take_role === 'tail' || plan.first_frame_policy === 'inherit_tail';
-    const hasFirstFrame = !!(input.first_frame_url || input.image_url || shot.local_path || shot.image_url);
-    if (plan.requires_first_frame && !hasFirstFrame && !input.universal && !isContinuation) {
-      if (process.env.NODE_ENV !== 'test' || input.first_frame_url !== undefined) {
-        throw new Error(`分镜 #${shot.storyboard_number} 缺少首帧图片（首帧生成失败或未就绪），已终止任务，禁止静默降级为无首帧生成！`);
-      }
+    if (plan.requires_first_frame && plan.first_frame_policy !== 'inherit_tail') {
+      requested.first_frame_url ||= (!input.universal && input.image_url) || shot.local_path || shot.image_url;
+      if (!requested.first_frame_url) throw new Error(`分镜 #${shot.storyboard_number} 缺少首帧图片，请先生成或上传首帧`);
     }
 
     return { shot, requested, plan };
@@ -104,14 +99,6 @@ function clearBatch(db, episodeId, batchId) {
 }
 
 // Only one dispatcher per process. Persisted video IDs are attached, never re-submitted on refresh/restart.
-function isSameSceneOrUnspecified(a, b) {
-  if (!a || !b) return false;
-  if (a.scene_id && b.scene_id) return Number(a.scene_id) === Number(b.scene_id);
-  if (a.location?.trim() && b.location?.trim()) return a.location.trim() === b.location.trim();
-  if (a.scene_id || b.scene_id || a.location?.trim() || b.location?.trim()) return false;
-  return true;
-}
-
 function createWorker(db, log, dependencies = {}) {
   const submit = dependencies.submit || submission.submitVideo;
   const process = dependencies.process || videoService.processVideoGeneration;
@@ -195,60 +182,15 @@ function createWorker(db, log, dependencies = {}) {
           return;
         }
         const payload = JSON.parse(item.payload);
-        let slots = valid.semantic_slots;
-        if (typeof slots === 'string') {
-          try { slots = JSON.parse(slots); } catch (_) { slots = null; }
-        }
-        const firstFramePolicy = payload.resolution_plan.first_frame_policy;
-        const continuityType = slots?.continuity_type || valid.continuity_type;
-        const isLongTakeContinuation = valid.long_take_group_id && (valid.long_take_role === 'continuation' || valid.long_take_role === 'tail' || (valid.long_take_sequence != null && valid.long_take_sequence > 1));
-
-        // 严格遵从语义槽位策略：仅在声明了 inherit_tail 或 long_take_continuation 时触发尾帧继承
-        const hasSemanticContinuity = !!(slots?.first_frame_policy || slots?.continuity_type);
-        const shouldInheritTail = (firstFramePolicy === 'inherit_tail' || continuityType === 'long_take_continuation' || isLongTakeContinuation || (!hasSemanticContinuity && item.continuity))
-          && firstFramePolicy !== 'generate_new'
-          && continuityType !== 'hard_cut'
-          && !require('./wardrobeService').hasChange(db, item.storyboard_id)
-          && payload.resolution_plan.mode === 'fl2va';
-
-        if (shouldInheritTail) {
-          const previousShot = db.prepare(`SELECT * FROM storyboards WHERE episode_id=? AND storyboard_number<?
-            AND deleted_at IS NULL ORDER BY storyboard_number DESC,id DESC LIMIT 1`).get(valid.episode_id, valid.storyboard_number);
-          const previousItem = previousShot && db.prepare('SELECT status FROM video_batch_items WHERE batch_id=? AND storyboard_id=?').get(item.batch_id, previousShot.id);
-          if (previousItem && !['skipped', 'completed'].includes(previousItem.status)) {
-            throw new Error(`依赖的分镜 #${previousShot.storyboard_number} 尚无本轮可采用的成片，选择或重新生成后重试`);
-          }
-          if (!previousShot) {
-            if (firstFramePolicy === 'inherit_tail') {
-              throw new Error(`分镜 #${valid.storyboard_number} 明确指定了 inherit_tail 尾帧连戏策略，但前序分镜不存在或尚未生成，禁止静默回退！`);
-            }
-          } else {
-            if (firstFramePolicy === 'inherit_tail' && !isSameSceneOrUnspecified(valid, previousShot)) {
-              throw new Error(`分镜 #${valid.storyboard_number} 明确要求继承上一镜尾帧，但上一镜属于不同场景；切换场景必须改为 Ref2VA 重新起镜！`);
-            }
-            try {
-              const cfg = require('../config').loadConfig();
-              const root = path.resolve(cfg.storage?.local_path || './data/storage');
-              const tail = await require('./h3NativeService').tailFrame(db, item.drama_id, previousShot, root);
-              const base = String(cfg.storage?.base_url || '').replace(/\/$/, '');
-              const url = base + (base.endsWith('/static') ? '/' : '/static/') + tail;
-              payload.image_url = payload.first_frame_url = url;
-              payload.reference_image_urls = [url, payload.last_frame_url].filter(Boolean);
-
-              // 继承尾帧仅作为本次执行输入记录，不覆盖 Agent 已规划并绑定的分镜首帧。
-              try {
-                db.prepare(`INSERT INTO image_generations (drama_id, storyboard_id, image_url, local_path, frame_type, prompt, status, created_at, updated_at)
-                  VALUES (?, ?, ?, ?, 'inherited_tail_frame', ?, 'completed', ?, ?)`).run(item.drama_id, item.storyboard_id, url, tail, `[连戏承接首帧] 承接分镜 #${previousShot.storyboard_number} 尾帧`, new Date().toISOString(), new Date().toISOString());
-              } catch (_) {}
-            } catch (tailErr) {
-              if (firstFramePolicy === 'inherit_tail') {
-                throw new Error(`分镜 #${valid.storyboard_number} 尾帧抽取失败（${tailErr.message}），无法满足 inherit_tail 强约束，禁止静默降级！`);
-              }
-              log.warn('[videoBatch] Tail frame continuity extraction failed for non-strict continuation', { storyboard_id: item.storyboard_id, error: tailErr.message });
-            }
+        const plan = resolveH3SubmissionPlan(db, item.drama_id, valid, payload);
+        payload.resolution_plan = plan;
+        if (plan.first_frame_policy === 'inherit_tail') {
+          const previous = previousStoryboard(db, valid);
+          const dependency = previous && db.prepare('SELECT status FROM video_batch_items WHERE batch_id=? AND storyboard_id=?').get(item.batch_id, previous.id);
+          if (dependency && !['skipped', 'completed'].includes(dependency.status)) {
+            throw new Error(`依赖的分镜 #${previous.storyboard_number} 尚无本轮可采用的成片，选择或重新生成后重试`);
           }
         }
-        // Stop may arrive while ffmpeg prepares a continuity frame. Recheck inside the transaction.
         const video = db.transaction(() => {
           if (db.prepare('SELECT status FROM video_batch_items WHERE id=?').get(item.id)?.status !== 'pending') return null;
           const row = submit(db, log, payload);

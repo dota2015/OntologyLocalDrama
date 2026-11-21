@@ -701,6 +701,7 @@ async function processVideoGenerationUnlocked(db, log, videoGenId) {
         omitFrameFields ? `正在上传 ${reference_urls.length} 张参考图到图床…` : '正在准备视频输入图片…'
       );
     }
+    const resolvedPlan = row.resolution_plan ? JSON.parse(row.resolution_plan) : null;
     const result = await videoClient.callVideoApi(db, log, {
       prompt: row.prompt,
       model: row.model,
@@ -717,6 +718,8 @@ async function processVideoGenerationUnlocked(db, log, videoGenId) {
       first_frame_url: omitFrameFields ? undefined : row.first_frame_url,
       last_frame_url: omitFrameFields ? undefined : row.last_frame_url,
       reference_urls,
+      first_frame_policy: resolvedPlan?.first_frame_policy,
+      last_frame_policy: resolvedPlan?.last_frame_policy,
       h3_mode: row.h3_mode || undefined,
       execution_backend: row.execution_backend || undefined,
       continuum_plan: row.continuum_plan || undefined,

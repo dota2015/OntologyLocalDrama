@@ -63,15 +63,20 @@ function setup(t) {
     CREATE TABLE storyboard_characters(id INTEGER PRIMARY KEY,storyboard_id INTEGER,character_id INTEGER);
     CREATE TABLE props(id INTEGER PRIMARY KEY,drama_id INTEGER,name TEXT,local_path TEXT,description TEXT,deleted_at TEXT);
     CREATE TABLE storyboard_props(storyboard_id INTEGER,prop_id INTEGER);
-    CREATE TABLE image_generations(id INTEGER PRIMARY KEY,character_id INTEGER,local_path TEXT,prompt TEXT,deleted_at TEXT);
+    CREATE TABLE image_generations(id INTEGER PRIMARY KEY,character_id INTEGER,local_path TEXT,prompt TEXT,deleted_at TEXT,drama_id INTEGER,storyboard_id INTEGER,frame_type TEXT,status TEXT,created_at TEXT,updated_at TEXT);
     CREATE TABLE video_generations(id INTEGER PRIMARY KEY,drama_id INTEGER,storyboard_id INTEGER,status TEXT,local_path TEXT,deleted_at TEXT);
     INSERT INTO dramas VALUES(1,'测试','{"keep":true,"storage_folder_label":"test"}','2026-10-22','',NULL),(2,'其他','{}','2026-10-22','',NULL);
     INSERT INTO episodes(id,drama_id,deleted_at) VALUES(10,1,NULL),(20,2,NULL);
     INSERT INTO storyboards VALUES(1,10,1,'[5]',2,'房间','少年转身','','',NULL,NULL,NULL),(2,10,2,'[5]',2,'房间','少年开口','','',NULL,NULL,NULL),(3,10,3,'[5]',3,'操场','','','',NULL,NULL,NULL),(4,20,1,'[]',NULL,'','','','',NULL,NULL,NULL);
     INSERT INTO characters VALUES(5,1,'王奕宸','card.png',NULL,NULL,'["profile.png"]','少年，黑色短发','',NULL);
     INSERT INTO scenes VALUES(2,1,'房间','room.png',NULL),(3,1,'操场','field.png',NULL);
-    INSERT INTO image_generations VALUES(1,5,'card.png','character reference sheet',NULL);`);
+    INSERT INTO image_generations(id,character_id,local_path,prompt,deleted_at) VALUES(1,5,'card.png','character reference sheet',NULL);`);
   db.exec('ALTER TABLE storyboards ADD COLUMN video_slots TEXT; ALTER TABLE video_generations ADD COLUMN shot_revision TEXT; ALTER TABLE dramas ADD COLUMN style TEXT');
+  db.exec(`ALTER TABLE storyboards ADD COLUMN h3_prompt_snapshot TEXT;
+    ALTER TABLE storyboards ADD COLUMN h3_prompt_fingerprint TEXT;
+    ALTER TABLE storyboards ADD COLUMN h3_prompt_manual INTEGER DEFAULT 0;
+    ALTER TABLE storyboards ADD COLUMN h3_contract_status TEXT;
+    ALTER TABLE storyboards ADD COLUMN updated_at TEXT`);
   db.prepare('UPDATE storyboards SET video_slots=? WHERE episode_id=10').run(JSON.stringify({
     shots_timeline: [{ duration: 5, visible_characters: [{ character_id: 5 }] }],
   }));
@@ -250,6 +255,7 @@ test('Stage 3 fails loudly without LLM fallback and all canvas presets respect t
   assert.match(prepared.prompt, /integrated_multimodal_description:/);
   assert.match(prepared.prompt, /<Picture 1>/);
 
+  db.exec('UPDATE storyboards SET h3_prompt_snapshot=NULL WHERE id=2');
   runAgentMock.mock.mockImplementationOnce(async () => { throw new Error('Stage 3 text model unavailable'); });
   await assert.rejects(
     () => native.prepare(db, log, { ...opts, h3_engine_mode: 'fl2va', first_frame_url: 'first.png' }),
@@ -377,6 +383,9 @@ test('FL2VA continuity can inherit the prior video tail while Ref2VA ignores all
   assert.equal(refResult.last_frame_url, undefined);
   assert.equal(refResult.reference_urls.length, 3); // card、profile、room
   const tail = await native.tailFrame(db, 1, db.prepare('SELECT * FROM storyboards WHERE id=1').get(), root);
+  assert.equal(result.first_frame_url, 'data:image/png;base64,' + fs.readFileSync(path.join(root, tail)).toString('base64'));
+  const inherited = db.prepare("SELECT local_path FROM image_generations WHERE storyboard_id=2 AND frame_type='inherited_tail_frame'").all();
+  assert.deepEqual(inherited, [{ local_path: tail }]);
   const expected = await run(ffmpeg, ['-v','error','-i',path.join(root,'previous.mp4'),'-vf',"select='eq(n,23)'",'-vsync','0','-frames:v','1','-f','rawvideo','-pix_fmt','rgb24','pipe:1'], { encoding:'buffer' });
   const actual = await run(ffmpeg, ['-v','error','-i',path.join(root,tail),'-f','rawvideo','-pix_fmt','rgb24','pipe:1'], { encoding:'buffer' });
   assert.deepEqual(actual.stdout, expected.stdout);

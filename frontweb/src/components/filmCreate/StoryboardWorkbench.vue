@@ -1413,7 +1413,7 @@ import { uploadAPI } from '@/api/upload'
 import { taskAPI } from '@/api/task'
 import { aiAPI } from '@/api/ai'
 import { generationJobsAPI, activeGenerationJob } from '@/api/generationJobs'
-import { orderedVideoShots } from '@/utils/h3VideoBatch'
+import { createStoryboardVideoBatch, buildBatchVideoShot } from '@/utils/storyboardVideoBatch'
 import { createVideoBatchMonitor } from '@/utils/videoBatchMonitor'
 import { shotSpeechStatus, automaticVideoModel, meaningfulSpeech } from '@/utils/shotSpeech'
 import { missingStoryboardImageSlots } from '@/utils/storyboardImageBatch'
@@ -1946,64 +1946,15 @@ async function stopBatchImageGeneration() {
   catch(e){ElMessage.error(e.message)}
 }
 
-async function startBatchVideoGeneration(options = {}) {
-  if (!currentEpisodeId.value || batchVideoRunning.value || pipelineRunning.value) return
-  const episodeId = currentEpisodeId.value
-  const did = dramaId.value
-  batchVideoErrors.value = []
-  batchVideoStopping.value = false
-  batchVideoRunning.value = true
-  batchVideoSubmitting.value = true
-  try {
-    await loadStoryboardMedia()
-    if (currentEpisodeId.value !== episodeId || dramaId.value !== did) return
-    const filterIds = options.filterIds
-    const todo = orderedVideoShots(store.storyboards || []).filter(sb => {
-      if (filterIds && !filterIds.has(Number(sb.id))) return false
-      // H3 以权威槽位为输入；具体首帧与参考素材由后端门禁。
-      return sbCanSubmitVideo(sb)
-    })
-    if (!todo.length) {
-      ElMessage.info('没有需要生成视频的分镜（缺少导演槽位，或视频已全部生成）')
-      return
-    }
-    // Snapshot all selected inputs once. The server submits each shot after its predecessor finishes.
-    const shots = todo.map(sb => {
-      const universal = isSbUniversalMode(sb.id)
-      const refs = universal ? collectSbOmniReferenceAbsoluteUrls(sb) : []
-      const { first, last } = sbVideoFirstLastUrls(sb, universal, null)
-      let referenceUrls = universal ? refs : [first].filter(Boolean)
-      if (!universal && last && !referenceUrls.includes(last)) referenceUrls.push(last)
-      return {
-        storyboard_id: sb.id, model: selectedShotModel(sb),
-        image_url: universal ? refs[0] : first, first_frame_url: first, last_frame_url: last,
-        reference_image_urls: referenceUrls, universal,
-        style: getSelectedStyle(), aspect_ratio: projectAspectRatio.value || '16:9',
-        resolution: videoResolution.value || undefined, duration: getSbVideoDurationForApi(sb),
-      }
-    })
-    const batch = await videosAPI.createBatch(episodeId, { drama_id: did, shots, continuity: videoFrameContiguity.value })
-    if (currentEpisodeId.value === episodeId && dramaId.value === did) applyVideoBatchStatus(batch)
-    ElMessage.success('已加入后台队列，刷新或关闭页面不影响生成')
-  } catch (e) {
-    ElMessage.error(e.message || '批量任务提交失败')
-  } finally {
-    batchVideoSubmitting.value = false
-    if (currentEpisodeId.value === episodeId) batchVideoRunning.value = ['running', 'stopping'].includes(serverVideoBatch.value?.status)
-  }
-}
-
-function applyVideoBatchStatus(batch) {
-  serverVideoBatch.value = batch
-  batchVideoRunning.value = ['running', 'stopping'].includes(batch?.status)
-  batchVideoStopping.value = batch?.status === 'stopping'
-  batchVideoProgress.value = { current: batch?.current || 0, total: batch?.total || 0, failed: batch?.failed || 0 }
-  if (batch?.status === 'cleared' || !batch) {
-    batchVideoErrors.value = []
-  } else {
-    batchVideoErrors.value = (batch?.items || []).filter(i => i.status === 'failed').map(i => `#${i.storyboard_number ?? i.storyboard_id}: ${i.error || '生成失败'}`)
-  }
-}
+const { startBatchVideoGeneration, applyVideoBatchStatus, stopBatchVideoGeneration } = createStoryboardVideoBatch({
+  currentEpisodeId, dramaId, batchVideoRunning, pipelineRunning, batchVideoStopping,
+  batchVideoSubmitting, batchVideoErrors, batchVideoProgress, serverVideoBatch, videoFrameContiguity,
+  loadStoryboardMedia, getStoryboards: () => store.storyboards || [], buildShot: sb => buildBatchVideoShot(sb, {
+    isSbUniversalMode, collectSbOmniReferenceAbsoluteUrls, sbVideoFirstLastUrls, selectedShotModel,
+    getSelectedStyle, projectAspectRatio, videoResolution, getSbVideoDurationForApi,
+  }),
+  canSubmit: sbCanSubmitVideo, videosAPI, ElMessage,
+})
 
 async function clearBatchVideoErrors() {
   batchVideoErrors.value = []
@@ -2025,20 +1976,6 @@ async function retryFailedBatchVideos() {
   }
   batchVideoErrors.value = []
   await startBatchVideoGeneration({ filterIds: failedSbIds })
-}
-
-async function stopBatchVideoGeneration() {
-  const batch = serverVideoBatch.value
-  if (!batch || !['running', 'stopping'].includes(batch.status)) return
-  try {
-    const result = await videosAPI.stopBatch(batch.episode_id, batch.id)
-    if (currentEpisodeId.value === batch.episode_id) applyVideoBatchStatus(result)
-    if (result?.status === 'stopped') {
-      ElMessage.success('批量生成已停止')
-    } else {
-      ElMessage.info('已停止后续提交，正在生成的分镜会正常完成（再次点击可强制停止）')
-    }
-  } catch (e) { ElMessage.error(e.message || '停止失败') }
 }
 
 const videoBatchMonitor = createVideoBatchMonitor({
@@ -3871,6 +3808,28 @@ async function onRegenerateLayoutDescription(sb) {
   }
 }
 
+async function pollStoryboardVideo(taskId, sb, meta, successText, failureText) {
+  const pollRes = await pollTask(taskId, () => loadSingleStoryboardMedia(sb.id), meta)
+  if (pollRes?.status === 'failed') {
+    sbVideoErrors.value[sb.id] = pollRes.error || failureText
+  } else if (pollRes?.status === 'completed') {
+    sbVideoErrors.value[sb.id] = ''
+    if (pollRes?.result?.status === 'needs_review') {
+      ElMessage.warning(pollRes.result.reason || '成片已保存，请复核')
+    } else if (pollRes?.result?.video_generation_id) {
+      sbSelectedVideoId.value = { ...sbSelectedVideoId.value, [sb.id]: pollRes.result.video_generation_id }
+      const row = (store.storyboards || []).find((b) => b.id === sb.id)
+      if (row) {
+        row.selected_video_id = pollRes.result.video_generation_id
+        if (pollRes.result.video_url) row.video_url = pollRes.result.video_url
+      }
+    }
+    if (pollRes.result?.status !== 'needs_review') ElMessage.success(successText)
+  } else if (pollRes?.status === 'cancelled') {
+    sbVideoErrors.value[sb.id] = '用户已取消'
+  }
+}
+
 async function onGenerateSbVideo(sb) {
   if (!dramaId.value || !sb?.id || !sbCanSubmitVideo(sb)) return
   const universal = isSbUniversalMode(sb.id)
@@ -3993,25 +3952,7 @@ async function onGenerateSbVideo(sb) {
     })
     if (res?.task_id) {
       genResTaskId = res.task_id
-      const pollRes = await pollTask(res.task_id, () => loadSingleStoryboardMedia(sb.id), meta)
-      if (pollRes?.status === 'failed') {
-        sbVideoErrors.value[sb.id] = pollRes.error || '视频生成失败'
-      } else if (pollRes?.status === 'completed') {
-        sbVideoErrors.value[sb.id] = ''
-        if (pollRes?.result?.status === 'needs_review') {
-          ElMessage.warning(pollRes.result.reason || '成片已保存，请复核')
-        } else if (pollRes?.result?.video_generation_id) {
-          sbSelectedVideoId.value = { ...sbSelectedVideoId.value, [sb.id]: pollRes.result.video_generation_id }
-          const row = (store.storyboards || []).find((b) => b.id === sb.id)
-          if (row) {
-            row.selected_video_id = pollRes.result.video_generation_id
-            if (pollRes.result.video_url) row.video_url = pollRes.result.video_url
-          }
-        }
-        if (pollRes.result?.status !== 'needs_review') ElMessage.success('视频生成完成')
-      } else if (pollRes?.status === 'cancelled') {
-        sbVideoErrors.value[sb.id] = '用户已取消'
-      }
+      await pollStoryboardVideo(res.task_id, sb, meta, '视频生成完成', '视频生成失败')
     } else {
       await loadSingleStoryboardMedia(sb.id)
       ElMessage.success('视频生成已提交，请稍后查看')
@@ -4039,37 +3980,20 @@ async function onResumeSbVideoPoll(sb) {
   const meta = buildSbGenMeta(sb, GEN_RESOURCE.SB_VIDEO, '继续查询')
   genStore.markRunning(meta)
   sbVideoErrors.value[sb.id] = ''
+  let taskId
   try {
     const res = await videosAPI.resumePoll(failed.id)
-    const taskId = res?.task_id
+    taskId = res?.task_id
     if (!taskId) {
       throw new Error('未返回任务 ID')
     }
-    const pollRes = await pollTask(taskId, () => loadSingleStoryboardMedia(sb.id), meta)
-    if (pollRes?.status === 'failed') {
-      sbVideoErrors.value[sb.id] = pollRes.error || '继续查询失败'
-    } else if (pollRes?.status === 'completed') {
-      sbVideoErrors.value[sb.id] = ''
-      if (pollRes?.result?.status === 'needs_review') {
-        ElMessage.warning(pollRes.result.reason || '成片已保存，请复核')
-      } else if (pollRes?.result?.video_generation_id) {
-        sbSelectedVideoId.value = { ...sbSelectedVideoId.value, [sb.id]: pollRes.result.video_generation_id }
-        const row = (store.storyboards || []).find((b) => b.id === sb.id)
-        if (row) {
-          row.selected_video_id = pollRes.result.video_generation_id
-          if (pollRes.result.video_url) row.video_url = pollRes.result.video_url
-        }
-      }
-      if (pollRes.result?.status !== 'needs_review') ElMessage.success('视频查询完成')
-    } else if (pollRes?.status === 'cancelled') {
-      sbVideoErrors.value[sb.id] = '用户已取消'
-    }
+    await pollStoryboardVideo(taskId, sb, meta, '视频查询完成', '继续查询失败')
   } catch (e) {
     sbVideoErrors.value[sb.id] = e.message || '继续查询失败'
     ElMessage.error(e.message || '继续查询失败')
   } finally {
     generatingSbVideoIds.delete(sb.id)
-    if (!genStore.isCancelledTask?.(failed?.task_id)) {
+    if (!genStore.isCancelledTask?.(taskId)) {
       genStore.markDone(meta)
     }
     await loadSingleStoryboardMedia(sb.id)
